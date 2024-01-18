@@ -12,18 +12,18 @@ RL_Agents is a comprehensive portfolio of reinforcement learning (RL) agents, de
 
 ## File Descriptions
 - `rl_agents.py`: Core implementations of the reinforcement learning agents.
-- `streamlit_support.py`: Streamlit interface for interactive visualization and control.
+- `streamlit_support.py`: Adds Streamlit support and callback for use with Tensorflow.
 - `wandb_support.py`: Integration utilities for experiment tracking with Weights & Biases.
-- `app.py`: Main application entry point.
+- `app.py`: Streamlit app.
 - `helper.py`: Helper functions for various tasks like optimizer selection.
-- `models.py`: Deep learning models used by the RL agents.
+- `models.py`: Models used by the RL agents.
 
 ## Installation
 To install and run RL_Agents, follow these steps:
 1. Clone the repository: `git clone https://github.com/jasonhayes1987/RL_Agents.git`
 2. Navigate to the cloned directory: `cd RL_Agents`
 3. (Optional) Create a virtual environment: `python -m venv env`
-4. Activate the environment: Windows: `.\env\Scriptsctivate`, Linux/Mac: `source env/bin/activate`
+4. Activate the environment: Windows: `.\env\Scripts\Activate`, Linux/Mac: `source env/bin/activate`
 5. Install dependencies: `pip install -r requirements.txt`
 
 ## Usage
