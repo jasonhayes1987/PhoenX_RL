@@ -1,6 +1,7 @@
 """Streamlit app for RL Model training and testing"""
 
 # imports
+import os
 import tkinter as tk
 from tkinter import filedialog
 
@@ -437,34 +438,76 @@ def select_folder():
     return folder_path
 
 
+# def login_to_wandb():
+#     """Logs in to Weights & Biases using the API key provided by the user."""
+
+#     # check if the user is already logged in
+#     if wandb.api.api_key:
+#         st.success("You are already logged in to Weights & Biases.")
+#     else:
+#         # Check if the W&B API key is stored in Streamlit secrets
+#         api_key = st.secrets["wandb_api_key"] if "wandb_api_key" in st.secrets else None
+
+#         # If API key is not in secrets, prompt the user to enter it
+#         if not api_key:
+#             api_key = st.text_input(
+#                 "Enter your Weights & Biases API key",
+#                 type="password",
+#                 help="Input your API key from Weights & Biases to log in and sync your training runs with the cloud for tracking and analysis. Your key is kept secure and not stored after the session ends.",
+#             )
+#             # Store the API key in the session state for the duration of the session (optional)
+#             if api_key:
+#                 st.session_state["wb_api_key"] = api_key
+
+#         # Proceed with the login process if API key is available
+#         if api_key:
+#             try:
+#                 wandb.login(key=api_key)
+#                 st.success("Logged in to Weights & Biases successfully.")
+#             except (ValueError, ConnectionError) as e:
+#                 st.error(f"Failed to log in to Weights & Biases: {e}")
+
 def login_to_wandb():
     """Logs in to Weights & Biases using the API key provided by the user."""
 
-    # check if the user is already logged in
+    # Paths to check for the secrets.toml file
+    # secrets_paths = [
+    #     os.path.expanduser("~/.streamlit/secrets.toml"), 
+    #     "D:/Documents/Programming/Projects/Reinforcement/RL_Agents/.streamlit/secrets.toml"
+    # ]
+
+    # Check if the secrets.toml file exists in any of the paths
+    secrets_file_exists = os.path.exists(os.path.expanduser("~/.streamlit/secrets.toml"))
+
+    # Initialize API key variable
+    api_key = None
+
+    # Check if the user is already logged in
     if wandb.api.api_key:
         st.success("You are already logged in to Weights & Biases.")
-    else:
-        # Check if the W&B API key is stored in Streamlit secrets
-        api_key = st.secrets["wandb_api_key"] if "wandb_api_key" in st.secrets else None
+    elif not api_key:
+        # If secrets file exists, try to get the API key
+        if secrets_file_exists:
+            api_key = st.secrets["wandb_api_key"] if "wandb_api_key" in st.secrets else None
 
-        # If API key is not in secrets, prompt the user to enter it
-        if not api_key:
+        else:
+            # Prompt the user to enter the API key manually
             api_key = st.text_input(
                 "Enter your Weights & Biases API key",
                 type="password",
-                help="Input your API key from Weights & Biases to log in and sync your training runs with the cloud for tracking and analysis. Your key is kept secure and not stored after the session ends.",
-            )
-            # Store the API key in the session state for the duration of the session (optional)
-            if api_key:
-                st.session_state["wb_api_key"] = api_key
+                help="Input your API key from Weights & Biases to log in and sync your training runs with the cloud for tracking and analysis. Your key is kept secure and not stored after the session ends."
+        )
+        # # Store the API key in the session state for the duration of the session (optional)
+        # if api_key:
+        #     st.session_state["wb_api_key"] = api_key
 
-        # Proceed with the login process if API key is available
-        if api_key:
-            try:
-                wandb.login(key=api_key)
-                st.success("Logged in to Weights & Biases successfully.")
-            except (ValueError, ConnectionError) as e:
-                st.error(f"Failed to log in to Weights & Biases: {e}")
+    # Proceed with the login process if API key is available
+    if api_key:
+        try:
+            wandb.login(key=api_key)
+            st.success("Logged in to Weights & Biases successfully.")
+        except (ValueError, ConnectionError) as e:
+            st.error(f"Failed to log in to Weights & Biases: {e}")
 
 
 def train_model():
