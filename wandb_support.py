@@ -487,21 +487,22 @@ class WandbCallback(Callback):
         # set save dir
         self.save_dir = agent.save_dir
         # add code to save config of agent and models to wandb
-        config = {
-            "env": agent.env.spec.id,
-            "discount": agent.discount,
-            "learning_rate": agent.learning_rate,
-            "model_type": self.model_type.replace("_", " "),
-        }
+        # config = {
+        #     "env": agent.env.spec.id,
+        #     "discount": agent.discount,
+        #     # "learning_rate": agent.learning_rate,
+        #     "model_type": self.model_type.replace("_", " "),
+        # }
 
-        if self.model_type == "ActorCritic":
-            config["policy_trace_decay"] = agent.policy_trace_decay
-            config["value_trace_decay"] = agent.value_trace_decay
+        # if self.model_type == "ActorCritic":
+        #     config["policy_trace_decay"] = agent.policy_trace_decay
+        #     config["value_trace_decay"] = agent.value_trace_decay
 
-        config.update(self._get_model_config(agent.policy_model))
-        config.update(self._get_model_config(agent.value_model))
+        # config.update(self._get_model_config(agent.actor_model))
+        # config.update(self._get_model_config(agent.critic_model))
 
-        return config
+
+        return agent.get_config()
 
     def _get_model_config(self, model):
         """configures callback internal state for wandb integration.
