@@ -222,17 +222,21 @@ class ActorModel(Model):
         #                      bias_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3)))
 
         # Switch to functional API
-        self.input_layer = Input(shape=self.env.observation_space.shape)
+        self.input_layer = Input(shape=self.env.observation_space.shape, name='Input')
         out = self.input_layer
-        for units, activation, initializer in hidden_layers:
+        out = BatchNormalization(name='Batch_Input')(out)
+        for i, (units, activation, initializer) in enumerate(hidden_layers):
             out = Dense(units,
                         activation=activation,
                         kernel_initializer=initializer,
-                        bias_initializer=initializer)(out)
+                        bias_initializer=initializer,
+                        name=f'Dense_{i}')(out)
+            out = BatchNormalization(name=f'Batch_{i}')(out)
         self.output_layer = Dense(env.action_space.shape[0],
                                   activation='tanh',
                                   kernel_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3),
-                                  bias_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3))(out)                               
+                                  bias_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3),
+                                  name='Output')(out)                               
         
         self.model = tf.keras.Model(inputs=self.input_layer, outputs=self.output_layer)
     
@@ -337,7 +341,7 @@ class CriticModel(Model):
             action_layers = []
         self.action_layers = action_layers
         if merged_layers is None:
-            merged_layers = [(300, "relu", initializers.VarianceScaling(scale=1.0,
+            merged_layers = [(300, "linear", initializers.VarianceScaling(scale=1.0,
                                                                         mode='fan_in',
                                                                         distribution='uniform',
                                                                         seed=np.random.randint(0, 100))),
@@ -350,16 +354,19 @@ class CriticModel(Model):
 
         # State processing
         state_out = self.state_input
-        for units, activation, initializer in state_layers:
+        state_out = BatchNormalization()(state_out)
+        for i, (units, activation, initializer) in enumerate(state_layers):
             state_out = Dense(units,
                               activation=activation,
                               kernel_initializer=initializer,
-                              bias_initializer=initializer)(state_out)
+                              bias_initializer=initializer,
+                              name=f'State_Dense_{i}')(state_out)
+            state_out = BatchNormalization(name=f'Batch_{i}')(state_out)
 
         # Action processing
         action_out = self.action_input
         # DEBUGGING
-        print(f'action out: {action_out}')
+        # print(f'action out: {action_out}')
         for units, activation, initializer in action_layers:
             action_out = Dense(units,
                                activation=activation,
@@ -367,20 +374,22 @@ class CriticModel(Model):
                                bias_initializer=initializer)(action_out)
 
         # Merge state and action
-        merged = Concatenate()([state_out, action_out])
+        merged = Concatenate(name="concat")([state_out, action_out])
 
         # Post-merge layers
-        for units, activation, initializer in merged_layers:
+        for i, (units, activation, initializer) in enumerate(merged_layers):
             merged = Dense(units,
                            activation=activation,
                            kernel_initializer=initializer,
-                           bias_initializer=initializer)(merged)
+                           bias_initializer=initializer,
+                           name=f'Merged_Dense_{i}')(merged)
 
         # Output layer
         self.output_layer = Dense(1,
                                   activation='relu',
                                   kernel_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3),
-                                  bias_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3))(merged)
+                                  bias_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3),
+                                  name='output')(merged)
 
         # Create the model
         self.model = tf.keras.Model(inputs=[self.state_input, self.action_input],

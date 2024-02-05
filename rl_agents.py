@@ -109,7 +109,7 @@ class ActorCritic(Agent):
         policy_layers,
         value_layers,
         callbacks,
-        config: wandb.config,
+        config,#: wandb.config,
         save_dir: str = "models/",
     ):
         """Builds the agent."""
@@ -508,7 +508,7 @@ class Reinforce(Agent):
         policy_layers,
         value_layers,
         callbacks,
-        config: wandb.config,
+        config,#: wandb.config,
         save_dir: str = "models/",
     ):
         """Builds the agent."""
@@ -878,13 +878,14 @@ class DDPG(Agent):
         noise = None,
         callbacks: List[Callback] = None,
         save_dir: str = "models/",
+        _DEBUG: bool = False
     ):
         self.env = env
         self.actor_model = actor_model
         self.critic_model = critic_model
         # set target actor and critic models
-        self.target_actor_model = self.clone_model(self.actor_model)
-        self.target_critic_model = self.clone_model(self.critic_model)
+        self.target_actor_model = self.clone_model(actor_model)
+        self.target_critic_model = self.clone_model(critic_model)
         # self.target_actor_model = clone_model(self.actor_model)
         # self.target_critic_model = clone_model(self.critic_model)
         # # set weights of target models
@@ -897,9 +898,11 @@ class DDPG(Agent):
         self.noise = noise
         self.callbacks = callbacks
         self.save_dir = save_dir
+        self._DEBUG = _DEBUG
         # instantiate and set keras loss objects
         # self.actor_loss = tf.keras.metrics.Mean(name="Actor Loss")
         # self.critic_loss = tf.keras.metrics.Mean(name="Critic Loss")
+        self.critic_loss = tf.keras.losses.MeanSquaredError()
         if callbacks:
             self.callback_list = self._create_callback_list(callbacks)
             for callback in self.callback_list:
@@ -957,7 +960,7 @@ class DDPG(Agent):
     def get_action(self, state):
         # receives current state and returns a vector of action values from policy model
         state = tf.convert_to_tensor([state], dtype=tf.float32)
-        return (self.actor_model(state) + tf.convert_to_tensor(self.noise(), dtype=tf.float32)).numpy()[0]
+        return (self.actor_model(state) + tf.convert_to_tensor(self.noise(), dtype=tf.float32)).numpy()[0] * self.env.action_space.high
 
     def learn(self):
         # receives a batch of experiences from the replay buffer and learns from them
@@ -970,34 +973,76 @@ class DDPG(Agent):
         # convert to tensors
         states = tf.convert_to_tensor(states, dtype=tf.float32)
         actions = tf.convert_to_tensor(actions, dtype=tf.float32)
-        rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
+        rewards = tf.convert_to_tensor(np.expand_dims(rewards, axis=1), dtype=tf.float32)
+        # rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
         next_states = tf.convert_to_tensor(next_states, dtype=tf.float32)
-        dones = tf.convert_to_tensor(dones, dtype=tf.float32)\
+        dones = tf.convert_to_tensor(np.expand_dims(dones, axis=1), dtype=tf.float32)
+        # dones = tf.convert_to_tensor(dones, dtype=tf.float32)
+        if self._DEBUG:
+            print(f'states shape: {states.shape}')
+            print(f'states: {states}')
+            print(f'actions shape: {actions.shape}')
+            print(f'actions: {actions}')
+            print(f'rewards shape: {rewards.shape}')
+            print(f'rewards: {rewards}')
+            print(f'dones shape: {dones.shape}')
+            print(f'dones: {dones}')
         
         # calculate critic loss and gradients
         with tf.GradientTape() as tape:
             # set target values using the target actor and critic models
-            targets = rewards + self.discount * self.target_critic_model([next_states, self.target_actor_model(next_states)]) * (1 - dones)
-            prediction = self.critic_model([states, actions])
+            # targets = rewards + self.discount * self.target_critic_model([next_states, self.target_actor_model(next_states)]) * (1 - dones)
+            target_actions = self.target_actor_model(next_states)
+            if self._DEBUG:
+                print(f'target action values shape: {target_actions.shape}')
+                print(f'target action values: {target_actions}')
+            target_critic_values = self.target_critic_model((next_states, target_actions))
+            if self._DEBUG:
+                print(f'target critic values shape: {target_critic_values.shape}')
+                print(f'target critic values: {target_critic_values}')
+            targets = rewards + self.discount * target_critic_values * (tf.ones_like(dones, dtype=tf.float32)-dones)
+            if self._DEBUG:
+                print(f'targets shape: {targets.shape}')
+                print(f'targets: {targets}')
+            prediction = self.critic_model((states, actions))
+            if self._DEBUG:
+                print(f'predictions shape: {prediction.shape}')
+                print(f'predictions: {prediction}')
             # calculate critic loss
-            critic_loss = tf.keras.losses.MSE(targets, prediction)
-
+            critic_loss = self.critic_loss(targets, prediction)
+        
+        if self._DEBUG:
+            print(f'critic loss shape: {critic_loss.shape}')    
+            print(f'critic loss: {critic_loss}')
         # calculate gradients
-        critic_gradient = tape.gradient(critic_loss, self.critic_model.trainable_variables)
+        critic_gradient = tape.gradient(critic_loss, self.critic_model.model.trainable_variables)
+        if self._DEBUG:
+            print(f'critic gradient: {critic_gradient}')
         # apply gradients to critic model
-        self.critic_model.optimizer.apply_gradients(zip(critic_gradient, self.critic_model.trainable_variables))
+        self.critic_model.optimizer.apply_gradients(zip(critic_gradient, self.critic_model.model.trainable_variables))
 
         # calculate actor loss and gradients
         with tf.GradientTape() as tape:
             # get actions from actor model
             action_values = self.actor_model(states)
-            values = self.critic_model([states, action_values])
+            if self._DEBUG:
+                print(f'action values shape: {action_values.shape}')
+                print(f'action values: {action_values}')
+            values = self.critic_model((states, action_values))
+            if self._DEBUG:
+                print(f'values shape: {values.shape}')
+                print(f'values: {values}')
             actor_loss = -tf.math.reduce_mean(values)
         
+        if self._DEBUG:
+            print(f'actor loss shape: {actor_loss.shape}')
+            print(f'actor loss: {actor_loss}')
         # calculate gradients
-        actor_gradient = tape.gradient(actor_loss, self.actor_model.trainable_variables)
+        actor_gradient = tape.gradient(actor_loss, self.actor_model.model.trainable_variables)
+        if self._DEBUG:
+            print(f'actor gradient: {actor_gradient}')
         # apply gradients to actor model
-        self.actor_model.optimizer.apply_gradients(zip(actor_gradient, self.actor_model.trainable_variables))
+        self.actor_model.optimizer.apply_gradients(zip(actor_gradient, self.actor_model.model.trainable_variables))
 
         # update target actor and critic models using soft update
         
