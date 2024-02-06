@@ -246,6 +246,9 @@ class ActorModel(Model):
             print(f"Optimizer '{optimizer}' not found. Using Adam instead. Original error: {e}")
             self.optimizer = optimizers.Adam(self.learning_rate)  # Setting Adam as the default optimizer
 
+
+        # compile model
+        self.model.compile(optimizer=self.optimizer)
         self.build(np.expand_dims(env.observation_space.sample(), axis=0).shape)
 
     def call(self, state):
@@ -341,7 +344,7 @@ class CriticModel(Model):
             action_layers = []
         self.action_layers = action_layers
         if merged_layers is None:
-            merged_layers = [(300, "linear", initializers.VarianceScaling(scale=1.0,
+            merged_layers = [(300, "relu", initializers.VarianceScaling(scale=1.0,
                                                                         mode='fan_in',
                                                                         distribution='uniform',
                                                                         seed=np.random.randint(0, 100))),
@@ -386,7 +389,7 @@ class CriticModel(Model):
 
         # Output layer
         self.output_layer = Dense(1,
-                                  activation='relu',
+                                  activation=None,
                                   kernel_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3),
                                   bias_initializer=initializers.RandomUniform(minval=-3e-3, maxval=3e-3),
                                   name='output')(merged)
@@ -403,7 +406,7 @@ class CriticModel(Model):
             self.optimizer = optimizers.Adam(self.learning_rate)  # Setting Adam as the default optimizer
         
         # compile model
-        # self.model.compile(optimizer=self.optimizer)
+        self.model.compile(optimizer=self.optimizer)
         
         # run data through network to set shapes
         # self.build([tf.convert_to_tensor([self.env.observation_space.sample()], dtype=tf.float32).shape,

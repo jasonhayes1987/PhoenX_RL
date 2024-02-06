@@ -973,10 +973,10 @@ class DDPG(Agent):
         # convert to tensors
         states = tf.convert_to_tensor(states, dtype=tf.float32)
         actions = tf.convert_to_tensor(actions, dtype=tf.float32)
-        rewards = tf.convert_to_tensor(np.expand_dims(rewards, axis=1), dtype=tf.float32)
-        # rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
+        # rewards = tf.convert_to_tensor(np.expand_dims(rewards, axis=1), dtype=tf.float32)
+        rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
         next_states = tf.convert_to_tensor(next_states, dtype=tf.float32)
-        dones = tf.convert_to_tensor(np.expand_dims(dones, axis=1), dtype=tf.float32)
+        # dones = tf.convert_to_tensor(np.expand_dims(dones, axis=1), dtype=tf.float32)
         # dones = tf.convert_to_tensor(dones, dtype=tf.float32)
         if self._DEBUG:
             print(f'states shape: {states.shape}')
@@ -996,15 +996,15 @@ class DDPG(Agent):
             if self._DEBUG:
                 print(f'target action values shape: {target_actions.shape}')
                 print(f'target action values: {target_actions}')
-            target_critic_values = self.target_critic_model((next_states, target_actions))
+            target_critic_values = tf.squeeze(self.target_critic_model((next_states, target_actions)), 1)
             if self._DEBUG:
                 print(f'target critic values shape: {target_critic_values.shape}')
                 print(f'target critic values: {target_critic_values}')
-            targets = rewards + self.discount * target_critic_values * (tf.ones_like(dones, dtype=tf.float32)-dones)
+            targets = rewards + self.discount * target_critic_values * (1-dones)
             if self._DEBUG:
                 print(f'targets shape: {targets.shape}')
                 print(f'targets: {targets}')
-            prediction = self.critic_model((states, actions))
+            prediction = tf.squeeze(self.critic_model((states, actions)),1)
             if self._DEBUG:
                 print(f'predictions shape: {prediction.shape}')
                 print(f'predictions: {prediction}')
@@ -1135,7 +1135,7 @@ class DDPG(Agent):
                 best_reward = avg_reward
                 self._train_episode_config["best"] = True
                 # save model
-                self.save()
+                # self.save()
             else:
                 self._train_episode_config["best"] = False
 

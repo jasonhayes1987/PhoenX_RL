@@ -157,3 +157,8 @@ models/
 artifacts/
 .vscode/
 wandb/
+*.js
+.X11-unix/
+devcontainers*/
+tmp*/
+_autograph_*/
