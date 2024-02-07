@@ -161,4 +161,5 @@ wandb/
 .X11-unix/
 devcontainers*/
 tmp*/
-_autograph_*/
+_autograph_*.py
+.conda*/
