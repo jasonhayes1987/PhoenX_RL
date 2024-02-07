@@ -156,10 +156,12 @@ cython_debug/
 models/
 artifacts/
 .vscode/
+vscode/
 wandb/
 *.js
 .X11-unix/
 devcontainers*/
 tmp*/
-_autograph_*.py
 .conda*/
+*.sock
+__autograph_*.py
