@@ -407,6 +407,15 @@ class WandbCallback(Callback):
 
         if not self._sweep:
             next_run_number = get_next_run_number(self.project_name)
+            # add num layers to config to log to wandb
+            # check which model type in order call correct classes to count number of layers
+            if self.model_type == "Reinforce" or self.model_type == "ActorCritic":
+                logs["Policy Number Layers"] = len(self.model.policy_model.layers)
+                logs["Critic Number Layers"] = len(self.model.value_model.layers)
+            elif self.model_type == "DDPG":
+                logs["Actor Number Layers"] = len(self.model.actor_model.layers)
+                logs["Critic Number Layers"] = len(self.model.critic_model.layers)
+
             wandb.init(
                 project=self.project_name,
                 name=f"train-{next_run_number}",

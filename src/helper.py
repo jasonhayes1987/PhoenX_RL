@@ -1,6 +1,7 @@
 """This module provides helper functions for configuring and using TensorFlow."""
 
 from tensorflow.keras import optimizers
+
 import gymnasium as gym
 import numpy as np
 
@@ -96,10 +97,19 @@ class ReplayBuffer():
             self.dones[indices],
         )
     
+    def get_config(self):
+        return {
+            'class_name': self.__class__.__name__,
+            'config': {
+                "env": self.env.spec.id,
+                "buffer_size": self.buffer_size,
+            }
+        }
+    
 class OUNoise():
     """Ornstein-Uhlenbeck noise process."""
 
-    def __init__(self, mu: np.ndarray, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2):
+    def __init__(self, size: int = 1, mean: float = 0.0, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2):
         """Initializes a new Ornstein-Uhlenbeck noise process.
 
         Args:
@@ -108,7 +118,9 @@ class OUNoise():
             sigma (float, optional): The sigma parameter. Defaults to 0.2.
             dt (float, optional): The time step. Defaults to 1e-2.
         """
-        self.mu = mu
+        self.size = size
+        self.mean = mean
+        self.mu = np.ones(size) * mean
         self.theta = theta
         self.sigma = sigma
         self.dt = dt
@@ -128,7 +140,32 @@ class OUNoise():
     
     def reset(self, mu: np.ndarray = None):
         """Resets the noise process."""
-        self.mu = np.zeros(self.mu.size) if mu is None else mu
+        self.mu = np.zeros(self.mu.size) if mu is None else np.array(mu)
         self.x_prev = np.ones(self.mu.size) * self.mu
+
+    def get_config(self):
+        return {
+            'class_name': self.__class__.__name__,
+            'config': {
+                "size": self.size,
+                "mean": self.mean,
+                "theta": self.theta,
+                "sigma": self.sigma,
+                "dt": self.dt,
+            }
+        }
+    
+# def get_noise_by_name(name: str):
+#     """Creates and returns a noise object by its string name.
+
+#     Args:
+#     name (str): The name of the noise.
+
+#     Returns:
+#     An instance of the requested noise.
+# """
+#     noises = {
+#         "Ornstein-Uhlenbeck": OUNoise,
+
 
     
