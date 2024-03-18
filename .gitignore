@@ -153,7 +153,16 @@ cython_debug/
 #.idea/
 
 # Other
-models/
+model*/
+assets/
 artifacts/
 .vscode/
+vscode/
 wandb/
+*.js
+.X11-unix/
+devcontainers*/
+tmp*/
+.conda*/
+*.sock
+__autograph_*.py

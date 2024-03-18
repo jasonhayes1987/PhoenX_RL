@@ -5,6 +5,7 @@ import os
 import tkinter as tk
 from tkinter import filedialog
 
+import tensorflow as tf
 import streamlit as st
 from streamlit_option_menu import option_menu
 import gymnasium as gym
@@ -88,6 +89,46 @@ def load_agent():
 def home():
     pass
 
+# Function to construct noise object
+def construct_noise_object(noise_type, **kwargs):
+    if noise_type == "Ornstein-Uhlenbeck":
+        return helper.OUNoise(**kwargs)
+    elif noise_type == "Normal":
+        return tf.random.normal(**kwargs)
+    elif noise_type == "Uniform":
+        return tf.random.uniform(**kwargs)
+    else:
+        raise ValueError("Unsupported noise type")
+
+# Function for user selection and to call object construction
+def select_noise():
+    noise_type = st.selectbox(
+        "Select the type of noise:",
+        ["Ornstein-Uhlenbeck", "Normal", "Uniform"]
+    )
+    
+    # Assuming default values or simplified inputs for demonstration
+    if noise_type == "Ornstein-Uhlenbeck":
+        # Gather parameters through st.number_input()
+        params = {'mean': st.number_input("Mean (mu)", value=0.0),
+                  'sigma': st.number_input("Standard Deviation (sigma)", value=0.2),
+                  'theta': st.number_input("Theta (speed of mean reversion)", value=0.15),
+                  'dt': st.number_input("Time Step (dt)", value=0.01)}
+    elif noise_type == "Normal":
+        # Parameters for tf.random.normal
+        params = {'shape': [1],
+                  'mean': st.number_input("Mean", value=0.0),
+                  'stddev': st.number_input("Standard Deviation", value=1.0)}
+    elif noise_type == "Uniform":
+        # Parameters for tf.random.uniform
+        params = {'shape': [1],
+                  'minval': st.number_input("Minimum Value", value=-1.0),
+                  'maxval': st.number_input("Maximum Value", value=1.0)}
+    
+    # Construct and return the noise object
+    return construct_noise_object(noise_type, **params)
+
+
 
 def build(agent_copy=None):
     """Build an agent based on the user's selections.
@@ -100,7 +141,7 @@ def build(agent_copy=None):
     """
 
     if agent_copy:
-        if st.session_state.model_type == "Reinforce":
+        if agent_copy.__class__.__name__ == "Reinforce":
             policy_model = models.PolicyModel(
                 env=gym.make(st.session_state.env),
                 hidden_layers=agent_copy.policy_model.hidden_layers,
@@ -124,7 +165,7 @@ def build(agent_copy=None):
                 callbacks=agent_copy.callbacks,
                 save_dir=agent_copy.save_dir,
             )
-        elif st.session_state.model_type == "Actor Critic":
+        elif agent_copy.__class__.__name__ == "Actor Critic":
             policy_model = models.PolicyModel(
                 env=gym.make(st.session_state.env),
                 hidden_layers=agent_copy.policy_model.hidden_layers,
@@ -151,60 +192,140 @@ def build(agent_copy=None):
                 save_dir=agent_copy.save_dir,
             )
 
+        elif agent_copy.__class__.__name__ == "DDPG":
+            actor_model = models.ActorModel(
+                env=gym.make(st.session_state.env),
+                dense_layers=agent_copy.actor_model.layer_config,
+                learning_rate=agent_copy.actor_model.learning_rate,
+                optimizer=helper.get_optimizer_by_name(
+                    agent_copy.actor_model.optimizer.__class__.__name__.lower()
+                ),
+            )
+            critic_model = models.CriticModel(
+                env=gym.make(st.session_state.env),
+                state_layers=agent_copy.critic_model.state_config,
+                merged_layers=agent_copy.critic_model.merged_config,
+                learning_rate=agent_copy.critic_model.learning_rate,
+                optimizer=helper.get_optimizer_by_name(
+                    agent_copy.critic_model.optimizer.__class__.__name__.lower()
+                ),
+            )
+            agent = rl_agents.DDPG(
+                env=gym.make(st.session_state.env),
+                actor_model=actor_model,
+                critic_model=critic_model,
+                discount=agent_copy.discount,
+                tau=agent_copy.tau,
+                replay_buffer=agent_copy.replay_buffer,
+                batch_size=agent_copy.batch_size,
+                noise=agent_copy.noise,
+                callbacks=agent_copy.callbacks,
+                save_dir=agent_copy.save_dir,
+            )
+
     else:
-        # set a defualt env to build
-        env_name = "CartPole-v1"
-        policy_optimizer = helper.get_optimizer_by_name(
-            st.session_state.policy_optimizer
-        )
-        value_optimizer = helper.get_optimizer_by_name(st.session_state.value_optimizer)
-        policy_layers = models.build_layers(
-            st.session_state.policy_units_per_layer, st.session_state.policy_activation
-        )
         
-        value_layers = models.build_layers(
-            st.session_state.value_units_per_layer, st.session_state.value_activation
-        )
-        
-        if st.session_state.model_type == "Reinforce":
-            policy_model = models.PolicyModel(
-                env=gym.make(env_name),
-                hidden_layers=policy_layers,
-                optimizer=policy_optimizer,
+        # set params if agent is reinforce or actor critic
+        if st.session_state.model_type == "Reinforce" or st.session_state.model_type == "Actor Critic":
+            # set defualt gym environment in order to build policy and value models and save
+            env_name = "CartPole-v1"
+
+            policy_optimizer = helper.get_optimizer_by_name(
+                st.session_state.policy_optimizer
             )
-            value_model = models.ValueModel(
-                env=gym.make(env_name),
-                hidden_layers=value_layers,
-                optimizer=value_optimizer,
+            value_optimizer = helper.get_optimizer_by_name(st.session_state.value_optimizer)
+            policy_layers = models.build_layers(
+                st.session_state.policy_units_per_layer, st.session_state.policy_activation
             )
-            agent = rl_agents.Reinforce(
-                env=gym.make(env_name),
-                policy_model=policy_model,
-                value_model=value_model,
-                learning_rate=st.session_state.learning_rate,
+            
+            value_layers = models.build_layers(
+                st.session_state.value_units_per_layer, st.session_state.value_activation
+            )
+            
+            if st.session_state.model_type == "Reinforce":
+                policy_model = models.PolicyModel(
+                    env=gym.make(env_name),
+                    hidden_layers=policy_layers,
+                    optimizer=policy_optimizer,
+                )
+                value_model = models.ValueModel(
+                    env=gym.make(env_name),
+                    hidden_layers=value_layers,
+                    optimizer=value_optimizer,
+                )
+                agent = rl_agents.Reinforce(
+                    env=gym.make(env_name),
+                    policy_model=policy_model,
+                    value_model=value_model,
+                    learning_rate=st.session_state.learning_rate,
+                    discount=st.session_state.discount,
+                    callbacks=st.session_state.callback_objs,
+                    save_dir=st.session_state.folder_path,
+                )
+            elif st.session_state.model_type == "Actor Critic":
+                policy_model = models.PolicyModel(
+                    env=gym.make(env_name),
+                    hidden_layers=policy_layers,
+                    optimizer=policy_optimizer,
+                )
+                value_model = models.ValueModel(
+                    env=gym.make(env_name),
+                    hidden_layers=value_layers,
+                    optimizer=value_optimizer,
+                )
+                agent = rl_agents.ActorCritic(
+                    env=gym.make(env_name),
+                    policy_model=policy_model,
+                    value_model=value_model,
+                    learning_rate=st.session_state.learning_rate,
+                    discount=st.session_state.discount,
+                    policy_trace_decay=st.session_state.policy_trace_decay,
+                    value_trace_decay=st.session_state.value_trace_decay,
+                    callbacks=st.session_state.callback_objs,
+                    save_dir=st.session_state.folder_path,
+                )
+
+        elif st.session_state.model_type == "DDPG":
+            # set defualt gym environment in order to build policy and value models and save
+            env = gym.make("Pendulum-v1")
+
+            # set actor and critic model params
+            actor_optimizer = helper.get_optimizer_by_name(st.session_state.actor_optimizer)
+            critic_optimizer = helper.get_optimizer_by_name(st.session_state.critic_optimizer)
+            actor_layers = models.build_layers(st.session_state.actor_units_per_layer,
+                                               st.session_state.actor_activation,
+                                               st.session_state.actor_kernel_initializer
+            )
+            critic_state_layers = models.build_layers(st.session_state.critic_state_units_per_layer,
+                                                      st.session_state.critic_activation,
+                                                      st.session_state.critic_kernel_initializer
+            )
+            critic_merged_layers = models.build_layers(st.session_state.critic_merged_units_per_layer,
+                                                       st.session_state.critic_activation,
+                                                       st.session_state.critic_kernel_initializer
+            )
+            actor_model = models.ActorModel(
+                env=env,
+                dense_layers=actor_layers,
+                learning_rate=st.session_state.actor_learning_rate,
+                optimizer=actor_optimizer
+            )
+            critic_model = models.CriticModel(
+                env=env,
+                state_layers=critic_state_layers,
+                merged_layers=critic_merged_layers,
+                learning_rate=st.session_state.critic_learning_rate,
+                optimizer=critic_optimizer
+            )
+            agent = rl_agents.DDPG(
+                env=env,
+                actor_model=actor_model,
+                critic_model=critic_model,
                 discount=st.session_state.discount,
-                callbacks=st.session_state.callback_objs,
-                save_dir=st.session_state.folder_path,
-            )
-        elif st.session_state.model_type == "Actor Critic":
-            policy_model = models.PolicyModel(
-                env=gym.make(env_name),
-                hidden_layers=policy_layers,
-                optimizer=policy_optimizer,
-            )
-            value_model = models.ValueModel(
-                env=gym.make(env_name),
-                hidden_layers=value_layers,
-                optimizer=value_optimizer,
-            )
-            agent = rl_agents.ActorCritic(
-                env=gym.make(env_name),
-                policy_model=policy_model,
-                value_model=value_model,
-                learning_rate=st.session_state.learning_rate,
-                discount=st.session_state.discount,
-                policy_trace_decay=st.session_state.policy_trace_decay,
-                value_trace_decay=st.session_state.value_trace_decay,
+                tau=st.session_state.tau,
+                replay_buffer=helper.ReplayBuffer(env, 100000),
+                batch_size=st.session_state.batch_size,
+                noise=st.session_state.noise,
                 callbacks=st.session_state.callback_objs,
                 save_dir=st.session_state.folder_path,
             )
@@ -221,101 +342,272 @@ def build_model():
     # Model type selection
     model_type = st.selectbox(
         "Select Model Type",
-        ["Reinforce", "Actor Critic"],
-        help="Choose a model type. Reinforce is simpler and Actor Critic has separate policy/value models.",
+        ["Reinforce", "Actor Critic", "DDPG"],
+        help="Choose a model type.",
     )
     # save variable to session state
     st.session_state.model_type = model_type
 
-    # Common parameters for both models
-    learning_rate = st.number_input(
-        "Learning Rate",
-        format="%.6f",
-        step=1e-6,
-        value=1e-5,
-        help="The learning rate controls how much to adjust the model's weights with respect to the gradient loss at each iteration. A smaller value may lead to more precise convergence but can slow down the training process.",
-    )
-    discount = st.number_input(
-        "Discount Factor",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.99,
-        step=0.01,
-        help="The discount factor determines the importance of future rewards. A value of 0 will make the agent short-sighted by only considering current rewards, while a value closer to 1 will make it strive for long-term high rewards.",
-    )
-    # save variables to session state
-    st.session_state.learning_rate = learning_rate
-    st.session_state.discount = discount
+    # show options depending on model type
+    if model_type == "Reinforce" or model_type == "Actor Critic":
 
-    # Policy Model Configuration
-    st.subheader(
-        "Policy Model Configuration",
-        help="The Policy Model network estimates the probabilities of taking actions in a given state.",
-    )
-    policy_hidden_layers = st.number_input(
-        "Number of Hidden Layers",
-        min_value=1,
-        max_value=10,
-        value=1,
-        help="This sets the depth of the neural network. More layers can capture complex features but may increase the risk of overfitting and require more data and training time.",
-    )
-    policy_units_per_layer = get_layer_units_input("Policy", policy_hidden_layers)
-    policy_activation = st.selectbox(
-        "Policy Activation Function",
-        ["relu", "tanh", "sigmoid"],
-        help="An activation function defines how the neurons in a neural network transform input signals into output signals, adding non-linearity to the learning process. Choose the activation function for the neurons. 'Relu' outputs the input directly if it's positive, otherwise, it outputs zero, and is generally a good default, 'tanh' centers the output between -1 and 1, and 'sigmoid' squashes the output to be between 0 and 1.",
-    )
-    policy_optimizer = st.selectbox(
-        "Policy Optimizer",
-        ["adam", "sgd", "rmsprop"],
-        help="An optimizer is an algorithm that adjusts the weights of the network to minimize the loss function, guiding how the model learns from the data. Select the optimization algorithm for the policy network. Adam is a popular choice that combines the benefits of two other extensions of stochastic gradient descent.",
-    )
-    # save variables to session state
-    st.session_state.policy_hidden_layers = policy_hidden_layers
-    st.session_state.policy_units_per_layer = policy_units_per_layer
-    st.session_state.policy_activation = policy_activation
-    st.session_state.policy_optimizer = policy_optimizer
-
-    # Value Model Configuration
-    st.subheader(
-        "Value Model Configuration",
-        help=" The Value Model network estimates the value of being in a given state.",
-    )
-    value_hidden_layers = st.number_input(
-        "Number of Hidden Layers (Value Model)",
-        min_value=1,
-        max_value=10,
-        value=1,
-        help="This sets the depth of the neural network. More layers can capture complex features but may increase the risk of overfitting and require more data and training time.",
-    )
-    value_units_per_layer = get_layer_units_input("Value", value_hidden_layers)
-    value_activation = st.selectbox(
-        "Value Activation Function",
-        ["relu", "tanh", "sigmoid"],
-        help="An activation function defines how the neurons in a neural network transform input signals into output signals, adding non-linearity to the learning process. Choose the activation function for the neurons. 'Relu' outputs the input directly if it's positive, otherwise, it outputs zero, and is generally a good default, 'tanh' centers the output between -1 and 1, and 'sigmoid' squashes the output to be between 0 and 1.",
-    )
-    value_optimizer = st.selectbox(
-        "Value Optimizer",
-        ["adam", "sgd", "rmsprop"],
-        help="An optimizer is an algorithm that adjusts the weights of the network to minimize the loss function, guiding how the model learns from the data. Select the optimization algorithm for the value network. Adam is a popular choice that combines the benefits of two other extensions of stochastic gradient descent.",
-    )
-    # save variables to session state
-    st.session_state.value_hidden_layers = value_hidden_layers
-    st.session_state.value_units_per_layer = value_units_per_layer
-    st.session_state.value_activation = value_activation
-    st.session_state.value_optimizer = value_optimizer
-
-    # Specific parameters for Actor Critic
-    if model_type == "Actor Critic":
-        policy_trace_decay = st.number_input(
-            "Policy Trace Decay", min_value=0.0, max_value=1.0, value=0.0, step=0.01
+        # Common parameters for both models
+        learning_rate = st.number_input(
+            "Learning Rate",
+            format="%.6f",
+            step=1e-6,
+            value=1e-5,
+            help="The learning rate controls how much to adjust the model's weights with respect to the gradient loss at each iteration. A smaller value may lead to more precise convergence but can slow down the training process.",
         )
-        value_trace_decay = st.number_input(
-            "Value Trace Decay", min_value=0.0, max_value=1.0, value=0.0, step=0.01
+        
+        discount = st.number_input(
+            "Discount Factor",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.99,
+            step=0.01,
+            help="The discount factor determines the importance of future rewards. A value of 0 will make the agent short-sighted by only considering current rewards, while a value closer to 1 will make it strive for long-term high rewards.",
         )
         # save variables to session state
-        st.session_state.policy_trace_decay = policy_trace_decay
-        st.session_state.value_trace_decay = value_trace_decay
+        st.session_state.learning_rate = learning_rate
+        st.session_state.discount = discount
+
+        # Policy Model Configuration
+        st.subheader(
+            "Policy Model Configuration",
+            help="The Policy Model network estimates the probabilities of taking actions in a given state.",
+        )
+        policy_hidden_layers = st.number_input(
+            "Number of Hidden Layers",
+            min_value=1,
+            max_value=10,
+            value=1,
+            help="This sets the depth of the neural network. More layers can capture complex features but may increase the risk of overfitting and require more data and training time.",
+        )
+        policy_units_per_layer = get_layer_units_input("Policy", policy_hidden_layers)
+        policy_activation = st.selectbox(
+            "Policy Activation Function",
+            ["relu", "tanh", "sigmoid"],
+            help="An activation function defines how the neurons in a neural network transform input signals into output signals, adding non-linearity to the learning process. Choose the activation function for the neurons. 'Relu' outputs the input directly if it's positive, otherwise, it outputs zero, and is generally a good default, 'tanh' centers the output between -1 and 1, and 'sigmoid' squashes the output to be between 0 and 1.",
+        )
+        policy_optimizer = st.selectbox(
+            "Policy Optimizer",
+            ["adam", "sgd", "rmsprop"],
+            help="An optimizer is an algorithm that adjusts the weights of the network to minimize the loss function, guiding how the model learns from the data. Select the optimization algorithm for the policy network. Adam is a popular choice that combines the benefits of two other extensions of stochastic gradient descent.",
+        )
+        # save variables to session state
+        st.session_state.policy_hidden_layers = policy_hidden_layers
+        st.session_state.policy_units_per_layer = policy_units_per_layer
+        st.session_state.policy_activation = policy_activation
+        st.session_state.policy_optimizer = policy_optimizer
+
+        # Value Model Configuration
+        st.subheader(
+            "Value Model Configuration",
+            help=" The Value Model network estimates the value of being in a given state.",
+        )
+        value_hidden_layers = st.number_input(
+            "Number of Hidden Layers (Value Model)",
+            min_value=1,
+            max_value=10,
+            value=1,
+            help="This sets the depth of the neural network. More layers can capture complex features but may increase the risk of overfitting and require more data and training time.",
+        )
+        value_units_per_layer = get_layer_units_input("Value", value_hidden_layers)
+        value_activation = st.selectbox(
+            "Value Activation Function",
+            ["relu", "tanh", "sigmoid"],
+            help="An activation function defines how the neurons in a neural network transform input signals into output signals, adding non-linearity to the learning process. Choose the activation function for the neurons. 'Relu' outputs the input directly if it's positive, otherwise, it outputs zero, and is generally a good default, 'tanh' centers the output between -1 and 1, and 'sigmoid' squashes the output to be between 0 and 1.",
+        )
+        value_optimizer = st.selectbox(
+            "Value Optimizer",
+            ["adam", "sgd", "rmsprop"],
+            help="An optimizer is an algorithm that adjusts the weights of the network to minimize the loss function, guiding how the model learns from the data. Select the optimization algorithm for the value network. Adam is a popular choice that combines the benefits of two other extensions of stochastic gradient descent.",
+        )
+        # save variables to session state
+        st.session_state.value_hidden_layers = value_hidden_layers
+        st.session_state.value_units_per_layer = value_units_per_layer
+        st.session_state.value_activation = value_activation
+        st.session_state.value_optimizer = value_optimizer
+
+        # Specific parameters for Actor Critic
+        if model_type == "Actor Critic":
+            policy_trace_decay = st.number_input(
+                "Policy Trace Decay", min_value=0.0, max_value=1.0, value=0.0, step=0.01
+            )
+            value_trace_decay = st.number_input(
+                "Value Trace Decay", min_value=0.0, max_value=1.0, value=0.0, step=0.01
+            )
+            # save variables to session state
+            st.session_state.policy_trace_decay = policy_trace_decay
+            st.session_state.value_trace_decay = value_trace_decay
+    
+    elif model_type == "DDPG":
+        # Actor Model Configuration
+        # Common parameters for both models
+        
+        
+        discount = st.number_input(
+            "Discount Factor",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.99,
+            step=0.01,
+            help="The discount factor determines the importance of future rewards. A value of 0 will make the agent short-sighted by only considering current rewards, while a value closer to 1 will make it strive for long-term high rewards.",
+        )
+        tau = st.number_input(
+            "Tau",
+            format="%.3f",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.005,
+            step=0.001,
+            help="The tau parameter in DDPG is used for softly updating the target networks, blending the main network weights with the target weights to provide stable learning targets. A smaller tau results in slower updates, enhancing stability, while a larger tau allows for faster updates but may reduce stability.",
+        )
+        ## Add the replay buffer options when there is more than one type of replay buffer to choose from
+        # replay_buffer = st.selectbox(
+        #     "Value Activation Function",
+        #     ["relu", "tanh", "sigmoid"],
+        #     help="An activation function defines how the neurons in a neural network transform input signals into output signals, adding non-linearity to the learning process. Choose the activation function for the neurons. 'Relu' outputs the input directly if it's positive, otherwise, it outputs zero, and is generally a good default, 'tanh' centers the output between -1 and 1, and 'sigmoid' squashes the output to be between 0 and 1.",
+        # )
+        batch_size = st.number_input(
+            "Batch Size",
+            min_value=0,
+            max_value=10000,
+            value=64,
+            step=1,
+            help="The batch size is the number of samples used to train the model at each \
+                iteration. A larger batch size will provide more accurate estimates of the \
+                gradient, but will require more computational resources to train.",
+        )
+
+        noise = select_noise()
+
+        # set the parameters of the actor model
+        st.subheader(
+            "Actor Model Configuration",
+            help="The Actor Model network estimates the action values of taking actions in a given state.",
+        )
+        actor_hidden_layers = st.number_input(
+            "Number of Hidden Layers (Actor Model)",
+            min_value=1,
+            max_value=10,
+            value=1,
+            help="This sets the depth of the neural network. More layers can capture complex features but may increase the risk of overfitting and require more data and training time.",
+        )
+        actor_units_per_layer = get_layer_units_input("Actor", actor_hidden_layers)
+        actor_activation = st.selectbox(
+            "Actor Activation Function",
+            ["relu", "tanh", "sigmoid"],
+            help="An activation function defines how the neurons in a neural network \
+                transform input signals into output signals, adding non-linearity to the \
+                learning process. Choose the activation function for the neurons. 'Relu' \
+                outputs the input directly if it's positive, otherwise, it outputs zero, \
+                and is generally a good default, 'tanh' centers the output between -1 and 1, \
+                and 'sigmoid' squashes the output to be between 0 and 1.",
+            )
+        actor_kernel_initializer = tf.keras.initializers.get(st.selectbox(
+            "Actor Kernel Initializer",
+            ["glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
+             "random_uniform", "random_normal", "variance_scaling"],
+             help="The kernel initializer is used to initialize the weights of the neural \
+                network.",
+        ))
+        actor_optimizer = st.selectbox(
+            "Actor Optimizer",
+            ["adam", "sgd", "rmsprop"],
+            help="An optimizer is an algorithm that adjusts the weights of the network to minimize the loss function, guiding how the model learns from the data. Select the optimization algorithm for the value network. Adam is a popular choice that combines the benefits of two other extensions of stochastic gradient descent.",
+        )
+        actor_learning_rate = st.number_input(
+            "Actor model Learning Rate",
+            format="%.6f",
+            step=1e-6,
+            value=1e-5,
+            help="The learning rate controls how much to adjust the model's weights with respect to the gradient loss at each iteration. A smaller value may lead to more precise convergence but can slow down the training process.",
+        )
+
+        # set the parameters of the critic model
+        st.subheader(
+            "Critic Model Configuration",
+            help="The Critic Model network estimates the value of taking actions in a given state.",
+        )
+        
+        critic_state_layers = st.number_input(
+            "The number of initial hidden layers using state input only",
+            min_value=0,
+            max_value=10,
+            value=1,
+            help="This sets the depth of the neural network using only the state as input features. \
+                Hidden layers allow the network to learn complex representations of the data. \
+                Using state-only inputs can help the network focus on the most relevant features \
+                for decision-making. More layers can capture complex features but may increase \
+                the risk of overfitting and require more data and training time.",
+
+        )
+        critic_state_units_per_layer = get_layer_units_input("Critic_State", critic_state_layers)
+        critic_merged_layers = st.number_input(
+            "The number of hidden layers using both state and action values as inputs",
+            min_value=1,
+            max_value=10,
+            value=1,
+            help="This sets the depth of the neural network using both the state and action values \
+                as input features. Hidden layers allow the network to learn complex representations of the data. \
+                Using state-only inputs can help the network focus on the most relevant features \
+                for decision-making. More layers can capture complex features but may increase \
+                the risk of overfitting and require more data and training time.",
+
+        )
+        critic_merged_units_per_layer = get_layer_units_input("Critic_Merged", critic_merged_layers)
+        critic_activation = st.selectbox(
+            "Critic Activation Function",
+            ["relu", "tanh", "sigmoid"],
+            help="An activation function defines how the neurons in a neural network \
+                transform input signals into output signals, adding non-linearity to the \
+                learning process. Choose the activation function for the neurons. 'Relu' \
+                outputs the input directly if it's positive, otherwise, it outputs zero, \
+                and is generally a good default, 'tanh' centers the output between -1 and 1, \
+                and 'sigmoid' squashes the output to be between 0 and 1.",
+            )
+        critic_kernel_initializer = tf.keras.initializers.get(st.selectbox(
+            "Critic Kernel Initializer",
+            ["glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
+             "random_uniform", "random_normal", "variance_scaling"],
+             help="The kernel initializer is used to initialize the weights of the neural \
+                network.",
+        ))
+        critic_optimizer = st.selectbox(
+            "Critic Optimizer",
+            ["adam", "sgd", "rmsprop"],
+            help="An optimizer is an algorithm that adjusts the weights of the network to minimize the loss function, guiding how the model learns from the data. Select the optimization algorithm for the value network. Adam is a popular choice that combines the benefits of two other extensions of stochastic gradient descent.",
+        )
+        critic_learning_rate = st.number_input(
+            "Critic model Learning Rate",
+            format="%.6f",
+            step=1e-6,
+            value=1e-5,
+            help="The learning rate controls how much to adjust the model's weights with respect to the gradient loss at each iteration. A smaller value may lead to more precise convergence but can slow down the training process.",
+        )
+
+        # save variables to session state
+        st.session_state.actor_learning_rate = actor_learning_rate
+        st.session_state.critic_learning_rate = critic_learning_rate
+        st.session_state.discount = discount
+        st.session_state.tau = tau
+        st.session_state.batch_size = batch_size
+        st.session_state.noise = noise
+        st.session_state.actor_hidden_layers = actor_hidden_layers
+        st.session_state.actor_units_per_layer = actor_units_per_layer
+        st.session_state.actor_activation = actor_activation
+        st.session_state.actor_kernel_initializer = actor_kernel_initializer
+        st.session_state.actor_optimizer = actor_optimizer
+        st.session_state.critic_state_layers = critic_state_layers
+        st.session_state.critic_state_units_per_layer = critic_state_units_per_layer
+        st.session_state.critic_merged_layers = critic_merged_layers
+        st.session_state.critic_merged_units_per_layer = critic_merged_units_per_layer
+        st.session_state.critic_activation = critic_activation
+        st.session_state.critic_kernel_initializer = critic_kernel_initializer
+        st.session_state.critic_optimizer = critic_optimizer
+
 
     # Callbacks
     callbacks = st.multiselect(
@@ -415,6 +707,7 @@ def get_layer_units_input(model_prefix, num_layers):
     for i in range(1, num_layers + 1):
         units = st.number_input(
             f"{model_prefix} Model - Units in Layer {i}",
+            key=f"{model_prefix}_model_units_per_layer_{i}",
             min_value=1,
             max_value=1024,
             value=100,
@@ -695,8 +988,6 @@ def get_all_gym_envs():
         for env_spec in gym.envs.registration.registry
         if not any(exclude in env_spec for exclude in exclude_list)
     ]
-
-    # return ["CartPole-v1", "MountainCar-v0", "MsPacman-v0"]  # Mock example
 
 
 def test_model():

@@ -6,17 +6,21 @@ import json
 import os
 from typing import List
 from pathlib import Path
+import time
 
 import gymnasium as gym
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras.callbacks import CallbackList, Callback
+from tensorflow.keras.models import clone_model
 
 import models
 import wandb
 import wandb_support
 import helper
+import dash_callbacks
+import tf_callbacks
 
 
 # Agent class
@@ -72,7 +76,7 @@ class ActorCritic(Agent):
         if callbacks:
             self.callback_list = self._create_callback_list(callbacks)
             for callback in callbacks:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     self._config = callback._config(self)
                     self._wandb = True
                     self._train_config = {}
@@ -108,14 +112,14 @@ class ActorCritic(Agent):
         policy_layers,
         value_layers,
         callbacks,
-        config: wandb.config,
+        config,#: wandb.config,
         save_dir: str = "models/",
     ):
         """Builds the agent."""
         policy_optimizer = helper.get_optimizer_by_name(wandb.config.policy_optimizer)
         value_optimizer = helper.get_optimizer_by_name(wandb.config.value_optimizer)
         policy_model = models.PolicyModel(
-            env, hidden_layers=policy_layers, optimizer=policy_optimizer
+            env, dense_layers=policy_layers, optimizer=policy_optimizer
         )
         value_model = models.ValueModel(
             env, hidden_layers=value_layers, optimizer=value_optimizer
@@ -136,14 +140,14 @@ class ActorCritic(Agent):
     def _initialize_env(self, render=False, render_freq=10):
         """Initializes a new environment."""
         if render:
-            env = gym.make(self.env.spec.id, render_mode="rgb_array")
+            env = gym.make(self.env.spec, render_mode="rgb_array")
             return gym.wrappers.RecordVideo(
                 env,
                 self.save_dir + "/renders",
                 episode_trigger=lambda episode_id: episode_id % render_freq == 0,
             )
 
-        return gym.make(self.env.spec.id)
+        return gym.make(self.env.spec)
 
     def _set_traces(self):
         for weights in self.policy_model.trainable_variables:
@@ -377,18 +381,24 @@ class ActorCritic(Agent):
         # close the environment
         self.env.close()
 
-    def save(self):
-        """Saves the model."""
-        obj_config = {
+    def get_config(self):
+        return {
             "agent_type": self.__class__.__name__,
             "env": self.env.spec.id,
-            "discount": self.discount,
+            "policy_model": self.policy_model.get_config(),
+            "value_model": self.value_model.get_config(),
             "learning_rate": self.learning_rate,
+            "discount": self.discount,
             "policy_trace_decay": self.policy_trace_decay,
             "value_trace_decay": self.value_trace_decay,
-            "callbacks": [callback.__class__.__name__ for callback in self.callbacks],
-            "save_dir": self.save_dir,
+            "callbacks": [callback.__class__.__name__ for callback in (self.callbacks or []) if callback is not None],
+            "save_dir": self.save_dir
         }
+
+
+    def save(self):
+        """Saves the model."""
+        obj_config = self.get_config()
 
         # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
@@ -404,7 +414,7 @@ class ActorCritic(Agent):
         # if wandb callback, save wandb config
         if self._wandb:
             for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     callback.save(self.save_dir + "/wandb_config.json")
 
     @classmethod
@@ -423,7 +433,7 @@ class ActorCritic(Agent):
         # load wandb config if exists
         if os.path.exists(Path(folder).joinpath(Path("wandb_config.json"))):
             callbacks = [
-                wandb_support.WandbCallback.load(
+                tf_callbacks.WandbCallback.load(
                     Path(folder).joinpath(Path("wandb_config.json"))
                 )
             ]
@@ -444,7 +454,7 @@ class ActorCritic(Agent):
         )
 
         for callback in callbacks:
-            if isinstance(callback, wandb_support.WandbCallback):
+            if isinstance(callback, tf_callbacks.WandbCallback):
                 agent._wandb = True
                 agent._train_config = {}
                 agent._train_episode_config = {}
@@ -452,8 +462,6 @@ class ActorCritic(Agent):
                 agent._test_config = {}
 
         return agent
-
-    # Agent class
 
 
 class Reinforce(Agent):
@@ -483,7 +491,7 @@ class Reinforce(Agent):
         if callbacks:
             self.callback_list = self._create_callback_list(callbacks)
             for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     self._config = callback._config(self)
                     self._wandb = True
                     self._train_config = {}
@@ -507,14 +515,14 @@ class Reinforce(Agent):
         policy_layers,
         value_layers,
         callbacks,
-        config: wandb.config,
+        config,#: wandb.config,
         save_dir: str = "models/",
     ):
         """Builds the agent."""
         policy_optimizer = helper.get_optimizer_by_name(wandb.config.policy_optimizer)
         value_optimizer = helper.get_optimizer_by_name(wandb.config.value_optimizer)
         policy_model = models.PolicyModel(
-            env, hidden_layers=policy_layers, optimizer=policy_optimizer
+            env, dense_layers=policy_layers, optimizer=policy_optimizer
         )
         value_model = models.ValueModel(
             env, hidden_layers=value_layers, optimizer=value_optimizer
@@ -540,14 +548,14 @@ class Reinforce(Agent):
     def _initialize_env(self, render=False, render_freq=10):
         """Initializes a new environment."""
         if render:
-            env = gym.make(self.env.spec.id, render_mode="rgb_array")
+            env = gym.make(self.env.spec, render_mode="rgb_array")
             return gym.wrappers.RecordVideo(
                 env,
                 self.save_dir + "/renders",
                 episode_trigger=lambda episode_id: episode_id % render_freq == 0,
             )
 
-        return gym.make(self.env.spec.id)
+        return gym.make(self.env.spec)
 
     def get_return(self, rewards):
         """Compute expected returns per timestep."""
@@ -788,16 +796,21 @@ class Reinforce(Agent):
         # close the environment
         self.env.close()
 
-    def save(self):
-        """Saves the model."""
-        obj_config = {
+    def get_config(self):
+        return {
             "agent_type": self.__class__.__name__,
             "env": self.env.spec.id,
-            "discount": self.discount,
+            "policy_model": self.policy_model.get_config(),
+            "value_model": self.value_model.get_config(),
             "learning_rate": self.learning_rate,
-            "callbacks": [callback.__class__.__name__ for callback in self.callbacks],
-            "save_dir": self.save_dir,
+            "discount": self.discount,
+            "callbacks": [callback.__class__.__name__ for callback in (self.callbacks or []) if callback is not None],
+            "save_dir": self.save_dir
         }
+
+    def save(self):
+        """Saves the model."""
+        obj_config = self.get_config()
 
         # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
@@ -814,7 +827,7 @@ class Reinforce(Agent):
         # if wandb callback, save wandb config
         if self._wandb:
             for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     callback.save(self.save_dir + "/wandb_config.json")
 
     @classmethod
@@ -833,7 +846,7 @@ class Reinforce(Agent):
         # load wandb config if exists
         if os.path.exists(Path(folder).joinpath(Path("wandb_config.json"))):
             callbacks = [
-                wandb_support.WandbCallback.load(
+                tf_callbacks.WandbCallback.load(
                     Path(folder).joinpath(Path("wandb_config.json"))
                 )
             ]
@@ -852,7 +865,7 @@ class Reinforce(Agent):
         )
 
         for callback in callbacks:
-            if isinstance(callback, wandb_support.WandbCallback):
+            if isinstance(callback, tf_callbacks.WandbCallback):
                 agent._wandb = True
                 agent._train_config = {}
                 agent._train_episode_config = {}
@@ -860,9 +873,505 @@ class Reinforce(Agent):
                 agent._test_config = {}
 
         return agent
+    
+
+class DDPG(Agent):
+    """Deep Deterministic Policy Gradient Agent."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        actor_model: models.ActorModel,
+        critic_model: models.CriticModel,
+        discount=0.99,
+        tau=0.001,
+        replay_buffer: helper.ReplayBuffer = None,
+        batch_size: int = 64,
+        noise = None,
+        callbacks: List[Callback] = None,
+        save_dir: str = "models/",
+        _DEBUG: bool = False
+    ):
+        self.env = env
+        self.actor_model = actor_model
+        self.critic_model = critic_model
+        # set target actor and critic models
+        self.target_actor_model = self.clone_model(actor_model)
+        self.target_critic_model = self.clone_model(critic_model)
+        # self.target_actor_model = clone_model(self.actor_model)
+        # self.target_critic_model = clone_model(self.critic_model)
+        # # set weights of target models
+        # self.target_actor_model.set_weights(self.actor_model.get_weights())
+        # self.target_critic_model.set_weights(self.critic_model.get_weights())
+        self.discount = discount
+        self.tau = tau
+        self.replay_buffer = replay_buffer
+        self.batch_size = batch_size
+        self.noise = noise
+        self.callbacks = callbacks
+        self.save_dir = save_dir
+        self._DEBUG = _DEBUG
+        # instantiate and set keras loss objects
+        # self.actor_loss = tf.keras.metrics.Mean(name="Actor Loss")
+        # self.critic_loss = tf.keras.metrics.Mean(name="Critic Loss")
+        self.critic_loss = tf.keras.losses.MeanSquaredError()
+        if callbacks:
+            self.callback_list = self._create_callback_list(callbacks)
+            for callback in self.callback_list:
+                if isinstance(callback, tf_callbacks.WandbCallback):
+                    self._config = callback._config(self)
+                    self._wandb = True
+                    break
+
+        else:
+            self.callback_list = None
+            self._wandb = False
+        self._train_config = {}
+        self._train_episode_config = {}
+        self._train_step_config = {}
+        self._test_config = {}
+        self._test_episode_config = {}
+
+        self._step = None
+        # instantiate and copy weights for target actor and critic models
+
+    def clone_model(self, model):
+        """Clones a model."""
+
+        return model.get_clone()
+    
+    @classmethod
+    def build(
+        cls,
+        env,
+        actor_layers,
+        critic_state_layers,
+        critic_merged_layers,
+        callbacks,
+        config,#: wandb.config,
+        save_dir: str = "models/",
+    ):
+        """Builds the agent."""
+        actor_optimizer = helper.get_optimizer_by_name(config[config.model_type][f"{config.model_type}_actor_optimizer"]) 
+        critic_optimizer = helper.get_optimizer_by_name(config[config.model_type][f"{config.model_type}_critic_optimizer"])
+        actor_model = models.ActorModel(
+            env=env, dense_layers=actor_layers, learning_rate=config[config.model_type][f"{config.model_type}_actor_learning_rate"], optimizer=actor_optimizer
+        )
+        critic_model = models.CriticModel(
+            env=env, state_layers=critic_state_layers, merged_layers=critic_merged_layers, learning_rate=config[config.model_type][f"{config.model_type}_critic_learning_rate"], optimizer=critic_optimizer
+        )
+
+        return cls(
+            env = env,
+            actor_model = actor_model,
+            critic_model = critic_model,
+            discount = config[config.model_type][f"{config.model_type}_discount"],
+            tau = config[config.model_type][f"{config.model_type}_tau"],
+            replay_buffer = helper.Buffer.create_instance(config[config.model_type][f"{config.model_type}_replay_buffer"], env=env),
+            batch_size = config[config.model_type][f"{config.model_type}_batch_size"],
+            noise = helper.Noise.create_instance(config[config.model_type][f"{config.model_type}_noise"], shape=env.action_space.shape, **config[config.model_type][f"{config.model_type}_noise_{config[config.model_type][f'{config.model_type}_noise']}"]),
+            callbacks = callbacks,
+            save_dir = save_dir,
+        )
+
+    def _create_callback_list(self, callbacks):
+        if callbacks is None:
+            callbacks = []
+        callback_list = CallbackList(callbacks)
+
+        return callback_list
+
+    def _initialize_env(self, render=False, render_freq=10, context=None):
+        """Initializes a new environment."""
+        if render:
+            env = gym.make(self.env.spec, render_mode="rgb_array")
+            if context == "train":
+                return gym.wrappers.RecordVideo(
+                    env,
+                    self.save_dir + "/renders/training",
+                    episode_trigger=lambda episode_id: episode_id % render_freq == 0,
+                )
+            elif context == "test":
+                return gym.wrappers.RecordVideo(
+                    env,
+                    self.save_dir + "/renders/testing",
+                    episode_trigger=lambda episode_id: episode_id % render_freq == 0,
+                )
+
+        return gym.make(self.env.spec)
+    
+    def get_action(self, state):
+        # receives current state and returns a vector of action values from policy model
+        state = tf.convert_to_tensor([state], dtype=tf.float32)
+        action_value = self.actor_model(state)[0]
+        noise = self.noise()
+        action = tf.clip_by_value((action_value + noise), self.env.action_space.low, self.env.action_space.high)
+        # DEBUG
+        # print(f'step: {self._step}')
+        # print(f'action_value: {action_value}')
+        # print(f'noise: {noise}')
+        # print(f'action_value + noise: {action_value + noise}')
+        # print(f'clipped action: {action}')
+        # print('')
+
+        return action
+
+        # return tf.clip_by_value((self.actor_model(state) + tf.convert_to_tensor(self.noise(), dtype=tf.float32)).numpy()[0], self.env.action_space.low, self.env.action_space.high)
+        
+
+    
+    def learn(self):
+        # receives a batch of experiences from the replay buffer and learns from them
+        
+        # run callbacks on train batch begin
+        if self.callback_list:
+            self.callback_list.on_train_batch_begin(batch=self._step, logs=None)
+        # sample a batch of experiences from the replay buffer
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+        # convert to tensors
+        states = tf.convert_to_tensor(states, dtype=tf.float32)
+        actions = tf.convert_to_tensor(actions, dtype=tf.float32)
+        rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
+        next_states = tf.convert_to_tensor(next_states, dtype=tf.float32)
+        dones = tf.convert_to_tensor(dones, dtype=tf.float32)
+        
+        # calculate critic loss and gradients
+        with tf.GradientTape() as tape:
+            target_actions = self.target_actor_model(next_states)
+            target_critic_values = tf.squeeze(self.target_critic_model((next_states, target_actions)), 1)
+            targets = rewards + self.discount * target_critic_values * (1 - dones)
+            prediction = tf.squeeze(self.critic_model((states, actions)), 1)
+            critic_loss = self.critic_loss(targets, prediction)
+        
+        critic_gradient = tape.gradient(critic_loss, self.critic_model.trainable_variables)
+        self.critic_model.optimizer.apply_gradients(zip(critic_gradient, self.critic_model.trainable_variables))
+
+        # calculate actor loss and gradients
+        with tf.GradientTape() as tape:
+            action_values = self.actor_model(states)
+            values = self.critic_model((states, action_values))
+            actor_loss = -tf.math.reduce_mean(values)
+        
+        actor_gradient = tape.gradient(actor_loss, self.actor_model.trainable_variables)
+        self.actor_model.optimizer.apply_gradients(zip(actor_gradient, self.actor_model.trainable_variables))
+
+        # update target actor and critic models using soft update
+        self.target_critic_model.set_weights([self.tau * cw + (1 - self.tau) * tcw for cw, tcw in zip(self.critic_model.get_weights(), self.target_critic_model.get_weights())])
+        self.target_actor_model.set_weights([self.tau * aw + (1 - self.tau) * taw for aw, taw in zip(self.actor_model.get_weights(), self.target_actor_model.get_weights())])
+
+        # log to wandb if using wandb callback
+        if self._wandb: 
+            self._train_step_config["temporal_difference"] = tf.reduce_mean(targets - prediction)
+            
+            for i, value in enumerate(tf.reduce_mean(action_values, axis=0)):
+                self._train_step_config[f"action_value_{i}"] = value
+            
+            self._train_step_config["policy_loss"] = actor_loss
+            self._train_step_config["value_loss"] = critic_loss.numpy()
+            
+            for num_layer, layer in enumerate(self.actor_model.layers):
+                weight_bias = layer.get_weights()
+                # check to make sure layer has weights
+                if weight_bias:
+                    weights, bias = weight_bias
+                    weight_hist = np.histogram(weights, density=True)
+                    bias_hist = np.histogram(bias, density=True)
+                    # wandb.log({"gradients": wandb.Histogram(weight_hist)})
+                    self._train_step_config[f"actor_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
+                    self._train_step_config[f"actor_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
+            
+            for num_layer, layer in enumerate(self.critic_model.layers):
+                weight_bias = layer.get_weights()
+                # check to make sure layer has weights
+                if weight_bias:
+                    weights, bias = weight_bias
+                    weight_hist = np.histogram(weights, density=True)
+                    bias_hist = np.histogram(bias, density=True)
+                    self._train_step_config[f"critic_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
+                    self._train_step_config[f"critic_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
+
+            for layer, (p_grad, v_grad) in enumerate(zip(actor_gradient, critic_gradient)):
+                self._train_step_config["policy_grad_mean"] = tf.reduce_mean(p_grad)
+                self._train_step_config["policy_grad_std"] = tf.math.reduce_std(p_grad)
+                self._train_step_config["policy_grad_max"] = tf.reduce_max(p_grad)
+                self._train_step_config["policy_grad_min"] = tf.reduce_min(p_grad)
+                self._train_step_config["policy_grad_norm"] = tf.norm(p_grad)
+                self._train_step_config["value_grad_mean"] = tf.reduce_mean(v_grad)
+                self._train_step_config["value_grad_std"] = tf.math.reduce_std(v_grad)
+                self._train_step_config["value_grad_max"] = tf.reduce_max(v_grad)
+                self._train_step_config["value_grad_min"] = tf.reduce_min(v_grad)
+                self._train_step_config["value_grad_norm"] = tf.norm(v_grad)
+                p_grad_hist = np.histogram(p_grad, density=True)
+                self._train_step_config[f"policy_grad_layer_{layer}"] = wandb.Histogram(np_histogram=p_grad_hist)
+                v_grad_hist = np.histogram(v_grad, density=True)
+                self._train_step_config[f"value_grad_layer_{layer}"] = wandb.Histogram(np_histogram=v_grad_hist)
+            # each state value
+            for e, s in enumerate(tf.reduce_mean(states, axis=0)):
+                self._train_step_config[f"state_{e}"] = s
+
+        if self.callback_list:
+            self.callback_list.on_train_batch_end(
+                batch=self._step, logs=self._train_step_config
+            )
+
+    
+    def train(
+        self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
+        """Trains the model for 'episodes' number of episodes."""
+
+        #DEBUG
+        # print("ddpg train called...")
+        
+        if save_dir:
+            self.save_dir = save_dir
+        if self.callback_list:
+            self.callback_list.on_train_begin(logs=self._config)
+        # instantiate new environment
+        self.env = self._initialize_env(render, render_freq, context='train')
+        if self._wandb:
+            # set step counter
+            self._step = 1
+        # set best reward
+        best_reward = self.env.reward_range[0]
+        # instantiate list to store reward history
+        reward_history = []
+        # instantiate lists to store time history
+        episode_time_history = []
+        step_time_history = []
+        learning_time_history = []
+        steps_per_episode_history = []  # List to store steps per episode
+        for i in range(num_episodes):
+            episode_start_time = time.time()
+            if self.callback_list:
+                self.callback_list.on_epoch_begin(epoch=self._step, logs=None)
+            # reset noise
+            self.noise.reset()
+            # reset environment
+            state, _ = self.env.reset()
+            done = False
+            episode_reward = 0
+            episode_steps = 0  # Initialize steps counter for the episode
+            while not done:
+                step_start_time = time.time()
+                # action_time = time.time()
+                action = self.get_action(state)
+                # print(f"Action time: {time.time() - action_time}")
+                next_state, reward, term, trunc, _ = self.env.step(action) # might have to use action.numpy()
+                step_time = time.time() - step_start_time
+                step_time_history.append(step_time)
+                # store trajectory in replay buffer
+                self.replay_buffer.add(state, action, reward, next_state, done)
+                if term or trunc:
+                    done = True
+                episode_reward += reward
+                state = next_state
+                episode_steps += 1  # Increment steps counter for the episode
+                # log to wandb if using wandb callback
+                if self._wandb:
+                    self._train_step_config["action"] = action
+                    self._train_step_config["step_reward"] = reward
+                    self._train_step_config["step_time"] = step_time
+                    if not done:
+                        self._step += 1
+                # check if enough samples in replay buffer and if so, learn from experiences
+                if self.replay_buffer.counter > self.batch_size:
+                    learn_time = time.time()
+                    self.learn()
+                    learning_time_history.append(time.time() - learn_time)
+            
+            episode_time = time.time() - episode_start_time
+            episode_time_history.append(episode_time)
+            reward_history.append(episode_reward)
+            steps_per_episode_history.append(episode_steps) 
+            avg_reward = np.mean(reward_history[-100:])
+            avg_episode_time = np.mean(episode_time_history[-100:])
+            avg_step_time = np.mean(step_time_history[-100:])
+            avg_learn_time = np.mean(learning_time_history[-100:])
+            avg_steps_per_episode = np.mean(steps_per_episode_history[-100:])  # Calculate average steps per episode
+
+            self._train_episode_config["episode_reward"] = episode_reward
+            self._train_episode_config["avg_reward"] = avg_reward
+            self._train_episode_config["episode_time"] = episode_time
+            # self._train_episode_config["avg_episode_time"] = avg_episode_time
+            # self._train_episode_config["avg_step_time"] = avg_step_time
+            # check if best reward
+            if avg_reward > best_reward:
+                best_reward = avg_reward
+                self._train_episode_config["best"] = True
+                # save model
+                self.save()
+            else:
+                self._train_episode_config["best"] = False
+
+            if self.callback_list:
+                self.callback_list.on_epoch_end(
+                    epoch=self._step, logs=self._train_episode_config
+                )
+
+            print(f"episode {i}, score {episode_reward}, avg_score {avg_reward}, episode_time {episode_time:.2f}s, avg_episode_time {avg_episode_time:.2f}s, avg_step_time {avg_step_time:.6f}s, avg_learn_time {avg_learn_time:.6f}s, avg_steps_per_episode {avg_steps_per_episode:.2f}")
+
+        if self.callback_list:
+            self.callback_list.on_train_end(logs=self._train_episode_config)
+        # close the environment
+        self.env.close()
+
+       
+    def test(self, num_episodes, render, render_freq):
+        """Runs a test over 'num_episodes'."""
+        # instantiate list to store reward history
+        reward_history = []
+        # instantiate new environment
+        self.env = self._initialize_env(render, render_freq, context='test')
+        if self.callback_list:
+            self.callback_list.on_test_begin(logs=self._config)
+
+        step = 1
+        for i in range(num_episodes):
+            if self.callback_list:
+                self.callback_list.on_test_batch_begin(batch=step, logs=None)
+            states = []
+            next_states = []
+            actions = []
+            rewards = []
+            state, _ = self.env.reset()
+            done = False
+            episode_reward = 0
+            while not done:
+                action = self.get_action(state)
+                next_state, reward, term, trunc, _ = self.env.step(action)
+                # store trajectories
+                states.append(state)
+                actions.append(action)
+                next_states.append(next_state)
+                rewards.append(reward)
+                if term or trunc:
+                    done = True
+                episode_reward += reward
+                state = next_state
+                step += 1
+            reward_history.append(episode_reward)
+            avg_reward = np.mean(reward_history[-100:])
+            self._test_episode_config["episode_reward"] = episode_reward
+            self._test_episode_config["avg_reward"] = avg_reward
+            if self.callback_list:
+                self.callback_list.on_test_batch_end(
+                    batch=step, logs=self._test_episode_config
+                )
+
+            print(f"episode {i}, score {episode_reward}, avg_score {avg_reward}")
+
+        if self.callback_list:
+            self.callback_list.on_test_end(logs=self._test_episode_config)
+        # close the environment
+        self.env.close()
+
+    def get_config(self):
+        return {
+            "agent_type": self.__class__.__name__,
+            "env": self.env.spec.id,
+            # "actor_model": self.actor_model.__class__.__name__,
+            # "critic_model": self.critic_model.__class__.__name__,
+            "actor_model": self.actor_model.get_config(),
+            "critic_model": self.critic_model.get_config(),
+            "discount": self.discount,
+            "tau": self.tau,
+            "replay_buffer": self.replay_buffer.get_config(),
+            "batch_size": self.batch_size,
+            "noise": self.noise.get_config(),
+            "callbacks": [callback.get_config() for callback in self.callback_list],
+            "save_dir": self.save_dir
+        }
+
+    def save(self):
+        """Saves the model."""
+        obj_config = self.get_config()
+
+        # makes directory if it doesn't exist
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # writes and saves JSON file of DDPG agent config
+        with open(self.save_dir + "/obj_config.json", "w", encoding="utf-8") as f:
+            json.dump(obj_config, f)
+
+        # saves policy and value model
+        self.actor_model.save(self.save_dir)
+        self.critic_model.save(self.save_dir)
+
+        # if wandb callback, save wandb config
+        # if self._wandb:
+        #     for callback in self.callback_list:
+        #         if isinstance(callback, tf_callbacks.WandbCallback):
+        #             callback.save(self.save_dir + "/wandb_config.json")
+
+    @classmethod
+    def load(cls, folder: str = "models", load_weights=True):
+        """Loads the model."""
+        # load reinforce agent config
+        with open(
+            Path(folder).joinpath(Path("obj_config.json")), "r", encoding="utf-8"
+        ) as f:
+            obj_config = json.load(f)
+
+        # load policy model
+        actor_model = models.ActorModel.load(folder, load_weights)
+        # load value model
+        critic_model = models.CriticModel.load(folder, load_weights)
+        # load replay buffer
+        obj_config['replay_buffer']['config']['env'] = gym.make(obj_config['env'])
+        replay_buffer = helper.ReplayBuffer(**obj_config["replay_buffer"]["config"])
+        # load noise
+        noise = helper.Noise.create_instance(obj_config["noise"]["class_name"], **obj_config["noise"]["config"])
+        # load wandb config if exists
+        # if os.path.exists(Path(folder).joinpath(Path("wandb_config.json"))):
+        #     callbacks = [
+        #         tf_callbacks.WandbCallback.load(
+        #             Path(folder).joinpath(Path("wandb_config.json"))
+        #         )
+        #     ]
+        # else:
+        #     callbacks = None
+        
+        # create callbacks list from obj_config['callbacks']
+        # callbacks = []
+        # for callback in obj_config['callbacks']:
+        #     if callback == 'WandbCallback':
+        #         callbacks.append(tf_callbacks.WandbCallback.load(
+        #             Path(folder).joinpath(Path("wandb_config.json"))
+        #         ))
+        #     if callback == 'DashCallback':
+        #         callbacks.append(dash_callbacks.DashCallback(obj_config['callbacks'][callback]['config']))
+            # else:
+            #     callbacks.append(helper.get_callback_instance(callback, obj_config['callbacks'][callback]['config']))
+
+        callbacks = [tf_callbacks.load(callback_info['class_name'], callback_info['config']) for callback_info in obj_config['callbacks']]
+
+        # return DDPG agent
+        agent = cls(
+            gym.make(obj_config["env"]),
+            actor_model = actor_model,
+            critic_model = critic_model,
+            discount=obj_config["discount"],
+            tau=obj_config["tau"],
+            replay_buffer=replay_buffer, # need to change to load from base class
+            batch_size=obj_config["batch_size"],
+            noise=noise, # need to change to load from base class
+            callbacks=callbacks,
+            save_dir=obj_config["save_dir"],
+        )
+        
+        if callbacks:
+            for callback in callbacks:
+                if isinstance(callback, tf_callbacks.WandbCallback):
+                    agent._wandb = True
+                    agent._train_config = {}
+                    agent._train_episode_config = {}
+                    agent._train_step_config = {}
+                    agent._test_config = {}
+
+        return agent
 
 
-def load_agent_from_config(config_path):
+def load_agent_from_config(config_path, load_weights=True):
     """Loads an agent from a config file."""
     with open(
         Path(config_path).joinpath(Path("obj_config.json")), "r", encoding="utf-8"
@@ -875,7 +1384,7 @@ def load_agent_from_config(config_path):
     agent_class = globals().get(agent_type)
 
     if agent_class:
-        return agent_class.load(config_path)
+        return agent_class.load(config_path, load_weights)
 
     raise ValueError(f"Unknown agent type: {agent_type}")
 
@@ -883,7 +1392,9 @@ def load_agent_from_config(config_path):
 def get_agent_class_from_type(agent_type: str):
     """Builds an agent from a passed agent type str."""
 
-    types = {"Actor Critic": "ActorCritic", "Reinforce": "Reinforce"}
+    types = {"Actor Critic": "ActorCritic",
+             "Reinforce": "Reinforce",
+             "DDPG": "DDPG"}
 
     # Use globals() to get a reference to the class
     agent_class = globals().get(types[agent_type])

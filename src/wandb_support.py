@@ -1,0 +1,631 @@
+"""Adds support for W&B integration to the rl_agents package."""
+
+# imports
+import json
+from pathlib import Path
+import os
+import ast
+
+import numpy as np
+import tensorflow as tf
+# from tensorflow.keras.callbacks import Callback
+import gymnasium as gym
+import wandb
+import pandas as pd
+from scipy.stats import zscore
+import plotly.graph_objs as go
+import plotly.offline as pyo
+import plotly.tools as tls
+
+import rl_agents
+import tf_callbacks
+import helper
+
+
+def save_model_artifact(file_path: str, project_name: str, model_is_best: bool = False):
+    """Save the model to W&B
+
+    Args:
+        file_path (str): The path to the model files.
+        project_name (str): The name of the project.
+        model_is_best (bool): Whether the model is the best model so far.
+    """
+
+    # Create a Model Version
+    art = wandb.Artifact(f"{project_name}-{wandb.run.name}", type="model")
+    # Add the serialized files
+    art.add_file(f"{file_path}/obj_config.json", name="obj_config.json")
+    art.add_dir(f"{file_path}/policy_model", name="policy_model")
+    art.add_dir(f"{file_path}/value_model", name="value_model")
+    # checks if there is a wandb config and if there is, log it as an artifact
+    if os.path.exists(f"{file_path}/wandb_config.json"):
+        art.add_file(f"{file_path}/wandb_config.json", name="wandb_config.json")
+    if model_is_best:
+        # If the model is the best model so far,
+        #  add "best" to the aliases
+        wandb.log_artifact(art, aliases=["latest", "best"])
+    else:
+        wandb.log_artifact(art)
+    # Link the Model Version to the Collection
+    wandb.run.link_artifact(art, target_path=project_name)
+
+
+def load_model_from_artifact(artifact, load_weights: bool = True):
+    """Loads the model from the specified artifact.
+
+    Args:
+        artifact (wandb.Artifact): The artifact to load the model from.
+
+    Returns:
+        rl_agents.Agent: The agent object.
+    """
+
+    # Download the artifact files to a directory
+    artifact_dir = Path(artifact.download())
+
+    return rl_agents.load_agent_from_config(artifact_dir, load_weights)
+
+
+def build_layers(sweep_config):
+    """formats sweep_config into policy and value layers.
+
+    Args:
+        sweep_config (dict): The sweep configuration.
+
+    Returns:
+        tuple: The policy layers and value layers.
+    """
+
+    if sweep_config.model_type == "Reinforce" or sweep_config.model_type == "ActorCritic":
+        # get policy layers
+        policy_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_num_layers"] + 1):
+            policy_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"policy_units_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_activation"],
+                )
+            )
+        # get value layers
+        value_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_num_layers"] + 1):
+            value_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"value_units_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_activation"],
+                )
+            )
+
+        return policy_layers, value_layers
+    
+    elif sweep_config.model_type == "DDPG":
+        # get actor layers
+        actor_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_num_layers"] + 1):
+            actor_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"actor_units_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_activation"],
+                    tf.keras.initializers.get(sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_kernel_initializer"]),
+                )
+            )
+        # get critic state layers
+        critic_state_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_state_num_layers"] + 1):
+            critic_state_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"critic_units_state_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_activation"],
+                    tf.keras.initializers.get(sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"]),
+                )
+            )
+        # get critic merged layers
+        critic_merged_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_merged_num_layers"] + 1):
+            critic_merged_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"critic_units_merged_layer_{layer_num}_DDPG"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_activation"],
+                    tf.keras.initializers.get(sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"]),
+                )
+            )
+
+        return actor_layers, critic_state_layers, critic_merged_layers
+
+
+def load_model_from_run(run_name: str, project_name: str, load_weights: bool = True):
+    """Loads the model from the specified run.
+
+    Args:
+        run_name (str): The name of the run.
+        project_name (str): The name of the project.
+
+    Returns:
+        rl_agents.Agent: The agent object.
+    """
+
+    artifact = get_artifact_from_run(project_name, run_name)
+
+    return load_model_from_artifact(artifact, load_weights)
+
+
+def hyperparameter_sweep(
+    sweep_config,
+    num_sweeps: int,
+    episodes_per_sweep: int,
+    save_dir: str = "models",
+):
+    """Runs a hyperparameter sweep of the specified agent.
+
+    Args:
+        rl_agent (rl_agents.Agent): The agent to train.
+        sweep_config (dict): The sweep configuration.
+        num_sweeps (int): The number of sweeps to run.
+        episodes_per_sweep (int): The number of episodes to train per sweep.
+        save_dir (str): The directory to save the model to.
+    """
+
+    sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
+    wandb.agent(
+        sweep_id,
+        function=lambda: _run_sweep(
+            sweep_config, episodes_per_sweep, save_dir
+        ),
+        count=num_sweeps,
+        project=sweep_config["project"],
+    )
+    wandb.teardown()
+
+
+def _run_sweep(sweep_config, episodes_per_sweep, save_dir):
+    """Runs a single sweep of the hyperparameter search.
+
+    Args:
+        sweep_config (dict): The sweep configuration.
+        episodes_per_sweep (int): The number of episodes to train per sweep.
+        save_dir (str): The directory to save the model to.
+
+    Returns:
+        dict: The sweep configuration.
+    """
+
+    # get next run number
+    run_number = get_next_run_number(sweep_config["project"])
+    run = wandb.init(
+        project=sweep_config["project"],
+        job_type="train",
+        name=f"train-{run_number}",
+        tags=["train"],
+        group=f"group-{run_number}",
+    )
+    run.tags = run.tags + (wandb.config.model_type,)
+    #DEBUG
+    print(f"creating env { {param: value['value'] for param, value in sweep_config['parameters']['env']['parameters'].items()} }")
+    env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+    #DEBUG
+    print(f'env spec: {env.spec}')
+
+    # check for agent type since constructors are different
+    if wandb.config.model_type == "Reinforce" or wandb.config.model_type == "Actor Critic":
+        policy_layers, value_layers = build_layers(wandb.config)
+        agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+        rl_agent = agent.build(
+            env=env,
+            policy_layers=policy_layers,
+            value_layers=value_layers,
+            callbacks=[tf_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+            config=wandb.config,
+            save_dir=save_dir,
+        )
+    elif wandb.config.model_type == "DDPG":
+        actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
+        agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+        rl_agent = agent.build(
+            env=env,
+            actor_layers=actor_layers,
+            critic_state_layers=critic_state_layers,
+            critic_merged_layers=critic_merged_layers,
+            callbacks=[tf_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+            config=wandb.config,
+            save_dir=save_dir,
+        )
+
+    rl_agent.train(episodes_per_sweep)
+
+
+
+
+
+def get_run_id_from_name(project_name, run_name):
+    """Returns the run ID for the specified run name.
+
+    Args:
+        project_name (str): The name of the project.
+        run_name (str): The name of the run.
+
+    Returns:
+        str: The run ID.
+    """
+
+    api = wandb.Api()
+    # Fetch all runs in the project
+    runs = api.runs(f"{api.default_entity}/{project_name}")
+    # Iterate over the runs and find the one with the matching name
+    for run in runs:
+        if run.name == run_name:
+            return run.id
+
+    # If we get here, no run has the given name
+    return None
+
+
+def get_run_number_from_name(run_name):
+    """Extracts the run number from the run name.
+
+    Args:
+    run_name (str): The run name, e.g., 'train-4'.
+
+    Returns:
+    int: The extracted run number.
+    """
+    try:
+        return int(run_name.split("-")[-1])
+
+    except (IndexError, ValueError) as exc:
+        raise ValueError(
+            "Invalid run name format. Expected format 'train-X' where X is an integer."
+        ) from exc
+
+
+def get_next_run_number(project_name):
+    """Returns the next run number for the specified project.
+
+    Args:
+        project_name (str): The name of the project.
+
+    Returns:
+        int: The next run number.
+    """
+    api = wandb.Api()
+    # Get the list of runs from the project
+    runs = api.runs(f"jasonhayes1987/{project_name}")
+    if runs:
+        # Extract the run numbers and find the maximum
+        run_numbers = [int(run.name.split("-")[-1]) for run in runs]
+        next_run_number = max(run_numbers) + 1
+    else:
+        next_run_number = 1
+
+    return next_run_number
+
+
+def get_run(project_name, run_name):
+    """Returns the specified run.
+
+    Args:
+    project_name (str): The name of the project.
+    run_name (str): The name of the run.
+
+    Returns:
+    wandb.Run: The run object.
+    """
+
+    api = wandb.Api()
+    # get the runs ID
+    run_id = get_run_id_from_name(project_name, run_name)
+
+    # Fetch the run using the project and run name
+    run_path = f"{api.default_entity}/{project_name}/{run_id}"
+    run = api.run(run_path)
+
+    return run
+
+
+def get_artifact_from_run(
+    project_name, run_name, artifact_type: str = "model", version="best"
+):
+    """Returns the specified artifact from the specified run.
+
+    Args:
+    project_name (str): The name of the project.
+    run_name (str): The name of the run.
+    artifact_type (str): The type of artifact to fetch.
+    version (str): The version of the artifact to fetch.
+
+    Returns:
+    wandb.Artifact: The artifact object.
+    """
+    api = wandb.Api()
+    # Get the run
+    run = get_run(project_name, run_name)
+
+    # Get the list of artifacts linked to this run
+    linked_artifacts = run.logged_artifacts()
+
+    # Find the artifact of the specified type
+    artifact_name = None
+    for artifact in linked_artifacts:
+        if artifact.type == artifact_type and version in artifact.aliases:
+            artifact_name = artifact.name
+            break
+    if artifact_name is None:
+        raise ValueError("No artifact of the specified type found in the run")
+
+    # Construct the artifact path
+    artifact_path = f"{api.default_entity}/{project_name}/{artifact_name}"
+
+    # Fetch the artifact
+    artifact = api.artifact(artifact_path, type=artifact_type)
+
+    return artifact
+
+
+def get_projects():
+    """Returns the list of projects."""
+    api = wandb.Api()
+    projects = api.projects()
+
+    return projects
+
+
+def get_runs(project_name):
+    """Returns the list of runs for the specified project.
+
+    Args:
+        project_name (str): The name of the project.
+
+    Returns:
+        list: The list of runs.
+    """
+
+    api = wandb.Api()
+
+    runs = api.runs(f"{api.default_entity}/{project_name}")
+
+    return runs
+
+
+def delete_all_runs(project_name, delete_artifacts: bool = True):
+    """Deletes all runs for the specified project.
+
+    Args:
+    project_name (str): The name of the project.
+    delete_artifacts (bool): Whether to delete the artifacts associated with the runs.
+    """
+
+    api = wandb.Api()
+    wandb.finish()
+    runs = api.runs(f"{api.default_entity}/{project_name}")
+    for run in runs:
+        print(f"Deleting run: {run.name}")
+        run.delete()
+
+
+## NOT WORKING
+# def delete_all_sweeps(project_name):
+#     api = wandb.Api()
+#     wandb.finish()
+#     project = api.project(f"{api.default_entity}/{project_name}")
+#     print(f"Deleting all sweeps in project: {project_name}")
+#     sweeps = project.sweeps()
+#     print(f"sweeps: {sweeps}")
+#     for sweep in sweeps:
+#         print(f"Deleting sweep: {sweep.id}")
+#         sweep.delete()
+
+## NOT WORKING
+# def delete_artifacts(project_name, only_empty: bool = True):
+#     api = wandb.Api()
+#     artifacts = api.artifacts(f"{api.default_entity}/{project_name}/model", per_page=1000)
+
+#     for artifact in artifacts:
+#         # Fetch the artifact to get detailed info
+#         artifact = artifact.fetch()
+#         if only_empty:
+#             if len(artifact.manifest.entries) == 0:
+#                 print(f"Deleting empty artifact: {artifact.name}")
+#                 artifact.delete()
+#             else:
+#                 print(f"Artifact {artifact.name} is not empty and will not be deleted.")
+#         else:
+#             print(f"Deleting artifact: {artifact.name}")
+#             artifact.delete()
+
+
+def custom_wandb_init(*args, **kwargs):
+    """Initializes a W&B run and prints the run ID."""
+    print("Initializing W&B run...")
+    run = wandb.init(*args, **kwargs)
+    print(f"Run initialized with ID: {run.id}")
+
+    return run
+
+
+def custom_wandb_finish():
+    """Finishes a W&B run."""
+    print("Finishing W&B run...")
+    wandb.finish()
+    print("Run finished.")
+
+
+def flush_cache():
+    """Flushes the W&B cache."""
+    api = wandb.Api()
+    api.flush()
+
+
+def get_sweep_from_name(project, sweep_name):
+    api = wandb.Api()
+    sweeps = api.project(project).sweeps()
+    
+    # Filter sweeps by name to find the matching sweep ID
+    for sweep in sweeps:
+        if sweep.name == sweep_name:
+            return sweep
+    else:
+        print(f"No sweep found with the name '{sweep_name}'.")
+
+def get_runs_from_sweep(project, sweep):
+    api = wandb.Api()
+    runs = api.runs(path=project, filters={"sweep": sweep.id})
+    return runs
+
+def get_metrics(project: str, sweep_name: str = None):
+    api = wandb.Api()
+    # check if sweep is specified and if so, get the runs from the sweep
+    if sweep_name is not None:
+        sweep = get_sweep_from_name(project, sweep_name)
+        runs = get_runs_from_sweep(project, sweep)
+    else:
+        runs = api.runs(project)
+
+    summary_list, config_list, name_list = [], [], []
+
+    for run in runs:       
+        # call ._json_dict to omit large files
+        summary_list.append(run.summary._json_dict)
+
+        # remove special values that start with _.
+        config_list.append({k: v for k, v in run.config.items() if not k.startswith("_")})
+
+        name_list.append(run.name)
+
+    runs_df = pd.DataFrame(
+        {"summary": summary_list, "config": config_list, "name": name_list}
+    )
+
+    # runs_df.to_csv(f"{project}.csv")
+
+    return runs_df
+
+def format_metrics(data: pd.DataFrame) -> pd.DataFrame:
+    # Parse the 'config' column
+    data['config'] = parse_dict_column(data['config'])
+
+    # Extract hyperparameters and rewards from the dictionaries
+    data['avg_reward'] = data['summary'].apply(lambda x: x.get('avg_reward') if isinstance(x, dict) else None)
+
+    # Filter out rows that do not have a 'config_dict' or 'avg_reward'
+    data_filtered = data.dropna(subset=['config', 'avg_reward'])
+    # Flatten the 'config_dict' and create a new DataFrame of hyperparameter values
+    data_hyperparams = pd.DataFrame(data_filtered['config'].apply(lambda x: helper.flatten_dict(x)).tolist())
+    # Join the flattened hyperparameters with the avg_reward column
+    data_hyperparams = data_hyperparams.join(data_filtered['avg_reward'])
+
+    return data_hyperparams
+
+def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, avg_reward_threshold: int, bins: int, z_scores: bool = False) -> pd.DataFrame:
+    
+    # create an empty dict to store the bin ranges of each hyperparameter
+    bin_ranges = {}
+    # data_hyperparams = format_metrics(data)
+    # drop all columns that arent in hyperparameters list
+    data = data[hyperparameters + ['avg_reward']]
+    # Filter the DataFrame based on the avg_reward_threshold
+    data_heatmap = data[data['avg_reward'] >= avg_reward_threshold]
+    # For continuous variables, bin them into the specified number of bins
+    for hp in data_heatmap.columns:
+        #DEBUG
+        print(f'Binning loop {hp}')
+        print(f'{hp} type: {data_heatmap[hp].dtype}')
+        if data_heatmap[hp].dtype == float and hp not in ['avg_reward']:
+            #DEBUG
+            print(f'Binning {hp}')
+            data_heatmap[hp], bin_edges  = pd.cut(data_heatmap[hp], bins, labels=range(bins), retbins=True)
+            #DEBUG
+            print(f'Bin edges for {hp}: {bin_edges}')
+            bin_ranges[hp] = bin_edges
+            #DEBUG
+            print(f'updated bin ranges dict: {bin_ranges}')
+    # One-hot encode categorical variables
+    data_one_hot = pd.get_dummies(data_heatmap.drop('avg_reward', axis=1).astype('category'), dtype=np.int8)
+    # Calculate co-occurrence matrix
+    co_occurrence_matrix = np.dot(data_one_hot.T, data_one_hot)
+
+    # calculate z-scores if z_scores is true
+    if z_scores:
+        # Calculate the z-scores of the co-occurrence counts
+        co_occurrence_matrix = zscore(co_occurrence_matrix, axis=None)
+    # Create a DataFrame from the co-occurrence matrix for easier plotting
+    co_occurrence_df = pd.DataFrame(co_occurrence_matrix, 
+                                    index=data_one_hot.columns, 
+                                    columns=data_one_hot.columns)
+
+
+    return co_occurrence_df, bin_ranges
+
+def plot_co_occurrence_heatmap(co_occurrence_df: pd.DataFrame) -> go.Figure:
+
+    # Create a layout
+    layout = go.Layout(title='Co-occurrence Heatmap')
+
+    # Create the figure
+    fig = go.Figure(
+        data=
+            go.Heatmap(
+                z=co_occurrence_df.values,  # Heatmap values
+                x=co_occurrence_df.columns,  # X-axis categories
+                y=co_occurrence_df.index, # Y-axis categories
+            ),
+            layout=layout,
+        )  
+
+    # Render the plot
+    # pyo.iplot(fig)
+
+    # return the figure
+    return fig
+
+# Function to safely parse a Python dictionary string
+def parse_dict_column(column):
+    parsed_column = []
+    for item in column:
+        try:
+            # Safely evaluate the dictionary string to a dictionary
+            parsed_column.append(item)
+        except ValueError:
+            # In case of error, append a None or an empty dictionary
+            parsed_column.append(None)
+    return parsed_column
+
+# Function to flatten the config dictionary and extract specified hyperparameters
+def flatten_config(config_dict, hyperparameters):
+    flat_config = {}
+    for param in hyperparameters:
+        # Extract the hyperparameter value from the nested dictionaries
+        value = config_dict.get('DDPG', {}).get(param, None)
+        # If a hyperparameter is not found, we try to get it from the top level (for env and model_type)
+        if value is None:
+            value = config_dict.get(param, None)
+        flat_config[param] = value
+    return flat_config
+
+def fetch_sweep_hyperparameters_single_run(project_name, sweep_name):
+    api = wandb.Api()
+    sweep = get_sweep_from_name(project_name, sweep_name)
+    runs = get_runs_from_sweep(project_name, sweep)
+    hyperparameters = set()
+
+    # Attempt to fetch a single run; if no runs, return empty list
+    if runs is not None:
+        run = runs.__getitem__(0)  # Take the first run from the sweep
+        config = run.config
+        flattened_config = helper.flatten_dict(config)
+        for key in flattened_config.keys():
+            if not key.startswith('_') and not key in ['wandb_version', 'state', 'env']:
+                hyperparameters.add(key)
+
+    return list(hyperparameters)
+
+def parse_parameter_name(parameter_string):
+    # parts = parameter_string.split('_', 2)
+    parts = parameter_string.split('_') # update to split on _ without maxsplit
+    # if len(parts) == 3:
+        # model_type, _, parameter_name = parts
+        # return f"{model_type}_{parameter_name}"
+    if parts[0] == parts[1]: # if the first string is repeated (model_type)
+        return parts[0] + '_'.join(parts[2:]) # remove the repeated string and return the rest joined by '_'
+                                            
+    else:
+        return parameter_string
+
