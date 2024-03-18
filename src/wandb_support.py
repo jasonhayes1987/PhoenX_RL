@@ -4,12 +4,22 @@
 import json
 from pathlib import Path
 import os
+import ast
 
-from tensorflow.keras.callbacks import Callback
+import numpy as np
+import tensorflow as tf
+# from tensorflow.keras.callbacks import Callback
 import gymnasium as gym
 import wandb
+import pandas as pd
+from scipy.stats import zscore
+import plotly.graph_objs as go
+import plotly.offline as pyo
+import plotly.tools as tls
 
 import rl_agents
+import tf_callbacks
+import helper
 
 
 def save_model_artifact(file_path: str, project_name: str, model_is_best: bool = False):
@@ -40,7 +50,7 @@ def save_model_artifact(file_path: str, project_name: str, model_is_best: bool =
     wandb.run.link_artifact(art, target_path=project_name)
 
 
-def load_model_from_artifact(artifact):
+def load_model_from_artifact(artifact, load_weights: bool = True):
     """Loads the model from the specified artifact.
 
     Args:
@@ -53,7 +63,7 @@ def load_model_from_artifact(artifact):
     # Download the artifact files to a directory
     artifact_dir = Path(artifact.download())
 
-    return rl_agents.load_agent_from_config(artifact_dir)
+    return rl_agents.load_agent_from_config(artifact_dir, load_weights)
 
 
 def build_layers(sweep_config):
@@ -66,29 +76,64 @@ def build_layers(sweep_config):
         tuple: The policy layers and value layers.
     """
 
-    # get policy layers
-    policy_layers = []
-    for layer_num in range(1, sweep_config.policy_num_layers + 1):
-        policy_layers.append(
-            (
-                sweep_config[f"policy_units_layer_{layer_num}"],
-                sweep_config.policy_activation,
+    if sweep_config.model_type == "Reinforce" or sweep_config.model_type == "ActorCritic":
+        # get policy layers
+        policy_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_num_layers"] + 1):
+            policy_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"policy_units_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_activation"],
+                )
             )
-        )
-    # get value layers
-    value_layers = []
-    for layer_num in range(1, sweep_config.value_num_layers + 1):
-        value_layers.append(
-            (
-                sweep_config[f"value_units_layer_{layer_num}"],
-                sweep_config.value_activation,
+        # get value layers
+        value_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_num_layers"] + 1):
+            value_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"value_units_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_activation"],
+                )
             )
-        )
 
-    return policy_layers, value_layers
+        return policy_layers, value_layers
+    
+    elif sweep_config.model_type == "DDPG":
+        # get actor layers
+        actor_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_num_layers"] + 1):
+            actor_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"actor_units_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_activation"],
+                    tf.keras.initializers.get(sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_kernel_initializer"]),
+                )
+            )
+        # get critic state layers
+        critic_state_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_state_num_layers"] + 1):
+            critic_state_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"critic_units_state_layer_{layer_num}_{sweep_config.model_type}"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_activation"],
+                    tf.keras.initializers.get(sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"]),
+                )
+            )
+        # get critic merged layers
+        critic_merged_layers = []
+        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_merged_num_layers"] + 1):
+            critic_merged_layers.append(
+                (
+                    sweep_config[sweep_config.model_type][f"critic_units_merged_layer_{layer_num}_DDPG"],
+                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_activation"],
+                    tf.keras.initializers.get(sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"]),
+                )
+            )
+
+        return actor_layers, critic_state_layers, critic_merged_layers
 
 
-def load_model_from_run(run_name: str, project_name: str):
+def load_model_from_run(run_name: str, project_name: str, load_weights: bool = True):
     """Loads the model from the specified run.
 
     Args:
@@ -101,11 +146,10 @@ def load_model_from_run(run_name: str, project_name: str):
 
     artifact = get_artifact_from_run(project_name, run_name)
 
-    return load_model_from_artifact(artifact)
+    return load_model_from_artifact(artifact, load_weights)
 
 
 def hyperparameter_sweep(
-    rl_agent,
     sweep_config,
     num_sweeps: int,
     episodes_per_sweep: int,
@@ -125,7 +169,7 @@ def hyperparameter_sweep(
     wandb.agent(
         sweep_id,
         function=lambda: _run_sweep(
-            rl_agent, sweep_config, episodes_per_sweep, save_dir
+            sweep_config, episodes_per_sweep, save_dir
         ),
         count=num_sweeps,
         project=sweep_config["project"],
@@ -133,11 +177,10 @@ def hyperparameter_sweep(
     wandb.teardown()
 
 
-def _run_sweep(agent, sweep_config, episodes_per_sweep, save_dir):
+def _run_sweep(sweep_config, episodes_per_sweep, save_dir):
     """Runs a single sweep of the hyperparameter search.
 
     Args:
-        agent (rl_agents.Agent): The agent to train.
         sweep_config (dict): The sweep configuration.
         episodes_per_sweep (int): The number of episodes to train per sweep.
         save_dir (str): The directory to save the model to.
@@ -148,25 +191,49 @@ def _run_sweep(agent, sweep_config, episodes_per_sweep, save_dir):
 
     # get next run number
     run_number = get_next_run_number(sweep_config["project"])
-    wandb.init(
+    run = wandb.init(
         project=sweep_config["project"],
         job_type="train",
         name=f"train-{run_number}",
-        tags=["train", agent.__name__],
+        tags=["train"],
         group=f"group-{run_number}",
     )
-    env = gym.make(wandb.config.env)
-    policy_layers, value_layers = build_layers(wandb.config)
-    rl_agent = agent.build(
-        env=env,
-        policy_layers=policy_layers,
-        value_layers=value_layers,
-        callbacks=[WandbCallback(project_name=sweep_config["project"], _sweep=True)],
-        config=wandb.config,
-        save_dir=save_dir,
-    )
+    run.tags = run.tags + (wandb.config.model_type,)
+    #DEBUG
+    print(f"creating env { {param: value['value'] for param, value in sweep_config['parameters']['env']['parameters'].items()} }")
+    env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+    #DEBUG
+    print(f'env spec: {env.spec}')
+
+    # check for agent type since constructors are different
+    if wandb.config.model_type == "Reinforce" or wandb.config.model_type == "Actor Critic":
+        policy_layers, value_layers = build_layers(wandb.config)
+        agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+        rl_agent = agent.build(
+            env=env,
+            policy_layers=policy_layers,
+            value_layers=value_layers,
+            callbacks=[tf_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+            config=wandb.config,
+            save_dir=save_dir,
+        )
+    elif wandb.config.model_type == "DDPG":
+        actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
+        agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+        rl_agent = agent.build(
+            env=env,
+            actor_layers=actor_layers,
+            critic_state_layers=critic_state_layers,
+            critic_merged_layers=critic_merged_layers,
+            callbacks=[tf_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+            config=wandb.config,
+            save_dir=save_dir,
+        )
 
     rl_agent.train(episodes_per_sweep)
+
+
+
 
 
 def get_run_id_from_name(project_name, run_name):
@@ -255,7 +322,7 @@ def get_run(project_name, run_name):
 
 
 def get_artifact_from_run(
-    project_name, run_name, artifact_type: str = "model", version="latest"
+    project_name, run_name, artifact_type: str = "model", version="best"
 ):
     """Returns the specified artifact from the specified run.
 
@@ -387,188 +454,178 @@ def flush_cache():
     api.flush()
 
 
-class WandbCallback(Callback):
-    """Wandb callback for Keras integration."""
+def get_sweep_from_name(project, sweep_name):
+    api = wandb.Api()
+    sweeps = api.project(project).sweeps()
+    
+    # Filter sweeps by name to find the matching sweep ID
+    for sweep in sweeps:
+        if sweep.name == sweep_name:
+            return sweep
+    else:
+        print(f"No sweep found with the name '{sweep_name}'.")
 
-    def __init__(
-        self,
-        project_name: str,
-        _sweep: bool = False,
-    ):
-        super().__init__()
-        self.project_name = project_name
-        self.save_dir = None
-        self.run_name = None
-        self.model_type = None
-        self._sweep = _sweep
+def get_runs_from_sweep(project, sweep):
+    api = wandb.Api()
+    runs = api.runs(path=project, filters={"sweep": sweep.id})
+    return runs
 
-    def on_train_begin(self, logs=None):
-        """Initializes W&B run for training."""
+def get_metrics(project: str, sweep_name: str = None):
+    api = wandb.Api()
+    # check if sweep is specified and if so, get the runs from the sweep
+    if sweep_name is not None:
+        sweep = get_sweep_from_name(project, sweep_name)
+        runs = get_runs_from_sweep(project, sweep)
+    else:
+        runs = api.runs(project)
 
-        if not self._sweep:
-            next_run_number = get_next_run_number(self.project_name)
-            # add num layers to config to log to wandb
-            # check which model type in order call correct classes to count number of layers
-            if self.model_type == "Reinforce" or self.model_type == "ActorCritic":
-                logs["Policy Number Layers"] = len(self.model.policy_model.layers)
-                logs["Critic Number Layers"] = len(self.model.value_model.layers)
-            elif self.model_type == "DDPG":
-                logs["Actor Number Layers"] = len(self.model.actor_model.layers)
-                logs["Critic Number Layers"] = len(self.model.critic_model.layers)
+    summary_list, config_list, name_list = [], [], []
 
-            wandb.init(
-                project=self.project_name,
-                name=f"train-{next_run_number}",
-                tags=["train", self.model_type],
-                group=f"group-{next_run_number}",
-                job_type="train",
-                config=logs,
-            )
+    for run in runs:       
+        # call ._json_dict to omit large files
+        summary_list.append(run.summary._json_dict)
 
-        # save run
-        self.run_name = wandb.run.name
+        # remove special values that start with _.
+        config_list.append({k: v for k, v in run.config.items() if not k.startswith("_")})
 
-    def on_train_end(self, logs=None):
-        """Finishes W&B run for training."""
+        name_list.append(run.name)
 
-        if not self._sweep:
-            wandb.finish()
+    runs_df = pd.DataFrame(
+        {"summary": summary_list, "config": config_list, "name": name_list}
+    )
 
-    def on_epoch_begin(self, epoch, logs=None):
-        """Initializes W&B run for epoch."""
+    # runs_df.to_csv(f"{project}.csv")
 
-    def on_epoch_end(self, epoch, logs=None):
-        """Finishes W&B run for epoch."""
+    return runs_df
 
-        wandb.log(logs, step=epoch)
-        # if best model so far (avg/100 reward), save model artifact
-        if logs["best"]:
-            # save model artifact
-            save_model_artifact(self.save_dir, self.project_name, model_is_best=True)
+def format_metrics(data: pd.DataFrame) -> pd.DataFrame:
+    # Parse the 'config' column
+    data['config'] = parse_dict_column(data['config'])
 
-    def on_train_batch_begin(self, batch, logs=None):
-        """Initializes W&B run for training batch."""
+    # Extract hyperparameters and rewards from the dictionaries
+    data['avg_reward'] = data['summary'].apply(lambda x: x.get('avg_reward') if isinstance(x, dict) else None)
 
-    def on_train_batch_end(self, batch, logs=None):
-        """Finishes W&B run for training batch."""
+    # Filter out rows that do not have a 'config_dict' or 'avg_reward'
+    data_filtered = data.dropna(subset=['config', 'avg_reward'])
+    # Flatten the 'config_dict' and create a new DataFrame of hyperparameter values
+    data_hyperparams = pd.DataFrame(data_filtered['config'].apply(lambda x: helper.flatten_dict(x)).tolist())
+    # Join the flattened hyperparameters with the avg_reward column
+    data_hyperparams = data_hyperparams.join(data_filtered['avg_reward'])
 
-        wandb.log(logs, step=batch)
+    return data_hyperparams
 
-    def on_test_begin(self, logs=None):
-        """Initializes W&B run for testing."""
+def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, avg_reward_threshold: int, bins: int, z_scores: bool = False) -> pd.DataFrame:
+    
+    # create an empty dict to store the bin ranges of each hyperparameter
+    bin_ranges = {}
+    # data_hyperparams = format_metrics(data)
+    # drop all columns that arent in hyperparameters list
+    data = data[hyperparameters + ['avg_reward']]
+    # Filter the DataFrame based on the avg_reward_threshold
+    data_heatmap = data[data['avg_reward'] >= avg_reward_threshold]
+    # For continuous variables, bin them into the specified number of bins
+    for hp in data_heatmap.columns:
+        #DEBUG
+        print(f'Binning loop {hp}')
+        print(f'{hp} type: {data_heatmap[hp].dtype}')
+        if data_heatmap[hp].dtype == float and hp not in ['avg_reward']:
+            #DEBUG
+            print(f'Binning {hp}')
+            data_heatmap[hp], bin_edges  = pd.cut(data_heatmap[hp], bins, labels=range(bins), retbins=True)
+            #DEBUG
+            print(f'Bin edges for {hp}: {bin_edges}')
+            bin_ranges[hp] = bin_edges
+            #DEBUG
+            print(f'updated bin ranges dict: {bin_ranges}')
+    # One-hot encode categorical variables
+    data_one_hot = pd.get_dummies(data_heatmap.drop('avg_reward', axis=1).astype('category'), dtype=np.int8)
+    # Calculate co-occurrence matrix
+    co_occurrence_matrix = np.dot(data_one_hot.T, data_one_hot)
 
-        run_number = get_run_number_from_name(self.run_name)
-        wandb.init(
-            project=self.project_name,
-            job_type="test",
-            tags=["test", self.model_type],
-            name=f"test-{run_number}",
-            group=f"group-{run_number}",
-            config=logs,
-        )
-        wandb.config.update({"model_type": self.model_type})  # allow_val_change=True
-
-    def on_test_end(self, logs=None):
-        """Finishes W&B run for testing."""
-
-        wandb.finish()
-
-    def on_test_batch_begin(self, batch, logs=None):
-        """Initializes W&B run for testing batch."""
-
-    def on_test_batch_end(self, batch, logs=None):
-        """Finishes W&B run for testing batch."""
-
-        wandb.log(logs, step=batch)
-
-    def _config(self, agent):
-        """configures callback internal state for wandb integration.
-
-        Args:
-            agent (rl_agents.Agent): The agent to configure.
-
-        Returns:
-            dict: The configuration dictionary.
-        """
-
-        # set agent type
-        self.model_type = type(agent).__name__
-        # set save dir
-        self.save_dir = agent.save_dir
-        # add code to save config of agent and models to wandb
-        # config = {
-        #     "env": agent.env.spec.id,
-        #     "discount": agent.discount,
-        #     # "learning_rate": agent.learning_rate,
-        #     "model_type": self.model_type.replace("_", " "),
-        # }
-
-        # if self.model_type == "ActorCritic":
-        #     config["policy_trace_decay"] = agent.policy_trace_decay
-        #     config["value_trace_decay"] = agent.value_trace_decay
-
-        # config.update(self._get_model_config(agent.actor_model))
-        # config.update(self._get_model_config(agent.critic_model))
+    # calculate z-scores if z_scores is true
+    if z_scores:
+        # Calculate the z-scores of the co-occurrence counts
+        co_occurrence_matrix = zscore(co_occurrence_matrix, axis=None)
+    # Create a DataFrame from the co-occurrence matrix for easier plotting
+    co_occurrence_df = pd.DataFrame(co_occurrence_matrix, 
+                                    index=data_one_hot.columns, 
+                                    columns=data_one_hot.columns)
 
 
-        return agent.get_config()
+    return co_occurrence_df, bin_ranges
 
-    def _get_model_config(self, model):
-        """configures callback internal state for wandb integration.
+def plot_co_occurrence_heatmap(co_occurrence_df: pd.DataFrame) -> go.Figure:
 
-        Args:
-            model (rl_agents.models): The model to configure.
+    # Create a layout
+    layout = go.Layout(title='Co-occurrence Heatmap')
 
-        Returns:
-            dict: The configuration dictionary.
-        """
+    # Create the figure
+    fig = go.Figure(
+        data=
+            go.Heatmap(
+                z=co_occurrence_df.values,  # Heatmap values
+                x=co_occurrence_df.columns,  # X-axis categories
+                y=co_occurrence_df.index, # Y-axis categories
+            ),
+            layout=layout,
+        )  
 
-        config = {}
+    # Render the plot
+    # pyo.iplot(fig)
 
-        for e, layer in enumerate(model.hidden_layers):
-            config[
-                f"{model.__class__.__name__.split('_')[0].lower()}_units_layer_{e+1}"
-            ] = layer[0]
-        config[f"{model.__class__.__name__.split('_')[0].lower()}_activation"] = layer[
-            1
-        ]
-        config[
-            f"{model.__class__.__name__.split('_')[0].lower()}_optimizer"
-        ] = model.optimizer.__class__.__name__.lower()
+    # return the figure
+    return fig
 
-        return config
+# Function to safely parse a Python dictionary string
+def parse_dict_column(column):
+    parsed_column = []
+    for item in column:
+        try:
+            # Safely evaluate the dictionary string to a dictionary
+            parsed_column.append(item)
+        except ValueError:
+            # In case of error, append a None or an empty dictionary
+            parsed_column.append(None)
+    return parsed_column
 
-    def save(self, folder: str = "wandb_config.json"):
-        """Save model.
+# Function to flatten the config dictionary and extract specified hyperparameters
+def flatten_config(config_dict, hyperparameters):
+    flat_config = {}
+    for param in hyperparameters:
+        # Extract the hyperparameter value from the nested dictionaries
+        value = config_dict.get('DDPG', {}).get(param, None)
+        # If a hyperparameter is not found, we try to get it from the top level (for env and model_type)
+        if value is None:
+            value = config_dict.get(param, None)
+        flat_config[param] = value
+    return flat_config
 
-        Args:
-            folder (str): The folder to save the config to.
-        """
-        wandb_config = {
-            "project_name": self.project_name,
-            "run_name": self.run_name,
-        }
+def fetch_sweep_hyperparameters_single_run(project_name, sweep_name):
+    api = wandb.Api()
+    sweep = get_sweep_from_name(project_name, sweep_name)
+    runs = get_runs_from_sweep(project_name, sweep)
+    hyperparameters = set()
 
-        with open(folder, "w", encoding="utf-8") as f:
-            json.dump(wandb_config, f)
+    # Attempt to fetch a single run; if no runs, return empty list
+    if runs is not None:
+        run = runs.__getitem__(0)  # Take the first run from the sweep
+        config = run.config
+        flattened_config = helper.flatten_dict(config)
+        for key in flattened_config.keys():
+            if not key.startswith('_') and not key in ['wandb_version', 'state', 'env']:
+                hyperparameters.add(key)
 
-    @classmethod
-    def load(cls, folder):
-        """Load model.
+    return list(hyperparameters)
 
-        Args:
-            folder (str): The folder to load the config from.
+def parse_parameter_name(parameter_string):
+    # parts = parameter_string.split('_', 2)
+    parts = parameter_string.split('_') # update to split on _ without maxsplit
+    # if len(parts) == 3:
+        # model_type, _, parameter_name = parts
+        # return f"{model_type}_{parameter_name}"
+    if parts[0] == parts[1]: # if the first string is repeated (model_type)
+        return parts[0] + '_'.join(parts[2:]) # remove the repeated string and return the rest joined by '_'
+                                            
+    else:
+        return parameter_string
 
-        Returns:
-            WandbCallback: The callback object.
-        """
-
-        with open(folder, "r", encoding="utf-8") as f:
-            wandb_config = json.load(f)
-
-        callback = WandbCallback(
-            project_name=wandb_config["project_name"],
-        )
-        callback.run_name = wandb_config["run_name"]
-
-        return callback

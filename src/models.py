@@ -30,29 +30,47 @@ class PolicyModel(Model):
     def __init__(
         self,
         env: gym.Env,
-        hidden_layers: List[Tuple[int, str]] = None,
+        dense_layers: List[Tuple[int, str, initializers.Initializer]] = None,
         optimizer: keras.optimizers = optimizers.Adam(0.001),
     ):
         super().__init__()
         self.env = env
-        if hidden_layers is None:
-            hidden_layers = [(100, "relu")]
-        self.hidden_layers = hidden_layers
+        self.layer_config = dense_layers
+        
+        # if dense_layers is None:
+        #     dense_layers = [(100, "relu")]
+        # self.hidden_layers = dense_layers
         self.optimizer = optimizer
-        self.model = keras.Sequential()
-        for size, activation in hidden_layers:
-            self.model.add(
-                Dense(size, activation=activation, kernel_initializer=HeNormal())
-            )
-        self.model.add(
-            Dense(env.action_space.n, activation=None, kernel_initializer=HeNormal())
-        )
-        self.build(np.expand_dims(env.observation_space.sample(), axis=0).shape)
+        # self.optimizer.learning_rate = self.learning_rate
+
+        # build model
+        self.dense_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in dense_layers]
+        self.out = Dense(env.action_space.n, activation=None, kernel_initializer=HeNormal(), bias_initializer=HeNormal())
+
+        # compile model
+        self.compile(optimizer=self.optimizer)
+        
+        # run sample data through model to initialize it
+        _ = self(np.random.random((1, env.observation_space.shape[0])))
+        
+        # self.model = keras.Sequential()
+        # for size, activation in dense_layers:
+        #     self.model.add(
+        #         Dense(size, activation=activation, kernel_initializer=HeNormal())
+        #     )
+        # self.model.add(
+        #     Dense(env.action_space.n, activation=None, kernel_initializer=HeNormal())
+        # )
+        # self.build(np.expand_dims(env.observation_space.sample(), axis=0).shape)
 
     # @tf.function()
     def call(self, state, return_logits=False):
         """Forward Propogation."""
-        logits = self.model(state)
+        x = state
+        for dense_layer in self.dense_layers:
+            x = dense_layer(x)
+        logits = self.out(x)
+        # logits = self.model(state)
         if return_logits:
             return logits
         return tf.nn.softmax(logits)
@@ -61,47 +79,68 @@ class PolicyModel(Model):
         """Sets learning rate of optimizer."""
         self.optimizer.learning_rate = learning_rate
 
+    def get_config(self):
+        """Get model config."""
+
+        config = {
+            'env': self.env.spec.id,
+            'hidden_layers': len(self.dense_layers),
+            'dense_layers': self.dense_layers,
+            'optimizer': optimizers.serialize(self.optimizer),
+        }
+
+        config['dense_layers'] = [(units, activation, initializers.serialize(initializer)) for (units, activation, initializer) in self.layer_config]
+
+        return config
+
     def save(self, folder):
         """Save model."""
-        # makes directory if it doesn't exist
-        os.makedirs(folder + "/policy_model", exist_ok=True)
-        self.model.save(folder + "/policy_model")
-        obj_config = {
-            "env_name": self.env.spec.id,
-            "hidden_layers": self.hidden_layers,
-        }
+        # Ensure the model directory exists
+        model_dir = os.path.join(folder, "policy_model")
+        os.makedirs(model_dir, exist_ok=True)
+
+        # Save the TensorFlow model for the weights
+        save_model(self, os.path.join(model_dir, 'tf_model'))
+        # self.model.save(folder + "/policy_model")
+        
+        obj_config = self.get_config()
         with open(folder + "/policy_model/obj_config.json", "w", encoding="utf-8") as f:
             json.dump((obj_config), f)
-        policy_opt_config = optimizers.serialize(self.optimizer)
-        with open(
-            folder + "/policy_model/policy_optimizer_config.json", "w", encoding="utf-8"
-        ) as f:
-            json.dump((policy_opt_config), f)
+        # policy_opt_config = optimizers.serialize(self.optimizer)
+        # with open(
+        #     folder + "/policy_model/policy_optimizer_config.json", "w", encoding="utf-8"
+        # ) as f:
+        #     json.dump((policy_opt_config), f)
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, load_weights=True):
         """Load model."""
-        with open(
-            Path(folder).joinpath(Path("policy_model/obj_config.json")),
-            "r",
-            encoding="utf-8",
-        ) as f:
+        with open(Path(folder) / "policy_model/obj_config.json", "r", encoding="utf-8") as f:
             obj_config = json.load(f)
-        with open(
-            Path(folder).joinpath(Path("policy_model/policy_optimizer_config.json")),
-            "r",
-            encoding="utf-8",
-        ) as f:
-            policy_opt_config = json.load(f)
-        policy_opt = optimizers.deserialize(policy_opt_config)
+        
+        # Load the TensorFlow model
+        tf_model_path = str(Path(folder) / "policy_model/tf_model")
+        loaded_model = load_model(tf_model_path)
+        policy_opt = loaded_model.optimizer
+        # policy_opt = optimizers.deserialize(policy_opt_config)
+        
+        # Reconstruct the environment and other configurations
+        env = gym.make(obj_config["env"])
+        dense_layers = [(size, activation, tf.keras.initializers.deserialize(initializer))
+                        for size, activation, initializer in obj_config["dense_layers"]]
+        
         policy_model = cls(
-            env=gym.make(obj_config["env_name"]),
-            hidden_layers=obj_config["hidden_layers"],
+            env=env,
+            dense_layers=dense_layers,
             optimizer=policy_opt,
         )
-        policy_model.model = keras.models.load_model(
-            Path(folder).joinpath(Path("policy_model"))
-        )
+        
+        if load_weights:
+            # Load the weights into the model
+            loaded_weights = [layer.get_weights() for layer in loaded_model.layers]
+            for layer, weights in zip(policy_model.layers, loaded_weights):
+                layer.set_weights(weights)
+
         return policy_model
 
 
@@ -118,73 +157,104 @@ class ValueModel(Model):
     def __init__(
         self,
         env: gym.Env,
-        hidden_layers: List[Tuple[int, str]] = None,
+        dense_layers: List[Tuple[int, str, initializers.Initializer]] = None,
         optimizer: keras.optimizers = optimizers.Adam(0.001),
     ):
         super().__init__()
         self.env = env
-        if hidden_layers is None:
-            hidden_layers = [(100, "relu")]
-        self.hidden_layers = hidden_layers
+        self.layer_config = dense_layers
+        # if hidden_layers is None:
+        #     hidden_layers = [(100, "relu")]
+        # self.hidden_layers = hidden_layers
         self.optimizer = optimizer
-        self.model = keras.Sequential()
-        for size, activation in hidden_layers:
-            self.model.add(
-                Dense(size, activation=activation, kernel_initializer=HeNormal())
-            )
-        self.model.add(Dense(1, activation=None, kernel_initializer=HeNormal()))
-        self.build(np.expand_dims(env.observation_space.sample(), axis=0).shape)
+        # self.optimizer.learning_rate = self.learning_rate
+        # self.model = keras.Sequential()
+        # for size, activation in hidden_layers:
+        #     self.model.add(
+        #         Dense(size, activation=activation, kernel_initializer=HeNormal())
+        #     )
+        # self.model.add(Dense(1, activation=None, kernel_initializer=HeNormal()))
+        # self.build(np.expand_dims(env.observation_space.sample(), axis=0).shape)
+
+        # build model
+        self.dense_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in dense_layers]
+        self.out = Dense(1, activation=None, kernel_initializer=HeNormal())
+        
+        # compile model
+        self.compile(optimizer=self.optimizer)
+        
+        # run sample data through model to initialize it
+        _ = self(np.random.random((1, env.observation_space.shape[0])))
 
     # @tf.function()
     def call(self, state):
         """Forward propogation."""
-
-        return self.model(state)
+        x = state
+        for dense_layer in self.dense_layers:
+            x = dense_layer(x)
+        return self.out(x)
 
     def _set_learning_rate(self, learning_rate):
         """Sets learning rate of optimizer."""
         self.optimizer.learning_rate = learning_rate
 
+    def get_config(self):
+        """Get model config."""
+
+        config = {
+            'env': self.env.spec.id,
+            'hidden_layers': len(self.dense_layers),
+            'dense_layers': self.dense_layers,
+            'optimizer': optimizers.serialize(self.optimizer),
+        }
+
+        config['dense_layers'] = [(units, activation, initializers.serialize(initializer)) for (units, activation, initializer) in self.layer_config]
+
+        return config
+
     def save(self, folder):
         """Save model."""
-        os.makedirs(folder + "/value_model", exist_ok=True)
-        self.model.save(folder + "/value_model")
-        obj_config = {
-            "env_name": self.env.spec.id,
-            "hidden_layers": self.hidden_layers,
-        }
+        # Ensure the model directory exists
+        model_dir = os.path.join(folder, "value_model")
+        os.makedirs(model_dir, exist_ok=True)
+
+        # Save the TensorFlow model for the weights
+        save_model(self, os.path.join(model_dir, 'tf_model'))
+        # self.model.save(folder + "/value_model")
+        
+        obj_config = self.get_config()
         with open(folder + "/value_model/obj_config.json", "w", encoding="utf-8") as f:
             json.dump((obj_config), f)
-        value_opt_config = optimizers.serialize(self.optimizer)
-        with open(
-            folder + "/value_model/value_optimizer_config.json", "w", encoding="utf-8"
-        ) as f:
-            json.dump((value_opt_config), f)
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, load_weights=True):
         """Load model."""
-        with open(
-            Path(folder).joinpath(Path("value_model/obj_config.json")),
-            "r",
-            encoding="utf-8",
-        ) as f:
+        with open(Path(folder) / "value_model/obj_config.json", "r", encoding="utf-8") as f:
             obj_config = json.load(f)
-        with open(
-            Path(folder).joinpath(Path("value_model/value_optimizer_config.json")),
-            "r",
-            encoding="utf-8",
-        ) as f:
-            value_opt_config = json.load(f)
-        value_opt = optimizers.deserialize(value_opt_config)
+        
+        # Load the TensorFlow model
+        tf_model_path = str(Path(folder) / "value_model/tf_model")
+        loaded_model = load_model(tf_model_path)
+        policy_opt = loaded_model.optimizer
+        # policy_opt = optimizers.deserialize(policy_opt_config)
+        
+        # Reconstruct the environment and other configurations
+        env = gym.make(obj_config["env"])
+        dense_layers = [(size, activation, tf.keras.initializers.deserialize(initializer))
+                        for size, activation, initializer in obj_config["dense_layers"]]
+        
         value_model = cls(
-            env=gym.make(obj_config["env_name"]),
-            hidden_layers=obj_config["hidden_layers"],
-            optimizer=value_opt,
+            env=env,
+            dense_layers=dense_layers,
+            optimizer=policy_opt,
         )
-        value_model.model = keras.models.load_model(
-            Path(folder).joinpath(Path("value_model"))
-        )
+        
+        if load_weights:
+            # Load the weights into the model
+            loaded_weights = [layer.get_weights() for layer in loaded_model.layers]
+            for layer, weights in zip(value_model.layers, loaded_weights):
+                layer.set_weights(weights)
+
         return value_model
     
 class ActorModel(Model):
@@ -201,27 +271,23 @@ class ActorModel(Model):
         self.env = env
         self.learning_rate = learning_rate
         self.layer_config = dense_layers
-        self.dense_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in dense_layers]
-        self.mu = Dense(env.action_space.shape[0], activation='tanh')
         self.optimizer = optimizer
         self.optimizer.learning_rate = self.learning_rate
+
+        # build model
+        self.dense_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in dense_layers]
+        self.mu = Dense(env.action_space.shape[0], activation='tanh', kernel_initializer=initializers.RandomUniform(-3e-3, 3e-3), bias_initializer=initializers.RandomUniform(-3e-3, 3e-3))
         
         # compile model
-        self.compile(self.optimizer)
+        self.compile(optimizer=self.optimizer)
         
         # run sample data through model to initialize it
-        _ = self(np.random.random((1, env.observation_space.shape[0])))
+        _ = self(np.random.random((1, *env.observation_space.shape)))
 
 
     def call(self, state):
         """Forward Propogation."""
-        # return self.model(state)
-        # prob = self.fc1(state)
-        # prob = self.fc2(prob)
-
-        # mu = self.mu(prob)
-
-        # return mu
+        
         x = state
         for dense_layer in self.dense_layers:
             x = dense_layer(x)
@@ -236,7 +302,7 @@ class ActorModel(Model):
 
         config = {
             'env': self.env.spec.id,
-            # 'hidden_layers': self.hidden_layers,
+            'hidden_layers': len(self.dense_layers),
             'dense_layers': self.dense_layers,
             'learning_rate': self.learning_rate,
             'optimizer': optimizers.serialize(self.optimizer),
@@ -291,7 +357,7 @@ class ActorModel(Model):
 
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, load_weights=True):
         """Load model."""
 
         with open(Path(folder) / "policy_model/obj_config.json", "r", encoding="utf-8") as f:
@@ -318,10 +384,11 @@ class ActorModel(Model):
         # Initialize your class with the configurations
         actor_model = cls(env=env, dense_layers=dense_layers, learning_rate=obj_config['learning_rate'], optimizer=opt)
 
-        # Load the weights into the model
-        loaded_weights = [layer.get_weights() for layer in loaded_model.layers]
-        for layer, weights in zip(actor_model.layers, loaded_weights):
-            layer.set_weights(weights)
+        if load_weights:
+            # Load the weights into the model
+            loaded_weights = [layer.get_weights() for layer in loaded_model.layers]
+            for layer, weights in zip(actor_model.layers, loaded_weights):
+                layer.set_weights(weights)
 
 
         return actor_model
@@ -345,15 +412,16 @@ class CriticModel(Model):
         self.state_config = state_layers
         self.merged_config = merged_layers
         
+        # build model
         self.state_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in state_layers]
         self.merged_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in merged_layers]
-        self.q = Dense(1, activation=None)
+        self.q = Dense(1, activation=None, kernel_initializer=initializers.RandomUniform(-3e-3, 3e-3), bias_initializer=initializers.RandomUniform(-3e-3, 3e-3))
         
         # compile model
-        self.compile(optimizer=optimizers.Adam(learning_rate=learning_rate))
+        self.compile(optimizer=self.optimizer)
 
         # run sample data through model to initialize it
-        _ = self([np.random.random((1, env.observation_space.shape[0])), np.random.random((1, env.action_space.shape[0]))])
+        _ = self([np.random.random((1, *env.observation_space.shape)), np.random.random((1, *env.action_space.shape))])
 
     
 
@@ -377,6 +445,7 @@ class CriticModel(Model):
     def get_config(self):
         config = {
             'env': self.env.spec.id,
+            'hidden_layers': len(self.state_config) + len(self.merged_config),
             'state_layers': self.state_config,
             'merged_layers': self.merged_config,
             'learning_rate': self.learning_rate,
@@ -437,7 +506,7 @@ class CriticModel(Model):
         #     json.dump((opt_config), f)
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, load_weights=True):
         """Load model."""
 
         with open(Path(folder) / "value_model/obj_config.json", "r", encoding="utf-8") as f:
@@ -465,11 +534,12 @@ class CriticModel(Model):
         # Initialize your class with the configurations
         critic_model = cls(env=env, state_layers=state_layers, merged_layers=merged_layers, learning_rate=obj_config['learning_rate'], optimizer=opt)
 
-        # Load the weights into the model
-        loaded_weights = [layer.get_weights() for layer in loaded_model.layers]
-        # critic_layers = critic_model.state_layers + critic_model.merged_layers
-        for layer, weights in zip(critic_model.layers, loaded_weights):
-            layer.set_weights(weights)
+        if load_weights:
+            # Load the weights into the model
+            loaded_weights = [layer.get_weights() for layer in loaded_model.layers]
+            # critic_layers = critic_model.state_layers + critic_model.merged_layers
+            for layer, weights in zip(critic_model.layers, loaded_weights):
+                layer.set_weights(weights)
 
 
         return critic_model

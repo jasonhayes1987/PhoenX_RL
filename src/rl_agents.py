@@ -19,6 +19,8 @@ import models
 import wandb
 import wandb_support
 import helper
+import dash_callbacks
+import tf_callbacks
 
 
 # Agent class
@@ -74,7 +76,7 @@ class ActorCritic(Agent):
         if callbacks:
             self.callback_list = self._create_callback_list(callbacks)
             for callback in callbacks:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     self._config = callback._config(self)
                     self._wandb = True
                     self._train_config = {}
@@ -117,7 +119,7 @@ class ActorCritic(Agent):
         policy_optimizer = helper.get_optimizer_by_name(wandb.config.policy_optimizer)
         value_optimizer = helper.get_optimizer_by_name(wandb.config.value_optimizer)
         policy_model = models.PolicyModel(
-            env, hidden_layers=policy_layers, optimizer=policy_optimizer
+            env, dense_layers=policy_layers, optimizer=policy_optimizer
         )
         value_model = models.ValueModel(
             env, hidden_layers=value_layers, optimizer=value_optimizer
@@ -138,14 +140,14 @@ class ActorCritic(Agent):
     def _initialize_env(self, render=False, render_freq=10):
         """Initializes a new environment."""
         if render:
-            env = gym.make(self.env.spec.id, render_mode="rgb_array")
+            env = gym.make(self.env.spec, render_mode="rgb_array")
             return gym.wrappers.RecordVideo(
                 env,
                 self.save_dir + "/renders",
                 episode_trigger=lambda episode_id: episode_id % render_freq == 0,
             )
 
-        return gym.make(self.env.spec.id)
+        return gym.make(self.env.spec)
 
     def _set_traces(self):
         for weights in self.policy_model.trainable_variables:
@@ -379,18 +381,24 @@ class ActorCritic(Agent):
         # close the environment
         self.env.close()
 
-    def save(self):
-        """Saves the model."""
-        obj_config = {
+    def get_config(self):
+        return {
             "agent_type": self.__class__.__name__,
             "env": self.env.spec.id,
-            "discount": self.discount,
+            "policy_model": self.policy_model.get_config(),
+            "value_model": self.value_model.get_config(),
             "learning_rate": self.learning_rate,
+            "discount": self.discount,
             "policy_trace_decay": self.policy_trace_decay,
             "value_trace_decay": self.value_trace_decay,
-            "callbacks": [callback.__class__.__name__ for callback in self.callbacks],
-            "save_dir": self.save_dir,
+            "callbacks": [callback.__class__.__name__ for callback in (self.callbacks or []) if callback is not None],
+            "save_dir": self.save_dir
         }
+
+
+    def save(self):
+        """Saves the model."""
+        obj_config = self.get_config()
 
         # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
@@ -406,7 +414,7 @@ class ActorCritic(Agent):
         # if wandb callback, save wandb config
         if self._wandb:
             for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     callback.save(self.save_dir + "/wandb_config.json")
 
     @classmethod
@@ -425,7 +433,7 @@ class ActorCritic(Agent):
         # load wandb config if exists
         if os.path.exists(Path(folder).joinpath(Path("wandb_config.json"))):
             callbacks = [
-                wandb_support.WandbCallback.load(
+                tf_callbacks.WandbCallback.load(
                     Path(folder).joinpath(Path("wandb_config.json"))
                 )
             ]
@@ -446,7 +454,7 @@ class ActorCritic(Agent):
         )
 
         for callback in callbacks:
-            if isinstance(callback, wandb_support.WandbCallback):
+            if isinstance(callback, tf_callbacks.WandbCallback):
                 agent._wandb = True
                 agent._train_config = {}
                 agent._train_episode_config = {}
@@ -483,7 +491,7 @@ class Reinforce(Agent):
         if callbacks:
             self.callback_list = self._create_callback_list(callbacks)
             for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     self._config = callback._config(self)
                     self._wandb = True
                     self._train_config = {}
@@ -514,7 +522,7 @@ class Reinforce(Agent):
         policy_optimizer = helper.get_optimizer_by_name(wandb.config.policy_optimizer)
         value_optimizer = helper.get_optimizer_by_name(wandb.config.value_optimizer)
         policy_model = models.PolicyModel(
-            env, hidden_layers=policy_layers, optimizer=policy_optimizer
+            env, dense_layers=policy_layers, optimizer=policy_optimizer
         )
         value_model = models.ValueModel(
             env, hidden_layers=value_layers, optimizer=value_optimizer
@@ -540,14 +548,14 @@ class Reinforce(Agent):
     def _initialize_env(self, render=False, render_freq=10):
         """Initializes a new environment."""
         if render:
-            env = gym.make(self.env.spec.id, render_mode="rgb_array")
+            env = gym.make(self.env.spec, render_mode="rgb_array")
             return gym.wrappers.RecordVideo(
                 env,
                 self.save_dir + "/renders",
                 episode_trigger=lambda episode_id: episode_id % render_freq == 0,
             )
 
-        return gym.make(self.env.spec.id)
+        return gym.make(self.env.spec)
 
     def get_return(self, rewards):
         """Compute expected returns per timestep."""
@@ -788,16 +796,21 @@ class Reinforce(Agent):
         # close the environment
         self.env.close()
 
-    def save(self):
-        """Saves the model."""
-        obj_config = {
+    def get_config(self):
+        return {
             "agent_type": self.__class__.__name__,
             "env": self.env.spec.id,
-            "discount": self.discount,
+            "policy_model": self.policy_model.get_config(),
+            "value_model": self.value_model.get_config(),
             "learning_rate": self.learning_rate,
-            "callbacks": [callback.__class__.__name__ for callback in self.callbacks],
-            "save_dir": self.save_dir,
+            "discount": self.discount,
+            "callbacks": [callback.__class__.__name__ for callback in (self.callbacks or []) if callback is not None],
+            "save_dir": self.save_dir
         }
+
+    def save(self):
+        """Saves the model."""
+        obj_config = self.get_config()
 
         # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
@@ -814,7 +827,7 @@ class Reinforce(Agent):
         # if wandb callback, save wandb config
         if self._wandb:
             for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     callback.save(self.save_dir + "/wandb_config.json")
 
     @classmethod
@@ -833,7 +846,7 @@ class Reinforce(Agent):
         # load wandb config if exists
         if os.path.exists(Path(folder).joinpath(Path("wandb_config.json"))):
             callbacks = [
-                wandb_support.WandbCallback.load(
+                tf_callbacks.WandbCallback.load(
                     Path(folder).joinpath(Path("wandb_config.json"))
                 )
             ]
@@ -852,7 +865,7 @@ class Reinforce(Agent):
         )
 
         for callback in callbacks:
-            if isinstance(callback, wandb_support.WandbCallback):
+            if isinstance(callback, tf_callbacks.WandbCallback):
                 agent._wandb = True
                 agent._train_config = {}
                 agent._train_episode_config = {}
@@ -905,7 +918,7 @@ class DDPG(Agent):
         if callbacks:
             self.callback_list = self._create_callback_list(callbacks)
             for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     self._config = callback._config(self)
                     self._wandb = True
                     break
@@ -927,8 +940,39 @@ class DDPG(Agent):
 
         return model.get_clone()
     
-    def build(self):
-        pass
+    @classmethod
+    def build(
+        cls,
+        env,
+        actor_layers,
+        critic_state_layers,
+        critic_merged_layers,
+        callbacks,
+        config,#: wandb.config,
+        save_dir: str = "models/",
+    ):
+        """Builds the agent."""
+        actor_optimizer = helper.get_optimizer_by_name(config[config.model_type][f"{config.model_type}_actor_optimizer"]) 
+        critic_optimizer = helper.get_optimizer_by_name(config[config.model_type][f"{config.model_type}_critic_optimizer"])
+        actor_model = models.ActorModel(
+            env=env, dense_layers=actor_layers, learning_rate=config[config.model_type][f"{config.model_type}_actor_learning_rate"], optimizer=actor_optimizer
+        )
+        critic_model = models.CriticModel(
+            env=env, state_layers=critic_state_layers, merged_layers=critic_merged_layers, learning_rate=config[config.model_type][f"{config.model_type}_critic_learning_rate"], optimizer=critic_optimizer
+        )
+
+        return cls(
+            env = env,
+            actor_model = actor_model,
+            critic_model = critic_model,
+            discount = config[config.model_type][f"{config.model_type}_discount"],
+            tau = config[config.model_type][f"{config.model_type}_tau"],
+            replay_buffer = helper.Buffer.create_instance(config[config.model_type][f"{config.model_type}_replay_buffer"], env=env),
+            batch_size = config[config.model_type][f"{config.model_type}_batch_size"],
+            noise = helper.Noise.create_instance(config[config.model_type][f"{config.model_type}_noise"], shape=env.action_space.shape, **config[config.model_type][f"{config.model_type}_noise_{config[config.model_type][f'{config.model_type}_noise']}"]),
+            callbacks = callbacks,
+            save_dir = save_dir,
+        )
 
     def _create_callback_list(self, callbacks):
         if callbacks is None:
@@ -937,22 +981,42 @@ class DDPG(Agent):
 
         return callback_list
 
-    def _initialize_env(self, render=False, render_freq=10):
+    def _initialize_env(self, render=False, render_freq=10, context=None):
         """Initializes a new environment."""
         if render:
-            env = gym.make(self.env.spec.id, render_mode="rgb_array")
-            return gym.wrappers.RecordVideo(
-                env,
-                self.save_dir + "/renders",
-                episode_trigger=lambda episode_id: episode_id % render_freq == 0,
-            )
+            env = gym.make(self.env.spec, render_mode="rgb_array")
+            if context == "train":
+                return gym.wrappers.RecordVideo(
+                    env,
+                    self.save_dir + "/renders/training",
+                    episode_trigger=lambda episode_id: episode_id % render_freq == 0,
+                )
+            elif context == "test":
+                return gym.wrappers.RecordVideo(
+                    env,
+                    self.save_dir + "/renders/testing",
+                    episode_trigger=lambda episode_id: episode_id % render_freq == 0,
+                )
 
-        return gym.make(self.env.spec.id)
+        return gym.make(self.env.spec)
     
     def get_action(self, state):
         # receives current state and returns a vector of action values from policy model
         state = tf.convert_to_tensor([state], dtype=tf.float32)
-        return tf.clip_by_value((self.actor_model(state) + tf.convert_to_tensor(self.noise(), dtype=tf.float32)).numpy()[0], self.env.action_space.low, self.env.action_space.high)
+        action_value = self.actor_model(state)[0]
+        noise = self.noise()
+        action = tf.clip_by_value((action_value + noise), self.env.action_space.low, self.env.action_space.high)
+        # DEBUG
+        # print(f'step: {self._step}')
+        # print(f'action_value: {action_value}')
+        # print(f'noise: {noise}')
+        # print(f'action_value + noise: {action_value + noise}')
+        # print(f'clipped action: {action}')
+        # print('')
+
+        return action
+
+        # return tf.clip_by_value((self.actor_model(state) + tf.convert_to_tensor(self.noise(), dtype=tf.float32)).numpy()[0], self.env.action_space.low, self.env.action_space.high)
         
 
     
@@ -1052,16 +1116,18 @@ class DDPG(Agent):
 
     
     def train(
-        self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None
-    ):
+        self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
         """Trains the model for 'episodes' number of episodes."""
+
+        #DEBUG
+        # print("ddpg train called...")
         
         if save_dir:
             self.save_dir = save_dir
         if self.callback_list:
             self.callback_list.on_train_begin(logs=self._config)
         # instantiate new environment
-        self.env = self._initialize_env(render, render_freq)
+        self.env = self._initialize_env(render, render_freq, context='train')
         if self._wandb:
             # set step counter
             self._step = 1
@@ -1116,7 +1182,7 @@ class DDPG(Agent):
             episode_time = time.time() - episode_start_time
             episode_time_history.append(episode_time)
             reward_history.append(episode_reward)
-            steps_per_episode_history.append(episode_steps)  # Add steps per episode to history
+            steps_per_episode_history.append(episode_steps) 
             avg_reward = np.mean(reward_history[-100:])
             avg_episode_time = np.mean(episode_time_history[-100:])
             avg_step_time = np.mean(step_time_history[-100:])
@@ -1149,15 +1215,13 @@ class DDPG(Agent):
         # close the environment
         self.env.close()
 
-
-
-        
+       
     def test(self, num_episodes, render, render_freq):
         """Runs a test over 'num_episodes'."""
         # instantiate list to store reward history
         reward_history = []
         # instantiate new environment
-        self.env = self._initialize_env(render, render_freq)
+        self.env = self._initialize_env(render, render_freq, context='test')
         if self.callback_list:
             self.callback_list.on_test_begin(logs=self._config)
 
@@ -1214,7 +1278,7 @@ class DDPG(Agent):
             "replay_buffer": self.replay_buffer.get_config(),
             "batch_size": self.batch_size,
             "noise": self.noise.get_config(),
-            "callbacks": [callback.__class__.__name__ for callback in self.callbacks],
+            "callbacks": [callback.get_config() for callback in self.callback_list],
             "save_dir": self.save_dir
         }
 
@@ -1234,13 +1298,13 @@ class DDPG(Agent):
         self.critic_model.save(self.save_dir)
 
         # if wandb callback, save wandb config
-        if self._wandb:
-            for callback in self.callback_list:
-                if isinstance(callback, wandb_support.WandbCallback):
-                    callback.save(self.save_dir + "/wandb_config.json")
+        # if self._wandb:
+        #     for callback in self.callback_list:
+        #         if isinstance(callback, tf_callbacks.WandbCallback):
+        #             callback.save(self.save_dir + "/wandb_config.json")
 
     @classmethod
-    def load(cls, folder: str = "models"):
+    def load(cls, folder: str = "models", load_weights=True):
         """Loads the model."""
         # load reinforce agent config
         with open(
@@ -1249,23 +1313,37 @@ class DDPG(Agent):
             obj_config = json.load(f)
 
         # load policy model
-        actor_model = models.ActorModel.load(folder)
+        actor_model = models.ActorModel.load(folder, load_weights)
         # load value model
-        critic_model = models.CriticModel.load(folder)
+        critic_model = models.CriticModel.load(folder, load_weights)
         # load replay buffer
         obj_config['replay_buffer']['config']['env'] = gym.make(obj_config['env'])
         replay_buffer = helper.ReplayBuffer(**obj_config["replay_buffer"]["config"])
         # load noise
-        noise = helper.OUNoise(**obj_config["noise"]["config"])
+        noise = helper.Noise.create_instance(obj_config["noise"]["class_name"], **obj_config["noise"]["config"])
         # load wandb config if exists
-        if os.path.exists(Path(folder).joinpath(Path("wandb_config.json"))):
-            callbacks = [
-                wandb_support.WandbCallback.load(
-                    Path(folder).joinpath(Path("wandb_config.json"))
-                )
-            ]
-        else:
-            callbacks = None
+        # if os.path.exists(Path(folder).joinpath(Path("wandb_config.json"))):
+        #     callbacks = [
+        #         tf_callbacks.WandbCallback.load(
+        #             Path(folder).joinpath(Path("wandb_config.json"))
+        #         )
+        #     ]
+        # else:
+        #     callbacks = None
+        
+        # create callbacks list from obj_config['callbacks']
+        # callbacks = []
+        # for callback in obj_config['callbacks']:
+        #     if callback == 'WandbCallback':
+        #         callbacks.append(tf_callbacks.WandbCallback.load(
+        #             Path(folder).joinpath(Path("wandb_config.json"))
+        #         ))
+        #     if callback == 'DashCallback':
+        #         callbacks.append(dash_callbacks.DashCallback(obj_config['callbacks'][callback]['config']))
+            # else:
+            #     callbacks.append(helper.get_callback_instance(callback, obj_config['callbacks'][callback]['config']))
+
+        callbacks = [tf_callbacks.load(callback_info['class_name'], callback_info['config']) for callback_info in obj_config['callbacks']]
 
         # return DDPG agent
         agent = cls(
@@ -1283,7 +1361,7 @@ class DDPG(Agent):
         
         if callbacks:
             for callback in callbacks:
-                if isinstance(callback, wandb_support.WandbCallback):
+                if isinstance(callback, tf_callbacks.WandbCallback):
                     agent._wandb = True
                     agent._train_config = {}
                     agent._train_episode_config = {}
@@ -1293,7 +1371,7 @@ class DDPG(Agent):
         return agent
 
 
-def load_agent_from_config(config_path):
+def load_agent_from_config(config_path, load_weights=True):
     """Loads an agent from a config file."""
     with open(
         Path(config_path).joinpath(Path("obj_config.json")), "r", encoding="utf-8"
@@ -1306,7 +1384,7 @@ def load_agent_from_config(config_path):
     agent_class = globals().get(agent_type)
 
     if agent_class:
-        return agent_class.load(config_path)
+        return agent_class.load(config_path, load_weights)
 
     raise ValueError(f"Unknown agent type: {agent_type}")
 
@@ -1314,7 +1392,9 @@ def load_agent_from_config(config_path):
 def get_agent_class_from_type(agent_type: str):
     """Builds an agent from a passed agent type str."""
 
-    types = {"Actor Critic": "ActorCritic", "Reinforce": "Reinforce"}
+    types = {"Actor Critic": "ActorCritic",
+             "Reinforce": "Reinforce",
+             "DDPG": "DDPG"}
 
     # Use globals() to get a reference to the class
     agent_class = globals().get(types[agent_type])
