@@ -1069,26 +1069,26 @@ class DDPG(Agent):
             self._train_step_config["policy_loss"] = actor_loss
             self._train_step_config["value_loss"] = critic_loss.numpy()
             
-            for num_layer, layer in enumerate(self.actor_model.layers):
-                weight_bias = layer.get_weights()
-                # check to make sure layer has weights
-                if weight_bias:
-                    weights, bias = weight_bias
-                    weight_hist = np.histogram(weights, density=True)
-                    bias_hist = np.histogram(bias, density=True)
-                    # wandb.log({"gradients": wandb.Histogram(weight_hist)})
-                    self._train_step_config[f"actor_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
-                    self._train_step_config[f"actor_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
+            # for num_layer, layer in enumerate(self.actor_model.layers):
+            #     weight_bias = layer.get_weights()
+            #     # check to make sure layer has weights
+            #     if weight_bias:
+            #         weights, bias = weight_bias
+            #         weight_hist = np.histogram(weights, density=True)
+            #         bias_hist = np.histogram(bias, density=True)
+            #         # wandb.log({"gradients": wandb.Histogram(weight_hist)})
+            #         self._train_step_config[f"actor_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
+            #         self._train_step_config[f"actor_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
             
-            for num_layer, layer in enumerate(self.critic_model.layers):
-                weight_bias = layer.get_weights()
-                # check to make sure layer has weights
-                if weight_bias:
-                    weights, bias = weight_bias
-                    weight_hist = np.histogram(weights, density=True)
-                    bias_hist = np.histogram(bias, density=True)
-                    self._train_step_config[f"critic_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
-                    self._train_step_config[f"critic_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
+            # for num_layer, layer in enumerate(self.critic_model.layers):
+            #     weight_bias = layer.get_weights()
+            #     # check to make sure layer has weights
+            #     if weight_bias:
+            #         weights, bias = weight_bias
+            #         weight_hist = np.histogram(weights, density=True)
+            #         bias_hist = np.histogram(bias, density=True)
+            #         self._train_step_config[f"critic_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
+            #         self._train_step_config[f"critic_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
 
             for layer, (p_grad, v_grad) in enumerate(zip(actor_gradient, critic_gradient)):
                 self._train_step_config["policy_grad_mean"] = tf.reduce_mean(p_grad)
@@ -1156,7 +1156,7 @@ class DDPG(Agent):
                 # action_time = time.time()
                 action = self.get_action(state)
                 # print(f"Action time: {time.time() - action_time}")
-                next_state, reward, term, trunc, _ = self.env.step(action) # might have to use action.numpy()
+                next_state, reward, term, trunc, _ = self.env.step(action.numpy()) # might have to use action.numpy()
                 step_time = time.time() - step_start_time
                 step_time_history.append(step_time)
                 # store trajectory in replay buffer
