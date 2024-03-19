@@ -9,12 +9,14 @@ from pathlib import Path
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.layers import Dense, Input, Concatenate, BatchNormalization
+from tensorflow.keras.layers import Dense, Input, Concatenate, BatchNormalization, Flatten
 from tensorflow.keras import Model, optimizers, initializers
 from tensorflow.keras.initializers import HeNormal
 from tensorflow.keras.models import save_model, load_model
 import gymnasium as gym
 import numpy as np
+
+import cnn_models
 
 
 class PolicyModel(Model):
@@ -263,6 +265,7 @@ class ActorModel(Model):
     def __init__(
             self,
             env: gym.Env,
+            cnn_model = None,
             dense_layers: List[Tuple[int, str, initializers.Initializer]] = None,
             learning_rate: float = 0.0001,
             optimizer: optimizers = optimizers.Adam(),
@@ -273,6 +276,7 @@ class ActorModel(Model):
         self.layer_config = dense_layers
         self.optimizer = optimizer
         self.optimizer.learning_rate = self.learning_rate
+        self.cnn_model = cnn_model
 
         # build model
         self.dense_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in dense_layers]
@@ -282,13 +286,17 @@ class ActorModel(Model):
         self.compile(optimizer=self.optimizer)
         
         # run sample data through model to initialize it
-        _ = self(np.random.random((1, *env.observation_space.shape)))
+        if self.cnn_model:
+            _ = self([np.random.random((1, *self.env.observation_space.shape))])
+        else:
+            _ = self([np.random.random((1, np.prod(self.env.observation_space.shape)))])
 
 
-    def call(self, state):
+    def call(self, x):
         """Forward Propogation."""
-        
-        x = state
+        if self.cnn_model:
+            x = self.cnn_model(x)
+            x = Flatten()(x)
         for dense_layer in self.dense_layers:
             x = dense_layer(x)
         return self.mu(x) * self.env.action_space.high
@@ -317,6 +325,7 @@ class ActorModel(Model):
         # Step 2: Reconstruct the model from its configuration
         cloned_model = ActorModel(
             env = self.env,
+            cnn_model = self.cnn_model,
             dense_layers=self.layer_config,
             learning_rate=self.learning_rate,
             optimizer=self.optimizer
@@ -399,6 +408,7 @@ class CriticModel(Model):
     def __init__(
             self,
             env: gym.Env,
+            cnn_model = None,
             state_layers: List[Tuple[int, str, initializers.Initializer]] = None,
             merged_layers: List[Tuple[int, str, initializers.Initializer]] = None,
             learning_rate: float = 0.001,
@@ -411,6 +421,7 @@ class CriticModel(Model):
         self.optimizer.learning_rate = self.learning_rate
         self.state_config = state_layers
         self.merged_config = merged_layers
+        self.cnn_model = cnn_model
         
         # build model
         self.state_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in state_layers]
@@ -421,20 +432,26 @@ class CriticModel(Model):
         self.compile(optimizer=self.optimizer)
 
         # run sample data through model to initialize it
-        _ = self([np.random.random((1, *env.observation_space.shape)), np.random.random((1, *env.action_space.shape))])
+        if self.cnn_model:
+            _ = self([np.random.random((1, *self.env.observation_space.shape)), np.random.random((1, *self.env.action_space.shape))])
+        else:
+            _ = self([np.random.random((1, np.prod(self.env.observation_space.shape))), np.random.random((1, *self.env.action_space.shape))])
 
     
 
     def call(self, inputs):
-        state, action = inputs
-        x = state
+        x, action = inputs # unpack (state,action)
+        if self.cnn_model:
+            x = self.cnn_model(x)
+            x = Flatten()(x)
+        
         for state_layer in self.state_layers:
             x = state_layer(x)
-        z = tf.concat([x, action], axis=1)
+        x = tf.concat([x, action], axis=1)
         for merged_layer in self.merged_layers:
-            z = merged_layer(z)
+            x = merged_layer(x)
 
-        q = self.q(z)
+        q = self.q(x)
 
         return q
     
@@ -462,6 +479,7 @@ class CriticModel(Model):
         # Step 2: Reconstruct the model from its configuration
         cloned_model = CriticModel(
             env = self.env,
+            cnn_model = self.cnn_model,
             state_layers = self.state_config,
             merged_layers=self.merged_config,
             learning_rate=self.learning_rate,
