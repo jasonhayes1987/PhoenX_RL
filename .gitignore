@@ -159,6 +159,7 @@ artifacts/
 .vscode/
 vscode/
 wandb/
+tensorboard/
 *.js
 .X11-unix/
 devcontainers*/
