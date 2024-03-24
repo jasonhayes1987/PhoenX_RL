@@ -1,0 +1,5 @@
+.venv
+.vscode
+.x11-unix
+__pycache__
+wandb
