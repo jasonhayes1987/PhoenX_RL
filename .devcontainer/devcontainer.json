@@ -1,0 +1,55 @@
+{
+    "name": "RL_Agents app",
+    "build": {
+      "context": "..",
+      "dockerfile": "Dockerfile",
+      "args": { 
+        // Custom build arguments here
+      }
+    },
+    "runArgs": [
+      "--gpus", "all"
+    ],
+    "mounts": [
+        "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/src/app,target=/app,type=bind,consistency=cached",
+        "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/src/app/tensorboard/logs,target=/app/tensorboard/logs,type=bind,consistency=cached"
+      ],
+    // "appPort": [ "8083:6006" ],
+    "customizations": {
+        "vscode": {
+            "settings": { 
+                "python.pythonPath": "/usr/bin/python3",
+                "python.formatting.autopep8Path": "/usr/bin/autopep8",
+                "python.formatting.blackPath": "/usr/bin/black",
+                "python.formatting.provider": "black",
+                "editor.tabSize": 4,
+                "editor.insertSpaces": true,
+                "editor.codeActionsOnSave": {
+                    "source.fixAll": true
+                },
+                "editor.minimap.enabled": true,
+                "editor.renderWhitespace": "all",
+                "editor.quickSuggestions": {
+                    "strings": true
+                },
+                "editor.suggest.localityBonus": true,
+                "editor.suggestSelection": "first"
+            },
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter",
+                "ms-vscode.cpptools",
+                "eamodio.gitlens",
+                "njpwerner.autodocstring",
+                "visualstudioexptteam.vscodeintellicode",
+                "ms-python.pylint"
+            ],
+            "postCreateCommand": [
+              "pip install -r requirements.txt",
+              "apt-get update"
+            ],
+            "remoteUser": "root"
+        }
+    }
+}
+  

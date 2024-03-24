@@ -7,6 +7,7 @@ import os
 from typing import List
 from pathlib import Path
 import time
+import datetime
 
 import gymnasium as gym
 import numpy as np
@@ -896,8 +897,8 @@ class DDPG(Agent):
         self.actor_model = actor_model
         self.critic_model = critic_model
         # set target actor and critic models
-        self.target_actor_model = self.clone_model(actor_model)
-        self.target_critic_model = self.clone_model(critic_model)
+        self.target_actor_model = self.clone_model(self.actor_model)
+        self.target_critic_model = self.clone_model(self.critic_model)
         # self.target_actor_model = clone_model(self.actor_model)
         # self.target_critic_model = clone_model(self.critic_model)
         # # set weights of target models
@@ -908,16 +909,21 @@ class DDPG(Agent):
         self.replay_buffer = replay_buffer
         self.batch_size = batch_size
         self.noise = noise
-        self.callbacks = callbacks
+        
         self.save_dir = save_dir
         self._DEBUG = _DEBUG
-        # instantiate and set keras loss objects
-        # self.actor_loss = tf.keras.metrics.Mean(name="Actor Loss")
-        # self.critic_loss = tf.keras.metrics.Mean(name="Critic Loss")
-        self.critic_loss = tf.keras.losses.MeanSquaredError()
+        
+        self.critic_loss = tf.keras.losses.MeanSquaredError(name="Critic_Loss")
+        # self.critic_loss_metric = tf.keras.metrics.Mean(name="Critic_Loss")
+        # self.actor_loss = tf.keras.metrics.Mean(name="Actor_Loss")
+        # setup callbacks
+        self.train_log_dir = None # for tensorboard
+        self.test_log_dir = None # for tensorboard
+        self.callbacks = callbacks
+        # self.callbacks.append(tf.keras.callbacks.TensorBoard(log_dir='tensorboard/logs/'))
         if callbacks:
             self.callback_list = self._create_callback_list(callbacks)
-            for callback in self.callback_list:
+            for callback in self.callback_list.callbacks:
                 if isinstance(callback, tf_callbacks.WandbCallback):
                     self._config = callback._config(self)
                     self._wandb = True
@@ -1006,6 +1012,10 @@ class DDPG(Agent):
         action_value = self.actor_model(state)[0]
         noise = self.noise()
         action = tf.clip_by_value((action_value + noise), self.env.action_space.low, self.env.action_space.high)
+        for i, (n,a) in enumerate(zip(noise, action)):
+            self._train_step_config[f'noise {i}'] = n
+            self._train_step_config[f'action {i}'] = a
+        
         # DEBUG
         # print(f'step: {self._step}')
         # print(f'action_value: {action_value}')
@@ -1017,9 +1027,9 @@ class DDPG(Agent):
         return action
 
         # return tf.clip_by_value((self.actor_model(state) + tf.convert_to_tensor(self.noise(), dtype=tf.float32)).numpy()[0], self.env.action_space.low, self.env.action_space.high)
-        
 
-    
+
+    # @tf.function
     def learn(self):
         # receives a batch of experiences from the replay buffer and learns from them
         
@@ -1039,10 +1049,22 @@ class DDPG(Agent):
         with tf.GradientTape() as tape:
             target_actions = self.target_actor_model(next_states)
             target_critic_values = tf.squeeze(self.target_critic_model((next_states, target_actions)), 1)
+            # target_critic_values = self.target_critic_model((next_states, target_actions))
+            #DEBUG
+            # print(f'rewards: {rewards.shape}')
+            # print(f'discount: {self.discount}')
+            # print(f'target critic values shape: {target_critic_values.shape}')
+            # print(f'dones: {dones.shape}')
             targets = rewards + self.discount * target_critic_values * (1 - dones)
+            # print(f'targets: {targets}')
+            # print(f'target shape: {targets.shape}')
             prediction = tf.squeeze(self.critic_model((states, actions)), 1)
+            # prediction = self.critic_model((states, actions))
             critic_loss = self.critic_loss(targets, prediction)
+            # tf.print(f'critic loss: {critic_loss}')
         
+        # add critic loss to critic loss metric object
+        # self.critic_loss_metric.update_state(critic_loss)
         critic_gradient = tape.gradient(critic_loss, self.critic_model.trainable_variables)
         self.critic_model.optimizer.apply_gradients(zip(critic_gradient, self.critic_model.trainable_variables))
 
@@ -1051,70 +1073,92 @@ class DDPG(Agent):
             action_values = self.actor_model(states)
             values = self.critic_model((states, action_values))
             actor_loss = -tf.math.reduce_mean(values)
+            # tf.print(f'actor loss: {actor_loss}')
         
+        # # add actor loss to actor loss metric object
+        # self.actor_loss(actor_loss)
+        
+        # update gradients
         actor_gradient = tape.gradient(actor_loss, self.actor_model.trainable_variables)
         self.actor_model.optimizer.apply_gradients(zip(actor_gradient, self.actor_model.trainable_variables))
 
-        # update target actor and critic models using soft update
-        self.target_critic_model.set_weights([self.tau * cw + (1 - self.tau) * tcw for cw, tcw in zip(self.critic_model.get_weights(), self.target_critic_model.get_weights())])
-        self.target_actor_model.set_weights([self.tau * aw + (1 - self.tau) * taw for aw, taw in zip(self.actor_model.get_weights(), self.target_actor_model.get_weights())])
+        # self.target_critic_model.set_weights([self.tau * cw + (1 - self.tau) * tcw for cw, tcw in zip(self.critic_model.get_weights(), self.target_critic_model.get_weights())])
+        # self.target_actor_model.set_weights([self.tau * aw + (1 - self.tau) * taw for aw, taw in zip(self.actor_model.get_weights(), self.target_actor_model.get_weights())])
+        
+        
+        # def update_target_network(current_weights, target_weights):
+        #     for cw, tw in zip(current_weights, target_weights):
+        #         # print('iterating over critic model weights')
+        #         tw.assign(self.tau * cw + (1 - self.tau) * tw)
 
-        # log to wandb if using wandb callback
-        if self._wandb: 
-            self._train_step_config["temporal_difference"] = tf.reduce_mean(targets - prediction)
-            
-            for i, value in enumerate(tf.reduce_mean(action_values, axis=0)):
-                self._train_step_config[f"action_value_{i}"] = value
-            
-            self._train_step_config["policy_loss"] = actor_loss
-            self._train_step_config["value_loss"] = critic_loss.numpy()
-            
-            # for num_layer, layer in enumerate(self.actor_model.layers):
-            #     weight_bias = layer.get_weights()
-            #     # check to make sure layer has weights
-            #     if weight_bias:
-            #         weights, bias = weight_bias
-            #         weight_hist = np.histogram(weights, density=True)
-            #         bias_hist = np.histogram(bias, density=True)
-            #         # wandb.log({"gradients": wandb.Histogram(weight_hist)})
-            #         self._train_step_config[f"actor_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
-            #         self._train_step_config[f"actor_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
-            
-            # for num_layer, layer in enumerate(self.critic_model.layers):
-            #     weight_bias = layer.get_weights()
-            #     # check to make sure layer has weights
-            #     if weight_bias:
-            #         weights, bias = weight_bias
-            #         weight_hist = np.histogram(weights, density=True)
-            #         bias_hist = np.histogram(bias, density=True)
-            #         self._train_step_config[f"critic_layer_{num_layer}_weights"] = wandb.Histogram(np_histogram=weight_hist)
-            #         self._train_step_config[f"critic_layer_{num_layer}_bias"] = wandb.Histogram(np_histogram=bias_hist)
+        # tf.py_function(update_target_network, [self.critic_model.variables, self.target_critic_model.variables], [], name='update_target_critic_model')
+        # tf.py_function(update_target_network, [self.actor_model.variables, self.target_actor_model.variables], [], name='update_target_actor_model')
 
-            for layer, (p_grad, v_grad) in enumerate(zip(actor_gradient, critic_gradient)):
-                self._train_step_config["policy_grad_mean"] = tf.reduce_mean(p_grad)
-                self._train_step_config["policy_grad_std"] = tf.math.reduce_std(p_grad)
-                self._train_step_config["policy_grad_max"] = tf.reduce_max(p_grad)
-                self._train_step_config["policy_grad_min"] = tf.reduce_min(p_grad)
-                self._train_step_config["policy_grad_norm"] = tf.norm(p_grad)
-                self._train_step_config["value_grad_mean"] = tf.reduce_mean(v_grad)
-                self._train_step_config["value_grad_std"] = tf.math.reduce_std(v_grad)
-                self._train_step_config["value_grad_max"] = tf.reduce_max(v_grad)
-                self._train_step_config["value_grad_min"] = tf.reduce_min(v_grad)
-                self._train_step_config["value_grad_norm"] = tf.norm(v_grad)
-                p_grad_hist = np.histogram(p_grad, density=True)
-                self._train_step_config[f"policy_grad_layer_{layer}"] = wandb.Histogram(np_histogram=p_grad_hist)
-                v_grad_hist = np.histogram(v_grad, density=True)
-                self._train_step_config[f"value_grad_layer_{layer}"] = wandb.Histogram(np_histogram=v_grad_hist)
-            # each state value
-            for e, s in enumerate(tf.reduce_mean(states, axis=0)):
-                self._train_step_config[f"state_{e}"] = s
+        # for cw, tw in zip(self.actor_model.variables, self.target_actor_model.variables):
+        #     # print('iterating over actor model weights')
+        #     tw.assign(self.tau * cw + (1 - self.tau) * tw)
 
-        if self.callback_list:
-            self.callback_list.on_train_batch_end(
-                batch=self._step, logs=self._train_step_config
-            )
+        
+        # define a tf.py_function inside tf.function graph to extract values for wandb logging if self._wandb
+        # def update_wandb_metrics(temporal_difference, action_values, actor_loss, critic_loss, mean_policy_grad_mean,
+        #                          mean_policy_grad_std, mean_policy_grad_max, mean_policy_grad_min, mean_policy_grad_norm,
+        #                          mean_value_grad_mean, mean_value_grad_std, mean_value_grad_max, mean_value_grad_min, mean_value_grad_norm):
+            
+        #     self._train_step_config["temporal_difference"] = tf.reduce_mean(temporal_difference)
+        #     mean_action_values = tf.reduce_mean(action_values, axis=0)
+        #     for i, a in enumerate(mean_action_values):
+        #         self._train_step_config[f"action_value {i}"] = a
+            
+        #     self._train_step_config["policy_loss"] = actor_loss
+        #     self._train_step_config["value_loss"] = critic_loss
+        #     self._train_step_config['mean_policy_grad_mean'] = mean_policy_grad_mean
+        #     self._train_step_config['mean_policy_grad_std'] = mean_policy_grad_std
+        #     self._train_step_config['mean_policy_grad_max'] = mean_policy_grad_max
+        #     self._train_step_config['mean_policy_grad_min'] = mean_policy_grad_min
+        #     self._train_step_config['mean_policy_grad_norm'] = mean_policy_grad_norm
+        #     self._train_step_config['mean_value_grad_mean'] = mean_value_grad_mean
+        #     self._train_step_config['mean_value_grad_std'] = mean_value_grad_std
+        #     self._train_step_config['mean_value_grad_max'] = mean_value_grad_max
+        #     self._train_step_config['mean_value_grad_min'] = mean_value_grad_min
+        #     self._train_step_config['mean_value_grad_norm'] = mean_value_grad_norm
+            
+            
+        # # log to wandb if using wandb callback
+        # if self._wandb:
+            
+        #     mean_policy_grad_mean = tf.reduce_mean([tf.reduce_mean(g) for g in actor_gradient if g is not None])
+        #     mean_policy_grad_std = tf.reduce_mean([tf.math.reduce_std(g) for g in actor_gradient if g is not None])
+        #     mean_policy_grad_max = tf.reduce_mean([tf.reduce_max(g) for g in actor_gradient if g is not None])
+        #     mean_policy_grad_min = tf.reduce_mean([tf.reduce_min(g) for g in actor_gradient if g is not None])
+        #     mean_policy_grad_norm = tf.reduce_mean([tf.norm(g) for g in actor_gradient if g is not None])
+        #     mean_value_grad_mean = tf.reduce_mean([tf.reduce_mean(g) for g in critic_gradient if g is not None])
+        #     mean_value_grad_std = tf.reduce_mean([tf.math.reduce_std(g) for g in critic_gradient if g is not None])
+        #     mean_value_grad_max = tf.reduce_mean([tf.reduce_max(g) for g in critic_gradient if g is not None])
+        #     mean_value_grad_min = tf.reduce_mean([tf.reduce_min(g) for g in critic_gradient if g is not None])
+        #     mean_value_grad_norm = tf.reduce_mean([tf.norm(g) for g in critic_gradient if g is not None])
+        #     tf.py_function(update_wandb_metrics, [targets - prediction, self.actor_model(states), actor_loss, critic_loss,
+        #                                          mean_policy_grad_mean, mean_policy_grad_std, mean_policy_grad_max,
+        #                                          mean_policy_grad_min, mean_policy_grad_norm, mean_value_grad_mean,
+        #                                          mean_value_grad_std, mean_value_grad_max, mean_value_grad_min,
+        #                                          mean_value_grad_norm], [], name='WandB_update_metrics')
+            # self._train_step_config['state_means'] = tf.reduce_mean(states, axis=0)
 
+        # if self.callback_list:
+        #     self._train_step_config = {
+        #         k: v.numpy() if hasattr(v, 'numpy') else v for k, v in self._train_step_config.items()
+        #     }
+            
+
+        # Reset metrics every step
+        # self.actor_loss.reset_state()
+        # self.critic_loss_metric.reset_state()
     
+    # @tf.function
+    def update_target_network(self, current_weights, target_weights):
+        for cw, tw in zip(current_weights, target_weights):
+            # print('iterating over critic model weights')
+            tw.assign(self.tau * cw + (1 - self.tau) * tw)
+
     def train(
         self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
         """Trains the model for 'episodes' number of episodes."""
@@ -1126,6 +1170,11 @@ class DDPG(Agent):
             self.save_dir = save_dir
         if self.callback_list:
             self.callback_list.on_train_begin(logs=self._config)
+        # set tensorboard train log directory
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.train_log_dir = f'tensorboard/logs/train/{current_time}'
+        # create a summary writer to send data to tensorboard
+        # self.train_summary_writer = tf.summary.create_file_writer(self.train_log_dir)
         # instantiate new environment
         self.env = self._initialize_env(render, render_freq, context='train')
         if self._wandb:
@@ -1166,18 +1215,23 @@ class DDPG(Agent):
                 episode_reward += reward
                 state = next_state
                 episode_steps += 1  # Increment steps counter for the episode
-                # log to wandb if using wandb callback
-                if self._wandb:
-                    self._train_step_config["action"] = action
-                    self._train_step_config["step_reward"] = reward
-                    self._train_step_config["step_time"] = step_time
-                    if not done:
-                        self._step += 1
+                
                 # check if enough samples in replay buffer and if so, learn from experiences
                 if self.replay_buffer.counter > self.batch_size:
                     learn_time = time.time()
                     self.learn()
+                    self.update_target_network(self.critic_model.variables, self.target_critic_model.variables)
+                    self.update_target_network(self.actor_model.variables, self.target_actor_model.variables)
+
                     learning_time_history.append(time.time() - learn_time)
+                
+                # log to wandb if using wandb callback
+                if self._wandb:
+                    self._train_step_config["step_reward"] = reward
+                    self._train_step_config["step_time"] = step_time
+                    self.callback_list.on_train_batch_end(batch=self._step, logs=self._train_step_config)
+                    if not done:
+                        self._step += 1
             
             episode_time = time.time() - episode_start_time
             episode_time_history.append(episode_time)
@@ -1218,6 +1272,11 @@ class DDPG(Agent):
        
     def test(self, num_episodes, render, render_freq):
         """Runs a test over 'num_episodes'."""
+
+        # set tensorboard test log directory
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.test_log_dir = f'tensorboard/logs/test/{current_time}'
+
         # instantiate list to store reward history
         reward_history = []
         # instantiate new environment
@@ -1266,21 +1325,36 @@ class DDPG(Agent):
         self.env.close()
 
     def get_config(self):
+        # return {
+        #     "agent_type": self.__class__.__name__,
+        #     "env": self.env.spec.id,
+        #     # "actor_model": self.actor_model.__class__.__name__,
+        #     # "critic_model": self.critic_model.__class__.__name__,
+        #     "actor_model": self.actor_model.get_config(),
+        #     "critic_model": self.critic_model.get_config(),
+        #     "discount": self.discount,
+        #     "tau": self.tau,
+        #     "replay_buffer": self.replay_buffer.get_config(),
+        #     "batch_size": self.batch_size,
+        #     "noise": self.noise.get_config(),
+        #     "callbacks": [callback.get_config() for callback in self.callback_list.callbacks],
+
+        #     "save_dir": self.save_dir
+        # }
         return {
-            "agent_type": self.__class__.__name__,
-            "env": self.env.spec.id,
-            # "actor_model": self.actor_model.__class__.__name__,
-            # "critic_model": self.critic_model.__class__.__name__,
-            "actor_model": self.actor_model.get_config(),
-            "critic_model": self.critic_model.get_config(),
-            "discount": self.discount,
-            "tau": self.tau,
-            "replay_buffer": self.replay_buffer.get_config(),
-            "batch_size": self.batch_size,
-            "noise": self.noise.get_config(),
-            "callbacks": [callback.get_config() for callback in self.callback_list],
-            "save_dir": self.save_dir
-        }
+                "agent_type": self.__class__.__name__,
+                "env": self.env.spec.id,
+                "actor_model": self.actor_model.model.get_config(),
+                "critic_model": self.critic_model.model.get_config(),
+                "discount": self.discount,
+                "tau": self.tau,
+                "replay_buffer": self.replay_buffer.get_config(),
+                "batch_size": self.batch_size,
+                "noise": self.noise.get_config(),
+                "callbacks": [callback.get_config() for callback in self.callback_list.callbacks],
+
+                "save_dir": self.save_dir
+            }
 
     def save(self):
         """Saves the model."""
