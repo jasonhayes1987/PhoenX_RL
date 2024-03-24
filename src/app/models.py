@@ -102,7 +102,7 @@ class PolicyModel(Model):
         os.makedirs(model_dir, exist_ok=True)
 
         # Save the TensorFlow model for the weights
-        save_model(self, os.path.join(model_dir, 'tf_model'))
+        save_model(self, os.path.join(model_dir, 'tf_model.keras'))
         # self.model.save(folder + "/policy_model")
         
         obj_config = self.get_config()
@@ -221,7 +221,7 @@ class ValueModel(Model):
         os.makedirs(model_dir, exist_ok=True)
 
         # Save the TensorFlow model for the weights
-        save_model(self, os.path.join(model_dir, 'tf_model'))
+        save_model(self, os.path.join(model_dir, 'tf_model.keras'))
         # self.model.save(folder + "/value_model")
         
         obj_config = self.get_config()
@@ -260,16 +260,7 @@ class ValueModel(Model):
         return value_model
     
 class ActorModel(Model):
-    """Actor model for predicting action values."""
-    
-    def __init__(
-            self,
-            env: gym.Env,
-            cnn_model = None,
-            dense_layers: List[Tuple[int, str, initializers.Initializer]] = None,
-            learning_rate: float = 0.0001,
-            optimizer: optimizers = optimizers.Adam(),
-    ):
+    def __init__(self, env, cnn_model=None, dense_layers=None, learning_rate=0.0001, optimizer: optimizers = optimizers.Adam(),):
         super().__init__()
         self.env = env
         self.learning_rate = learning_rate
@@ -277,29 +268,57 @@ class ActorModel(Model):
         self.optimizer = optimizer
         self.optimizer.learning_rate = self.learning_rate
         self.cnn_model = cnn_model
-
-        # build model
-        self.dense_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in dense_layers]
-        self.mu = Dense(env.action_space.shape[0], activation='tanh', kernel_initializer=initializers.RandomUniform(-3e-3, 3e-3), bias_initializer=initializers.RandomUniform(-3e-3, 3e-3))
-        
-        # compile model
-        self.compile(optimizer=self.optimizer)
-        
-        # run sample data through model to initialize it
-        if self.cnn_model:
-            _ = self([np.random.random((1, *self.env.observation_space.shape))])
+        # Start with the CNN model's input if it's provided
+        if cnn_model:
+            self.inputs = cnn_model.input_layer  # Use the input layer from cnn_model
+            x = cnn_model.output_layer  # Use the output of cnn_model as the starting point
         else:
-            _ = self([np.random.random((1, np.prod(self.env.observation_space.shape)))])
+            if len(self.env.observation_space.shape) > 1:
+                self.inputs = Input(shape=(np.prod([env.observation_space.shape, env.observation_space.shape]),))
+            else:
+                self.inputs = Input(shape=env.observation_space.shape)
+            x = self.inputs
 
+        # Flatten the output of the CNN model to ensure it's compatible with dense layers
+        if cnn_model:
+            x = Flatten()(x)
+        
+        # Add any additional dense layers specified
+        for units, activation, initializer in dense_layers:
+            x = Dense(units, activation=activation, kernel_initializer=initializer)(x)
+        
+        self.outputs = Dense(self.env.action_space.shape[0],
+                             activation='tanh',
+                             kernel_initializer=initializers.RandomUniform(-3e-3, 3e-3),
+                             bias_initializer=initializers.RandomUniform(-3e-3, 3e-3)
+                             )(x)
+        
+        # Define the overall model
+        self.model = Model(inputs=self.inputs, outputs=self.outputs)
+        
+        self.compile(self.optimizer)
+
+        ## Call model with a sample input to build it
+        if self.cnn_model:
+            sample_input = np.random.random((1, *self.env.observation_space.shape))
+        else:
+            if len(self.env.observation_space.shape) > 1:
+                sample_input = np.random.random(1, *np.prod([self.env.observation_space.shape, self.env.observation_space.shape]))
+            else:
+                 sample_input = np.random.random((1, *self.env.observation_space.shape))
+        _ = self(sample_input)
+        
 
     def call(self, x):
         """Forward Propogation."""
-        if self.cnn_model:
-            x = self.cnn_model(x)
-            x = Flatten()(x)
-        for dense_layer in self.dense_layers:
-            x = dense_layer(x)
-        return self.mu(x) * self.env.action_space.high
+        # x = Input(self.env.observation_space.shape)
+        # if self.cnn_model:
+        #     x = self.cnn_model(x)
+        #     x = Flatten()(x)
+        # for dense_layer in self.dense_layers:
+        #     x = dense_layer(x)
+        # return self.mu(x) * self.env.action_space.high
+        return self.model(x) * self.env.action_space.high
     
     def _set_learning_rate(self, learning_rate):
         """Sets learning rate of optimizer."""
@@ -310,8 +329,8 @@ class ActorModel(Model):
 
         config = {
             'env': self.env.spec.id,
-            'hidden_layers': len(self.dense_layers),
-            'dense_layers': self.dense_layers,
+            'hidden_layers': len(self.model.layers),
+            'dense_layers': self.layer_config,
             'learning_rate': self.learning_rate,
             'optimizer': optimizers.serialize(self.optimizer),
         }
@@ -343,7 +362,7 @@ class ActorModel(Model):
         os.makedirs(model_dir, exist_ok=True)
 
         # Save the TensorFlow model for the weights
-        save_model(self, os.path.join(model_dir, 'tf_model'))
+        save_model(self, os.path.join(model_dir, 'tf_model.keras'))
 
         # # Save additional configuration as before
         # obj_config = {
@@ -423,37 +442,74 @@ class CriticModel(Model):
         self.merged_config = merged_layers
         self.cnn_model = cnn_model
         
-        # build model
-        self.state_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in state_layers]
-        self.merged_layers = [Dense(units, activation, kernel_initializer=initializer, bias_initializer=initializer) for units, activation, initializer in merged_layers]
-        self.q = Dense(1, activation=None, kernel_initializer=initializers.RandomUniform(-3e-3, 3e-3), bias_initializer=initializers.RandomUniform(-3e-3, 3e-3))
-        
-        # compile model
-        self.compile(optimizer=self.optimizer)
-
-        # run sample data through model to initialize it
-        if self.cnn_model:
-            _ = self([np.random.random((1, *self.env.observation_space.shape)), np.random.random((1, *self.env.action_space.shape))])
+        # Start with the CNN model's input if it's provided
+        if cnn_model:
+            self.state_input = self.cnn_model.input_layer  # Use the input layer from cnn_model
+            state_output = self.cnn_model.output_layer  # Use the output of cnn_model as the starting point
         else:
-            _ = self([np.random.random((1, np.prod(self.env.observation_space.shape))), np.random.random((1, *self.env.action_space.shape))])
+            if len(self.env.observation_space.shape) > 1:
+                self.state_input = Input(shape=(np.prod([self.env.observation_space.shape, self.env.observation_space.shape]),))
+            else:
+                self.state_input = Input(shape=self.env.observation_space.shape)
+            state_output = self.state_input
 
+        # Flatten the output of the CNN model to ensure it's compatible with dense layers
+        if cnn_model:
+            state_output = Flatten()(state_output)
+        
+        # Add any additional state dense layers specified
+        for units, activation, initializer in self.state_config:
+            state_output = Dense(units, activation=activation, kernel_initializer=initializer, bias_initializer=initializer)(state_output)
+
+        # Add input layer to add action values as input
+        self.action_input = Input(shape=self.env.action_space.shape)
+
+        # Concatenate state output with action input
+        merged_output = Concatenate()([state_output, self.action_input])
+
+        # Add any additional merged dense layers specified
+        for units, activation, initializer in self.merged_config:
+            merged_output = Dense(units, activation=activation, kernel_initializer=initializer, bias_initializer=initializer)(merged_output)
+        
+        self.outputs = Dense(1,
+                             activation='linear',
+                             kernel_initializer=initializers.RandomUniform(-3e-3, 3e-3),
+                             bias_initializer=initializers.RandomUniform(-3e-3, 3e-3)
+                             )(merged_output)
+        
+        # Define the overall model
+        self.model = Model(inputs=[self.state_input, self.action_input], outputs=self.outputs)
+        
+        self.compile(self.optimizer)
+
+        ## Call model with a sample input to build it
+        if self.cnn_model:
+            sample_input = [np.random.random((1, *self.env.observation_space.shape)), np.random.random(1, *self.env.action_space.shape)]
+        else:
+            if len(self.env.observation_space.shape) > 1:
+                sample_input = [np.random.random(1, *np.prod([self.env.observation_space.shape, self.env.observation_space.shape])), np.random.random(1, *self.env.action_space.shape)]
+            else:
+                 sample_input = [np.random.random((1, *self.env.observation_space.shape)), np.random.random((1, *self.env.action_space.shape))]
+        _ = self(sample_input)
     
 
     def call(self, inputs):
-        x, action = inputs # unpack (state,action)
-        if self.cnn_model:
-            x = self.cnn_model(x)
-            x = Flatten()(x)
+        # x, action = inputs # unpack (state,action)
+        # if self.cnn_model:
+        #     x = self.cnn_model(x)
+        #     x = Flatten()(x)
         
-        for state_layer in self.state_layers:
-            x = state_layer(x)
-        x = tf.concat([x, action], axis=1)
-        for merged_layer in self.merged_layers:
-            x = merged_layer(x)
+        # for state_layer in self.state_layers:
+        #     x = state_layer(x)
+        # x = tf.concat([x, action], axis=1)
+        # for merged_layer in self.merged_layers:
+        #     x = merged_layer(x)
 
-        q = self.q(x)
+        # q = self.q(x)
 
-        return q
+        # return q
+        state_input, action_input = inputs
+        return self.model([state_input, action_input])
     
     def _set_learning_rate(self, learning_rate):
         """Sets learning rate of optimizer."""
@@ -499,7 +555,7 @@ class CriticModel(Model):
         os.makedirs(model_dir, exist_ok=True)
 
         # Save the TensorFlow model
-        save_model(self, os.path.join(model_dir, 'tf_model'))  # This saves architecture, weights, and optimizer
+        save_model(self, os.path.join(model_dir, 'tf_model.keras'))  # This saves architecture, weights, and optimizer
     #     obj_config = {
     #     "env_name": self.env.spec.id,
     #     "state_layers": [

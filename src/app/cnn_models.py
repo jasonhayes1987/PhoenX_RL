@@ -1,51 +1,91 @@
+import numpy as np
 import tensorflow as tf
-from tensorflow.keras import Model
-from tensorflow.keras.layers import Flatten, Conv2D, MaxPooling2D, Dropout, BatchNormalization
-from tensorflow.keras.applications import resnet_v2, resnet_rs
+from tensorflow.keras import Model, Input
+from tensorflow.keras.layers import Flatten, Conv2D, MaxPooling2D, Dropout, BatchNormalization, InputLayer
+from tensorflow.keras.applications import resnet_v2
 from tensorflow.keras.applications.vgg16 import VGG16 as VGG16_base
 from tensorflow.keras.applications.vgg19 import VGG19 as VGG19_base
 from tensorflow.keras.applications.inception_v3 import InceptionV3
+# from tensorflow.keras.applications import resnet_rs
 
 
 
 
-class CNN(Model):
-    def __init__(self, input_shape, output_shape, layers):
-        super().__init__()
-        self.input_shape = input_shape
-        self.output_shape = output_shape
-        self.layers = self._build_layers(layers)
 
-    def _build_layers(self, layer_configs):
-        layers = []
-        for layer_config in layer_configs:
-            layer_type = layer_config['type']
-            if layer_type == 'conv':
-                layer = Conv2D(**layer_config['params'])
-            elif layer_type == 'pool':
-                layer = MaxPooling2D(**layer_config['params'])
-            elif layer_type == 'dropout':
-                layer = Dropout(**layer_config['params'])
-            elif layer_type == 'batchnorm':
-                layer = BatchNormalization(**layer_config['params'])
-            else:
-                raise ValueError(f"Unsupported layer type: {layer_type}")
-            layers.append(layer)
-        return layers
+# class CNN(Model):
+#     def __init__(self, layers, env):
+#         super().__init__()
+#         self.env = env
+
+#         self.model_layers = [self._build_layer(layer) for layer in layers]
+#         # # run sample data through model to initialize
+#         input_data = np.random.random((1, *env.observation_space.shape))
+#         input_tensor = tf.convert_to_tensor(input_data, dtype=tf.float32)
+#         _ = self(input_tensor)
+
+#     def _build_layer(self, layer_config):    
+#         layer_type = layer_config['type']
+#         if layer_type == 'conv':
+#             layer = Conv2D(**layer_config['params'])
+#         elif layer_type == 'pool':
+#             layer = MaxPooling2D(**layer_config['params'])
+#         elif layer_type == 'dropout':
+#             layer = Dropout(**layer_config['params'])
+#         elif layer_type == 'batchnorm':
+#             layer = BatchNormalization(**layer_config['params'])
+#         else:
+#             raise ValueError(f"Unsupported layer type: {layer_type}")
+            
+#         return layer
     
 
-    def call(self, inputs):
-        x = inputs
-        for layer in self.layers:
-            x = layer(x)
-        # x = Flatten()(x) # will be flattened by model.py models
-        return x
+#     def __call__(self, inputs):
+#         x = inputs
+#         for layer in self.model_layers:
+#             x = layer(x)
+#         # x = Flatten()(x) # will be flattened by model.py models
+#         return x
+
+class CNN(Model):
+    def __init__(self, layers, env):
+        super().__init__()
+        self.env = env
+        self.input_layer = Input(shape=env.observation_space.shape)
+        x = self.input_layer
+        for layer in layers:
+            x = self._build_layer(layer)(x)
+        self.output_layer = x
+        self.model = Model(inputs=self.input_layer, outputs=self.output_layer)
+        # Call the model with a sample input to build it
+        sample_input = np.random.random((1, *self.env.observation_space.shape))
+        _ = self(sample_input)
+
+    
+    def _build_layer(self, layer_config):
+        layer_type = layer_config['type']
+        # print(f'layer type: {layer_type}')
+        # if layer_type == 'input':
+        #     layer = Input(**layer_config['params'])
+        if layer_type == 'conv':
+            layer = Conv2D(**layer_config['params'])
+        elif layer_type == 'pool':
+            layer = MaxPooling2D(**layer_config['params'])
+        elif layer_type == 'dropout':
+            layer = Dropout(**layer_config['params'])
+        elif layer_type == 'batchnorm':
+            layer = BatchNormalization(**layer_config['params'])
+        else:
+            raise ValueError(f"Unsupported layer type: {layer_type}")
+        return layer
+
+    def call(self, x):
+        return self.model(x)
     
 class ResNet50():
     def __init__(self, input_shape, pooling):
-        self.model = resnet_v2.ResNet50V2(include_top=False, weights=None, input_shape=input_shape, pooling=pooling)
+        self.model = resnet_v2.ResNet50V2(include_top=False, weights='imagenet', input_shape=input_shape, pooling=pooling)
 
-    def call(self, inputs):
+    def __call__(self, inputs):
         x = self.model(inputs)
         return x
     
@@ -126,7 +166,7 @@ class VGG16():
     def __init__(self, input_shape, pooling):
         self.model = VGG16_base(include_top=False, weights=None, input_shape=input_shape, pooling=pooling)
 
-    def call(self, inputs):
+    def __call__(self, inputs):
         x = self.model(inputs)
         return x
     
