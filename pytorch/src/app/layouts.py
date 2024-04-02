@@ -1,0 +1,344 @@
+from dash import html, dcc
+import dash_bootstrap_components as dbc
+import plotly.express as px
+import plotly.graph_objs as go
+import plotly.offline as pyo
+import plotly.tools as tls
+
+import utils
+
+# Placeholder for page content functions
+def home(page):
+    return html.Div("Home Page Content")
+
+def build_agent(page):
+    return html.Div([
+        dbc.Container([
+            html.H1("Build Agent", style={'textAlign': 'center'}),
+            dcc.Dropdown(
+                id={
+                    'type': 'agent-type-dropdown',
+                    'page': page
+                },
+                options=[
+                    {'label': 'Reinforce', 'value': 'Reinforce'},
+                    {'label': 'Actor Critic', 'value': 'ActorCritic'},
+                    {'label': 'DDPG', 'value': 'DDPG'},
+                ],
+                placeholder="Select Agent Type",
+            ),
+            html.Div(id='agent-parameters-inputs'),
+            html.Div(id='callback-selection'),
+            html.Div(id={
+                'type': 'wandb-login-container',
+                'page': page,
+            }),
+            html.Div(id={'type':'project-selection-container', 'page':page}),
+            html.Div(id='save-directory-selection'),
+            dbc.Button("Build Model", id='build-agent-button', n_clicks=0),
+            html.Div(id='build-agent-status')
+        ])
+    ])
+
+def train_agent(page):
+   
+    return dbc.Container([
+        html.H1("Train Agent", style={'textAlign': 'center'}),
+        utils.upload_component(page),
+        html.Div(id='output-agent-load'),
+        utils.env_dropdown_component(page),
+        html.Div(id={'type':'env-description', 'page':page}),
+        html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
+        utils.parameter_settings_component(page),
+        dbc.Button("Start",
+            id={
+                'type': 'start',
+                'page': page,
+            },
+            n_clicks=0
+        ),
+        # dcc.Loading(
+        #     id={
+        #         'type':'loading',
+        #         'page':page,
+        #         },
+        #     type="default", 
+        #     children=html.Div(
+        #         id={
+        #             'type':'loading-output',
+        #             'page':page,
+        #         },
+        #     ),
+        # ),
+        dcc.Store(
+            id={
+                'type':'storage',
+                'page':page,
+            },
+            data={
+                'status': " Training Initiated...",
+                'progress': 0,
+                'data': {},
+            },
+        ),
+        html.Div(id={'type':'status', 'page':page}),
+        utils.video_carousel_component(page),  # Initially empty list of video paths
+        dcc.Interval(
+            id={
+                'type':'interval-component',
+                'page':page
+            },
+            interval=1*1000,  # in milliseconds
+            n_intervals=0
+        ),
+    ], fluid=True)
+
+def test_agent(page):
+    
+    return dbc.Container([
+        html.H1("Test Agent", style={'textAlign': 'center'}),
+        utils.upload_component(page),
+        html.Div(id='output-agent-load'),
+        utils.env_dropdown_component(page),
+        html.Div(id={'type':'env-description', 'page':page}),
+        html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
+        utils.parameter_settings_component(page),
+        dbc.Button("Start",
+            id={
+                'type': 'start',
+                'page': page,
+            },
+            n_clicks=0
+        ),
+        dcc.Store(
+            id={
+                'type':'storage',
+                'page':page,
+            },
+            data={
+                'status': "Testing Initiated...",
+                'progress': 0,
+                'data': {},
+            },
+        ),
+        html.Div(id={'type':'status', 'page':page}),
+        utils.video_carousel_component(page),  # Initially empty list of video paths
+        dcc.Interval(
+            id={
+                'type':'interval-component',
+                'page':page
+            },
+            interval=1*1000,  # in milliseconds
+            n_intervals=0
+        ),
+    ], fluid=True)
+
+
+def hyperparameter_search(page):
+    left_column = dbc.Col(
+        [
+            html.H3('Wandb Project'),
+            utils.generate_wandb_project_dropdown(page),
+            html.Hr(),
+            html.H3("Search Configuration"),
+            utils.env_dropdown_component(page),
+            html.Div(id={'type':'gym-params', 'page':page}),
+            html.Div(id={'type': 'env-description', 'page': page}),
+            html.Img(id={'type': 'env-gif', 'page': page}, style={'width': '300px'}),
+            html.H6('Search Method'),
+            dcc.RadioItems(
+                id='search-type',
+                options=[
+                    {'label': 'Random Search', 'value': 'random'},
+                    {'label': 'Grid Search', 'value': 'grid'},
+                    {'label': 'Bayesian Search', 'value': 'bayes'},
+                ],
+                value='bayes',
+            ),
+            html.Div(
+                [
+                    html.H6('Set Goal', style={'textAlign': 'left'}),
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    dcc.RadioItems(
+                                        id='goal-type',
+                                        options=[
+                                            {'label': 'Maximize', 'value': 'maximize'},
+                                            {'label': 'Minimize', 'value': 'minimize'},
+                                        ],
+                                    ),
+                                ],
+                                style={'display': 'flex'}
+                            ),
+                            html.Div(
+                                [
+                                    dcc.RadioItems(
+                                        id='goal-metric',
+                                        options=[
+                                            {'label': 'Episode Reward', 'value': 'episode_reward'},
+                                            {'label': 'Value Loss', 'value': 'value_loss'},
+                                            {'label': 'Policy Loss', 'value': 'policy_loss'},
+                                        ],
+                                    ),
+                                ],
+                                style={'display': 'flex'}
+                            ),
+                        ],
+                        style={'display': 'flex'}
+                    ),
+                ]
+            ),
+            dcc.Input(
+                id='sweep-name',
+                type='text',
+                placeholder='Sweep Name',
+            ),
+            dcc.Input(
+                id='num-sweeps',
+                type='number',
+                placeholder='Number of Sweeps',
+            ),
+            dcc.Input(
+                id='num-episodes',
+                type='number',
+                placeholder='Episodes per Sweep',
+            ),
+            html.Hr(),
+        ],
+        md=6,
+    )
+
+    right_column = dbc.Col(
+        [
+            html.H3('Agent Configuration'),
+            dcc.Dropdown(
+                id='agent-type-selector',
+                options=[
+                    {'label': 'Reinforce', 'value': 'Reinforce'},
+                    {'label': 'Actor Critic', 'value': 'ActorCritic'},
+                    {'label': 'DDPG', 'value': 'DDPG'},
+                    {'label': 'TD3', 'value': 'TD3'},
+                    {'label': 'DQN', 'value': 'DQN'},
+                    {'label': 'PPO', 'value': 'PPO'},
+                    {'label': 'A3C', 'value': 'A3C'}
+                ],    
+                value=[],
+                multi=True,
+                placeholder="Select Agent(s)",
+            ),
+            utils.generate_seed_component('none', 'none'),
+            html.Div(
+                id='agent-hyperparameters-inputs',
+                children=[
+                    dcc.Tabs(
+                        id='agent-options-tabs',
+                    ),
+                ]
+            ),
+            html.Hr(),
+        ]
+    )
+
+    row = dbc.Row([left_column, right_column])
+
+    inputs = html.Div(
+        id={
+            'type': 'hyperparameter-inputs',
+            'page': page,
+        },
+        hidden=True,
+        children=[
+            row,
+            dbc.Button("Start Sweep",
+                id={
+                    'type': 'start',
+                    'page': page,
+                },
+                n_clicks=0
+            ),
+            dcc.Store(
+                id={
+                    'type': 'storage',
+                    'page': page,
+                },
+                data={
+                    'status': "Sweep Initiated...",
+                    'progress': 0,
+                    'data': {},
+                },
+            ),
+            html.Div(id={'type': 'status', 'page': page}),
+            html.Div(
+                id={
+                    'type': 'hidden-div-hyperparam',
+                    'page': page,
+                },
+                style={'display': 'none'}
+            ),
+            dcc.Dropdown(
+                id='hyperparameter-selector',
+                options=[],
+                multi=True,
+                placeholder="Select Hyperparameters",
+            ),
+            dcc.Interval(
+                id='update-hyperparam-selector',
+                interval=1*1000,
+                n_intervals=0
+            ),
+            
+            utils.render_heatmap(),
+            dcc.Store(id='heatmap-data-store'),
+            dcc.Interval(
+                id='heatmap-store-data-interval',
+                interval=1*1000,
+                n_intervals=0
+            ),
+            dcc.Interval(
+                id='start-fetch-process-interval',
+                interval=1000,
+                n_intervals=0,
+                max_intervals=1,
+            ),
+            dcc.Interval(
+                id='start-matrix-process-interval',
+                interval=1000,
+                n_intervals=0,
+            ),
+            html.Div(id='hidden-div-fetch-process', style={'display': 'none'}),
+            html.Div(id='hidden-div-matrix-process', style={'display': 'none'}),
+        ]
+    )
+
+    return dbc.Container(
+        [
+            html.Div(
+                [
+                    html.H1("Hyperparameter Search", style={'textAlign': 'center'}),
+                    html.Div(
+                        [  
+                            utils.generate_wandb_login(page),
+                        ],
+                        style={'textAlign': 'center'},
+                    ),
+                ],
+            ),
+            inputs
+        ]
+    )
+
+    
+
+
+
+
+
+def wandb_utils(page):
+    return html.Div([
+        dbc.Container([
+            html.H1("wandb-utils"),
+            html.Div(id='wandb-utils'),
+        ])
+    ])
