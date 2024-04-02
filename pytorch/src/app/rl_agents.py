@@ -931,11 +931,7 @@ class DDPG(Agent):
             # print(f'permuted state shape: {state.size()}')
 
         action_value = self.actor_model(state)
-        print(f'action value shape: {action_value.size()}')
-        print(f'action value: {action_value}')
         noise = self.noise(action_value.size())
-        print(f'noise shape: {noise.size()}')
-        print(f'noise: {noise}')
 
         # Convert the action space bounds to a tensor on the same device
         action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
@@ -945,10 +941,6 @@ class DDPG(Agent):
 
         noise_np = noise.cpu().detach().numpy().flatten()
         action_np = action.cpu().detach().numpy().flatten()
-        print(f'action_np shape: {action_np.shape}')
-        print(f'action_np: {action_np}')
-        print(f'noise_np shape: {noise_np.shape}')
-        print(f'noise_np: {noise_np}')
 
         # Loop over the noise and action values and log them to wandb
         for i, (a,n) in enumerate(zip(action_np, noise_np)):
