@@ -7,6 +7,7 @@ import torch.nn.functional as F
 class CNN(nn.Module):
     def __init__(self, layers, env):
         super(CNN, self).__init__()
+        self.layer_config = layers
         self.env = env
 
         # Set the device
@@ -22,9 +23,6 @@ class CNN(nn.Module):
         # Build the layers
         for i, layer in enumerate(layers):
             for layer_type, params in layer.items():
-                print(f'layer type: {layer_type}')
-                print(f'params: {params}')
-                print(f'input size: {input_size}')
                 self.layers[f'{layer_type}_{i}'] = self._build_layer(layer_type, params, input_size)
                 if layer_type == 'conv':
                     input_size = params['out_channels']
@@ -38,10 +36,8 @@ class CNN(nn.Module):
     def _build_layer(self, layer_type, params, input_size):
         # set the input size in the params dict
         
-
         if layer_type == 'conv':
             params['in_channels'] = input_size
-            print(f'params: {params}')
             return nn.Conv2d(**params)
         elif layer_type == 'pool':
             return nn.MaxPool2d(**params)
@@ -49,10 +45,11 @@ class CNN(nn.Module):
             return nn.Dropout(**params)
         elif layer_type == 'batchnorm':
             params['num_features'] = input_size
-            print(f'num features: {params}')
             return nn.BatchNorm2d(**params)
         elif layer_type == 'relu':
             return nn.ReLU()
+        elif layer_type == 'tanh':
+            return nn.Tanh()
         else:
             raise ValueError(f"Unsupported layer type: {layer_type}")
 
@@ -62,7 +59,10 @@ class CNN(nn.Module):
         return x
     
     def get_config(self):
-        pass
+        return {
+            'layers': self.layer_config,
+            'env': self.env.spec.id,
+        }
     
 # class ResNet50():
 #     def __init__(self, input_shape, pooling):

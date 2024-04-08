@@ -11,6 +11,7 @@ import datetime
 
 import rl_callbacks
 import models
+import cnn_models
 import wandb
 import wandb_support
 import helper
@@ -871,6 +872,8 @@ class DDPG(Agent):
     def build(
         cls,
         env,
+        actor_cnn_layers,
+        critic_cnn_layers,
         actor_layers,
         critic_state_layers,
         critic_merged_layers,
@@ -879,13 +882,28 @@ class DDPG(Agent):
         save_dir: str = "models/",
     ):
         """Builds the agent."""
-        actor_optimizer = helper.get_optimizer_by_name(config[config.model_type][f"{config.model_type}_actor_optimizer"]) 
-        critic_optimizer = helper.get_optimizer_by_name(config[config.model_type][f"{config.model_type}_critic_optimizer"])
+        actor_optimizer = config[config.model_type][f"{config.model_type}_actor_optimizer"]
+        critic_optimizer = config[config.model_type][f"{config.model_type}_critic_optimizer"]
+        # Check if CNN layers and if so, build CNN model
+        #DEBUG
+        print(f'actor layers: {actor_cnn_layers}')
+        if actor_cnn_layers:
+            #DEBUG
+            print(f'build actor cnn fired...')
+            actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
+
+        #DEBUG
+        print(f'critic layers: {critic_cnn_layers}')
+        if critic_cnn_layers:
+            #DEBUG
+            print(f'build critic cnn fired...')
+            critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
+        
         actor_model = models.ActorModel(
-            env=env, dense_layers=actor_layers, learning_rate=config[config.model_type][f"{config.model_type}_actor_learning_rate"], optimizer=actor_optimizer
+            env=env, cnn_model=actor_cnn_model, dense_layers=actor_layers, learning_rate=config[config.model_type][f"{config.model_type}_actor_learning_rate"], optimizer=actor_optimizer
         )
         critic_model = models.CriticModel(
-            env=env, state_layers=critic_state_layers, merged_layers=critic_merged_layers, learning_rate=config[config.model_type][f"{config.model_type}_critic_learning_rate"], optimizer=critic_optimizer
+            env=env, cnn_model=critic_cnn_model, state_layers=critic_state_layers, merged_layers=critic_merged_layers, learning_rate=config[config.model_type][f"{config.model_type}_critic_learning_rate"], optimizer=critic_optimizer
         )
 
         return cls(
@@ -928,10 +946,9 @@ class DDPG(Agent):
         # permute state to (C,H,W) if actor using cnn model
         if self.actor_model.cnn_model:
             state = state.permute(2, 0, 1).unsqueeze(0)
-            # print(f'permuted state shape: {state.size()}')
 
         action_value = self.actor_model(state)
-        noise = self.noise(action_value.size())
+        noise = self.noise()
 
         # Convert the action space bounds to a tensor on the same device
         action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
@@ -960,6 +977,12 @@ class DDPG(Agent):
         with torch.no_grad():
             # sample a batch of experiences from the replay buffer
             states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+            # convert to tensors
+            states = torch.tensor(states, dtype=torch.float32, device=self.actor_model.device)
+            actions = torch.tensor(actions, dtype=torch.float32, device=self.actor_model.device)
+            rewards = torch.tensor(rewards, dtype=torch.float32, device=self.actor_model.device)
+            next_states = torch.tensor(next_states, dtype=torch.float32, device=self.actor_model.device)
+            dones = torch.tensor(dones, dtype=torch.int8, device=self.actor_model.device)
 
             # permute states and next states if using cnn
             if self.actor_model.cnn_model:
@@ -1046,7 +1069,7 @@ class DDPG(Agent):
                     callback.on_train_epoch_begin(epoch=self._step, logs=None)
             # reset noise
             if type(self.noise) == helper.OUNoise:
-                self.noise.reset(torch.tensor(self.env.action_space.sample()).size())
+                self.noise.reset()
             # reset environment
             state, _ = self.env.reset()
             done = False
@@ -1055,7 +1078,7 @@ class DDPG(Agent):
             while not done:
                 step_start_time = time.time()
                 action = self.get_action(state)
-                next_state, reward, term, trunc, _ = self.env.step(action) # might have to use action.numpy()
+                next_state, reward, term, trunc, _ = self.env.step(action)
                 step_time = time.time() - step_start_time
                 step_time_history.append(step_time)
                 # store trajectory in replay buffer
@@ -1254,14 +1277,14 @@ class DDPG(Agent):
             save_dir=obj_config["save_dir"],
         )
         
-        if callbacks:
-            for callback in callbacks:
-                if isinstance(callback, callbacks.WandbCallback):
-                    agent._wandb = True
-                    agent._train_config = {}
-                    agent._train_episode_config = {}
-                    agent._train_step_config = {}
-                    agent._test_config = {}
+        # if callbacks:
+        #     for callback in callbacks:
+        #         if isinstance(callback, rl_callbacks.WandbCallback):
+        #             agent._wandb = True
+        #             agent._train_config = {}
+        #             agent._train_episode_config = {}
+        #             agent._train_step_config = {}
+        #             agent._test_config = {}
 
         return agent
 

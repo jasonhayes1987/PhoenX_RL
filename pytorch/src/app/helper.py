@@ -52,12 +52,12 @@ def get_optimizer_by_name(name: str):
         # Add more optimizers as needed
     }
 
-    if name.lower() not in opts:
+    if name not in opts:
         raise ValueError(
             f'Optimizer "{name}" is not recognized. Available options: {list(opts.keys())}'
         )
 
-    return opts[name.lower()]()
+    return opts[name]
 
 
 class Buffer():
@@ -102,7 +102,7 @@ class Buffer():
 class ReplayBuffer(Buffer):
     """Replay buffer for experience replay."""
     # needs to store state, action, reward, next_state, done
-    def __init__(self, env: gym.Env, buffer_size: int = 100000, device=None):
+    def __init__(self, env: gym.Env, buffer_size: int = 100000, device='cpu'):
         """Initializes a new replay buffer.
         Args:
             env (gym.Env): The environment.
@@ -113,14 +113,20 @@ class ReplayBuffer(Buffer):
         self.buffer_size = buffer_size
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        self.states = torch.zeros((buffer_size, *env.observation_space.shape), dtype=torch.float32, device=self.device)
-        self.actions = torch.zeros((buffer_size, *env.action_space.shape), dtype=torch.float32, device=self.device)
-        self.rewards = torch.zeros((buffer_size,), dtype=torch.float32, device=self.device)
-        self.next_states = torch.zeros((buffer_size, *env.observation_space.shape), dtype=torch.float32, device=self.device)
-        self.dones = torch.zeros((buffer_size,), dtype=torch.int, device=self.device)
+        # self.states = torch.zeros((buffer_size, *env.observation_space.shape), dtype=torch.float32, device=self.device)
+        self.states = np.zeros((buffer_size, *env.observation_space.shape), dtype=np.float32)
+        # self.actions = torch.zeros((buffer_size, *env.action_space.shape), dtype=torch.float32, device=self.device)
+        self.actions = np.zeros((buffer_size, *env.action_space.shape), dtype=np.float32)
+        # self.rewards = torch.zeros((buffer_size,), dtype=torch.float32, device=self.device)
+        self.rewards = np.zeros((buffer_size,), dtype=np.float32)
+        # self.next_states = torch.zeros((buffer_size, *env.observation_space.shape), dtype=torch.float32, device=self.device)
+        self.next_states = np.zeros((buffer_size, *env.observation_space.shape), dtype=np.float32)
+        # self.dones = torch.zeros((buffer_size,), dtype=torch.int, device=self.device)
+        self.dones = np.zeros((buffer_size,), dtype=np.int8)
         
         self.counter = 0
-        self.gen = torch.Generator(device=self.device)
+        # self.gen = torch.Generator(device=self.device)
+        self.gen = np.random.default_rng()
         
     def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool):
         """Adds a new transition to the replay buffer.
@@ -132,11 +138,16 @@ class ReplayBuffer(Buffer):
             done (bool): Whether the episode is done.
         """
         index = self.counter % self.buffer_size
-        self.states[index] = torch.from_numpy(state).to(self.device)
-        self.actions[index] = torch.from_numpy(action).to(self.device)
-        self.rewards[index] = torch.tensor(reward).to(self.device)
-        self.next_states[index] = torch.from_numpy(next_state).to(self.device)
-        self.dones[index] = torch.tensor(done).to(self.device)
+        # self.states[index] = torch.from_numpy(state).to(self.device)
+        self.states[index] = state
+        # self.actions[index] = torch.from_numpy(action).to(self.device)
+        self.actions[index] = action
+        # self.rewards[index] = torch.tensor(reward).to(self.device)
+        self.rewards[index] = reward
+        # self.next_states[index] = torch.from_numpy(next_state).to(self.device)
+        self.next_states[index] = next_state
+        # self.dones[index] = torch.tensor(done).to(self.device)
+        self.dones[index] = done
         self.counter = self.counter + 1
         
     def sample(self, batch_size: int):
@@ -147,7 +158,7 @@ class ReplayBuffer(Buffer):
             A tuple of (states, actions, rewards, next_states, dones).
         """
         size = min(self.counter, self.buffer_size)
-        indices = torch.randint(0, size, (batch_size,), generator=self.gen, device=self.device)
+        indices = self.gen.integers(0, size, (batch_size,))
         return (
             self.states[indices],
             self.actions[indices],
@@ -250,48 +261,35 @@ class NormalNoise(Noise):
 class OUNoise(Noise):
     """Ornstein-Uhlenbeck noise process."""
 
-    def __init__(self, mean: float = 0.0, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2, device=None):
-        """Initializes a new Ornstein-Uhlenbeck noise process.
-
-        Args:
-            mu (ndarray): The mean of the noise process.
-            theta (float, optional): The theta parameter. Defaults to 0.15.
-            sigma (float, optional): The sigma parameter. Defaults to 0.2.
-            dt (float, optional): The time step. Defaults to 1e-2.
-        """
+    def __init__(self, shape: tuple, mean: float = 0.0, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2, device=None):
+        """Initializes a new Ornstein-Uhlenbeck noise process."""
         super().__init__()
-        # set device to run operations on
-        self.device = self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.shape = shape
         self.mean = torch.tensor(mean, device=self.device)
-        self.mu = torch.tensor(mean, device=self.device)
+        self.mu = torch.ones(self.shape, device=self.device) * self.mean
         self.theta = torch.tensor(theta, device=self.device)
         self.sigma = torch.tensor(sigma, device=self.device)
         self.dt = torch.tensor(dt, device=self.device)
-        self.x_prev = None # set after first call
-        # self.init_state = np.ones(size) * mu
+        self.x_prev = torch.ones(self.shape, device=self.device) * self.mean
 
-        
-
-    def __call__(self, shape: torch.Size):
+    def __call__(self):
         """Samples a new noise vector."""
-        if self.x_prev is None:
-            self.x_prev = torch.ones_like(self.mu, device=self.device) * self.mu
-
-        dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * torch.sqrt(self.dt) * torch.randn(shape, device=self.device)
+        dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * torch.randn(self.shape, device=self.device)
         x = self.x_prev + dx
         self.x_prev = x
-
         return x
-    
-    def reset(self, shape: torch.tensor, mu: torch.tensor = None):
+
+    def reset(self, mu: torch.tensor = None):
         """Resets the noise process."""
-        self.mu = torch.ones(shape, device=self.device) * self.mean if mu is None else torch.tensor(mu, device=self.device)
-        self.x_prev = torch.ones(self.mu.size(), device=self.device) * self.mu
+        self.mu = torch.ones(self.shape, device=self.device) * self.mean if mu is None else torch.tensor(mu, device=self.device)
+        self.x_prev = torch.ones(self.shape, device=self.device) * self.mu
 
     def get_config(self):
         return {
             'class_name': self.__class__.__name__,
             'config': {
+                "shape": self.shape,
                 "mean": self.mean.item(),
                 "theta": self.theta.item(),
                 "sigma": self.sigma.item(),
