@@ -33,6 +33,22 @@ def get_specific_value(all_values, all_ids, value_type, value_model, agent_type)
     # Return None or some default value if not found
     return None
 
+def get_specific_value_id(all_values, all_ids, value_type, value_model, agent_type, index):
+    #DEBUG
+    # print(f'get_specific_value fired...')
+    # print(f'all_values: {all_values}')
+    # print(f'all_ids: {all_ids}')
+    for id_dict, value in zip(all_ids, all_values):
+        if 'index' in id_dict.keys():
+            # print(f'id_dict: {id_dict}')
+            # Check if this id dictionary matches the criteria
+            if id_dict.get('type') == value_type and id_dict.get('model') == value_model and id_dict.get('agent') == agent_type and id_dict.get('index') == index:
+                #DEBUG
+                # print(f"Found value {value} for {value_type} {value_model} {agent_type}")
+                return value
+    # Return None or some default value if not found
+    return None
+
 def create_noise_object(env, all_values, all_ids, agent_type):
     noise_type = get_specific_value(
         all_values=all_values,
@@ -120,14 +136,21 @@ def create_noise_object(env, all_values, all_ids, agent_type):
         )
 
 def format_layers(all_values, all_ids, layer_units_values, layer_units_ids, value_type, value_model, agent_type):
-      
+    #DEBUG
+    # print(f'format_layers fired...')
     num_layers = get_specific_value(
         all_values=all_values,
         all_ids=all_ids,
-        value_type='hidden-layers',
+        value_type='dense-layers',
         value_model=value_model,
         agent_type=agent_type,
     )
+    #DEBUG
+    # print(f'{num_layers} for {value_type}, {value_model}, {agent_type}')
+
+    #DEBUG
+    # print(f'layer units ids: {layer_units_ids}')
+    # print(f'layer units values: {layer_units_values}')
     
     units = []
     for index in range(num_layers):
@@ -144,6 +167,157 @@ def format_layers(all_values, all_ids, layer_units_values, layer_units_ids, valu
      #DEBUG
     # print(f'{units} for {value_type}, {value_model}, {agent_type}')     
     return units
+
+def format_cnn_layers(all_values, all_ids, all_indexed_values, all_indexed_ids, model_type, agent_type):
+    layers = []
+    # Get num CNN layers for model type
+    num_cnn_layers = get_specific_value(
+        all_values=all_values,
+        all_ids=all_ids,
+        value_type='conv-layers',
+        value_model=model_type,
+        agent_type=agent_type,
+    )
+    #DEBUG
+    # print(f'num_cnn_layers: {num_cnn_layers}')
+
+    # Loop through num of CNN layers
+    for index in range(1, num_cnn_layers+1):
+        # Get the layer type
+        layer_type = get_specific_value_id(
+            all_values=all_indexed_values,
+            all_ids=all_indexed_ids,
+            value_type='cnn-layer-type',
+            value_model=model_type,
+            agent_type=agent_type,
+            index=index
+        )
+        #DEBUG
+        # print(f'layer_type: {layer_type}')
+
+        # Parse layer types to set params
+        if layer_type == "conv":
+            params = {}
+            params['out_channels'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='conv-filters',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            params['kernel_size'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='conv-kernel-size',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            params['stride'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='conv-stride',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            padding = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='conv-padding',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            if padding == "custom":
+                params['padding'] = get_specific_value_id(
+                    all_values=all_indexed_values,
+                    all_ids=all_indexed_ids,
+                    value_type='conv-padding-custom',
+                    value_model=model_type,
+                    agent_type=agent_type,
+                    index=index
+                )
+
+            else:
+                params['padding'] = padding
+
+
+            params['bias'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='conv-use-bias',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            # Append to layers list
+            layers.append({layer_type: params})
+            continue
+        
+        elif layer_type == "batchnorm":
+            params = {}
+            params['num_features'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='batch-features',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            layers.append({layer_type: params})
+            continue
+        
+        elif layer_type == "pool":
+            params = {}
+            params['kernel_size'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='pool-kernel-size',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            params['stride'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='pool-stride',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            layers.append({layer_type: params})
+            continue
+
+        elif layer_type == 'dropout':
+            params = {}
+            params['p'] = get_specific_value_id(
+                all_values=all_indexed_values,
+                all_ids=all_indexed_ids,
+                value_type='dropout-prob',
+                value_model=model_type,
+                agent_type=agent_type,
+                index=index
+            )
+            layers.append({layer_type: params})
+            continue
+
+        elif layer_type == 'relu':
+            params = {}
+            layers.append({layer_type: params})
+
+        elif layer_type == 'tanh':
+            params = {}
+            layers.append({layer_type: params})
+
+        else:
+            raise ValueError(f'Layer type {layer_type} not supported')
+        
+    return layers
+
+
+
 
 def get_projects():
     """Returns a list of projects from the W&B API."""
@@ -255,9 +429,9 @@ def load(agent_data, env_name):
     if agent_data['agent_type'] == 'Reinforce' or agent_data['agent_type'] == 'ActorCritic':
         env=gym.make(env_name)
         
-        policy_optimizer = helper.get_optimizer_by_name(agent_data['policy_model']['optimizer']['class_name'])
+        policy_optimizer = agent_data['policy_model']['optimizer']['class_name']
         
-        value_optimizer = helper.get_optimizer_by_name(agent_data['value_model']['optimizer']['class_name'])
+        value_optimizer = agent_data['value_model']['optimizer']['class_name']
 
         policy_layers = [(units, activation, initializer) for (units, activation, initializer) in agent_data['policy_model']['dense_layers']]
 
@@ -273,11 +447,13 @@ def load(agent_data, env_name):
                 env=env,
                 dense_layers=policy_layers,
                 optimizer=policy_optimizer,
+                learning_rate=agent_data['learning_rate'],
             )
         value_model = models.ValueModel(
             env=env,
             dense_layers=value_layers,
             optimizer=value_optimizer,
+            learning_rate=agent_data['learning_rate'],
         )
         
         if agent_data['agent_type'] == "Reinforce":
@@ -286,9 +462,8 @@ def load(agent_data, env_name):
                 env=env,
                 policy_model=policy_model,
                 value_model=value_model,
-                learning_rate=agent_data['learning_rate'],
                 discount=agent_data['discount'],
-                callbacks=[callbacks.WandbCallback.load(Path(agent_data['save_dir']).joinpath(Path("wandb_config.json"))) for callback in agent_data['callbacks']],
+                callbacks = [rl_callbacks.load(callback['class_name'], callback['config']) for callback in agent_data['callbacks']],
                 save_dir=agent_data['save_dir'],
             )
         elif agent_data['agent_type'] == "ActorCritic":
@@ -297,11 +472,10 @@ def load(agent_data, env_name):
                 env=gym.make(env),
                 policy_model=policy_model,
                 value_model=value_model,
-                learning_rate=agent_data['learning_rate'],
                 discount=agent_data['discount'],
                 policy_trace_decay=agent_data['policy_trace_decay'],
                 value_trace_decay=agent_data['policy_trace_decay'],
-                callbacks=[callbacks.WandbCallback.load(Path(agent_data['save_dir']).joinpath(Path("wandb_config.json"))) for callback in agent_data['callbacks']],
+                callbacks = [rl_callbacks.load(callback['class_name'], callback['config']) for callback in agent_data['callbacks']],
                 save_dir=agent_data['save_dir'],
             )
     elif agent_data['agent_type'] == "DDPG":
@@ -309,18 +483,18 @@ def load(agent_data, env_name):
         env=gym.make(env_name)
 
         # set actor and critic model params
-        actor_optimizer = helper.get_optimizer_by_name(agent_data['actor_model']['optimizer']['class_name'])
-        critic_optimizer = helper.get_optimizer_by_name(agent_data['critic_model']['optimizer']['class_name'])
+        actor_optimizer = agent_data['actor_model']['optimizer']['class_name']
+        critic_optimizer = agent_data['critic_model']['optimizer']['class_name']
         
-        actor_layers = [(units, activation, tf.keras.initializers.deserialize(initializer)) for (units, activation, initializer) in agent_data['actor_model']['dense_layers']]
+        actor_layers = [(units, activation, initializer) for (units, activation, initializer) in agent_data['actor_model']['dense_layers']]
 
         ##DEBUG
         # print("Actor layers:", actor_layers)
         
-        critic_state_layers = [(units, activation, tf.keras.initializers.deserialize(initializer)) for (units, activation, initializer) in agent_data['critic_model']['state_layers']]
+        critic_state_layers = [(units, activation, initializer) for (units, activation, initializer) in agent_data['critic_model']['state_layers']]
         ##DEBUG
         # print("Critic state layers:", critic_state_layers)
-        critic_merged_layers = [(units, activation, tf.keras.initializers.deserialize(initializer)) for (units, activation, initializer) in agent_data['critic_model']['merged_layers']]
+        critic_merged_layers = [(units, activation, initializer) for (units, activation, initializer) in agent_data['critic_model']['merged_layers']]
         ##DEBUG
         # print("Critic merged layers:", critic_merged_layers)
 
@@ -351,7 +525,7 @@ def load(agent_data, env_name):
             replay_buffer=helper.ReplayBuffer(env, 100000),
             batch_size=agent_data['batch_size'],
             noise=helper.Noise.create_instance(agent_data["noise"]["class_name"], **agent_data["noise"]["config"]),
-            callbacks=[callbacks.WandbCallback.load(Path(agent_data['save_dir']).joinpath(Path("wandb_config.json"))) for callback in agent_data['callbacks']],
+            callbacks = [rl_callbacks.load(callback['class_name'], callback['config']) for callback in agent_data['callbacks']],
             save_dir=agent_data['save_dir'],
         )
     
@@ -451,6 +625,7 @@ def env_dropdown_component(page):
     env_options = [
         {'label': env_name, 'value': env_name} for env_name in get_all_gym_envs()
     ]
+    
     return dcc.Dropdown(
         id={
             'type': 'env-dropdown',
@@ -528,9 +703,13 @@ def get_kernel_initializer_inputs(selected_initializer, initializer_id):
     initializer_input_creators = {
         "variance_scaling": create_variance_scaling_inputs,
         "constant": create_constant_initializer_inputs,
-        "random_normal": create_random_normal_initializer_inputs,
-        "random_uniform": create_random_uniform_initializer_inputs,
-        "truncated_normal": create_truncated_normal_initializer_inputs,        
+        "normal": create_normal_initializer_inputs,
+        "uniform": create_uniform_initializer_inputs,
+        "truncated_normal": create_truncated_normal_initializer_inputs,
+        "xavier_uniform": create_xavier_uniform_initializer_inputs,
+        "xavier_normal": create_xavier_normal_initializer_inputs,
+        "kaiming_uniform": create_kaiming_uniform_initializer_inputs,
+        "kaiming_normal": create_kaiming_normal_initializer_inputs,
     }
     
     # Call the function associated with the selected_initializer,
@@ -538,6 +717,116 @@ def get_kernel_initializer_inputs(selected_initializer, initializer_id):
     if selected_initializer in initializer_input_creators:
         return initializer_input_creators.get(selected_initializer, lambda: html.Div())(initializer_id)
 
+
+def create_kaiming_normal_initializer_inputs(initializer_id):
+    """Component for kaiming uniform initializer hyperparameters"""
+    return html.Div(
+        id={
+            'type': 'kernel-params',
+            'model': initializer_id['model'],
+            'agent': initializer_id['agent']
+            },
+        children=[
+            html.Label('Mode', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'mode',
+                    'model':initializer_id['model'],
+                    'agent':initializer_id['agent'],
+                    },
+                options=[
+                        {'label': 'fan in', 'value': 'fan_in'},
+                        {'label': 'fan out', 'value': 'fan_out'},
+                    ],
+                value='fan_in',
+            ),
+            html.Hr(),
+        ]
+    )
+
+
+def create_kaiming_uniform_initializer_inputs(initializer_id):
+    """Component for kaiming uniform initializer hyperparameters"""
+    return html.Div(
+        id={
+            'type': 'kernel-params',
+            'model': initializer_id['model'],
+            'agent': initializer_id['agent']
+            },
+        children=[
+            html.Label('Mode', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'mode',
+                    'model':initializer_id['model'],
+                    'agent':initializer_id['agent'],
+                    },
+                options=[
+                        {'label': 'fan in', 'value': 'fan_in'},
+                        {'label': 'fan out', 'value': 'fan_out'},
+                    ],
+                value='fan_in',
+            ),
+            html.Hr(),
+        ]
+    )
+                    
+
+
+def create_xavier_normal_initializer_inputs(initializer_id):
+    """Component for xavier uniform initializer hyperparameters"""
+    return html.Div(
+        id={
+            'type': 'kernel-params',
+            'model': initializer_id['model'],
+            'agent': initializer_id['agent']
+            },
+        children=[
+            html.Label('Gain', style={'text-decoration': 'underline'}),
+            dcc.Slider(
+                id={
+                    'type':'gain',
+                    'model':initializer_id['model'],
+                    'agent':initializer_id['agent'],
+                },
+                min=1.0,
+                max=3.0,
+                step=1.0,
+                value=1.0,
+                marks={1.0:'1.0', 3.0:'3.0'},
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+            html.Hr(),
+        ],
+    )
+
+
+def create_xavier_uniform_initializer_inputs(initializer_id):
+    """Component for xavier uniform initializer hyperparameters"""
+    return html.Div(
+        id={
+            'type': 'kernel-params',
+            'model': initializer_id['model'],
+            'agent': initializer_id['agent']
+            },
+        children=[
+            html.Label('Gain', style={'text-decoration': 'underline'}),
+            dcc.Slider(
+                id={
+                    'type':'gain',
+                    'model':initializer_id['model'],
+                    'agent':initializer_id['agent'],
+                },
+                min=1.0,
+                max=3.0,
+                step=1.0,
+                value=1.0,
+                marks={1.0:'1.0', 3.0:'3.0'},
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+            html.Hr(),
+        ],
+    )
 
 def create_truncated_normal_initializer_inputs(initializer_id):
     """Component for truncated normal initializer hyperparameters"""
@@ -548,10 +837,10 @@ def create_truncated_normal_initializer_inputs(initializer_id):
             'agent': initializer_id['agent']
         },
         children=[
-            html.Label('Mean'),
+            html.Label('Mean', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
-                'type':'truncated-normal-mean',
+                'type':'mean',
                 'model':initializer_id['model'],
                 'agent':initializer_id['agent'],
                 },
@@ -564,10 +853,10 @@ def create_truncated_normal_initializer_inputs(initializer_id):
                 included=False,
             ),
 
-            html.Label('Standard Deviation'),
+            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
-                'type':'truncated-normal-std',
+                'type':'std',
                 'model':initializer_id['model'],
                 'agent':initializer_id['agent'],
                 },
@@ -583,7 +872,7 @@ def create_truncated_normal_initializer_inputs(initializer_id):
     ])
 
 
-def create_random_uniform_initializer_inputs(initializer_id):
+def create_uniform_initializer_inputs(initializer_id):
     """Component for random uniform initializer hyperparameters"""
     return html.Div(
         id={
@@ -592,10 +881,10 @@ def create_random_uniform_initializer_inputs(initializer_id):
             'agent': initializer_id['agent']
         },
         children=[
-            html.Label('Minimum'),
+            html.Label('Minimum', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
-                'type':'random-uniform-min',
+                'type':'a',
                 'model':initializer_id['model'],
                 'agent':initializer_id['agent']
                 },
@@ -608,10 +897,10 @@ def create_random_uniform_initializer_inputs(initializer_id):
                 included=False,
             ),
 
-            html.Label('Maximum'),
+            html.Label('Maximum', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
-                'type':'random-uniform-max',
+                'type':'b',
                 'model':initializer_id['model'],
                 'agent':initializer_id['agent']
                 },
@@ -627,11 +916,11 @@ def create_random_uniform_initializer_inputs(initializer_id):
     ])
 
 
-def create_random_normal_initializer_inputs(initializer_id):
+def create_normal_initializer_inputs(initializer_id):
     """Component for random normal initializer hyperparameters"""
     return html.Div(
         children=[
-            html.Label('Mean'),
+            html.Label('Mean', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
                 'type':'mean',
@@ -647,10 +936,10 @@ def create_random_normal_initializer_inputs(initializer_id):
                 included=False,
             ),
 
-            html.Label('Standard Deviation'),
+            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
-                'type':'stddev',
+                'type':'std',
                 'model':initializer_id['model'],
                 'agent':initializer_id['agent']
                 },
@@ -670,10 +959,10 @@ def create_constant_initializer_inputs(initializer_id):
     """Component for constant initializer hyperparameters"""
     return html.Div(
         children=[
-            html.Label('Value'),
+            html.Label('Value', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
-                'type':'value',
+                'type':'val',
                 'model':initializer_id['model'],
                 'agent':initializer_id['agent']
                 },
@@ -694,7 +983,7 @@ def create_variance_scaling_inputs(initializer_id):
     """Component for variance scaling initializer hyperparameters"""
     return html.Div(
         children=[
-            html.Label('Scale'),
+            html.Label('Scale', style={'text-decoration': 'underline'}),
             dcc.Slider(
                 id={
                 'type':'scale',
@@ -710,7 +999,7 @@ def create_variance_scaling_inputs(initializer_id):
                 included=False,
             ),
             
-            html.Label('Mode'),
+            html.Label('Mode', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
                     'type':'mode',
@@ -722,7 +1011,7 @@ def create_variance_scaling_inputs(initializer_id):
                 value='fan_in'
             ),
             
-            html.Label('Distribution'),
+            html.Label('Distribution', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
                     'type':'distribution',
@@ -733,29 +1022,23 @@ def create_variance_scaling_inputs(initializer_id):
                 placeholder="Distribution",
                 value='truncated_normal'
             ),
-            
-            html.Label('Seed'),
-            dcc.Input(
-                id={
-                    'type':'seed',
-                    'model': initializer_id['model'],
-                    'agent': initializer_id['agent']
-                },
-                type='number', placeholder="Leave Blank for Random",
-            ),
             html.Hr(),
         ]
     )
 
-def create_kernel_initializer(all_values, all_ids, value_model, agent_type):
+def format_kernel_initializer_config(all_values, all_ids, value_model, agent_type):
     """Returns an initializer object based on initializer component values"""
     # Define an initializer config dictionary listing params needed for each initializer
     initializer_configs = {
-        'variance_scaling': ['scale', 'mode', 'distribution', 'seed'],
-        'constant': ['value'],
-        'random_normal': ['mean', 'stddev', 'seed'],
-        'random_uniform': ['minval', 'maxval', 'seed'],
-        'truncated_normal': ['mean', 'stddev', 'seed']
+        'variance scaling': ['scale', 'mode', 'distribution'],
+        'constant': ['val'],
+        'normal': ['mean', 'std'],
+        'uniform': ['a', 'b'],
+        'truncated normal': ['mean', 'std'],
+        'xavier uniform': ['gain'],
+        'xavier normal': ['gain'],
+        'kaiming uniform': ['mode'],
+        'kaiming normal': ['mode'],
     }
 
     # Get initializer type
@@ -768,12 +1051,9 @@ def create_kernel_initializer(all_values, all_ids, value_model, agent_type):
         config[param] = get_specific_value(all_values, all_ids, param, value_model, agent_type)
     
     # format 
-    initializer_config = {
-        'class_name': initializer_type,
-        'config': config 
-    }
+    initializer_config = {initializer_type: config}
 
-    return tf.keras.initializers.deserialize(initializer_config)
+    return initializer_config
 
 
 def create_agent_parameter_inputs(agent_type):
@@ -782,7 +1062,7 @@ def create_agent_parameter_inputs(agent_type):
         return html.Div(
             id=f'{agent_type}-inputs',
             children=[
-                html.Label('Learning Rate'),
+                html.Label('Learning Rate', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'learning-rate',
@@ -797,7 +1077,7 @@ def create_agent_parameter_inputs(agent_type):
                     # tooltip={"placement": "bottom", "always_visible": True},
                     included=False,
                 ),
-                html.Label('Discount Factor'),
+                html.Label('Discount Factor', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'discount',
@@ -813,7 +1093,7 @@ def create_agent_parameter_inputs(agent_type):
                 ),
                 # Policy Model Configuration for Reinforce and Actor Critic
                 html.H3("Policy Model Configuration"),
-                html.Label('Policy Hidden Layers'),
+                html.Label('Policy Hidden Layers', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'hidden-layers',
@@ -842,9 +1122,19 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'policy',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-                        "random_uniform", "random_normal", "truncated_normal", "variance_scaling"]],
-                    placeholder="Kernel Function",
+                    options=[{'label': "Constant", 'value': "constant"},
+                             {'label': "Xavier Uniform", 'value': "xavier_uniform"},
+                             {'label': "Xavier Normal", 'value': "xavier_normal"},
+                             {'label': "Kaiming Uniform", 'value': "kaiming_uniform"},
+                             {'label': "Kaiming Normal", 'value': "kaiming_normal"},
+                             {'label': "Zeros", 'value': "zeros"},
+                             {'label': "Ones", 'value': "ones"},
+                             {'label': "Uniform", 'value': "uniform"},
+                             {'label': "Normal", 'value': "normal"},
+                             {'label': "Truncated Normal", 'value': "truncated_normal"},
+                             {'label': "Variance Scaling", 'value': "variance_scaling"},
+                             ],
+                    placeholder="Kernel Function"
                 ),
                 html.Div(
                     id={
@@ -868,12 +1158,12 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'policy',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ['adam', 'sgd', 'rmsprop']],
+                    options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
                 ),
                 # Value Model Configuration for Reinforce and Actor Critic
                 html.H3("Value Model Configuration"),
-                html.Label('Value Hidden Layers'),
+                html.Label('Value Hidden Layers', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'hidden-layers',
@@ -902,8 +1192,18 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'value',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-                        "random_uniform", "random_normal", "variance_scaling"]],
+                    options=[{'label': 'Constant', 'value': 'constant'},
+                             {'label': 'Xavier Uniform', 'value': 'xavier_uniform'},
+                             {'label': 'Xavier Normal', 'value': 'xavier_normal'},
+                             {'label': 'Kaiming Uniform', 'value': 'kaiming_uniform'},
+                             {'label': 'Kaiming Normal', 'value': 'kaiming_normal'},
+                             {'label': 'Zeros', 'value': 'zeros'},
+                             {'label': 'Ones', 'value': 'ones'},
+                             {'label': 'Uniform', 'value': 'uniform'},
+                             {'label': 'Normal', 'value': 'normal'},
+                             {'label': 'Truncated Normal', 'value': 'truncated_normal'},
+                             {'label': 'Variance Scaling', 'value': 'variance_scaling'},
+                    ],
                     placeholder="Kernel Function",
                 ),
                 html.Div(
@@ -928,7 +1228,7 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'value',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ['adam', 'sgd', 'rmsprop']],
+                    options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
                 ),
                 # Additional configuration for Actor Critic
@@ -939,7 +1239,7 @@ def create_agent_parameter_inputs(agent_type):
             id=f'{agent_type}-inputs',
             children=[
                 # DDPG specific inputs
-                html.Label('Discount Factor'),
+                html.Label('Discount Factor', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'discount',
@@ -954,7 +1254,7 @@ def create_agent_parameter_inputs(agent_type):
                     tooltip={"placement": "bottom", "always_visible": True},
                     included=False,
                 ),
-                html.Label('Tau'),
+                html.Label('Tau', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'tau',
@@ -963,13 +1263,13 @@ def create_agent_parameter_inputs(agent_type):
                     },
                     min=0.001,
                     max=0.999,
-                    value=[0.001, 0.500],
+                    value=0.005,
                     step=0.001,
                     marks={0.001: "0.001", 0.500: "0.500", 0.999: "0.999"},
                     tooltip={"placement": "bottom", "always_visible": True},
                     included=False,
                 ),
-                html.Label('Batch Size'),
+                html.Label('Batch Size', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'batch-size',
@@ -1002,10 +1302,33 @@ def create_agent_parameter_inputs(agent_type):
                 ),
                 # Actor Model Configuration
                 html.H3("Actor Model Configuration"),
-                html.Label('Actor Hidden Layers'),
+                html.Label('Actor Convolution Layers', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
-                        'type':'hidden-layers',
+                        'type':'conv-layers',
+                        'model':'actor',
+                        'agent':agent_type,
+                    }, 
+                    min=0,
+                    max=20,
+                    step=1,
+                    value=0,  # Default position
+                    marks={0:'0', 20:'20'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                    included=False,
+                ),
+                html.Div(
+                    id={
+                        'type':'layer-types',
+                        'model':'actor',
+                        'agent':agent_type,
+                    }
+                ),
+
+                html.Label('Actor Dense Layers', style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id={
+                        'type':'dense-layers',
                         'model':'actor',
                         'agent':agent_type,
                     }, 
@@ -1031,8 +1354,8 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'actor',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-                        "random_uniform", "random_normal", "variance_scaling"]],
+                    options=[{'label': i, 'value': i} for i in ["constant", "xavier uniform", "xavier normal", "kaiming uniform", "kaiming normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated normal", "variance scaling"]],
                     placeholder="Kernel Function",
                 ),
                 html.Div(
@@ -1057,10 +1380,10 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'actor',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ['adam', 'sgd', 'rmsprop']],
+                    options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
                 ),
-                html.Label('Learning Rate'),
+                html.Label('Learning Rate', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'learning-rate',
@@ -1078,10 +1401,33 @@ def create_agent_parameter_inputs(agent_type):
 
                 # Critic Model Configuration
                 html.H3("Critic Model Configuration"),
-                html.Label('Critic State Layers'),
+                html.Label('Critic Convolution Layers', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
-                        'type':'hidden-layers',
+                        'type':'conv-layers',
+                        'model':'critic',
+                        'agent':agent_type,
+                    }, 
+                    min=0,
+                    max=20,
+                    step=1,
+                    value=0,  # Default position
+                    marks={0:'0', 20:'20'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                    included=False,
+                ),
+                html.Div(
+                    id={
+                        'type':'layer-types',
+                        'model':'critic',
+                        'agent':agent_type,
+                    }
+                ),
+                
+                html.Label('Critic State Layers', style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id={
+                        'type':'dense-layers',
                         'model':'critic-state',
                         'agent':agent_type,
                     }, 
@@ -1101,10 +1447,10 @@ def create_agent_parameter_inputs(agent_type):
                     }
                 ),
                 html.Hr(),
-                html.Label('Critic Merged Layers'),
+                html.Label('Critic Merged Layers', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
-                        'type':'hidden-layers',
+                        'type':'dense-layers',
                         'model':'critic-merged',
                         'agent':agent_type,
                     }, 
@@ -1130,8 +1476,8 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'critic',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-                        "random_uniform", "random_normal", "variance_scaling"]],
+                    options=[{'label': i, 'value': i} for i in ["constant", "xavier uniform", "xavier normal", "kaiming uniform", "kaiming normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated normal", "variance scaling"]],
                     placeholder="Kernel Function",
                 ),
                 html.Div(
@@ -1156,10 +1502,10 @@ def create_agent_parameter_inputs(agent_type):
                         'model':'critic',
                         'agent':agent_type,
                     },
-                    options=[{'label': i, 'value': i} for i in ['adam', 'sgd', 'rmsprop']],
+                    options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
                 ),
-                html.Label('Learning Rate'),
+                html.Label('Learning Rate', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
                         'type':'learning-rate',
@@ -1234,6 +1580,247 @@ def generate_discount_hyperparam_component(agent_type, model_type):
         )
     ])
 
+
+def generate_cnn_layer_hyperparam_component(agent_type, model_type):
+    return html.Div([
+        html.H5('CNN Layers'),
+        dcc.RangeSlider(
+            id={
+                'type': 'cnn-layers-slider-hyperparam',
+                'model': model_type,
+                'agent': agent_type
+            },
+            min=1,
+            max=20,
+            value=[1, 5],  # Default range
+            marks={0: "0", 10: "10", 20: "20"},
+            step=1,  # anchor slider to marks
+            # pushable=1,  # allow pushing the slider,
+            allowCross=True,  # allow selecting one value
+            tooltip={"placement": "bottom", "always_visible": True}
+        ),
+        html.Div(id={
+            'type':'cnn-layer-types-hyperparam',
+            'model':model_type,
+            'agent':agent_type
+        })
+    ])
+
+
+def generate_cnn_layer_type_hyperparam_component(agent_type, model_type, index):
+    
+        input_id = {
+            'type': 'cnn-layer-type-hyperparam',
+            'model': model_type,
+            'agent': agent_type,
+            'index': index,
+        }
+        return html.Div([
+            html.Label(f'Layer Type for Conv Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id=input_id,
+                options=[
+                    {'label': 'Conv2D', 'value': 'conv'},
+                    {'label': 'MaxPool2D', 'value': 'pool'},
+                    {'label': 'Dropout', 'value': 'dropout'},
+                    {'label': 'BatchNorm2D', 'value': 'batchnorm'},
+                    {'label': 'Relu', 'value':'relu'},
+                    {'label': 'Tanh', 'value': 'tanh'},
+                ],
+                multi=True,
+            ),
+            html.Div(
+                id={
+                    'type': 'cnn-layer-type-parameters-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+            ),
+            html.Hr(),
+            ])
+
+def generate_cnn_layer_parameters_hyperparam_component(layer_type, agent_type, model_type, index):
+    # loop over layer types to create the appropriate parameters
+    if layer_type == 'conv':
+        return html.Div([
+            html.Label(f'Filters in Conv Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type': 'conv-filters-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                options=[{'label': i, 'value': i} for i in [8, 16, 32, 64, 128, 256, 512, 1024]],
+                multi=True,
+            ),
+            html.Label(f'Kernel Size in Conv Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.RangeSlider(
+                id={
+                    'type': 'conv-kernel-size-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                min=1,
+                max=10,
+                step=1,
+                value=[2, 4],
+                marks={1:'1', 10:'10'},
+                allowCross=True,
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+            html.Label(f'Kernel Stride in Conv Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.RangeSlider(
+                id={
+                    'type': 'conv-stride-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                min=1,
+                max=10,
+                step=1,
+                value=[2, 4],
+                marks={1:'1', 10:'10'},
+                allowCross=True,
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+            html.Label(f'Input Padding in Conv Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.RadioItems(
+                id={
+                    'type': 'conv-padding-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                options=[
+                    {'label': 'Same', 'value': 'same'},
+                    {'label': 'Valid', 'value': 'valid'},
+                    {'label': 'Custom', 'value': 'custom'},
+                ],
+            ),
+            html.Div(
+                [
+                    html.Label('Custom Padding (pixels)', style={'text-decoration': 'underline'}),
+                    dcc.RangeSlider(
+                        id={
+                            'type': 'conv-padding-custom-hyperparam',
+                            'model': model_type,
+                            'agent': agent_type,
+                            'index': index,
+                        },
+                        min=0,
+                        max=10,
+                        step=1,
+                        value=[1,3],
+                        marks={0:'0', 10:'10'},
+                        allowCross=True,
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                ],
+                id={
+                    'type': 'conv-padding-custom-container-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                style={'display': 'none'},  # Hide initially
+            ),
+            html.Hr(),
+            html.Label('Use Bias Term', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type': 'conv-use-bias-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                options=[
+                    {'label': 'True', 'value': True},
+                    {'label': 'False', 'value': False},
+                ],
+                multi=True,
+            ),
+            html.Hr(),
+        ])
+    if layer_type == 'pool':
+        return html.Div([
+            html.Label(f'Kernel Size of Pooling Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.RangeSlider(
+                id={
+                    'type': 'pool-kernel-size-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                min=1,
+                max=10,
+                step=1,
+                value=[2, 4],
+                marks={1:'1', 10:'10'},
+                allowCross=True,
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+            html.Label(f'Kernel Stride in Pooling Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.RangeSlider(
+                id={
+                    'type': 'pool-stride-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                min=1,
+                max=10,
+                step=1,
+                value=[2,4],
+                marks={1:'1', 10:'10'},
+                allowCross=True,
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+            html.Hr(),
+        ])
+    if layer_type == 'batchnorm':
+        return html.Div([
+            html.Label(f'Number of Features for BatchNorm Layer {index} Set by Previous Layer Input Channels', style={'text-decoration': 'underline'}),
+            # dcc.RangeSlider(
+            #     id={
+            #         'type': 'batch-features-hyperparam',
+            #         'model': model_type,
+            #         'agent': agent_type,
+            #         'index': index,
+            #     },
+            #     min=1,
+            #     max=1024,
+            #     step=1,
+            #     value=32,
+            #     marks={1:'1', 1024:'1024'},
+            #     tooltip={"placement": "bottom", "always_visible": True},
+            # ),
+        ])
+    if layer_type == 'dropout':
+        return html.Div([
+            html.Label(f'Probability of Zero-ed Element for Dropout Layer {index}', style={'text-decoration': 'underline'}),
+            dcc.RangeSlider(
+                id={
+                    'type': 'dropout-prob-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': index,
+                },
+                min=0.0,
+                max=1.0,
+                step=0.1,
+                value=[0.2, 0.5],
+                marks={0.0:'0.0', 1.0:'1.0'},
+                allowCross=True,
+                tooltip={"placement": "bottom", "always_visible": True},
+            ),
+            html.Hr(),
+        ])
+
+
 def generate_hidden_layer_hyperparam_component(agent_type, model_type):
     return html.Div([
         html.H5('Hidden Layers'),
@@ -1283,8 +1870,18 @@ def generate_kernel_initializer_hyperparam_component(agent_type, model_type):
                 'model':model_type,
                 'agent':agent_type,
             },
-            options=[{'label': i, 'value': i} for i in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-                "random_uniform", "random_normal", "truncated_normal", "variance_scaling"]],
+            options=[{'label': "Constant", 'value': "constant"},
+                             {'label': "Xavier Uniform", 'value': "xavier_uniform"},
+                             {'label': "Xavier Normal", 'value': "xavier_normal"},
+                             {'label': "Kaiming Uniform", 'value': "kaiming_uniform"},
+                             {'label': "Kaiming Normal", 'value': "kaiming_normal"},
+                             {'label': "Zeros", 'value': "zeros"},
+                             {'label': "Ones", 'value': "ones"},
+                             {'label': "Uniform", 'value': "uniform"},
+                             {'label': "Normal", 'value': "normal"},
+                             {'label': "Truncated Normal", 'value': "truncated_normal"},
+                             {'label': "Variance Scaling", 'value': "variance_scaling"},
+            ],
             placeholder="Kernel Function",
             multi=True,
         ),
@@ -1320,11 +1917,14 @@ def generate_kernel_options_hyperparam_component(agent_type, model_type, selecte
     kernel_input_creators = {
         "variance_scaling": generate_variance_scaling_hyperparam_inputs,
         "constant": generate_constant_kernel_hyperparam_inputs,
-        "random_normal": generate_random_normal_kernel_hyperparam_inputs,
-        "random_uniform": generate_random_uniform_kernel_hyperparam_inputs,
-        "truncated_normal": generate_truncated_normal_kernel_hyperparam_inputs,        
+        "normal": generate_normal_kernel_hyperparam_inputs,
+        "uniform": generate_uniform_kernel_hyperparam_inputs,
+        "truncated_normal": generate_truncated_normal_kernel_hyperparam_inputs,
+        "kaiming_normal": generate_kaiming_normal_hyperparam_inputs,
+        "kaiming_uniform": generate_kaiming_uniform_hyperparam_inputs,
+        "xavier_normal": generate_xavier_normal_hyperparam_inputs,
+        "xavier_uniform": generate_xavier_uniform_hyperparam_inputs,
     }
-
 
     tabs = [] # empty list for adding tabs for each initializer in selected initializers
     
@@ -1336,10 +1936,138 @@ def generate_kernel_options_hyperparam_component(agent_type, model_type, selecte
         
     return tabs
 
+
+def generate_xavier_uniform_hyperparam_inputs(agent_type, model_type):
+    """Component for xavier uniform initializer hyperparameters"""
+    return dcc.Tab([
+        html.Div(
+            id={
+                'type': 'kernel-params-hyperparam',
+                'model': model_type,
+                'agent': agent_type
+                },
+            children=[
+                html.Label('Gain', style={'text-decoration': 'underline'}),
+                dcc.RangeSlider(
+                    id={
+                        'type':'xavier-uniform-gain-hyperparam',
+                        'model':model_type,
+                        'agent':agent_type,
+                    },
+                    min=1.0,
+                    max=3.0,
+                    step=1.0,
+                    value=[1.0, 3.0],
+                    marks={1.0:'1.0', 3.0:'3.0'},
+                    allowCross=True,
+                    tooltip={"placement": "bottom", "always_visible": True},
+                ),
+                html.Hr(),
+            ],
+        )
+        ],
+        label='Xavier Uniform'
+    )
+
+
+def generate_xavier_normal_hyperparam_inputs(agent_type, model_type):
+    """Component for xavier normal initializer hyperparameters"""
+    return dcc.Tab([
+        html.Div(
+            id={
+                'type': 'kernel-params-hyperparam',
+                'model': model_type,
+                'agent': agent_type
+                },
+            children=[
+                html.Label('Gain', style={'text-decoration': 'underline'}),
+                dcc.RangeSlider(
+                    id={
+                        'type':'xavier-normal-gain-hyperparam',
+                        'model':model_type,
+                        'agent':agent_type,
+                    },
+                    min=1.0,
+                    max=3.0,
+                    step=1.0,
+                    value=[1.0, 3.0],
+                    marks={1.0:'1.0', 3.0:'3.0'},
+                    allowCross=True,
+                    tooltip={"placement": "bottom", "always_visible": True},
+                ),
+                html.Hr(),
+            ],
+        )
+        ],
+        label="Xavier Normal"
+    )
+
+def generate_kaiming_uniform_hyperparam_inputs(agent_type, model_type):
+    """Component for kaiming uniform initializer sweep hyperparameters"""
+    return dcc.Tab([
+        html.Div(
+            id={
+                'type': 'kernel-params-hyperparam',
+                'model': model_type,
+                'agent': agent_type,
+                },
+            children=[
+                html.Label('Mode', style={'text-decoration': 'underline'}),
+                dcc.Dropdown(
+                    id={
+                        'type':'kaiming-uniform-mode-hyperparam',
+                        'model':model_type,
+                        'agent':agent_type,
+                        },
+                    options=[
+                            {'label': 'fan in', 'value': 'fan_in'},
+                            {'label': 'fan out', 'value': 'fan_out'},
+                        ],
+                    value='fan_in',
+                    multi=True,
+                ),
+                html.Hr(),
+            ]
+        )
+        ],
+        label='Kaiming Uniform'
+    )
+
+def generate_kaiming_normal_hyperparam_inputs(agent_type, model_type):
+    """Component for kaiming normal initializer sweep hyperparameters"""
+    return dcc.Tab([
+        html.Div(
+            id={
+                'type': 'kernel-params-hyperparam',
+                'model': model_type,
+                'agent': agent_type,
+                },
+            children=[
+                html.Label('Mode', style={'text-decoration': 'underline'}),
+                dcc.Dropdown(
+                    id={
+                        'type':'kaiming-normal-mode-hyperparam',
+                        'model':model_type,
+                        'agent':agent_type,
+                        },
+                    options=[
+                            {'label': 'fan in', 'value': 'fan_in'},
+                            {'label': 'fan out', 'value': 'fan_out'},
+                        ],
+                    value=['fan_in'],
+                    multi=True,
+                ),
+                html.Hr(),
+            ]
+        )
+    ],
+    label='Kaiming Normal'
+    )
+
 def generate_variance_scaling_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([
-            html.Label('Scale'),
+            html.Label('Scale', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'variance-scaling-scale-hyperparam',
@@ -1355,7 +2083,7 @@ def generate_variance_scaling_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Mode'),
+            html.Label('Mode', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
                     'type': 'variance-scaling-mode-hyperparam',
@@ -1367,16 +2095,16 @@ def generate_variance_scaling_hyperparam_inputs(agent_type, model_type):
                 value=['fan_in'],
                 multi=True
             ),
-            html.Label('Distribution'),
+            html.Label('Distribution', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
                     'type':'variance-scaling-distribution-hyperparam',
                     'model': model_type,
                     'agent': agent_type
                 },
-                options=[{'label': dist, 'value': dist} for dist in ['truncated_normal', 'uniform']],
+                options=[{'label': dist, 'value': dist} for dist in ['truncated normal', 'uniform']],
                 placeholder="Distribution",
-                value=['truncated_normal'],
+                value=['truncated normal'],
                 multi=True
             ),
         ])
@@ -1386,7 +2114,7 @@ def generate_variance_scaling_hyperparam_inputs(agent_type, model_type):
 def generate_constant_kernel_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([
-            html.Label('Value'),
+            html.Label('Value', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'constant-value-hyperparam',
@@ -1406,10 +2134,10 @@ def generate_constant_kernel_hyperparam_inputs(agent_type, model_type):
     ],
     label='Constant')
 
-def generate_random_normal_kernel_hyperparam_inputs(agent_type, model_type):
+def generate_normal_kernel_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([
-            html.Label('Mean'),
+            html.Label('Mean', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'random-normal-mean-hyperparam',
@@ -1425,7 +2153,7 @@ def generate_random_normal_kernel_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Standard Deviation'),
+            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'random-normal-stddev-hyperparam',
@@ -1445,10 +2173,10 @@ def generate_random_normal_kernel_hyperparam_inputs(agent_type, model_type):
     ],
     label='Random Normal')
 
-def generate_random_uniform_kernel_hyperparam_inputs(agent_type, model_type):
+def generate_uniform_kernel_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([ 
-            html.Label('Minimum'),
+            html.Label('Minimum', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'random-uniform-minval-hyperparam',
@@ -1464,7 +2192,7 @@ def generate_random_uniform_kernel_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Maximum'),
+            html.Label('Maximum', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'random-uniform-maxval-hyperparam',
@@ -1487,7 +2215,7 @@ def generate_random_uniform_kernel_hyperparam_inputs(agent_type, model_type):
 def generate_truncated_normal_kernel_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([
-            html.Label('Mean'),
+            html.Label('Mean', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'truncated-normal-mean-hyperparam',
@@ -1503,7 +2231,7 @@ def generate_truncated_normal_kernel_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Standard Deviation'),
+            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'truncated-normal-stddev-hyperparam',
@@ -1547,7 +2275,7 @@ def generate_optimizer_hyperparam_component(agent_type, model_type):
                 'model': model_type,
                 'agent': agent_type,
             },
-            options=[{'label': i, 'value': i} for i in ['adam', 'sgd', 'rmsprop']],
+            options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
             placeholder="Optimizer",
             multi=True,
         ),
@@ -1673,7 +2401,7 @@ def generate_noise_options_hyperparams_component(agent_type, model_type, noise_f
 def generate_OU_noise_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([
-            html.Label('Mean'),
+            html.Label('Mean', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'ou-mean-hyperparam',
@@ -1689,7 +2417,7 @@ def generate_OU_noise_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Mean Reversion'),
+            html.Label('Mean Reversion', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'ou-theta-hyperparam',
@@ -1705,7 +2433,7 @@ def generate_OU_noise_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Volatility'),
+            html.Label('Volatility', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'ou-sigma-hyperparam',
@@ -1728,7 +2456,7 @@ def generate_OU_noise_hyperparam_inputs(agent_type, model_type):
 def generate_uniform_noise_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([
-            html.Label('Minimum Value'),
+            html.Label('Minimum Value', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'uniform-min-hyperparam',
@@ -1744,7 +2472,7 @@ def generate_uniform_noise_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Maximum Value'),
+            html.Label('Maximum Value', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'uniform-max-hyperparam',
@@ -1767,7 +2495,7 @@ def generate_uniform_noise_hyperparam_inputs(agent_type, model_type):
 def generate_normal_noise_hyperparam_inputs(agent_type, model_type):
     return dcc.Tab([
         html.Div([
-            html.Label('Mean'),
+            html.Label('Mean', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'normal-mean-hyperparam',
@@ -1783,7 +2511,7 @@ def generate_normal_noise_hyperparam_inputs(agent_type, model_type):
                 allowCross=True, # allow selecting single value
                 tooltip={"placement": "bottom", "always_visible": True},
             ),
-            html.Label('Standard Deviation'),
+            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
             dcc.RangeSlider(
                 id={
                     'type': 'normal-stddev-hyperparam',
@@ -1808,7 +2536,7 @@ def generate_replay_buffer_hyperparam_component(agent_type, model_type):
 
 def generate_seed_component(agent_type, model_type):
     return html.Div([
-        html.Label('Seed'),
+        html.Label('Seed', style={'text-decoration': 'underline'}),
         dcc.Input(
             id={
                 'type':'seed',
@@ -1857,7 +2585,9 @@ def generate_wandb_project_dropdown(page):
             )
         ])
 
-def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, all_values, all_ids):
+def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    #DEBUG
+    # print(f'create wandb config fired...')
     sweep_config = {
         "method": method,
         "project": project,
@@ -1881,6 +2611,8 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             sweep_config["parameters"][agent] = {}
         
         if agent == "DDPG":
+            #DEBUG
+            # print(f'DDPG agent selected...')
             sweep_config["parameters"][agent]["parameters"] = {}
 
             # set parameters based on selection(s)
@@ -1893,6 +2625,9 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {"min": 10**value_range[0], "max": 10**value_range[1]}         
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_learning_rate"] = config
+            #DEBUG
+            # print(f'DDPG actor learning rate set to {config}')
+
 
             # critic learning rate
             value_range = get_specific_value(all_values, all_ids, 'learning-rate-slider', 'critic', agent)
@@ -1902,6 +2637,9 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {"min": 10**value_range[0], "max": 10**value_range[1]}           
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_learning_rate"] = config
+            #DEBUG
+            # print(f'DDPG critic learning rate set to {config}')
+
 
             # discount
             value_range = get_specific_value(all_values, all_ids, 'discount-slider', 'none', agent)
@@ -1911,6 +2649,9 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {"min": value_range[0], "max": value_range[1]}           
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_discount"] = config
+            #DEBUG
+            # print(f'DDPG discount set to {config}')
+
 
             # tau
             value_range = get_specific_value(all_values, all_ids, 'tau-hyperparam', 'none', agent)
@@ -1920,6 +2661,21 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {"min": value_range[0], "max": value_range[1]}           
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_tau"] = config
+            #DEBUG
+            # print(f'DDPG tau set to {config}')
+
+
+            # actor cnn layers
+            value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'actor', agent)
+            if value_range[0] == value_range[1]:
+                config = {"value": value_range[0]}
+            else:
+                config = {"min": value_range[0], "max": value_range[1]}           
+            
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_num_cnn_layers"] = config
+            #DEBUG
+            # print(f'DDPG actor cnn layers set to {config}')
+
 
             # actor num layers
             value_range = get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'actor', agent)
@@ -1929,19 +2685,40 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {"min": value_range[0], "max": value_range[1]}           
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_num_layers"] = config
+            #DEBUG
+            # print(f'DDPG actor num layers set to {config}')
+
 
             # actor activation
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_activation"] = \
                 {"values": get_specific_value(all_values, all_ids, 'activation-function-hyperparam', 'actor', agent)}
+            #DEBUG
+            # print(f'DDPG actor activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_activation"]}')
 
             # actor kernel initializer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"] = \
                 {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent)}
-            
+            #DEBUG
+            # print(f'DDPG actor kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"]}')
+
             # actor optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"] = \
                 {"values": get_specific_value(all_values, all_ids, 'optimizer-hyperparam', 'actor', agent)}
+            #DEBUG
+            print(f'DDPG actor optimizer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"]}')
+
+            # critic cnn layers
+            value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'critic', agent)
+            if value_range[0] == value_range[1]:
+                config = {"value": value_range[0]}
+            else:
+                config = {"min": value_range[0], "max": value_range[1]}           
             
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_num_cnn_layers"] = config
+            #DEBUG
+            # print(f'DDPG critic cnn layers set to {config}')
+
+
             # critic state num layers
             value_range = get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-state', agent)
             if value_range[0] == value_range[1]:
@@ -1950,6 +2727,8 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {"min": value_range[0], "max": value_range[1]}           
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_state_num_layers"] = config
+            #DEBUG
+            # print(f'DDPG critic state num layers set to {config}')
 
             # critic merged num layers
             value_range = get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-merged', agent)
@@ -1959,30 +2738,44 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {"min": value_range[0], "max": value_range[1]}           
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_merged_num_layers"] = config
+            #DEBUG
+            # print(f'DDPG critic merged num layers set to {config}')
 
             # critic activation
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_activation"] = \
                 {"values": get_specific_value(all_values, all_ids, 'activation-function-hyperparam', 'critic', agent)}
+            #DEBUG
+            # print(f'DDPG critic activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_activation"]}')
 
             # critic kernel initializer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"] = \
                 {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent)}
-            
+            #DEBUG
+            # print(f'DDPG critic kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"]}')
+
             # critic optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer"] = \
                 {"values": get_specific_value(all_values, all_ids, 'optimizer-hyperparam', 'critic', agent)}
-            
+            #DEBUG
+            # print(f'DDPG critic optimizer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer"]}')
+
             # replay buffer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer"] = {"values": ["ReplayBuffer"]}
+            #DEBUG
+            # print(f'DDPG replay buffer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer"]}')
 
             # batch size
             sweep_config["parameters"][agent]["parameters"][f"{agent}_batch_size"] = \
                 {"values": get_specific_value(all_values, all_ids, 'batch-size-hyperparam', 'none', agent)}
-            
+            #DEBUG
+            # print(f'DDPG batch size set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_batch_size"]}')
+
             # noise
             sweep_config["parameters"][agent]["parameters"][f"{agent}_noise"] = \
                 {"values": get_specific_value(all_values, all_ids, 'noise-function-hyperparam', 'none', agent)}
-            
+            #DEBUG
+            # print(f'DDPG noise set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_noise"]}')
+
             # noise parameter options
             for noise in get_specific_value(all_values, all_ids, 'noise-function-hyperparam', 'none', agent):
                 # Initialize the dictionary for the agent if it doesn't exist
@@ -2046,6 +2839,8 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                         config["maxval"] = {"min": value_range[0], "max": value_range[1]}
 
                 sweep_config["parameters"][agent]["parameters"][f"{agent}_noise_{noise}"]["parameters"] = config
+            #DEBUG
+            # print(f'DDPG noise set to {config}')
 
             # kernel options       
             # actor kernel options
@@ -2077,7 +2872,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                     # distribution
                     config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent)}
 
-                elif kernel == "random_uniform":
+                elif kernel == "uniform":
                     # maxval
                     value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)
                     if value_range[0] == value_range[1]:
@@ -2092,7 +2887,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                     else:
                         config["minval"] = {"min": value_range[0], "max": value_range[1]}
 
-                elif kernel == "random_normal":
+                elif kernel == "normal":
                     # mean
                     value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)
                     if value_range[0] == value_range[1]:
@@ -2121,13 +2916,43 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                         config["stddev"] = {"value": value_range[0]}
                     else:
                         config["stddev"] = {"min": value_range[0], "max": value_range[1]}
-        
+
+                elif kernel == "xavier_uniform":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config["gain"] = {"value": value_range[0]}
+                    else:
+                        config["gain"] = {"min": value_range[0], "max": value_range[1]}
+
+                elif kernel == "xavier_normal":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config["gain"] = {"value": value_range[0]}
+                    else:
+                        config["gain"] = {"min": value_range[0], "max": value_range[1]}
+
+                elif kernel == "kaiming_uniform":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor', agent)
+                    config["mode"] = {"values": values}
+
+
+                elif kernel == "kaiming_normal":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor', agent)
+                    config["mode"] = {"values": values}
+
+                    
                 else:
-                    if kernel not in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-                        "random_uniform", "random_normal", "truncated_normal", "variance_scaling"]:
+                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
                         raise ValueError(f"Unknown kernel: {kernel}")
                     
                 sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = config
+            #DEBUG
+            # print(f'DDPG actor kernel set to {config}')
 
             # critic kernel options
             for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent):
@@ -2158,7 +2983,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                     # distribution
                     config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent)}
 
-                elif kernel == "random_uniform":
+                elif kernel == "uniform":
                     # maxval
                     value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)
                     if value_range[0] == value_range[1]:
@@ -2173,7 +2998,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                     else:
                         config["minval"] = {"min": value_range[0], "max": value_range[1]}
 
-                elif kernel == "random_normal":
+                elif kernel == "normal":
                     # mean
                     value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)
                     if value_range[0] == value_range[1]:
@@ -2202,14 +3027,180 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                         config["stddev"] = {"value": value_range[0]}
                     else:
                         config["stddev"] = {"min": value_range[0], "max": value_range[1]}
-        
+
+                elif kernel == "xavier_uniform":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config["gain"] = {"value": value_range[0]}
+                    else:
+                        config["gain"] = {"min": value_range[0], "max": value_range[1]}
+
+                elif kernel == "xavier_normal":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config["gain"] = {"value": value_range[0]}
+                    else:
+                        config["gain"] = {"min": value_range[0], "max": value_range[1]}
+
+                elif kernel == "kaiming_uniform":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic', agent)
+                    config["mode"] = {"values": values}
+
+                elif kernel == "kaiming_normal":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic', agent)
+                    config["mode"] = {"values": values}
+
+                    
                 else:
-                    if kernel not in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-                        "random_uniform", "random_normal", "truncated_normal", "variance_scaling"]:
+                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
                         raise ValueError(f"Unknown kernel: {kernel}")
                     
                 sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = config
+            #DEBUG
+            # print(f'DDPG critic kernel set to {config}')
+
+            # CNN layer params
+            # Actor CNN layers
+            for i in range(1, get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'actor', agent)[1] + 1):
+                sweep_config["parameters"][agent]["parameters"][f"actor_cnn_layer_{i}_types_{agent}"] = {"parameters":{}}
+                config = {}
+                config["types"] = {"values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'cnn-layer-type-hyperparam', 'actor', agent, i)}
+
+                # loop through each type in CNN layer and get the parameters to add to the sweep config
+                for value in config["types"]["values"]:
+                    if value == "conv":
+                        config["conv_filters"] = {
+                            "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-filters-hyperparam', 'actor', agent, i)
+                        }
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-kernel-size-hyperparam', 'actor', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["conv_kernel_size"] = {"value": value_range[0]}
+                        else:
+                            config["conv_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-stride-hyperparam', 'actor', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["conv_strides"] = {"value": value_range[0]}
+                        else:
+                            config["conv_strides"] = {"min": value_range[0], "max": value_range[1]}
+
+                        config["conv_padding"] = {
+                            "value": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-hyperparam', 'actor', agent, i)
+                        }
+
+                        if config["conv_padding"]["value"] == 'custom':
+                            value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-custom-hyperparam', 'actor', agent, i)
+                            if value_range[0] == value_range[1]:
+                                config["conv_padding"] = {"value": value_range[0]}
+                            else:
+                                config["conv_padding"] = {"min": value_range[0], "max": value_range[1]}
+                            
+                            # val_config["conv_padding"]["parameters"] = pad_config
+                        
+                        config["conv_bias"] = {
+                            "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-use-bias-hyperparam', 'actor', agent, i)
+                        }
                     
+                    if value == "pool":
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-kernel-size-hyperparam', 'actor', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["pool_kernel_size"] = {"value": value_range[0]}
+                        else:
+                            config["pool_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-stride-hyperparam', 'actor', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["pool_strides"] = {"value": value_range[0]}
+                        else:
+                            config["pool_strides"] = {"min": value_range[0], "max": value_range[1]}
+
+                    if value == "dropout":
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'dropout-prob-hyperparam', 'actor', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["dropout_prob"] = {"value": value_range[0]}
+                        else:
+                            config["dropout_prob"] = {"min": value_range[0], "max": value_range[1]}
+
+                    # config["parameters"] = val_config
+
+                sweep_config["parameters"][agent]["parameters"][f"actor_cnn_layer_{i}_types_{agent}"]["parameters"] = config
+            #DEBUG
+            # print(f'DDPG actor CNN layers set to {config}')
+
+            # Critic CNN layers
+            for i in range(1, get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'critic', agent)[1] + 1):
+                sweep_config["parameters"][agent]["parameters"][f"critic_cnn_layer_{i}_types_{agent}"] = {"parameters":{}}
+                config = {}
+                config["types"] = {"values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'cnn-layer-type-hyperparam', 'critic', agent, i)}
+
+                # loop through each type in CNN layer and get the parameters to add to the sweep config
+                for value in config["types"]["values"]:
+                    if value == "conv":
+                        config["conv_filters"] = {
+                            "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-filters-hyperparam', 'critic', agent, i)
+                        }
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-kernel-size-hyperparam', 'critic', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["conv_kernel_size"] = {"value": value_range[0]}
+                        else:
+                            config["conv_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-stride-hyperparam', 'critic', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["conv_strides"] = {"value": value_range[0]}
+                        else:
+                            config["conv_strides"] = {"min": value_range[0], "max": value_range[1]}
+
+                        config["conv_padding"] = {
+                            "value": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-hyperparam', 'critic', agent, i)
+                        }
+
+                        if config["conv_padding"]["value"] == 'custom':
+                            value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-custom-hyperparam', 'critic', agent, i)
+                            if value_range[0] == value_range[1]:
+                                config["conv_padding"] = {"value": value_range[0]}
+                            else:
+                                config["conv_padding"] = {"min": value_range[0], "max": value_range[1]}
+                        
+                        config["conv_bias"] = {
+                            "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-use-bias-hyperparam', 'critic', agent, i)
+                        }
+                    
+                    if value == "pool":
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-kernel-size-hyperparam', 'critic', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["pool_kernel_size"] = {"value": value_range[0]}
+                        else:
+                            config["pool_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-stride-hyperparam', 'critic', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["pool_strides"] = {"value": value_range[0]}
+                        else:
+                            config["pool_strides"] = {"min": value_range[0], "max": value_range[1]}
+
+                    if value == "dropout":
+
+                        value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'dropout-prob-hyperparam', 'critic', agent, i)
+                        if value_range[0] == value_range[1]:
+                            config["dropout_prob"] = {"value": value_range[0]}
+                        else:
+                            config["dropout_prob"] = {"min": value_range[0], "max": value_range[1]}
+
+                sweep_config["parameters"][agent]["parameters"][f"critic_cnn_layer_{i}_types_{agent}"]["parameters"] = config
+            #DEBUG
+            # print(f'DDPG critic CNN layers set to {config}')
+
             # layer units
             # actor layer units
             for i in range(1, get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'actor', agent)[1] + 1):
@@ -2226,266 +3217,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 sweep_config["parameters"][agent]["parameters"][f"critic_units_merged_layer_{i}_{agent}"] = {
                     "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
                 }
-            
-            
-            # add units per layer to sweep config
-        #     for i in range(1, get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'actor', agent)[1] + 1):
-        #         sweep_config["parameters"][agent]["parameters"][f"actor_units_layer_{i}_{agent}"] = {
-        #             "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'actor', agent)   
-        #         }
-        #     for i in range(1, get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-state', agent)[1] + 1):
-        #         sweep_config["parameters"][agent]["parameters"][f"critic_units_state_layer_{i}_{agent}"] = {
-        #             "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-state', agent)
-        #         }
-        #     for i in range(1, get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-merged', agent)[1] + 1):
-        #         sweep_config["parameters"][agent]["parameters"][f"critic_units_merged_layer_{i}_{agent}"] = {
-        #             "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
-        #         }
 
-
-
-
-        #     sweep_config["parameters"][agent]["parameters"] = {
-        #         f"{agent}_actor_learning_rate": {
-        #             "max": 10**(get_specific_value(all_values, all_ids, 'learning-rate-slider', 'actor', agent)[1]),
-        #             "min": 10**(get_specific_value(all_values, all_ids, 'learning-rate-slider', 'actor', agent)[0]),
-        #             },
-        #         f"{agent}_critic_learning_rate": {
-        #             "max": 10**(get_specific_value(all_values, all_ids, 'learning-rate-slider', 'critic', agent)[1]),
-        #             "min": 10**(get_specific_value(all_values, all_ids, 'learning-rate-slider', 'critic', agent)[0]),
-        #             },
-        #         f"{agent}_discount": {
-        #             "max": get_specific_value(all_values, all_ids, 'discount-slider', 'none', agent)[1],
-        #             "min": get_specific_value(all_values, all_ids, 'discount-slider', 'none', agent)[0],
-        #             },
-        #         f"{agent}_tau": {
-        #             "max": get_specific_value(all_values, all_ids, 'tau-hyperparam', 'none', agent)[1],
-        #             "min": get_specific_value(all_values, all_ids, 'tau-hyperparam', 'none', agent)[0],
-        #             },
-        #         f"{agent}_actor_num_layers": {
-        #             "max": get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'actor', agent)[1],
-        #             "min": get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'actor', agent)[0],
-        #             },
-        #         f"{agent}_actor_activation": {
-        #             "values": get_specific_value(all_values, all_ids, 'activation-function-hyperparam', 'actor', agent)
-        #             },
-        #         f"{agent}_actor_kernel_initializer": {
-        #             "values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent)
-        #             },
-        #         f"{agent}_actor_optimizer": {
-        #             "values": get_specific_value(all_values, all_ids, 'optimizer-hyperparam', 'actor', agent)
-        #             },
-        #         f"{agent}_critic_state_num_layers": {
-        #             "max": get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-state', agent)[1],
-        #             "min": get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-state', agent)[0],
-        #             },
-        #         f"{agent}_critic_merged_num_layers": {
-        #             "max": get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-merged', agent)[1],
-        #             "min": get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-merged', agent)[0],
-        #             },
-        #         f"{agent}_critic_activation": {
-        #             "values": get_specific_value(all_values, all_ids, 'activation-function-hyperparam', 'critic', agent)
-        #             },
-        #         f"{agent}_critic_kernel_initializer": {
-        #             "values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent)
-        #             },
-        #         f"{agent}_critic_optimizer": {
-        #             "values": get_specific_value(all_values, all_ids, 'optimizer-hyperparam', 'critic', agent)
-        #             },
-        #         f"{agent}_replay_buffer": {
-        #             "values": ["ReplayBuffer"]
-        #             },
-        #         f"{agent}_batch_size": {
-        #             "values": get_specific_value(all_values, all_ids, 'batch-size-hyperparam', 'none', agent)
-        #             },
-        #         f"{agent}_noise": {
-        #             "values": get_specific_value(all_values, all_ids, 'noise-function-hyperparam', 'none', agent)
-        #             },
-        #         }
-        #     # add noise params to sweep config
-        #     for noise in get_specific_value(all_values, all_ids, 'noise-function-hyperparam', 'none', agent):
-        #         # Initialize the dictionary for the agent if it doesn't exist
-        #         if f"{agent}_noise_{noise}" not in sweep_config["parameters"][agent]["parameters"]:
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_noise_{noise}"] = {}
-        #         if noise == "Ornstein-Uhlenbeck":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_noise_{noise}"]["parameters"] = {
-        #                 "mean": {
-        #                     "max": get_specific_value(all_values, all_ids, 'ou-mean-hyperparam', 'none', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'ou-mean-hyperparam', 'none', agent)[0],
-        #                 },
-        #                 "theta": {
-        #                     "max": get_specific_value(all_values, all_ids, 'ou-theta-hyperparam', 'none', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'ou-theta-hyperparam', 'none', agent)[0],
-        #                 },
-        #                 "sigma": {
-        #                     "max": get_specific_value(all_values, all_ids, 'ou-sigma-hyperparam', 'none', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'ou-sigma-hyperparam', 'none', agent)[0],
-        #                 }
-        #             }
-                
-        #         elif noise == "Normal":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_noise_{noise}"]["parameters"] = {
-        #                 "mean": {
-        #                     "max": get_specific_value(all_values, all_ids, 'normal-mean-hyperparam', 'none', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'normal-mean-hyperparam', 'none', agent)[0],
-        #                 },
-        #                 "stddev": {
-        #                     "max": get_specific_value(all_values, all_ids, 'normal-stddev-hyperparam', 'none', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'normal-stddev-hyperparam', 'none', agent)[0],
-        #                 },
-        #             }
-                                 
-        #         elif noise == "Uniform":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_noise_{noise}"]["parameters"] = {
-        #                 "minval": {
-        #                     "max": get_specific_value(all_values, all_ids, 'uniform-min-hyperparam', 'none', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'uniform-min-hyperparam', 'none', agent)[0],
-        #                 },
-        #                 "maxval": {
-        #                     "max": get_specific_value(all_values, all_ids, 'uniform-max-hyperparam', 'none', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'uniform-max-hyperparam', 'none', agent)[0],
-        #                 },
-        #             }
-
-        #     # add kernel options to sweep config
-        #     # actor kernel options
-        #     for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent):
-        #         if f"{agent}_actor_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"] = {}
-        #         if kernel == "constant":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = {
-        #                 "value": {
-        #                     "max": get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)[0],
-        #                 },
-        #             }
-        #         elif kernel == "variance_scaling":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = {
-        #                 "scale": {
-        #                     "max": get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)[0],
-        #                 },
-        #                 "mode": {
-        #                     "values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor', agent),
-        #                 },
-        #                 "distribution": {
-        #                     "values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent),
-        #                 },
-        #             }
-        #         elif kernel == "random_uniform":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = {
-        #                 "maxval": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)[0],
-        #                 },
-        #                 "minval": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)[0],
-        #                 },
-        #             }
-        #         elif kernel == "random_normal":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = {
-        #                 "mean": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)[0],
-        #                 },
-        #                 "stddev": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)[0],
-        #                 },
-        #             }
-        #         elif kernel == "truncated_normal":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = {
-        #                 "mean": {
-        #                     "max": get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)[0],
-        #                 },
-        #                 "stddev": {
-        #                     "max": get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)[0],
-        #                 },
-        #             }
-        #         else:
-        #             if kernel not in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-        #                 "random_uniform", "random_normal", "truncated_normal", "variance_scaling"]:
-        #                 raise ValueError(f"Unknown kernel: {kernel}")
-                
-        #     # critic kernel options
-        #     for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent):
-        #         if f"{agent}_critic_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"] = {}
-        #         if kernel == "constant":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = {
-        #                 "value": {
-        #                     "max": get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)[0],
-        #                 },
-        #             }
-        #         elif kernel == "variance_scaling":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = {
-        #                 "scale": {
-        #                     "max": get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)[0],
-        #                 },
-        #                 "mode": {
-        #                     "values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic', agent),
-        #                 },
-        #                 "distribution": {
-        #                     "values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent),
-        #                 },
-        #             }
-        #         elif kernel == "random_uniform":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = {
-        #                 "maxval": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)[0],
-        #                 },
-        #                 "minval": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)[0],
-        #                 },
-        #             }
-        #         elif kernel == "random_normal":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = {
-        #                 "mean": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)[0],
-        #                 },
-        #                 "stddev": {
-        #                     "max": get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)[0],
-        #                 },
-        #             }
-        #         elif kernel == "truncated_normal":
-        #             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = {
-        #                 "mean": {
-        #                     "max": fget_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)[0],
-        #                 },
-        #                 "stddev": {
-        #                     "max": get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)[1],
-        #                     "min": get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)[0],
-        #                 },
-        #             }
-        #         else:
-        #             if kernel not in ["constant", "glorot_uniform", "glorot_normal", "he_uniform", "he_normal", "zeros", "ones", \
-        #                 "random_uniform", "random_normal", "truncated_normal", "variance_scaling"]:
-        #                 raise ValueError(f"Unknown kernel: {kernel}")
-
-
-        #     # add units per layer to sweep config
-        #     for i in range(1, get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'actor', agent)[1] + 1):
-        #         sweep_config["parameters"][agent]["parameters"][f"actor_units_layer_{i}_{agent}"] = {
-        #             "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'actor', agent)   
-        #         }
-        #     for i in range(1, get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-state', agent)[1] + 1):
-        #         sweep_config["parameters"][agent]["parameters"][f"critic_units_state_layer_{i}_{agent}"] = {
-        #             "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-state', agent)
-        #         }
-        #     for i in range(1, get_specific_value(all_values, all_ids, 'hidden-layers-slider', 'critic-merged', agent)[1] + 1):
-        #         sweep_config["parameters"][agent]["parameters"][f"critic_units_merged_layer_{i}_{agent}"] = {
-        #             "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
-        #         }
                                     
         # elif agent == "Reinforce" or agent == "ActorCritic":
         #     sweep_config["parameters"][agent]["parameters"] = {
@@ -2663,7 +3395,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
         #         }
             
         ##DEBUG
-        print(f'Sweep Config: {sweep_config}')
+        # print(f'Sweep Config: {sweep_config}')
         
     return sweep_config
 
@@ -2729,7 +3461,7 @@ def update_heatmap(data):
     
 def render_heatmap():
     return html.Div([
-        html.Label('Bins'),
+        html.Label('Bins', style={'text-decoration': 'underline'}),
         dcc.Slider(
             id='bin-slider',
             min=1,
@@ -2739,7 +3471,7 @@ def render_heatmap():
             step=1,
         ),
         html.Div(id='legend-container'),
-        html.Label('Reward Threshold'),
+        html.Label('Reward Threshold', style={'text-decoration': 'underline'}),
         dcc.Input(
             id='reward-threshold',
             type='number',
@@ -2910,7 +3642,7 @@ def generate_gym_param_input(param_name, param_info):
         )
 
     return html.Div([
-        html.Label(param_name),
+        html.Label(param_name, style={'text-decoration': 'underline'}),
         html.Div(param_description, style={'fontSize': '12px', 'color': 'gray'}),
         input_component
     ], style={'marginBottom': '10px'})

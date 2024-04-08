@@ -167,3 +167,4 @@ tmp*/
 .conda*/
 *.sock
 __autograph_*.py
+*.csv

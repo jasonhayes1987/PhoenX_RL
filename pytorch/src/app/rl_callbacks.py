@@ -260,10 +260,10 @@ class DashCallback(Callback):
         except Exception as e:
             print(f"Failed to send update to Dash app: {e}")
 
-    def on_train_step_begin(self, batch, logs=None):
+    def on_train_step_begin(self, step, logs=None):
         pass
 
-    def on_train_step_end(self, batch, logs=None):
+    def on_train_step_end(self, step, logs=None):
         pass
 
     def on_test_begin(self, logs=None):

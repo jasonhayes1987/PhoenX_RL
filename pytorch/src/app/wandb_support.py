@@ -100,7 +100,116 @@ def build_layers(sweep_config):
         return policy_layers, value_layers
     
     elif sweep_config.model_type == "DDPG":
-        # get actor layers
+        
+        # Get actor CNN layers if present
+        actor_cnn_layers = []
+        # Set variable to keep track of last out channel param in conv layer loop to use for batchnorm layer features param
+        last_out_channels = 0
+
+        # Set number of cnn layers to loop over and to check if 0
+        num_layers = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_num_cnn_layers"]
+        
+        # Loop over num layers if not 0
+        if num_layers > 0:
+            for layer_num in range(1, num_layers + 1):
+                layer_type = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["types"]
+                if layer_type == 'conv':
+                    # get num filters
+                    out_channels = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_filters"]
+                    # update last out channel param
+                    last_out_channels = out_channels
+
+                    # get kernel size
+                    kernel_size = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_kernel_size"]
+                    # get stride
+                    stride = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_strides"]
+                    # get padding
+                    padding = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_padding"]
+                    # get bias
+                    bias = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_bias"]
+
+                    # append to actor_cnn_layers
+                    actor_cnn_layers.append({layer_type: {"out_channels": out_channels, "kernel_size": kernel_size, "stride": stride, "padding": padding, "bias": bias}})
+
+                elif layer_type == 'pool':
+                    # get pool size
+                    kernel_size = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["pool_kernel_size"]
+                    stride = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["pool_strides"]
+
+                    # append to actor_cnn_layers
+                    actor_cnn_layers.append({layer_type: {"kernel_size": kernel_size, "stride": stride}})
+
+                elif layer_type == 'dropout':
+                    # get dropout rate
+                    rate = sweep_config[sweep_config.model_type][f"actor_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["dropout_rate"]
+
+                    # append to actor_cnn_layers
+                    actor_cnn_layers.append({layer_type: {"p": rate}})
+
+                elif layer_type == 'batchnorm':
+                    if last_out_channels == 0:
+                        raise ValueError("Batchnorm layer must come after a conv layer")
+                    else:
+                        num_features = last_out_channels
+                    
+                    # append to actor_cnn_layers
+                    actor_cnn_layers.append({layer_type: {"num_features": num_features}})
+
+        # Get critic CNN layers if present
+        critic_cnn_layers = []
+        # Set variable to keep track of last out channel param in conv layer loop to use for batchnorm layer features param
+        last_out_channels = 0
+
+        # Set number of cnn layers to loop over and to check if 0
+        num_layers = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_num_cnn_layers"]
+        
+        # Loop over num layers if not 0
+        if num_layers > 0:
+            for layer_num in range(1, num_layers + 1):
+                layer_type = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["types"]
+                if layer_type == 'conv':
+                    # get num filters
+                    out_channels = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_filters"]
+                    # update last out channel param
+                    last_out_channels = out_channels
+
+                    # get kernel size
+                    kernel_size = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_kernel_size"]
+                    # get stride
+                    stride = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_strides"]
+                    # get padding
+                    padding = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_padding"]
+                    # get bias
+                    bias = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["conv_bias"]
+
+                    # append to critic_cnn_layers
+                    critic_cnn_layers.append({layer_type: {"out_channels": out_channels, "kernel_size": kernel_size, "stride": stride, "padding": padding, "bias": bias}})
+
+                elif layer_type == 'pool':
+                    # get pool size
+                    kernel_size = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["pool_kernel_size"]
+                    stride = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["pool_strides"]
+
+                    # append to critic_cnn_layers
+                    critic_cnn_layers.append({layer_type: {"kernel_size": kernel_size, "stride": stride}})
+
+                elif layer_type == 'dropout':
+                    # get dropout rate
+                    rate = sweep_config[sweep_config.model_type][f"critic_cnn_layer_{layer_num}_types_{sweep_config.model_type}"]["dropout_rate"]
+
+                    # append to critic_cnn_layers
+                    critic_cnn_layers.append({layer_type: {"p": rate}})
+
+                elif layer_type == 'batchnorm':
+                    if last_out_channels == 0:
+                        raise ValueError("Batchnorm layer must come after a conv layer")
+                    else:
+                        num_features = last_out_channels
+                    
+                    # append to critic_cnn_layers
+                    critic_cnn_layers.append({layer_type: {"num_features": num_features}})
+
+        # get actor hidden layers
         actor_layers = []
         for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_num_layers"] + 1):
             actor_layers.append(
@@ -110,7 +219,7 @@ def build_layers(sweep_config):
                     sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_kernel_initializer"],
                 )
             )
-        # get critic state layers
+        # get critic state hidden layers
         critic_state_layers = []
         for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_state_num_layers"] + 1):
             critic_state_layers.append(
@@ -120,7 +229,7 @@ def build_layers(sweep_config):
                     sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"],
                 )
             )
-        # get critic merged layers
+        # get critic merged hidden layers
         critic_merged_layers = []
         for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_merged_num_layers"] + 1):
             critic_merged_layers.append(
@@ -131,7 +240,7 @@ def build_layers(sweep_config):
                 )
             )
 
-        return actor_layers, critic_state_layers, critic_merged_layers
+        return actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers
 
 
 def load_model_from_run(run_name: str, project_name: str, load_weights: bool = True):
@@ -165,8 +274,11 @@ def hyperparameter_sweep(
         episodes_per_sweep (int): The number of episodes to train per sweep.
         save_dir (str): The directory to save the model to.
     """
-
+    #DEBUG
+    print(f'hyperparameter_sweep fired...')
     sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
+    #DEBUG
+    print(f'sweep id: {sweep_id}')
     wandb.agent(
         sweep_id,
         function=lambda: _run_sweep(
@@ -189,9 +301,12 @@ def _run_sweep(sweep_config, episodes_per_sweep, save_dir):
     Returns:
         dict: The sweep configuration.
     """
-
+    #DEBUG
+    print(f'_run_sweep fired...')
     # get next run number
     run_number = get_next_run_number(sweep_config["project"])
+    #DEBUG
+    print(f'run number: {run_number}')
     run = wandb.init(
         project=sweep_config["project"],
         job_type="train",
@@ -214,19 +329,21 @@ def _run_sweep(sweep_config, episodes_per_sweep, save_dir):
             env=env,
             policy_layers=policy_layers,
             value_layers=value_layers,
-            callbacks=[callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+            callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
             save_dir=save_dir,
         )
     elif wandb.config.model_type == "DDPG":
-        actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
+        actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
         agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
         rl_agent = agent.build(
             env=env,
+            actor_cnn_layers = actor_cnn_layers,
+            critic_cnn_layers = critic_cnn_layers,
             actor_layers=actor_layers,
             critic_state_layers=critic_state_layers,
             critic_merged_layers=critic_merged_layers,
-            callbacks=[callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+            callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
             save_dir=save_dir,
         )
@@ -515,18 +632,30 @@ def get_metrics(project: str, sweep_name: str = None):
     return runs_df
 
 def format_metrics(data: pd.DataFrame) -> pd.DataFrame:
+    #DEBUG
+    print(f'data in format metrics: {data}')
+    
     # Parse the 'config' column
     data['config'] = parse_dict_column(data['config'])
+    #DEBUG
+    print(f'data[config] after parse: {data}')
 
     # Extract hyperparameters and rewards from the dictionaries
-    data['avg_reward'] = data['summary'].apply(lambda x: x.get('avg_reward') if isinstance(x, dict) else None)
+    data['avg reward'] = data['summary'].apply(lambda x: x.get('avg reward') if isinstance(x, dict) else None)
+    #DEBUG
+    print(f'data[avg reward] after apply: {data}')
+    data.to_csv(f"data.csv")
 
-    # Filter out rows that do not have a 'config_dict' or 'avg_reward'
-    data_filtered = data.dropna(subset=['config', 'avg_reward'])
+    # Filter out rows that do not have a 'config_dict' or 'avg reward'
+    data_filtered = data.dropna(subset=['config', 'avg reward'])
+    #DEBUG
+    print(f'data_filtered: {data_filtered}')
     # Flatten the 'config_dict' and create a new DataFrame of hyperparameter values
     data_hyperparams = pd.DataFrame(data_filtered['config'].apply(lambda x: helper.flatten_dict(x)).tolist())
-    # Join the flattened hyperparameters with the avg_reward column
-    data_hyperparams = data_hyperparams.join(data_filtered['avg_reward'])
+    # Join the flattened hyperparameters with the avg reward column
+    data_hyperparams = data_hyperparams.join(data_filtered['avg reward'])
+    #DEBUG
+    print(f'data_hyperparams: {data_hyperparams}')
 
     return data_hyperparams
 
@@ -536,15 +665,15 @@ def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, av
     bin_ranges = {}
     # data_hyperparams = format_metrics(data)
     # drop all columns that arent in hyperparameters list
-    data = data[hyperparameters + ['avg_reward']]
-    # Filter the DataFrame based on the avg_reward_threshold
-    data_heatmap = data[data['avg_reward'] >= avg_reward_threshold]
+    data = data[hyperparameters + ['avg reward']]
+    # Filter the DataFrame based on the avg reward_threshold
+    data_heatmap = data[data['avg reward'] >= avg_reward_threshold]
     # For continuous variables, bin them into the specified number of bins
     for hp in data_heatmap.columns:
         #DEBUG
         print(f'Binning loop {hp}')
         print(f'{hp} type: {data_heatmap[hp].dtype}')
-        if data_heatmap[hp].dtype == float and hp not in ['avg_reward']:
+        if data_heatmap[hp].dtype == float and hp not in ['avg reward']:
             #DEBUG
             print(f'Binning {hp}')
             data_heatmap[hp], bin_edges  = pd.cut(data_heatmap[hp], bins, labels=range(bins), retbins=True)
@@ -554,7 +683,7 @@ def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, av
             #DEBUG
             print(f'updated bin ranges dict: {bin_ranges}')
     # One-hot encode categorical variables
-    data_one_hot = pd.get_dummies(data_heatmap.drop('avg_reward', axis=1).astype('category'), dtype=np.int8)
+    data_one_hot = pd.get_dummies(data_heatmap.drop('avg reward', axis=1).astype('category'), dtype=np.int8)
     # Calculate co-occurrence matrix
     co_occurrence_matrix = np.dot(data_one_hot.T, data_one_hot)
 
@@ -566,6 +695,7 @@ def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, av
     co_occurrence_df = pd.DataFrame(co_occurrence_matrix, 
                                     index=data_one_hot.columns, 
                                     columns=data_one_hot.columns)
+    co_occurrence_df.to_csv(f"co_occurrence_df.csv")
 
 
     return co_occurrence_df, bin_ranges

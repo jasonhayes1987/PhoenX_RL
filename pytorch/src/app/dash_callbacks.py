@@ -31,6 +31,7 @@ import layouts
 import helper
 import utils
 import models
+import cnn_models
 import rl_agents
 import wandb_support
 # import tasks
@@ -45,7 +46,7 @@ def fetch_data_process(project, sweep_name, shared_data):
             metrics_data = wandb_support.get_metrics(project, sweep_name)
             formatted_data = wandb_support.format_metrics(metrics_data)
             shared_data['formatted_data'] = formatted_data
-            print("Data fetched and formatted successfully.")
+            # print("Data fetched and formatted successfully.")
             time.sleep(10)  # Wait for 60 seconds before fetching data again
         except Exception as e:
             print(f"Error in fetch_data_process: {str(e)}")
@@ -56,6 +57,8 @@ def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_t
     # while True:
     try:
         if 'formatted_data' in shared_data:
+            #DEBUG
+            print(f'shared data: {shared_data}')
             # print("Calculating co-occurrence matrix...")
             formatted_data = shared_data['formatted_data']
             #DEBUG
@@ -67,7 +70,7 @@ def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_t
             shared_data['bin_ranges'] = bin_ranges
             #DEBUG
             print(f'data in shared data: {shared_data}')
-            # print("Co-occurrence matrix calculated successfully.")
+            print("Co-occurrence matrix calculated successfully.")
         # time.sleep(5)  # Wait for 5 seconds before updating the heatmap again
     except Exception as e:
         print(f"Error in update_heatmap_process: {str(e)}")
@@ -108,8 +111,8 @@ def register_callbacks(app, shared_data):
         
     @app.callback(
     Output({'type': 'units-per-layer', 'model': MATCH, 'agent': MATCH}, 'children'),
-    Input({'type': 'hidden-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
-    State({'type': 'hidden-layers', 'model': MATCH, 'agent': MATCH}, 'id'),
+    Input({'type': 'dense-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
+    State({'type': 'dense-layers', 'model': MATCH, 'agent': MATCH}, 'id'),
 )
     def update_units_per_layer_inputs(num_layers, id):
         if num_layers is not None:
@@ -124,7 +127,7 @@ def register_callbacks(app, shared_data):
                     'index': i,
                 }
                 inputs.append(html.Div([
-                    html.Label(f'Neurons in Hidden Layer {i}'),
+                    html.Label(f'Neurons in Hidden Layer {i}', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id=input_id,
                         min=1,
@@ -138,16 +141,257 @@ def register_callbacks(app, shared_data):
                 ]))
 
             return inputs
+        
+        
+    @app.callback(
+    Output({'type': 'layer-types', 'model': MATCH, 'agent': MATCH}, 'children'),
+    Input({'type': 'conv-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
+    State({'type': 'conv-layers', 'model': MATCH, 'agent': MATCH}, 'id'),
+)
+    def update_cnn_layer_type_inputs(num_layers, id):
+        if num_layers is not None:
+            model_type = id['model']
+            agent_type = id['agent']
+
+            layer_types = []
+            for i in range(1, num_layers + 1):
+                input_id = {
+                    'type': 'cnn-layer-type',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': i,
+                }
+                layer_types.append(html.Div([
+                    html.Label(f'Layer Type for Conv Layer {i}', style={'text-decoration': 'underline'}),
+                    dcc.Dropdown(
+                        id=input_id,
+                        options=[
+                            {'label': 'Conv2D', 'value': 'conv'},
+                            {'label': 'MaxPool2D', 'value': 'pool'},
+                            {'label': 'Dropout', 'value': 'dropout'},
+                            {'label': 'BatchNorm2D', 'value': 'batchnorm'},
+                            {'label': 'Relu', 'value':'relu'},
+                            {'label': 'Tanh', 'value': 'tanh'},
+                        ]
+                    ),
+                    html.Div(
+                        id={
+                            'type': 'cnn-layer-type-parameters',
+                            'model': model_type,
+                            'agent': agent_type,
+                            'index': i,
+                        },
+                    )
+                    ])
+                )
+
+            return layer_types
+        
     
-    # @app.callback(
-    #     Output({'type': 'layer-units-output', 'index': MATCH}, 'children'),
-    #     Input({'type': 'layer-units', 'index': MATCH}, 'value'),
-    #     State({'type': 'layer-units', 'index': MATCH}, 'id'),
-    # )
-    # def update_layer_units(value, id):
-    #     if value is not None:
-    #         return f"Layer {id['index']} units: {value}"
-    #     return "Please select a value"
+    @app.callback(
+    Output({'type': 'conv-padding-custom-container', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'style'),
+    Input({'type': 'conv-padding', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value')
+    )
+    def show_hide_custom_padding(padding_value):
+        if padding_value == 'custom':
+            return {'display': 'block'}
+        else:
+            return {'display': 'none'}
+        
+    
+    @app.callback(
+    Output({'type': 'conv-padding-custom-container-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'style'),
+    Input({'type': 'conv-padding-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value')
+    )
+    def show_hide_custom_padding_hyperparams(padding_value):
+        if padding_value == 'custom':
+            return {'display': 'block'}
+        else:
+            return {'display': 'none'}
+        
+        
+    @app.callback(
+    Output({'type': 'cnn-layer-type-parameters', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'children'),
+    Input({'type': 'cnn-layer-type', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value'),
+    State({'type': 'cnn-layer-type', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'id'),
+    )
+    def update_layer_type_params(layer_type, id):
+        if layer_type is not None:
+            model_type = id['model']
+            agent = id['agent']
+            index = id['index']
+
+            # loop over layer types to create the appropriate parameters
+            if layer_type == 'conv':
+                return html.Div([
+                    html.Label(f'Filters in Conv Layer {index}', style={'text-decoration': 'underline'}),
+                    dcc.Slider(
+                        id={
+                            'type': 'conv-filters',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        min=1,
+                        max=1024,
+                        step=1,
+                        value=32,
+                        marks={1:'1', 1024:'1024'},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                    html.Label(f'Kernel Size in Conv Layer {index}', style={'text-decoration': 'underline'}),
+                    dcc.Slider(
+                        id={
+                            'type': 'conv-kernel-size',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        min=1,
+                        max=10,
+                        step=1,
+                        value=3,
+                        marks={1:'1', 10:'10'},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                    html.Label(f'Kernel Stride in Conv Layer {index}', style={'text-decoration': 'underline'}),
+                    dcc.Slider(
+                        id={
+                            'type': 'conv-stride',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        min=1,
+                        max=10,
+                        step=1,
+                        value=3,
+                        marks={1:'1', 10:'10'},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                    html.Label(f'Input Padding in Conv Layer {index}', style={'text-decoration': 'underline'}),
+                    dcc.RadioItems(
+                        id={
+                            'type': 'conv-padding',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        options=[
+                            {'label': 'Same', 'value': 'same'},
+                            {'label': 'Valid', 'value': 'valid'},
+                            {'label': 'Custom', 'value': 'custom'},
+                        ],
+                        value='same',  # Default value
+                    ),
+                    html.Div(
+                        [
+                            html.Label('Custom Padding (pixels)', style={'text-decoration': 'underline'}),
+                            dcc.Slider(
+                                id={
+                                    'type': 'conv-padding-custom',
+                                    'model': model_type,
+                                    'agent': agent,
+                                    'index': index,
+                                },
+                                min=0,
+                                max=10,
+                                step=1,
+                                value=1,
+                                marks={0:'0', 10:'10'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                            ),
+                        ],
+                        id={
+                            'type': 'conv-padding-custom-container',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        style={'display': 'none'},  # Hide initially
+                    ),
+                    dcc.Checklist(
+                        id={
+                            'type': 'conv-use-bias',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        options=[
+                            {'label': 'Use Bias', 'value': True},
+                        ]
+                    )
+                ])
+            if layer_type == 'pool':
+                return html.Div([
+                    html.Label(f'Kernel Size of Pooling Layer {index}', style={'text-decoration': 'underline'}),
+                    dcc.Slider(
+                        id={
+                            'type': 'pool-kernel-size',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        min=1,
+                        max=10,
+                        step=1,
+                        value=3,
+                        marks={1:'1', 10:'10'},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                    html.Label(f'Kernel Stride in Pooling Layer {index}', style={'text-decoration': 'underline'}),
+                    dcc.Slider(
+                        id={
+                            'type': 'pool-stride',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        min=1,
+                        max=10,
+                        step=1,
+                        value=3,
+                        marks={1:'1', 10:'10'},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                ])
+            if layer_type == 'batchnorm':
+                return html.Div([
+                    html.Label(f'Number of Features for BatchNorm Layer {index} (set to number of input channels)', style={'text-decoration': 'underline'}),
+                    dcc.Slider(
+                        id={
+                            'type': 'batch-features',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        min=1,
+                        max=1024,
+                        step=1,
+                        value=32,
+                        marks={1:'1', 1024:'1024'},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                ])
+            if layer_type == 'dropout':
+                return html.Div([
+                    html.Label(f'Probability of Zero-ed Element for Dropout Layer {index}', style={'text-decoration': 'underline'}),
+                    dcc.Slider(
+                        id={
+                            'type': 'dropout-prob',
+                            'model': model_type,
+                            'agent': agent,
+                            'index': index,
+                        },
+                        min=0.0,
+                        max=1.0,
+                        step=0.1,
+                        value=0.5,
+                        marks={0.0:'0.0', 1.0:'1.0'},
+                        tooltip={"placement": "bottom", "always_visible": True},
+                    ),
+                ])
+    
     
     @app.callback(
         Output('actor-critic-config-container', 'children'),
@@ -196,7 +440,7 @@ def register_callbacks(app, shared_data):
             agent_type = id['agent']
             if noise_type == "Ornstein-Uhlenbeck":
                 inputs = html.Div([
-                    html.Label('Mean'),
+                    html.Label('Mean', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'ou-mean',
@@ -211,7 +455,7 @@ def register_callbacks(app, shared_data):
                         tooltip={"placement": "bottom", "always_visible": True},
                         included=False,
                     ),
-                    html.Label('Mean Reversion'),
+                    html.Label('Mean Reversion', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'ou-sigma',
@@ -226,7 +470,7 @@ def register_callbacks(app, shared_data):
                         tooltip={"placement": "bottom", "always_visible": True},
                         included=False,
                     ),
-                    html.Label('Volatility'),
+                    html.Label('Volatility', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'ou-theta',
@@ -241,7 +485,7 @@ def register_callbacks(app, shared_data):
                         tooltip={"placement": "bottom", "always_visible": True},
                         included=False,
                     ),
-                    html.Label('Time Delta'),
+                    html.Label('Time Delta', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'ou-dt',
@@ -260,7 +504,7 @@ def register_callbacks(app, shared_data):
 
             elif noise_type == "Normal":
                 inputs = html.Div([
-                    html.Label('Mean'),
+                    html.Label('Mean', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'normal-mean',
@@ -275,7 +519,7 @@ def register_callbacks(app, shared_data):
                         tooltip={"placement": "bottom", "always_visible": True},
                         included=False,
                     ),
-                    html.Label('Standard Deviation'),
+                    html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'normal-stddv',
@@ -294,7 +538,7 @@ def register_callbacks(app, shared_data):
 
             elif noise_type == "Uniform":
                 inputs = html.Div([
-                    html.Label('Minimum Value'),
+                    html.Label('Minimum Value', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'uniform-min',
@@ -309,7 +553,7 @@ def register_callbacks(app, shared_data):
                         tooltip={"placement": "bottom", "always_visible": True},
                         included=False,
                     ),
-                    html.Label('Maximum Value'),
+                    html.Label('Maximum Value', style={'text-decoration': 'underline'}),
                     dcc.Slider(
                         id={
                             'type':'uniform-max',
@@ -371,30 +615,40 @@ def register_callbacks(app, shared_data):
         State({'type':'agent-type-dropdown', 'page':'/build-agent'}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
-        State({'type':'projects-dropdown', 'page': '/build-agent'}, 'value')],
+        State({'type':'projects-dropdown', 'page': '/build-agent'}, 'value'),
         State({'type':'callback', 'page':'/build-agent'}, 'value'),
+        State({'type': 'env-dropdown', 'page': '/build-agent'}, 'value')],
         prevent_initial_call=True,
 )
-    def build_agent_model(n_clicks, all_values, all_ids, agent_type_dropdown_value, layer_units_values, layer_units_ids, project, callbacks):
+    def build_agent_model(n_clicks, all_values, all_ids, agent_type_dropdown_value, layer_index_values, layer_index_ids, project, callbacks, env_selection):
         if n_clicks is None or n_clicks < 1:
             raise PreventUpdate
+
+        # Set environment parameter
+        env = gym.make(env_selection)
 
         # set params if agent is reinforce or actor critic
         if agent_type_dropdown_value == "Reinforce" or agent_type_dropdown_value == "ActorCritic":
             # set defualt gym environment in order to build policy and value models and save
-            env = gym.make("CartPole-v1")
+            # env = gym.make("CartPole-v1")
 
-            policy_optimizer = helper.get_optimizer_by_name(
-                utils.get_specific_value(
+            learning_rate=10**utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        value_type='learning-rate',
+                        value_model='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+
+            policy_optimizer = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     value_type='optimizer',
                     value_model='policy',
                     agent_type=agent_type_dropdown_value,
                 )
-            )
             
-            policy_initializer = utils.create_kernel_initializer(
+            policy_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='policy',
@@ -405,8 +659,8 @@ def register_callbacks(app, shared_data):
                 utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
-                    layer_units_values=layer_units_values,
-                    layer_units_ids=layer_units_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
                     value_type='layer-units',
                     value_model='policy',
                     agent_type=agent_type_dropdown_value,
@@ -428,19 +682,18 @@ def register_callbacks(app, shared_data):
                     env=gym.make(env),
                     dense_layers=policy_layers,
                     optimizer=policy_optimizer,
+                    learning_rate=learning_rate,
                 )
 
-            value_optimizer = helper.get_optimizer_by_name(
-                utils.get_specific_value(
+            value_optimizer = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     value_type='optimizer',
                     value_model='value',
                     agent_type=agent_type_dropdown_value,
                 )
-            )
 
-            value_initializer = utils.create_kernel_initializer(
+            value_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='value',
@@ -451,8 +704,8 @@ def register_callbacks(app, shared_data):
                 utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
-                    layer_units_values=layer_units_values,
-                    layer_units_ids=layer_units_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
                     value_type='layer-units',
                     value_model='value',
                     agent_type=agent_type_dropdown_value,
@@ -473,107 +726,117 @@ def register_callbacks(app, shared_data):
             
             value_model = models.ValueModel(
                 env=gym.make(env),
-                hidden_layers=value_layers,
+                dense_layers=value_layers,
                 optimizer=value_optimizer,
+                learning_rate=learning_rate,
             )
+
             
             if agent_type_dropdown_value == "Reinforce":
+
+                discount=utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        value_type='discount',
+                        value_model='none',
+                        agent_type=agent_type_dropdown_value,
+                    ),
+
                 
                 agent = rl_agents.Reinforce(
                     env=gym.make(env),
                     policy_model=policy_model,
                     value_model=value_model,
-                    learning_rate=10**(utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        value_type='learning-rate',
-                        value_model='none',
-                        agent_type=agent_type_dropdown_value,
-                    )),
-                    discount=utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        value_type='discount',
-                        value_model='none',
-                        agent_type=agent_type_dropdown_value,
-                    ),
+                    discount=discount,
                     callbacks=utils.get_callbacks(callbacks, project),
                     save_dir=os.path.join(os.getcwd(), 'assets'),
                 )
+
             elif agent_type_dropdown_value == "Actor Critic":
-                policy_model = models.PolicyModel(
-                    env=gym.make(env),
-                    dense_layers=policy_layers,
-                    optimizer=policy_optimizer,
-                )
-                value_model = models.ValueModel(
-                    env=gym.make(env),
-                    hidden_layers=value_layers,
-                    optimizer=value_optimizer,
-                )
-                agent = rl_agents.ActorCritic(
-                    env=gym.make(env),
-                    policy_model=policy_model,
-                    value_model=value_model,
-                    learning_rate=10**(utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        value_type='learning-rate',
-                        value_model='none',
-                        agent_type=agent_type_dropdown_value,
-                    )),
-                    discount=utils.get_specific_value(
+
+                discount=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
                         value_type='discount',
                         value_model='none',
                         agent_type=agent_type_dropdown_value,
                     ),
-                    policy_trace_decay=utils.get_specific_value(
+
+                policy_trace_decay=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
                         value_type='trace-decay',
                         value_model='policy',
                         agent_type=agent_type_dropdown_value,
-                    ),
-                    value_trace_decay=utils.get_specific_value(
+                    )
+                value_trace_decay=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
                         value_type='trace-decay',
                         value_model='value',
                         agent_type=agent_type_dropdown_value,
-                    ),
+                    )
+
+                agent = rl_agents.ActorCritic(
+                    env=gym.make(env),
+                    policy_model=policy_model,
+                    value_model=value_model,
+                    discount=discount,
+                    policy_trace_decay=policy_trace_decay,
+                    value_trace_decay=value_trace_decay,
                     callbacks=utils.get_callbacks(callbacks, project),
                     save_dir=os.path.join(os.getcwd(), 'assets'),
                 )
+
         elif agent_type_dropdown_value == "DDPG":
             # set defualt gym environment in order to build policy and value models and save
-            env = gym.make("Pendulum-v1")
+            # env = gym.make("Pendulum-v1")
 
-            # set actor and critic model params
-            actor_optimizer = helper.get_optimizer_by_name(
-                utils.get_specific_value(
+            # Set actor params
+            
+            # Set actor learning rate
+            actor_learning_rate=10**utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    value_type='learning-rate',
+                    value_model='actor',
+                    agent_type=agent_type_dropdown_value,
+                )
+
+            actor_optimizer = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     value_type='optimizer',
                     value_model='actor',
                     agent_type=agent_type_dropdown_value,
                 )
-            )
 
-            actor_initializer = utils.create_kernel_initializer(
+            actor_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='actor',
                 agent_type=agent_type_dropdown_value
             )
 
-            actor_layers = models.build_layers(
+            actor_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'actor',
+                agent_type_dropdown_value
+            )
+
+            if actor_conv_layers:
+                actor_cnn = cnn_models.CNN(actor_conv_layers, env)
+
+
+            actor_dense_layers = models.build_layers(
                 utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
-                    layer_units_values=layer_units_values,
-                    layer_units_ids=layer_units_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
                     value_type='layer-units',
                     value_model='actor',
                     agent_type=agent_type_dropdown_value,
@@ -588,20 +851,41 @@ def register_callbacks(app, shared_data):
                 actor_initializer,
             )
 
-            ##DEBUG
-            # print("Actor layers:", actor_layers)
+            # Create actor model
+            actor_model = models.ActorModel(
+                env=env,
+                cnn_model=actor_cnn,
+                dense_layers=actor_dense_layers,
+                learning_rate=actor_learning_rate,
+                optimizer=actor_optimizer
+            )
             
-            critic_optimizer = helper.get_optimizer_by_name(
-                utils.get_specific_value(
+            #DEBUG
+            # print(f'actor cnn model: {actor_cnn}')
+            # print(f'actor dense layers: {actor_dense_layers}')
+            # print(f'actor optimizer: {actor_optimizer}')
+            # print(f'actor learning rate: {actor_learning_rate}')
+            # print(f'actor model: {actor_model}')
+            
+            # Set critic params
+
+            critic_learning_rate=10**utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    value_type='learning-rate',
+                    value_model='critic',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            critic_optimizer = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     value_type='optimizer',
                     value_model='critic',
                     agent_type=agent_type_dropdown_value,
                 )
-            )
 
-            critic_initializer = utils.create_kernel_initializer(
+            critic_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='critic',
@@ -612,8 +896,8 @@ def register_callbacks(app, shared_data):
                 utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
-                    layer_units_values=layer_units_values,
-                    layer_units_ids=layer_units_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
                     value_type='layer-units',
                     value_model='critic-state',
                     agent_type=agent_type_dropdown_value,
@@ -627,14 +911,25 @@ def register_callbacks(app, shared_data):
                 ),
                 critic_initializer,
             )
-            ##DEBUG
-            # print("Critic state layers:", critic_state_layers)
+           
+            critic_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'critic',
+                agent_type_dropdown_value
+            )
+
+            if critic_conv_layers:
+                critic_cnn = cnn_models.CNN(critic_conv_layers, env)
+
             critic_merged_layers = models.build_layers(
                 utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
-                    layer_units_values=layer_units_values,
-                    layer_units_ids=layer_units_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
                     value_type='layer-units',
                     value_model='critic-merged',
                     agent_type=agent_type_dropdown_value,
@@ -648,75 +943,72 @@ def register_callbacks(app, shared_data):
                 ),
                 critic_initializer,
             )
-            ##DEBUG
-            # print("Critic merged layers:", critic_merged_layers)
-
-            actor_model = models.ActorModel(
-                env=env,
-                dense_layers=actor_layers,
-                learning_rate=10**(utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    value_type='learning-rate',
-                    value_model='actor',
-                    agent_type=agent_type_dropdown_value,
-                )),
-                optimizer=actor_optimizer
-            )
-            ##DEBUG
-            # print("Actor model:", actor_model.get_config())
+           
+           
             critic_model = models.CriticModel(
                 env=env,
+                cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
-                learning_rate=10**(utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    value_type='learning-rate',
-                    value_model='critic',
-                    agent_type=agent_type_dropdown_value,
-                )),
+                learning_rate=critic_learning_rate,
                 optimizer=critic_optimizer
             )
-            ##DEBUG
-            # print("Critic model:", critic_model.get_config())
-            agent = rl_agents.DDPG(
-                env=env,
-                actor_model=actor_model,
-                critic_model=critic_model,
-                discount=utils.get_specific_value(
+
+            #DEBUG
+            # print(f'critic cnn model: {critic_cnn}')
+            # print(f'critic state layers: {critic_state_layers}')
+            # print(f'critic merged layers: {critic_merged_layers}')
+            # print(f'critic optimizer: {critic_optimizer}')
+            # print(f'critic learning rate: {critic_learning_rate}')
+            # print(f'critic model: {critic_model}')
+
+
+            # Set DDPG params
+
+            discount=utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     value_type='discount',
                     value_model='none',
                     agent_type=agent_type_dropdown_value,
-                ),
-                tau=utils.get_specific_value(
+                )
+            
+            tau=utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     value_type='tau',
                     value_model='none',
                     agent_type=agent_type_dropdown_value,
-                ),
-                replay_buffer=helper.ReplayBuffer(env, 100000),
-                batch_size=utils.get_specific_value(
+                )
+            
+            batch_size=utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     value_type='batch-size',
                     value_model='none',
                     agent_type=agent_type_dropdown_value,
-                ),
-                noise=utils.create_noise_object(
+                )
+            
+            noise=utils.create_noise_object(
                     env=env,
                     all_values=all_values,
                     all_ids=all_ids,
                     agent_type=agent_type_dropdown_value,
-                ),
+                )
+            
+            agent = rl_agents.DDPG(
+                env=env,
+                actor_model=actor_model,
+                critic_model=critic_model,
+                discount=discount,
+                tau=tau,
+                replay_buffer=helper.ReplayBuffer(env, 100000),
+                batch_size=batch_size,
+                noise=noise,
                 callbacks=utils.get_callbacks(callbacks, project),
                 save_dir=os.path.join(os.getcwd(), 'assets'),
             )
-            ##DEBUG
-            # print("Agent:", agent.get_config())
+            
         # save agent
         agent.save()
 
@@ -800,9 +1092,11 @@ def register_callbacks(app, shared_data):
         [Output({'type':'env-description', 'page':MATCH}, 'children'),
         Output({'type':'env-gif', 'page':MATCH}, 'src'),
         Output({'type':'gym-params', 'page':MATCH}, 'children')],
-        [Input({'type':'env-dropdown', 'page':MATCH}, 'value')]
+        [Input({'type':'env-dropdown', 'page':MATCH}, 'value')],
+        State({'type':'env-dropdown', 'page':MATCH}, 'id'),
+        prevent_initial_call=True,
     )
-    def update_env_info(env_name):
+    def update_env_info(env_name, id):
         if env_name:
             env_data = {
         "CartPole-v0": {
@@ -916,7 +1210,9 @@ def register_callbacks(app, shared_data):
     }
             description = env_data[env_name]['description']
             gif_url = env_data[env_name]['gif_url']
-            gym_params = utils.generate_gym_extra_params_container(env_name)
+            gym_params = {}
+            if id['page'] != "/build-agent":
+                gym_params = utils.generate_gym_extra_params_container(env_name)
             return description, gif_url, gym_params
         return "", "", gym_params  # Default empty state
 
@@ -1302,6 +1598,7 @@ def register_callbacks(app, shared_data):
                                 dcc.Tab([
                                     # html.H4("Actor Model Configuration"),
                                     utils.generate_learning_rate_hyperparam_component(agent_type, 'actor'),
+                                    utils.generate_cnn_layer_hyperparam_component(agent_type, 'actor'),
                                     utils.generate_hidden_layer_hyperparam_component(agent_type, 'actor'),
                                     utils.generate_kernel_initializer_hyperparam_component(agent_type, 'actor'),
                                     html.Hr(),
@@ -1313,6 +1610,7 @@ def register_callbacks(app, shared_data):
                                     # html.H4("Critic Model Configuration"),
                                     utils.generate_learning_rate_hyperparam_component(agent_type, 'critic'),
                                     html.Hr(),
+                                    utils.generate_cnn_layer_hyperparam_component(agent_type, 'critic'),
                                     html.H4("Critic State Input Layer Configuration"),
                                     utils.generate_hidden_layer_hyperparam_component(agent_type, 'critic-state'),
                                     html.Hr(),
@@ -1339,7 +1637,7 @@ def register_callbacks(app, shared_data):
         Input({'type': 'hidden-layers-slider', 'model': MATCH, 'agent': MATCH}, 'value'),
         State({'type': 'hidden-layers-slider', 'model': MATCH, 'agent': MATCH}, 'id'),
     )
-    def update_units_per_layer_inputs(num_layers, id):
+    def update_hyperparam_units_per_layer_inputs(num_layers, id):
         if num_layers is not None:
             model_type = id['model']
             agent_type = id['agent']
@@ -1350,6 +1648,44 @@ def register_callbacks(app, shared_data):
                 )
 
             return inputs
+        
+
+    @app.callback(
+        Output({'type': 'cnn-layer-types-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'cnn-layers-slider-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'cnn-layers-slider-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+    )
+    def update_hyperparam_units_types_inputs(num_layers, layer_id):
+        if num_layers is not None:
+            model_type = layer_id['model']
+            agent_type = layer_id['agent']
+            layer_types = []
+            for i in range(1, num_layers[1] + 1):
+                layer_types.append(
+                    utils.generate_cnn_layer_type_hyperparam_component(agent_type, model_type, i)
+                )
+
+            return layer_types
+        
+
+    @app.callback(
+    Output({'type': 'cnn-layer-type-parameters-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'children'),
+    Input({'type': 'cnn-layer-type-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value'),
+    State({'type': 'cnn-layer-type-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'id'),
+    prevent_initial_call=True
+    )
+    def update_layer_type_params_hyperparams(layer_types, layer_id):
+        if layer_types is not None:
+            layer_params = []
+            for layer_type in layer_types:
+                model = layer_id['model']
+                agent = layer_id['agent']
+                index = layer_id['index']
+
+                layer_params.append(utils.generate_cnn_layer_parameters_hyperparam_component(layer_type, agent, model, index))
+            
+        return layer_params
+
  
     @app.callback(
         Output({'type': 'kernel-options-tabs', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -1403,9 +1739,11 @@ def register_callbacks(app, shared_data):
         State('num-episodes', 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, num_sweeps, num_episodes, all_values, all_ids):
+    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, num_sweeps, num_episodes, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
         # extract any additional gym env params
         params = utils.extract_gym_params(env_params)
@@ -1421,8 +1759,12 @@ def register_callbacks(app, shared_data):
                 params,
                 agent_selection,
                 all_values,
-                all_ids
+                all_ids,
+                all_indexed_values,
+                all_indexed_ids
             )
+            #DEBUG
+            print(f'wandb config: {sweep_config}')
             thread = threading.Thread(target=wandb_support.hyperparameter_sweep, args=(sweep_config, num_sweeps, num_episodes, os.path.join(os.getcwd(), 'assets')))
             #DEBUG
             # print("thread set")
@@ -1463,7 +1805,7 @@ def register_callbacks(app, shared_data):
         matrix_data = shared_data.get('matrix_data')
         bin_ranges = shared_data.get('bin_ranges')
         if matrix_data:
-            print(f'heatmap data: {data}')
+            # print(f'heatmap data: {data}')
             new_data = {'matrix_data': matrix_data, 'bin_ranges': bin_ranges}
             return new_data
         else:

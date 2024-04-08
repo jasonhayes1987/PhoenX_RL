@@ -36,57 +36,41 @@ class Model(nn.Module):
                 print(f'layer {prefix}_dense_{config_index} using {init_config} for {layer}')
                 
                 if isinstance(init_config, dict):
-                    if init_config['variance scaling']:
+                    if 'variance scaling' in init_config:
                         print('dict variance scaling')
                         torch_utils.VarianceScaling_(layer.weight, **init_config['variance scaling'])
                     
-                    elif init_config['uniform']:
+                    elif 'xavier uniform' in init_config:
+                        nn.init.xavier_uniform_(layer.weight, **init_config['xavier uniform'])
+
+                    elif 'xavier normal' in init_config:
+                        nn.init.xavier_normal_(layer.weight, **init_config['xavier normal'])
+
+                    elif 'kaiming uniform' in init_config:
+                        nn.init.kaiming_uniform_(layer.weight, **init_config['kaiming uniform'])
+                    
+                    elif 'kaiming normal' in init_config:
+                        nn.init.kaiming_normal_(layer.weight, **init_config['kaiming normal'])
+
+                    elif 'truncated normal' in init_config:
+                        nn.init.trunc_normal_(layer.weight, **init_config['truncated normal'])
+                        nn.init.trunc_normal_(layer.bias, **init_config['truncated normal'])
+
+                    elif 'uniform' in init_config:
                         nn.init.uniform_(layer.weight, **init_config['uniform'])
                         nn.init.uniform_(layer.bias, **init_config['uniform'])
 
-                    elif init_config['normal']:
+                    elif 'normal' in init_config:
                         nn.init.normal_(layer.weight, **init_config['normal'])
                         nn.init.normal_(layer.bias, **init_config['normal'])
 
-                    elif init_config['constant']:
+                    elif 'constant' in init_config:
                         nn.init.constant_(layer.weight, **init_config['constant'])
                         nn.init.constant_(layer.bias, **init_config['constant'])
-
-                    elif init_config['xavier uniform']:
-                        nn.init.xavier_uniform_(layer.weight, **init_config['xavier uniform'])
-
-                    elif init_config['xavier normal']:
-                        nn.init.xavier_normal_(layer.weight, **init_config['xavier normal'])
-
-                    elif init_config['kaiming uniform']:
-                        nn.init.kaiming_uniform_(layer.weight, **init_config['kaiming uniform'])
-                    
-                    elif init_config['kaiming normal']:
-                        nn.init.kaiming_normal_(layer.weight, **init_config['kaiming normal'])
-
-                    elif init_config['truncated normal']:
-                        nn.init.trunc_normal_(layer.weight, **init_config['truncated normal'])
-                        nn.init.trunc_normal_(layer.bias, **init_config['truncated normal'])
                 
                 elif isinstance(init_config, str):
                     if init_config == 'variance scaling':
                         torch_utils.VarianceScaling_(layer.weight)
-
-                    elif init_config == 'uniform':
-                        nn.init.uniform_(layer.weight)
-                        nn.init.uniform_(layer.bias)
-
-                    elif init_config == 'normal':
-                        nn.init.normal_(layer.weight)
-                        nn.init.normal_(layer.bias)
-
-                    elif init_config == 'ones':
-                        nn.init.ones_(layer.weight)
-                        nn.init.ones_(layer.bias)
-
-                    elif init_config == 'zeros':
-                        nn.init.zeros_(layer.weight)
-                        nn.init.zeros_(layer.bias)
 
                     elif init_config == 'xavier uniform':
                         nn.init.xavier_normal_(layer.weight)
@@ -103,6 +87,22 @@ class Model(nn.Module):
                     elif init_config == 'truncated normal':
                         nn.init.trunc_normal_(layer.weight)
                         nn.init.trunc_normal_(layer.bias)
+
+                    elif init_config == 'uniform':
+                        nn.init.uniform_(layer.weight)
+                        nn.init.uniform_(layer.bias)
+
+                    elif init_config == 'normal':
+                        nn.init.normal_(layer.weight)
+                        nn.init.normal_(layer.bias)
+
+                    elif init_config == 'ones':
+                        nn.init.ones_(layer.weight)
+                        nn.init.ones_(layer.bias)
+
+                    elif init_config == 'zeros':
+                        nn.init.zeros_(layer.weight)
+                        nn.init.zeros_(layer.bias)
                 
                 else:
                     raise ValueError(f"Invalid init_config {init_config} index {config_index}")
@@ -287,7 +287,7 @@ class PolicyModel(Model):
 
         config = {
             'env': self.env.spec.id,
-            'hidden_layers': len(self.dense_layers),
+            'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
             'optimizer': self.optimizer_class,
             'learning_rate': self.learning_rate,
@@ -303,12 +303,7 @@ class PolicyModel(Model):
         # Save the model parameters
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
 
-        obj_config = {
-            "env_name": self.env.spec.id,
-            "dense_layers": self.layer_config,
-            "optimizer": self.optimizer_class,
-            "learning_rate": self.learning_rate,
-        }
+        obj_config = self.get_config()
 
         with open(model_dir / "obj_config.json", "w", encoding="utf-8") as f:
             json.dump(obj_config, f)
@@ -322,7 +317,7 @@ class PolicyModel(Model):
         if obj_config_path.is_file():
             with open(obj_config_path, "r", encoding="utf-8") as f:
                 obj_config = json.load(f)
-            env = obj_config.get("env_name", "Custom/UnknownEnv")
+            env = obj_config.get("env", "Custom/UnknownEnv")
             dense_layers = obj_config.get("dense_layers", [])
             optimizer = obj_config.get("optimizer", "Adam")
             learning_rate = obj_config.get("learning_rate", 0.0001)
@@ -521,13 +516,7 @@ class ValueModel(Model):
     def get_config(self):
         """Get model config."""
 
-        config = {
-            'env': self.env.spec.id,
-            'hidden_layers': len(self.dense_layers),
-            'dense_layers': self.layer_config,
-            'optimizer': self.optimizer_class,
-            'learning_rate': self.learning_rate,
-        }
+        config = self.get_config()
 
         return config
 
@@ -541,7 +530,7 @@ class ValueModel(Model):
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
 
         obj_config = {
-            "env_name": self.env.spec.id,
+            "env": self.env.spec.id,
             "dense_layers": self.layer_config,
             "optimizer": self.optimizer_class,
             "learning_rate": self.learning_rate,
@@ -560,7 +549,7 @@ class ValueModel(Model):
         if obj_config_path.is_file():
             with open(obj_config_path, "r", encoding="utf-8") as f:
                 obj_config = json.load(f)
-            env = obj_config.get("env_name", "Custom/UnknownEnv")
+            env = obj_config.get("env", "Custom/UnknownEnv")
             dense_layers = obj_config.get("dense_layers", [])
             optimizer = obj_config.get("optimizer", "Adam")
             learning_rate = obj_config.get("learning_rate", 0.0001)
@@ -643,7 +632,9 @@ class ActorModel(Model):
 
     def get_config(self):
         config = {
-            'env_spec_id': self.env.spec.id if hasattr(self.env, 'spec') else 'Custom/UnknownEnv',
+            'env': self.env.spec.id if hasattr(self.env, 'spec') else 'Custom/UnknownEnv',
+            'cnn_model': self.cnn_model.get_config() if self.cnn_model is not None else None,
+            'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
             'optimizer': self.optimizer.__class__.__name__,
             'learning_rate': self.learning_rate,
@@ -676,13 +667,9 @@ class ActorModel(Model):
 
         # Save the model parameters
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
-        obj_config = {
-            "env_name": self.env.spec.id,
-            "dense_layers": self.layer_config,
-            "optimizer": self.optimizer_class,
-            "learning_rate": self.learning_rate,
-        }
+        obj_config = self.get_config()
 
         with open(model_dir / "obj_config.json", "w", encoding="utf-8") as f:
             json.dump(obj_config, f)
@@ -692,13 +679,15 @@ class ActorModel(Model):
     def load(cls, folder):
         model_dir = Path(folder) / "policy_model"
         obj_config_path = model_dir / "obj_config.json"
-        model_path = model_dir / 'pytorch_model.onnx'
+        model_path = model_dir / 'pytorch_model.pt'
 
         if obj_config_path.is_file():
             with open(obj_config_path, "r", encoding="utf-8") as f:
                 obj_config = json.load(f)
-            env = obj_config.get("env_name", "Custom/UnknownEnv")
-            cnn_model = obj_config.get("cnn_model", None)
+            env = gym.make(obj_config.get("env", "Custom/UnknownEnv"))
+            cnn_model_config = obj_config.get("cnn_model", None)
+            if cnn_model_config:
+                cnn_model = cnn_models.CNN(cnn_model_config['layers'], env)
             dense_layers = obj_config.get("dense_layers", [])
             optimizer = obj_config.get("optimizer", "Adam")
             learning_rate = obj_config.get("learning_rate", 0.0001)
@@ -712,7 +701,7 @@ class ActorModel(Model):
 
 
 class CriticModel(Model):
-    def __init__(self, env, cnn_model: nn.ModuleList=None, state_layers=None, merged_layers=None, optimizer: str = 'Adam', learning_rate=0.001):
+    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, optimizer: str = 'Adam', learning_rate=0.001):
         super().__init__()
         self.env = env
         self.cnn_model = cnn_model
@@ -861,8 +850,9 @@ class CriticModel(Model):
 
     def get_config(self):
         config = {
-            'env_spec_id': self.env.spec.id if hasattr(self.env, 'spec') and hasattr(self.env.spec, 'id') else 'Custom/UnknownEnv',
-            'hidden_layers': len(self.state_layers) + len(self.merged_layers),
+            'env': self.env.spec.id if hasattr(self.env, 'spec') and hasattr(self.env.spec, 'id') else 'Custom/UnknownEnv',
+            'cnn_model': self.cnn_model.get_config() if self.cnn_model is not None else None,
+            'num_layers': len(self.state_layers) + len(self.merged_layers),
             'state_layers': self.state_config,
             'merged_layers': self.merged_config,
             'learning_rate': self.learning_rate,
@@ -899,13 +889,9 @@ class CriticModel(Model):
 
         # Save the model parameters
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
-        obj_config = {
-            "env_name": self.env.spec.id,
-            "state_layers": self.state_config,
-            "merged_layers": self.merged_config,
-            "learning_rate": self.learning_rate,
-        }
+        obj_config = self.get_config()
 
         with open(model_dir / "obj_config.json", "w", encoding="utf-8") as f:
             json.dump(obj_config, f)
@@ -915,27 +901,30 @@ class CriticModel(Model):
     def load(cls, folder):
         model_dir = Path(folder) / "value_model"
         obj_config_path = model_dir / "obj_config.json"
-        model_path = model_dir / 'pytorch_model.onnx'
+        model_path = model_dir / 'pytorch_model.pt'
 
         if obj_config_path.is_file():
             with open(obj_config_path, "r", encoding="utf-8") as f:
                 obj_config = json.load(f)
-            env = obj_config.get("env_name", "Custom/UnknownEnv")
-            cnn_model = obj_config.get("cnn_model", None)
-            dense_layers = obj_config.get("dense_layers", [])
+            env = gym.make(obj_config.get("env", "Custom/UnknownEnv"))
+            cnn_model_config = obj_config.get("cnn_model", None)
+            if cnn_model_config:
+                cnn_model = cnn_models.CNN(cnn_model_config['layers'], env)
+            state_layers = obj_config.get("state_layers", [])
+            merged_layers = obj_config.get("merged_layers", [])
             optimizer = obj_config.get("optimizer", "Adam")
             learning_rate = obj_config.get("learning_rate", 0.0001)
         else:
             raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
 
-        model = cls(env, cnn_model, dense_layers, optimizer, learning_rate)
+        model = cls(env, cnn_model, state_layers, merged_layers, optimizer, learning_rate)
         model.load_state_dict(torch.load(model_path))
 
         return model
 
 
 def build_layers(units_per_layer: List[int], activation: str, initializer: str):
-    """formats sweep_config into policy and value layers"""
+    """formats config into policy and value layers"""
     # get policy layers
     layers = []
     for units in units_per_layer:

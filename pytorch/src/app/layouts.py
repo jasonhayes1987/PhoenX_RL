@@ -15,6 +15,10 @@ def build_agent(page):
     return html.Div([
         dbc.Container([
             html.H1("Build Agent", style={'textAlign': 'center'}),
+            utils.env_dropdown_component(page),
+            html.Div(id={'type':'gym-params', 'page':page}), # will be empty since just building agent
+            html.Div(id={'type':'env-description', 'page':page}),
+            html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
             dcc.Dropdown(
                 id={
                     'type': 'agent-type-dropdown',
@@ -49,6 +53,7 @@ def train_agent(page):
         utils.env_dropdown_component(page),
         html.Div(id={'type':'env-description', 'page':page}),
         html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
+        html.Div(id={'type':'gym-params', 'page':page}),
         utils.parameter_settings_component(page),
         dbc.Button("Start",
             id={
@@ -102,6 +107,7 @@ def test_agent(page):
         utils.env_dropdown_component(page),
         html.Div(id={'type':'env-description', 'page':page}),
         html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
+        html.Div(id={'type':'gym-params', 'page':page}),
         utils.parameter_settings_component(page),
         dbc.Button("Start",
             id={
