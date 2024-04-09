@@ -8,12 +8,14 @@ import time
 import json
 import base64
 import dash
-from dash import html, dcc
+from dash import html, dcc, dash_table
 from dash.dependencies import Input, Output, State, MATCH, ALL
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 from flask import request
 import numpy as np
+import io
+import ast
 
 import plotly.graph_objs as go
 import plotly.offline as pyo
@@ -54,23 +56,25 @@ def fetch_data_process(project, sweep_name, shared_data):
 
 
 def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_threshold):
-    # while True:
+    # while True
     try:
         if 'formatted_data' in shared_data:
             #DEBUG
-            print(f'shared data: {shared_data}')
+            # print(f'shared data: {shared_data}')
             # print("Calculating co-occurrence matrix...")
             formatted_data = shared_data['formatted_data']
+            # Convert the JSON string back to a pandas DataFrame
+            # formatted_data = pd.read_json(data, orient='split')
             #DEBUG
             print(f'formatted data passed to wandb_support: {formatted_data}')
             matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
             #DEBUG
-            print(f'bin ranges returned from wandb_support: {bin_ranges}')
+            # print(f'bin ranges returned from wandb_support: {bin_ranges}')
             shared_data['matrix_data'] = matrix_data.to_dict(orient='split')
             shared_data['bin_ranges'] = bin_ranges
             #DEBUG
-            print(f'data in shared data: {shared_data}')
-            print("Co-occurrence matrix calculated successfully.")
+            # print(f'data in shared data: {shared_data}')
+            # print("Co-occurrence matrix calculated successfully.")
         # time.sleep(5)  # Wait for 5 seconds before updating the heatmap again
     except Exception as e:
         print(f"Error in update_heatmap_process: {str(e)}")
@@ -93,6 +97,8 @@ def register_callbacks(app, shared_data):
             return layouts.test_agent(page)
         elif page == '/hyperparameter-search':
             return layouts.hyperparameter_search(page)
+        elif page == '/co-occurrence-analysis':
+            return layouts.co_occurrence_analysis(page)
         elif page == '/wandb-utils':
             return layouts.wandb_utils(page)
         # Add additional conditions for other pages
@@ -1775,7 +1781,7 @@ def register_callbacks(app, shared_data):
 
 
     @app.callback(
-        Output('hyperparameter-selector', 'options'),
+        Output({'type':'hyperparameter-selector', 'page':'/hyperparameter-search'}, 'options'),
         Input('update-hyperparam-selector', 'n_intervals'),
         State({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
         State({'type':'projects-dropdown', 'page':'/hyperparameter-search'}, 'value'),
@@ -1795,9 +1801,9 @@ def register_callbacks(app, shared_data):
         
             
     @app.callback(
-        Output('heatmap-data-store', 'data'),
+        Output({'type':'heatmap-data-store', 'page':'/hyperparameter-search'}, 'data'),
         Input('heatmap-store-data-interval', 'n_intervals'),
-        State('heatmap-data-store', 'data'),
+        State({'type':'heatmap-data-store', 'page':'/hyperparameter-search'}, 'data'),
     )
     def update_heatmap_data(n, data):
         if 'matrix_data' not in shared_data:
@@ -1813,9 +1819,9 @@ def register_callbacks(app, shared_data):
         
     
     @app.callback(
-        Output('heatmap-container', 'children'),
-        Output('legend-container' , 'children'),
-        Input('heatmap-data-store', 'data')
+        Output({'type':'heatmap-container', 'page':'/hyperparameter-search'}, 'children'),
+        Output({'type':'legend-container', 'page':'/hyperparameter-search'}, 'children'),
+        Input({'type':'heatmap-data-store', 'page':'/hyperparameter-search'}, 'data')
     )
     def update_heatmap_container(data):
         heatmap, bar_chart = utils.update_heatmap(data)
@@ -1824,8 +1830,8 @@ def register_callbacks(app, shared_data):
         return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
     
     @app.callback(
-        Output('heatmap-placeholder', 'style'),
-        Input('heatmap-container', 'children')
+        Output({'type':'heatmap-placeholder', 'page':'/hyperparameter-search'}, 'style'),
+        Input({'type':'heatmap-container', 'page':'/hyperparameter-search'}, 'children')
     )
     def toggle_placeholder(heatmap):
         if heatmap is None:
@@ -1850,10 +1856,10 @@ def register_callbacks(app, shared_data):
     @app.callback(
         Output('hidden-div-matrix-process', 'children'),
         Input('start-matrix-process-interval', 'n_intervals'),
-        State('hyperparameter-selector', 'value'),
-        State('bin-slider', 'value'),
-        State('z-score-checkbox', 'value'),
-        State('reward-threshold', 'value'),
+        State({'type':'hyperparameter-selector', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'bin-slider', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'z-score-checkbox', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'reward-threshold', 'page':'/hyperparameter-search'}, 'value'),
         State({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
     )
     def start_matrix_process(n, hyperparameters, bins, zscore_option, reward_threshold, n_clicks):
@@ -1866,3 +1872,78 @@ def register_callbacks(app, shared_data):
         
         return None
 
+
+    @app.callback(
+        Output({'type':'sweeps-dropdown', 'page':'/co-occurrence-analysis'}, 'options'),
+        Input({'type': 'projects-dropdown', 'page': '/co-occurrence-analysis'}, 'value'),
+        prevent_initial_call=True,
+    )
+    def update_sweeps_dropdown(project):
+        if project is not None:
+            sweep_names = wandb_support.get_sweeps_from_name(project)
+            return [{'label': name, 'value': name} for name in sweep_names]
+        
+    @app.callback(
+        Output({'type':'heatmap-data-store', 'page':'/co-occurrence-analysis'}, 'data'),
+        Output({'type':'output-data-upload', 'page':'/co-occurrence-analysis'}, 'children'),
+        Input({'type':'sweep-data-button', 'page': '/co-occurrence-analysis'}, 'n_clicks'),
+        State({'type':'projects-dropdown', 'page': '/co-occurrence-analysis'}, 'value'),
+        State({'type':'sweeps-dropdown', 'page': '/co-occurrence-analysis'}, 'value'),
+        State({'type':'heatmap-data-store', 'page':'/co-occurrence-analysis'}, 'data'),
+        prevent_initial_call=True,
+    )
+    def get_sweep_data(n_clicks, project, sweeps, co_occurrence_data):
+        if n_clicks > 0:
+            dfs = []
+            for sweep in sweeps:
+                metrics_data = wandb_support.get_metrics(project, sweep)
+                formatted_data = wandb_support.format_metrics(metrics_data)
+                dfs.append(formatted_data)
+            data = pd.concat(dfs, ignore_index=True)
+            data_json = data.to_json(orient='split')
+            co_occurrence_data['formatted_data'] = data_json
+            # create a Div containing a success message to return
+            success_message = html.Div([
+                dbc.Alert("Data Loaded.", color="success")
+            ])
+            return co_occurrence_data, success_message
+
+        return None
+    
+    @app.callback(
+        Output({'type':'hyperparameter-selector', 'page':'/co-occurrence-analysis'}, 'options'),
+        Input({'type':'sweeps-dropdown', 'page': '/co-occurrence-analysis'}, 'value'),
+        State({'type':'projects-dropdown', 'page': '/co-occurrence-analysis'}, 'value'),
+        prevent_initial_call=True,
+    )
+    def update_hyperparameter_dropdown(sweeps, project):
+        hyperparameters = wandb_support.fetch_sweep_hyperparameters_single_run(project, sweeps[0])
+
+        return [{'label': hp, 'value': hp} for hp in hyperparameters]
+
+
+    @app.callback(
+        Output({'type':'heatmap-container', 'page':'/co-occurrence-analysis'}, 'children'),
+        Output({'type':'legend-container', 'page':'/co-occurrence-analysis'}, 'children'),
+        Input({'type':'heatmap-data-store', 'page':'/co-occurrence-analysis'}, 'data'),
+        Input({'type':'hyperparameter-selector', 'page':'/co-occurrence-analysis'}, 'value'),
+        Input({'type':'bin-slider', 'page':'/co-occurrence-analysis'}, 'value'),
+        Input({'type':'z-score-checkbox', 'page':'/co-occurrence-analysis'}, 'value'),
+        Input({'type':'reward-threshold', 'page':'/co-occurrence-analysis'}, 'value'),
+        prevent_initial_call=True,
+    )
+    def update_co_occurrence_graphs(data, hyperparameters, bins, zscore_option, reward_threshold):
+        print(f'formatted data: {data["formatted_data"]}')
+        f_data = data['formatted_data']
+        print(f'formatted data: {f_data}')
+        # Convert the JSON string back to a pandas DataFrame
+        formatted_data = pd.read_json(f_data, orient='split')
+        z_score = 'zscore' in zscore_option
+        matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
+        data['matrix_data'] = matrix_data.to_dict(orient='split')
+        print(f'matrix data: {data["matrix_data"]}')
+        data['bin_ranges'] = bin_ranges
+        print(f'bin_ranges: {data["bin_ranges"]}')
+        heatmap, bar_chart = utils.update_heatmap(data)
+        
+        return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)

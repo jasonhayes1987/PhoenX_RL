@@ -28,6 +28,7 @@ navbar = dbc.NavbarSimple(
         dbc.NavItem(dbc.NavLink("Train Agent", href="/train-agent")),
         dbc.NavItem(dbc.NavLink("Test Agent", href="/test-agent")),
         dbc.NavItem(dbc.NavLink("Hyperparameter Search", href="/hyperparameter-search")),
+        dbc.NavItem(dbc.NavLink("Co-Occurrence Analysis", href="/co-occurrence-analysis")),
         dbc.NavItem(dbc.NavLink("WandB Utils", href="/wandb-utils")),
     ],
     brand="RL Agent Training and Testing App",

@@ -284,7 +284,7 @@ def hyperparameter_search(page):
                 style={'display': 'none'}
             ),
             dcc.Dropdown(
-                id='hyperparameter-selector',
+                id={'type':'hyperparameter-selector', 'page':page},
                 options=[],
                 multi=True,
                 placeholder="Select Hyperparameters",
@@ -295,8 +295,8 @@ def hyperparameter_search(page):
                 n_intervals=0
             ),
             
-            utils.render_heatmap(),
-            dcc.Store(id='heatmap-data-store'),
+            utils.render_heatmap(page),
+            dcc.Store(id={'type':'heatmap-data-store', 'page':page}),
             dcc.Interval(
                 id='heatmap-store-data-interval',
                 interval=1*1000,
@@ -335,10 +335,24 @@ def hyperparameter_search(page):
         ]
     )
 
-    
 
-
-
+def co_occurrence_analysis(page):
+    return html.Div([
+        html.H1("Co-Occurrence Analysis", style={'textAlign': 'center'}),
+        utils.generate_wandb_project_dropdown(page),
+        utils.generate_sweeps_dropdown(page),
+        html.Button('Get Data', id={'type':'sweep-data-button', 'page':page}, n_clicks=0),
+        html.Div(id={'type':'output-data-upload', 'page':page}),
+        dcc.Dropdown(
+            id={'type':'hyperparameter-selector', 'page':page},
+            options=[],
+            multi=True,
+            placeholder="Select Hyperparameters",
+        ),
+        utils.render_heatmap(page),
+        dcc.Store(id={'type':'heatmap-data-store', 'page':page},
+                  data={'formatted_data':None, 'matrix_data':None, 'bin_ranges':None}),
+    ])
 
 
 def wandb_utils(page):

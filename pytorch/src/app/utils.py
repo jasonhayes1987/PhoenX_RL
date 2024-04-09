@@ -2585,6 +2585,17 @@ def generate_wandb_project_dropdown(page):
             )
         ])
 
+def generate_sweeps_dropdown(page):
+    return html.Div([
+        dcc.Dropdown(
+            id={'type':'sweeps-dropdown', 'page':page},
+            options=[],
+            multi=True,
+            placeholder="Select a W&B Sweep",
+            )
+    ])
+
+
 def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, all_values, all_ids, all_indexed_values, all_indexed_ids):
     #DEBUG
     # print(f'create wandb config fired...')
@@ -3067,43 +3078,43 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # CNN layer params
             # Actor CNN layers
             for i in range(1, get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'actor', agent)[1] + 1):
-                sweep_config["parameters"][agent]["parameters"][f"actor_cnn_layer_{i}_types_{agent}"] = {"parameters":{}}
+                sweep_config["parameters"][agent]["parameters"][f"actor_cnn_layer_{i}_{agent}"] = {"parameters":{}}
                 config = {}
-                config["types"] = {"values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'cnn-layer-type-hyperparam', 'actor', agent, i)}
+                config[f"{agent}_actor_cnn_layer_{i}_types"] = {"values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'cnn-layer-type-hyperparam', 'actor', agent, i)}
 
                 # loop through each type in CNN layer and get the parameters to add to the sweep config
-                for value in config["types"]["values"]:
+                for value in config[f"{agent}_actor_cnn_layer_{i}_types"]["values"]:
                     if value == "conv":
-                        config["conv_filters"] = {
+                        config[f"{agent}_actor_cnn_layer_{i}_conv_filters"] = {
                             "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-filters-hyperparam', 'actor', agent, i)
                         }
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-kernel-size-hyperparam', 'actor', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["conv_kernel_size"] = {"value": value_range[0]}
+                            config[f"{agent}_actor_cnn_layer_{i}_conv_kernel_size"] = {"value": value_range[0]}
                         else:
-                            config["conv_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_actor_cnn_layer_{i}_conv_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-stride-hyperparam', 'actor', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["conv_strides"] = {"value": value_range[0]}
+                            config[f"{agent}_actor_cnn_layer_{i}_conv_strides"] = {"value": value_range[0]}
                         else:
-                            config["conv_strides"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_actor_cnn_layer_{i}_conv_strides"] = {"min": value_range[0], "max": value_range[1]}
 
-                        config["conv_padding"] = {
+                        config[f"{agent}_actor_cnn_layer_{i}_conv_padding"] = {
                             "value": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-hyperparam', 'actor', agent, i)
                         }
 
-                        if config["conv_padding"]["value"] == 'custom':
+                        if config[f"{agent}_actor_cnn_layer_{i}_conv_padding"]["value"] == 'custom':
                             value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-custom-hyperparam', 'actor', agent, i)
                             if value_range[0] == value_range[1]:
-                                config["conv_padding"] = {"value": value_range[0]}
+                                config[f"{agent}_actor_cnn_layer_{i}_conv_padding"] = {"value": value_range[0]}
                             else:
-                                config["conv_padding"] = {"min": value_range[0], "max": value_range[1]}
+                                config[f"{agent}_actor_cnn_layer_{i}_conv_padding"] = {"min": value_range[0], "max": value_range[1]}
                             
                             # val_config["conv_padding"]["parameters"] = pad_config
                         
-                        config["conv_bias"] = {
+                        config[f"{agent}_actor_cnn_layer_{i}_conv_bias"] = {
                             "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-use-bias-hyperparam', 'actor', agent, i)
                         }
                     
@@ -3111,67 +3122,67 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-kernel-size-hyperparam', 'actor', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["pool_kernel_size"] = {"value": value_range[0]}
+                            config[f"{agent}_actor_cnn_layer_{i}_pool_kernel_size"] = {"value": value_range[0]}
                         else:
-                            config["pool_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_actor_cnn_layer_{i}_pool_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-stride-hyperparam', 'actor', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["pool_strides"] = {"value": value_range[0]}
+                            config[f"{agent}_actor_cnn_layer_{i}_pool_strides"] = {"value": value_range[0]}
                         else:
-                            config["pool_strides"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_actor_cnn_layer_{i}_pool_strides"] = {"min": value_range[0], "max": value_range[1]}
 
                     if value == "dropout":
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'dropout-prob-hyperparam', 'actor', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["dropout_prob"] = {"value": value_range[0]}
+                            config[f"{agent}_actor_cnn_layer_{i}_dropout_prob"] = {"value": value_range[0]}
                         else:
-                            config["dropout_prob"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_actor_cnn_layer_{i}_dropout_prob"] = {"min": value_range[0], "max": value_range[1]}
 
                     # config["parameters"] = val_config
 
-                sweep_config["parameters"][agent]["parameters"][f"actor_cnn_layer_{i}_types_{agent}"]["parameters"] = config
+                sweep_config["parameters"][agent]["parameters"][f"actor_cnn_layer_{i}_{agent}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG actor CNN layers set to {config}')
 
             # Critic CNN layers
             for i in range(1, get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'critic', agent)[1] + 1):
-                sweep_config["parameters"][agent]["parameters"][f"critic_cnn_layer_{i}_types_{agent}"] = {"parameters":{}}
+                sweep_config["parameters"][agent]["parameters"][f"critic_cnn_layer_{i}_{agent}"] = {"parameters":{}}
                 config = {}
-                config["types"] = {"values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'cnn-layer-type-hyperparam', 'critic', agent, i)}
+                config[f"{agent}_critic_cnn_layer_{i}_types"] = {"values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'cnn-layer-type-hyperparam', 'critic', agent, i)}
 
                 # loop through each type in CNN layer and get the parameters to add to the sweep config
-                for value in config["types"]["values"]:
+                for value in config[f"{agent}_critic_cnn_layer_{i}_types"]["values"]:
                     if value == "conv":
-                        config["conv_filters"] = {
+                        config[f"{agent}_critic_cnn_layer_{i}_conv_filters"] = {
                             "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-filters-hyperparam', 'critic', agent, i)
                         }
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-kernel-size-hyperparam', 'critic', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["conv_kernel_size"] = {"value": value_range[0]}
+                            config[f"{agent}_critic_cnn_layer_{i}_conv_kernel_size"] = {"value": value_range[0]}
                         else:
-                            config["conv_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_critic_cnn_layer_{i}_conv_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-stride-hyperparam', 'critic', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["conv_strides"] = {"value": value_range[0]}
+                            config[f"{agent}_critic_cnn_layer_{i}_conv_strides"] = {"value": value_range[0]}
                         else:
-                            config["conv_strides"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_critic_cnn_layer_{i}_conv_strides"] = {"min": value_range[0], "max": value_range[1]}
 
-                        config["conv_padding"] = {
+                        config[f"{agent}_critic_cnn_layer_{i}_conv_padding"] = {
                             "value": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-hyperparam', 'critic', agent, i)
                         }
 
-                        if config["conv_padding"]["value"] == 'custom':
+                        if config[f"{agent}_critic_cnn_layer_{i}_conv_padding"]["value"] == 'custom':
                             value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-padding-custom-hyperparam', 'critic', agent, i)
                             if value_range[0] == value_range[1]:
-                                config["conv_padding"] = {"value": value_range[0]}
+                                config[f"{agent}_critic_cnn_layer_{i}_conv_padding"] = {"value": value_range[0]}
                             else:
-                                config["conv_padding"] = {"min": value_range[0], "max": value_range[1]}
+                                config[f"{agent}_critic_cnn_layer_{i}_conv_padding"] = {"min": value_range[0], "max": value_range[1]}
                         
-                        config["conv_bias"] = {
+                        config[f"{agent}_critic_cnn_layer_{i}_conv_bias"] = {
                             "values": get_specific_value_id(all_indexed_values, all_indexed_ids, 'conv-use-bias-hyperparam', 'critic', agent, i)
                         }
                     
@@ -3179,25 +3190,25 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-kernel-size-hyperparam', 'critic', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["pool_kernel_size"] = {"value": value_range[0]}
+                            config[f"{agent}_critic_cnn_layer_{i}_pool_kernel_size"] = {"value": value_range[0]}
                         else:
-                            config["pool_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_critic_cnn_layer_{i}_pool_kernel_size"] = {"min": value_range[0], "max": value_range[1]}
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'pool-stride-hyperparam', 'critic', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["pool_strides"] = {"value": value_range[0]}
+                            config[f"{agent}_critic_cnn_layer_{i}_pool_strides"] = {"value": value_range[0]}
                         else:
-                            config["pool_strides"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_critic_cnn_layer_{i}_pool_strides"] = {"min": value_range[0], "max": value_range[1]}
 
                     if value == "dropout":
 
                         value_range = get_specific_value_id(all_indexed_values, all_indexed_ids, 'dropout-prob-hyperparam', 'critic', agent, i)
                         if value_range[0] == value_range[1]:
-                            config["dropout_prob"] = {"value": value_range[0]}
+                            config[f"{agent}_critic_cnn_layer_{i}_dropout_prob"] = {"value": value_range[0]}
                         else:
-                            config["dropout_prob"] = {"min": value_range[0], "max": value_range[1]}
+                            config[f"{agent}_critic_cnn_layer_{i}_dropout_prob"] = {"min": value_range[0], "max": value_range[1]}
 
-                sweep_config["parameters"][agent]["parameters"][f"critic_cnn_layer_{i}_types_{agent}"]["parameters"] = config
+                sweep_config["parameters"][agent]["parameters"][f"critic_cnn_layer_{i}_{agent}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG critic CNN layers set to {config}')
 
@@ -3459,36 +3470,36 @@ def update_heatmap(data):
     else:
         return None
     
-def render_heatmap():
+def render_heatmap(page):
     return html.Div([
         html.Label('Bins', style={'text-decoration': 'underline'}),
         dcc.Slider(
-            id='bin-slider',
+            id={'type':'bin-slider', 'page':page},
             min=1,
             max=10,
             value=5,
             marks={i: str(i) for i in range(1, 11)},
             step=1,
         ),
-        html.Div(id='legend-container'),
+        html.Div(id={'type':'legend-container', 'page':page}),
         html.Label('Reward Threshold', style={'text-decoration': 'underline'}),
         dcc.Input(
-            id='reward-threshold',
+            id={'type':'reward-threshold', 'page':page},
             type='number',
             value=0,
             style={'display':'inline-block'}
         ),
         dcc.Checklist(
-                id='z-score-checkbox',
+                id={'type':'z-score-checkbox', 'page':page},
                 options=[
                     {'label': ' Display Z-Scores', 'value': 'zscore'},
                 ],
                 value=[],
                 style={'display':'inline-block'}
         ),
-        html.Div(id='heatmap-container'),
+        html.Div(id={'type':'heatmap-container', 'page':page}),
         html.Div(
-            id='heatmap-placeholder',
+            id={'type':'heatmap-placeholder', 'page':page},
             children=[
                 html.P('The co-occurrence graph will load once enough data has been retrieved.'),
                 html.Img(src='path/to/placeholder-image.png', alt='Placeholder Image')
