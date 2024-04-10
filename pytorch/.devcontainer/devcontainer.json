@@ -13,6 +13,7 @@
       }
     },
     "runArgs": ["--gpus", "all"],
+    "forwardPorts": [8080],
     "mounts": [
       "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app,target=/app,type=bind,consistency=cached",
       // "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app/tensorboard/logs,target=/app/tensorboard/logs,type=bind,consistency=cached"
