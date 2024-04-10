@@ -29,7 +29,7 @@ class Model(nn.Module):
         config_index = 0
 
         for layer_name, layer in module_dict.items():
-            if 'activation' not in layer_name:
+            if 'dense' in layer_name:
                 _, _, init_config = layer_config[config_index]
 
                 ##DEBUG
@@ -112,13 +112,13 @@ class Model(nn.Module):
 
     def _init_optimizer(self):
         if self.optimizer_class == 'Adam':
-            return optim.Adam(self.parameters(), lr=self.learning_rate)
+            return optim.Adam(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
         elif self.optimizer_class =='SGD':
-            return optim.SGD(self.parameters(), lr=self.learning_rate)
+            return optim.SGD(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
         elif self.optimizer_class == 'RMSprop':
-            return optim.RMSprop(self.parameters(), lr=self.learning_rate)
+            return optim.RMSprop(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
         elif self.optimizer_class == 'Adagrad':
-            return optim.Adagrad(self.parameters(), lr=self.learning_rate)
+            return optim.Adagrad(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
         else:
             raise NotImplementedError
 
@@ -563,15 +563,20 @@ class ValueModel(Model):
 
 
 class ActorModel(Model):
-    def __init__(self, env, cnn_model=None, dense_layers=None, optimizer: str = 'Adam', learning_rate=0.0001):
+    def __init__(self, env, cnn_model=None, dense_layers=None, optimizer: str = 'Adam',
+                 optimizer_params:dict={}, learning_rate=0.0001, normalize:bool=False):
         super().__init__()
         self.env = env
         self.layer_config = dense_layers
         self.cnn_model = cnn_model
         self.optimizer_class = optimizer
+        self.optimizer_params = optimizer_params
         self.learning_rate = learning_rate
+        self.normalize = normalize
         
         self.dense_layers = nn.ModuleDict()
+        self.output_layer = nn.ModuleDict()
+        self.output_activation = nn.ModuleDict()
         
         if self.cnn_model:
             obs_shape = env.observation_space.shape
@@ -587,6 +592,11 @@ class ActorModel(Model):
         for i, (units, activation, _) in enumerate(self.layer_config):
             self.dense_layers[f'actor_dense_{i}'] = nn.Linear(input_size, units)
             
+            # add normalization layer if normalize
+            if self.normalize:
+                self.dense_layers[f'actor_normalization_{i}'] = nn.LayerNorm(units)
+            
+            # add activation layer
             if activation == 'relu':
                 self.dense_layers[f'actor_activation_{i}'] = nn.ReLU()
             elif activation == 'tanh':
@@ -599,16 +609,16 @@ class ActorModel(Model):
         self._init_weights(self.dense_layers, self.layer_config, 'actor')
 
         # add output layer to dict
-        self.dense_layers['actor_output'] = nn.Linear(input_size, env.action_space.shape[0])
-        self.dense_layers['actor_activation'] = nn.Tanh()
+        self.output_layer['actor_output'] = nn.Linear(input_size, env.action_space.shape[0])
+        self.output_activation['actor_output_activation'] = nn.Tanh()
 
          # output layer initialization dependent on presence of cnn model  
         if self.cnn_model:
-            nn.init.uniform_(self.dense_layers['actor_output'].weight, -3e-4, 3e-4)
-            nn.init.uniform_(self.dense_layers['actor_output'].bias, -3e-4, 3e-4)
+            nn.init.uniform_(self.output_layer['actor_output'].weight, -3e-4, 3e-4)
+            nn.init.uniform_(self.output_layer['actor_output'].bias, -3e-4, 3e-4)
         else:
-            nn.init.uniform_(self.dense_layers['actor_output'].weight, -3e-3, 3e-3)
-            nn.init.uniform_(self.dense_layers['actor_output'].bias, -3e-3, 3e-3)
+            nn.init.uniform_(self.output_layer['actor_output'].weight, -3e-3, 3e-3)
+            nn.init.uniform_(self.output_layer['actor_output'].bias, -3e-3, 3e-3)
 
         # Initialize optimizer
         self.optimizer = self._init_optimizer()
@@ -624,10 +634,15 @@ class ActorModel(Model):
 
         for layer in self.dense_layers.values():
             x = layer(x)
-        # x = self.output_layer(x)
-        output = x * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device)
+
+        for layer in self.output_layer.values():
+            mu = layer(x)
         
-        return output
+        for layer in self.output_activation.values():
+            pi = layer(mu)
+        pi = pi * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device)
+        
+        return mu, pi
 
 
     def get_config(self):
@@ -637,7 +652,9 @@ class ActorModel(Model):
             'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
             'optimizer': self.optimizer.__class__.__name__,
+            'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
+            'normalize': self.normalize,
         }
 
         return config
@@ -649,8 +666,10 @@ class ActorModel(Model):
             env=self.env,
             cnn_model=self.cnn_model,
             dense_layers=self.layer_config,
-            optimizer=self.optimizer.__class__.__name__,
-            learning_rate=self.learning_rate
+            optimizer=self.optimizer_class,
+            optimizer_params=self.optimizer_params,
+            learning_rate=self.learning_rate,
+            normalize=self.normalize,
         )
         
         if weights:
@@ -690,29 +709,35 @@ class ActorModel(Model):
                 cnn_model = cnn_models.CNN(cnn_model_config['layers'], env)
             dense_layers = obj_config.get("dense_layers", [])
             optimizer = obj_config.get("optimizer", "Adam")
+            optimizer_params = obj_config.get("optimizer_params", ())
             learning_rate = obj_config.get("learning_rate", 0.0001)
+            normalize = obj_config.get("normalize", False)
         else:
             raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
 
-        actor_model = cls(env, cnn_model, dense_layers, optimizer, learning_rate)
+        actor_model = cls(env, cnn_model, dense_layers, optimizer, optimizer_params, learning_rate, normalize, clamp_output)
         actor_model.load_state_dict(torch.load(model_path))
 
         return actor_model
 
 
 class CriticModel(Model):
-    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, optimizer: str = 'Adam', learning_rate=0.001):
+    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, optimizer: str = 'Adam',
+                 optimizer_params:dict={}, learning_rate=0.001, normalize:bool=False):
         super().__init__()
         self.env = env
         self.cnn_model = cnn_model
         self.state_config = state_layers
         self.merged_config = merged_layers
         self.optimizer_class = optimizer
+        self.optimizer_params = optimizer_params
         self.learning_rate = learning_rate
+        self.normalize = normalize
 
         # instantiate ModuleDicts for state and merged Modules
         self.state_layers = nn.ModuleDict()
         self.merged_layers = nn.ModuleDict()
+        self.output_layer = nn.ModuleDict()
 
         if self.cnn_model:
             obs_shape = env.observation_space.shape
@@ -726,6 +751,12 @@ class CriticModel(Model):
         # Define state processing layers
         for i, (units, activation, _) in enumerate(self.state_config):
             self.state_layers[f'critic_state_dense_{i}'] = nn.Linear(input_size, units)
+
+            # add normalization layer if normalize
+            if self.normalize:
+                self.state_layers[f'critic_state_normalize_{i}'] = nn.LayerNorm(units)
+
+            # add activation layer
             if activation == 'relu':
                 self.state_layers[f'critic_state_activation_{i}'] = nn.ReLU()
             elif activation == 'tanh':
@@ -738,6 +769,12 @@ class CriticModel(Model):
         # Define merged layers
         for i, (units, activation, _) in enumerate(self.merged_config):
             self.merged_layers[f'critic_merged_dense_{i}'] = nn.Linear(input_size + action_input_size, units)
+
+            # add normalization layer if normalize
+            if self.normalize:
+                self.state_layers[f'critic_merged_normalize_{i}'] = nn.LayerNorm(units)
+
+            # add activation layer
             if activation == 'relu':
                 self.merged_layers[f'critic_merged_activation_{i}'] = nn.ReLU()
             elif activation == 'tanh':
@@ -749,86 +786,21 @@ class CriticModel(Model):
         self._init_weights(self.merged_layers, self.merged_config, 'critic_merged')
 
         # add output layer to merged layers
-        self.merged_layers['critic_output'] = nn.Linear(input_size, 1)
+        self.output_layer['critic_output'] = nn.Linear(input_size, 1)
 
         # Output layer kernel initialization dependent on presence of cnn model
         if self.cnn_model:
-            nn.init.uniform_(self.merged_layers['critic_output'].weight, -3e-4, 3e-4)
-            nn.init.uniform_(self.merged_layers['critic_output'].bias, -3e-4, 3e-4)
+            nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-4, 3e-4)
+            nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-4, 3e-4)
         else:
-            nn.init.uniform_(self.merged_layers['critic_output'].weight, -3e-3, 3e-3)
-            nn.init.uniform_(self.merged_layers['critic_output'].bias, -3e-3, 3e-3)
+            nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-3, 3e-3)
+            nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-3, 3e-3)
         
         # Define the optimizer
         self.optimizer = self._init_optimizer()
 
          # Move the model to the specified device
         self.to(self.device)
-
-    # def _init_weights(self):
-    #     for i, (_, _, init_config) in enumerate(self.layer_config):
-    #         layer = self.dense_layers[f'critic_dense_{i}']
-    #         # for (name, layer) in self.dense_layers.items():
-
-    #         ##DEBUG
-    #         print(f'layer critic_dense_{i} using {init_config} for {layer}')
-
-    #         if init_config == 'variance scaling':
-    #             #DEBUG
-    #             torch_utils.VarianceScaling_(layer.weight, **init_config['variance scaling'])
-    #             # torch_utils.VarianceScaling_(layer.bias, **init_config['variance scaling'])
-            
-    #         if init_config == 'uniform':
-    #             nn.init.uniform_(layer.weight, **init_config['uniform'])
-    #             nn.init.uniform_(layer.bias, **init_config['uniform'])
-
-    #         if init_config == 'normal':
-    #             nn.init.normal_(layer.weight, **init_config['normal'])
-    #             nn.init.normal_(layer.bias, **init_config['normal'])
-
-    #         if init_config == 'constant':
-    #             nn.init.constant_(layer.weight, **init_config['constant'])
-    #             nn.init.constant_(layer.bias, **init_config['constant'])
-
-    #         if init_config == 'ones':
-    #             nn.init.ones_(layer.weight)
-    #             nn.init.ones_(layer.bias)
-
-    #         if init_config == 'zeros':
-    #             nn.init.zeros_(layer.weight)
-    #             nn.init.zeros_(layer.bias)
-
-    #         if init_config == 'xavier uniform':
-    #             nn.init.xavier_uniform_(layer.weight, **init_config['xavier uniform'])
-    #             # nn.init.uniform_(layer.bias)
-
-    #         if init_config == 'xavier normal':
-    #             nn.init.xavier_normal_(layer.weight, **init_config['xavier normal'])
-    #             # nn.init.normal_(layer.bias)
-
-    #         if init_config == 'kaiming uniform':
-    #             nn.init.kaiming_uniform_(layer.weight, **init_config['kaiming uniform'])
-    #             # nn.init.uniform_(layer.bias)
-
-    #         if init_config == 'kaiming normal':
-    #             nn.init.kaiming_normal_(layer.weight, **init_config['kaiming normal'])
-    #             # nn.init.normal_(layer.bias)
-
-    #         if init_config == 'truncated normal':
-    #             nn.init.trunc_normal_(layer.weight, **init_config['truncated normal'])
-    #             nn.init.trunc_normal_(layer.bias, **init_config['truncated normal'])
-
-    # def _init_optimizer(self):
-    #     if self.optimizer_class == 'Adam':
-    #         return optim.Adam(self.parameters(), lr=self.learning_rate)
-    #     elif self.optimizer_class =='SGD':
-    #         return optim.SGD(self.parameters(), lr=self.learning_rate)
-    #     elif self.optimizer_class == 'RMSprop':
-    #         return optim.RMSprop(self.parameters(), lr=self.learning_rate)
-    #     elif self.optimizer_class == 'Adagrad':
-    #         return optim.Adagrad(self.parameters(), lr=self.learning_rate)
-    #     else:
-    #         raise NotImplementedError
 
     def forward(self, state, action):
         state = state.to(self.device)
@@ -837,12 +809,18 @@ class CriticModel(Model):
             state = self.cnn_model(state)
         else:
             state = state.view(state.size(0), -1)  # Flatten state input if not using a cnn_model
+
         for layer in self.state_layers.values():
             state = layer(state)
+
         merged = torch.cat([state, action], dim=1)
         for layer in self.merged_layers.values():
             merged = layer(merged)
-        return merged
+
+        for layer in self.output_layer.values():
+            output = layer(merged)
+        
+        return output
     
     # def _set_learning_rate(self, learning_rate):
     #     """Sets learning rate of optimizer."""
@@ -855,8 +833,10 @@ class CriticModel(Model):
             'num_layers': len(self.state_layers) + len(self.merged_layers),
             'state_layers': self.state_config,
             'merged_layers': self.merged_config,
-            'learning_rate': self.learning_rate,
             'optimizer': self.optimizer.__class__.__name__,
+            'optimizer_params': self.optimizer_params,
+            'learning_rate': self.learning_rate,
+            'normalize': self.normalize,
         }
 
         return config
@@ -868,7 +848,10 @@ class CriticModel(Model):
             cnn_model=self.cnn_model,
             state_layers=self.state_config,
             merged_layers=self.merged_config,
-            learning_rate=self.learning_rate
+            optimizer=self.optimizer_class,
+            optimizer_params=self.optimizer_params,
+            learning_rate=self.learning_rate,
+            normalize=self.normalize,
         )
         
         if weights:
@@ -914,10 +897,12 @@ class CriticModel(Model):
             merged_layers = obj_config.get("merged_layers", [])
             optimizer = obj_config.get("optimizer", "Adam")
             learning_rate = obj_config.get("learning_rate", 0.0001)
+            optimizer_params = obj_config.get("optimizer_params", ())
+            normalize = obj_config.get("normalize", False)
         else:
             raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
 
-        model = cls(env, cnn_model, state_layers, merged_layers, optimizer, learning_rate)
+        model = cls(env, cnn_model, state_layers, merged_layers, optimizer, optimizer_params, learning_rate, normalize)
         model.load_state_dict(torch.load(model_path))
 
         return model
