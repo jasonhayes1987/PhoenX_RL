@@ -1161,6 +1161,14 @@ def create_agent_parameter_inputs(agent_type):
                     options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
                 ),
+                html.Div(
+                    id=
+                    {
+                        'type':'optimizer-options',
+                        'model':'policy',
+                        'agent':agent_type,
+                    },
+                ),
                 # Value Model Configuration for Reinforce and Actor Critic
                 html.H3("Value Model Configuration"),
                 html.Label('Value Hidden Layers', style={'text-decoration': 'underline'}),
@@ -1230,6 +1238,14 @@ def create_agent_parameter_inputs(agent_type):
                     },
                     options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
+                ),
+                html.Div(
+                    id=
+                    {
+                        'type':'optimizer-options',
+                        'model':'value',
+                        'agent':agent_type,
+                    },
                 ),
                 # Additional configuration for Actor Critic
                 html.Div(id='actor-critic-config-container'),  # Container to hold the generated inputs
@@ -1383,6 +1399,14 @@ def create_agent_parameter_inputs(agent_type):
                     options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
                 ),
+                html.Div(
+                    id=
+                    {
+                        'type':'optimizer-options',
+                        'model':'actor',
+                        'agent':agent_type,
+                    },
+                ),
                 html.Label('Learning Rate', style={'text-decoration': 'underline'}),
                 dcc.Slider(
                     id={
@@ -1504,6 +1528,14 @@ def create_agent_parameter_inputs(agent_type):
                     },
                     options=[{'label': i, 'value': i} for i in ['Adam', 'SGD', 'RMSprop', 'Adagrad']],
                     placeholder="Optimizer",
+                ),
+                html.Div(
+                    id=
+                    {
+                        'type':'optimizer-options',
+                        'model':'critic',
+                        'agent':agent_type,
+                    },
                 ),
                 html.Label('Learning Rate', style={'text-decoration': 'underline'}),
                 dcc.Slider(
@@ -2279,6 +2311,14 @@ def generate_optimizer_hyperparam_component(agent_type, model_type):
             placeholder="Optimizer",
             multi=True,
         ),
+        html.Div(
+            id=
+            {
+                'type':'optimizer-options-hyperparams',
+                'model': model_type,
+                'agent': agent_type,
+            }
+        )
     ])
 
 def generate_trace_decay_hyperparam_componenent(agent_type, model_type):
@@ -2718,6 +2758,60 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             print(f'DDPG actor optimizer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"]}')
 
+            # Actor optimizer options
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer_{value}_options"] = {'parameters': {}}
+            config = {}
+            for value in sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"]['values']:
+                if value == 'Adam':
+                    value_range = get_specific_value(all_values, all_ids, 'adam-weight-decay-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                elif value == 'Adagrad':
+                    value_range = get_specific_value(all_values, all_ids, 'adagrad-weight-decay-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                    value_range = get_specific_value(all_values, all_ids, 'adagrad-lr-decay-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_lr_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_lr_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                elif value == 'RMSprop':
+                    value_range = get_specific_value(all_values, all_ids, 'rmsprop-weight-decay-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                    value_range = get_specific_value(all_values, all_ids, 'rmsprop-momentum-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_momentum'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_momentum'] = {"min": value_range[0], "max": value_range[1]}
+
+                elif value == 'SGD':
+                    value_range = get_specific_value(all_values, all_ids, 'sgd-weight-decay-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                    value_range = get_specific_value(all_values, all_ids, 'sgd-momentum-hyperparam', 'actor', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_momentum'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_momentum'] = {"min": value_range[0], "max": value_range[1]}
+                    
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer_{value}_options"]['parameters'] = config
+                    
+                    
+
             # critic cnn layers
             value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'critic', agent)
             if value_range[0] == value_range[1]:
@@ -2769,6 +2863,58 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 {"values": get_specific_value(all_values, all_ids, 'optimizer-hyperparam', 'critic', agent)}
             #DEBUG
             # print(f'DDPG critic optimizer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer"]}')
+
+            # Critic optimizer options
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer_{value}_options"] = {'parameters': {}}
+            config = {}
+            for value in sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer"]['values']:
+                if value == 'Adam':
+                    value_range = get_specific_value(all_values, all_ids, 'adam-weight-decay-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                elif value == 'Adagrad':
+                    value_range = get_specific_value(all_values, all_ids, 'adagrad-weight-decay-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                    value_range = get_specific_value(all_values, all_ids, 'adagrad-lr-decay-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_lr_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_lr_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                elif value == 'RMSprop':
+                    value_range = get_specific_value(all_values, all_ids, 'rmsprop-weight-decay-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                    value_range = get_specific_value(all_values, all_ids, 'rmsprop-momentum-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_momentum'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_momentum'] = {"min": value_range[0], "max": value_range[1]}
+
+                elif value == 'SGD':
+                    value_range = get_specific_value(all_values, all_ids, 'sgd-weight-decay-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_weight_decay'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_weight_decay'] = {"min": value_range[0], "max": value_range[1]}
+
+                    value_range = get_specific_value(all_values, all_ids, 'sgd-momentum-hyperparam', 'critic', agent)
+                    if value_range[0] == value_range[1]:
+                        config[f'{value}_momentum'] = {"value": value_range[0]}
+                    else:
+                        config[f'{value}_momentum'] = {"min": value_range[0], "max": value_range[1]}
+                    
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer_{value}_options"]['parameters'] = config
 
             # replay buffer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer"] = {"values": ["ReplayBuffer"]}

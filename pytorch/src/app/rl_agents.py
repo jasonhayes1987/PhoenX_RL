@@ -947,14 +947,14 @@ class DDPG(Agent):
         if self.actor_model.cnn_model:
             state = state.permute(2, 0, 1).unsqueeze(0)
 
-        action_value = self.actor_model(state)
+        _, pi = self.actor_model(state)
         noise = self.noise()
 
         # Convert the action space bounds to a tensor on the same device
         action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
         action_space_low = torch.tensor(self.env.action_space.low, dtype=torch.float32, device=self.actor_model.device)
 
-        action = (action_value + noise).clip(action_space_low, action_space_high)
+        action = (pi + noise).clip(action_space_low, action_space_high)
 
         noise_np = noise.cpu().detach().numpy().flatten()
         action_np = action.cpu().detach().numpy().flatten()
@@ -994,7 +994,7 @@ class DDPG(Agent):
             dones = dones.unsqueeze(1)
 
             # get target values 
-            target_actions = self.target_actor_model(next_states)
+            _, target_actions = self.target_actor_model(next_states)
             target_critic_values = self.target_critic_model(next_states, target_actions)
             targets = rewards + self.discount * target_critic_values * (1 - dones)
         
@@ -1008,7 +1008,7 @@ class DDPG(Agent):
         self.critic_model.optimizer.step()
         
         # update actor
-        action_values = self.actor_model(states)
+        _, action_values = self.actor_model(states)
         critic_values = self.critic_model(states, action_values)
         actor_loss = -critic_values.mean()
         self.actor_model.optimizer.zero_grad()
