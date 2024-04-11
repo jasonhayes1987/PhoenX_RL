@@ -115,6 +115,135 @@ def register_callbacks(app, shared_data):
         else:
             return "Select a model type to configure its parameters."
         
+    
+    @app.callback(
+        Output({'type':'optimizer-options', 'model':MATCH, 'agent':MATCH}, 'children'),
+        Input({'type':'optimizer', 'model':MATCH, 'agent':MATCH}, 'value'),
+        State({'type':'optimizer-options', 'model':MATCH, 'agent':MATCH}, 'id')
+    )
+    def update_agent_optimizer_params(optimizer, optimizer_id):
+        if optimizer == 'Adam':
+            return html.Div([
+                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id=
+                    {
+                        'type':'adam-weight-decay',
+                        'model':optimizer_id['model'],
+                        'agent':optimizer_id['agent'],
+                    },
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    value=0.01,
+                    marks={0:'0.0', 1:'1.0'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                )
+            ])
+        
+        elif optimizer == 'Adagrad':
+            return html.Div([
+                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id=
+                    {
+                        'type':'adagrad-weight-decay',
+                        'model':optimizer_id['model'],
+                        'agent':optimizer_id['agent'],
+                    },
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    value=0.01,
+                    marks={0:'0.0', 1:'1.0'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                ),
+                html.Label("Learning Rate Decay", style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id=
+                    {
+                        'type':'adagrad-lr-decay',
+                        'model':optimizer_id['model'],
+                        'agent':optimizer_id['agent'],
+                    },
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    value=0.01,
+                    marks={0:'0.0', 1:'1.0'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                )
+            ])
+        
+        elif optimizer == 'RMSprop':
+            return html.Div([
+                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id=
+                    {
+                        'type':'rmsprop-weight-decay',
+                        'model':optimizer_id['model'],
+                        'agent':optimizer_id['agent'],
+                    },
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    value=0.01,
+                    marks={0:'0.0', 1:'1.0'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                ),
+                html.Label("Momentum", style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id=
+                    {
+                        'type':'rmsprop-momentum',
+                        'model':optimizer_id['model'],
+                        'agent':optimizer_id['agent'],
+                    },
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    value=0.01,
+                    marks={0:'0.0', 1:'1.0'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                )
+            ])
+        
+        elif optimizer == 'SGD':
+            return html.Div([
+                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id=
+                    {
+                        'type':'sgd-weight-decay',
+                        'model':optimizer_id['model'],
+                        'agent':optimizer_id['agent'],
+                    },
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    value=0.01,
+                    marks={0:'0.0', 1:'1.0'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                ),
+                html.Label("Momentum", style={'text-decoration': 'underline'}),
+                dcc.Slider(
+                    id=
+                    {
+                        'type':'sgd-momentum',
+                        'model':optimizer_id['model'],
+                        'agent':optimizer_id['agent'],
+                    },
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    value=0.01,
+                    marks={0:'0.0', 1:'1.0'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                )
+            ])
+
+        
     @app.callback(
     Output({'type': 'units-per-layer', 'model': MATCH, 'agent': MATCH}, 'children'),
     Input({'type': 'dense-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
@@ -1636,6 +1765,165 @@ def register_callbacks(app, shared_data):
                 )
         
         return tabs
+    
+
+    @app.callback(
+    Output({'type': 'optimizer-options-hyperparams', 'model': MATCH, 'agent': MATCH}, 'children'),
+    Input({'type': 'optimizer-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+    State({'type': 'optimizer-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+    prevent_initial_call=True
+    )
+    def update_optimizer_options_hyperparams(optimizers, optimizer_id):
+        tabs = []
+        for optimizer in optimizers:
+            if optimizer == 'Adam':
+                tab = dcc.Tab(
+                    label='Adam',
+                    children=[
+                        html.Div([
+                            html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                            dcc.RangeSlider(
+                                id=
+                                {
+                                    'type': 'adam-weight-decay-hyperparam',
+                                    'model': optimizer_id['model'],
+                                    'agent': optimizer_id['agent']
+                                },
+                                min=0.0,
+                                max=1.0,
+                                step=0.01,
+                                value=[0.01, 0.1],
+                                marks={0: '0.0', 1: '1.0'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                allowCross=True,
+                            )
+                        ])
+                    ]
+                )
+            elif optimizer == 'Adagrad':
+                tab = dcc.Tab(
+                    label='Adagrad',
+                    children=[
+                        html.Div([
+                            html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                            dcc.RangeSlider(
+                                id=
+                                {
+                                    'type': 'adagrad-weight-decay-hyperparam',
+                                    'model': optimizer_id['model'],
+                                    'agent': optimizer_id['agent']
+                                },
+                                min=0.0,
+                                max=1.0,
+                                step=0.01,
+                                value=[0.01, 0.1],
+                                marks={0: '0.0', 1: '1.0'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                allowCross=True,
+                            ),
+                            html.Label("Learning Rate Decay", style={'text-decoration': 'underline'}),
+                            dcc.RangeSlider(
+                                id=
+                                {
+                                    'type': 'adagrad-lr-decay-hyperparam',
+                                    'model': optimizer_id['model'],
+                                    'agent': optimizer_id['agent']
+                                },
+                                min=0.0,
+                                max=1.0,
+                                step=0.01,
+                                value=[0.01, 0.1],
+                                marks={0: '0.0', 1: '1.0'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                allowCross=True,
+                            )
+                        ])
+                    ]
+                )
+            elif optimizer == 'RMSprop':
+                tab = dcc.Tab(
+                    label='RMSprop',
+                    children=[
+                        html.Div([
+                            html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                            dcc.RangeSlider(
+                                id=
+                                {
+                                    'type': 'rmsprop-weight-decay-hyperparam',
+                                    'model': optimizer_id['model'],
+                                    'agent': optimizer_id['agent']
+                                },
+                                min=0.0,
+                                max=1.0,
+                                step=0.01,
+                                value=[0.01, 0.1],
+                                marks={0: '0.0', 1: '1.0'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                allowCross=True,
+                            ),
+                            html.Label("Momentum", style={'text-decoration': 'underline'}),
+                            dcc.RangeSlider(
+                                id=
+                                {
+                                    'type': 'rmsprop-momentum-hyperparam',
+                                    'model': optimizer_id['model'],
+                                    'agent': optimizer_id['agent']
+                                },
+                                min=0.0,
+                                max=1.0,
+                                step=0.01,
+                                value=[0.01, 0.1],
+                                marks={0: '0.0', 1: '1.0'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                allowCross=True,
+                            )
+                        ])
+                    ]
+                )
+            elif optimizer == 'SGD':
+                tab = dcc.Tab(
+                    label='SGD',
+                    children=[
+                        html.Div([
+                            html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+                            dcc.RangeSlider(
+                                id=
+                                {
+                                    'type': 'sgd-weight-decay-hyperparam',
+                                    'model': optimizer_id['model'],
+                                    'agent': optimizer_id['agent']
+                                },
+                                min=0.0,
+                                max=1.0,
+                                step=0.01,
+                                value=[0.01, 0.1],
+                                marks={0: '0.0', 1: '1.0'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                allowCross=True,
+                            ),
+                            html.Label("Momentum", style={'text-decoration': 'underline'}),
+                            dcc.RangeSlider(
+                                id=
+                                {
+                                    'type': 'sgd-momentum-hyperparam',
+                                    'model': optimizer_id['model'],
+                                    'agent': optimizer_id['agent']
+                                },
+                                min=0.0,
+                                max=1.0,
+                                step=0.01,
+                                value=[0.01, 0.1],
+                                marks={0: '0.0', 1: '1.0'},
+                                tooltip={"placement": "bottom", "always_visible": True},
+                                allowCross=True,
+                            )
+                        ])
+                    ]
+                )
+            
+            tabs.append(tab)
+        
+        return dcc.Tabs(tabs)
     
 
     @app.callback(

@@ -715,7 +715,7 @@ class ActorModel(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
 
-        actor_model = cls(env, cnn_model, dense_layers, optimizer, optimizer_params, learning_rate, normalize, clamp_output)
+        actor_model = cls(env, cnn_model, dense_layers, optimizer, optimizer_params, learning_rate, normalize)
         actor_model.load_state_dict(torch.load(model_path))
 
         return actor_model
@@ -772,7 +772,7 @@ class CriticModel(Model):
 
             # add normalization layer if normalize
             if self.normalize:
-                self.state_layers[f'critic_merged_normalize_{i}'] = nn.LayerNorm(units)
+                self.merged_layers[f'critic_merged_normalize_{i}'] = nn.LayerNorm(units)
 
             # add activation layer
             if activation == 'relu':
@@ -858,9 +858,9 @@ class CriticModel(Model):
             # Copy the model weights
             cloned_model.load_state_dict(self.state_dict())
             
-            # Optionally, clone the optimizer (requires more manual work, shown below)
-            cloned_optimizer = type(self.optimizer)(cloned_model.parameters(), **self.optimizer.defaults)
-            cloned_optimizer.load_state_dict(self.optimizer.state_dict())
+            # # Optionally, clone the optimizer (requires more manual work, shown below)
+            # cloned_optimizer = type(self.optimizer)(cloned_model.parameters(), **self.optimizer.defaults)
+            # cloned_optimizer.load_state_dict(self.optimizer.state_dict())
 
         return cloned_model
 
