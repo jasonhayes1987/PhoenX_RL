@@ -100,72 +100,68 @@ class Buffer():
 
 
 class ReplayBuffer(Buffer):
-    """Replay buffer for experience replay."""
-    # needs to store state, action, reward, next_state, done
-    def __init__(self, env: gym.Env, buffer_size: int = 100000, device='cpu'):
-        """Initializes a new replay buffer.
-        Args:
-            env (gym.Env): The environment.
-            buffer_size (int): The maximum number of transitions to store.
-            device (torch.device): The device to use for storing tensors.
-        """
+    def __init__(self, env:gym.Env, buffer_size:int=100000, goal_shape:tuple=None, device='cpu'):
         self.env = env
         self.buffer_size = buffer_size
+        self.goal_shape = goal_shape
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # self.states = torch.zeros((buffer_size, *env.observation_space.shape), dtype=torch.float32, device=self.device)
         self.states = np.zeros((buffer_size, *env.observation_space.shape), dtype=np.float32)
-        # self.actions = torch.zeros((buffer_size, *env.action_space.shape), dtype=torch.float32, device=self.device)
         self.actions = np.zeros((buffer_size, *env.action_space.shape), dtype=np.float32)
-        # self.rewards = torch.zeros((buffer_size,), dtype=torch.float32, device=self.device)
         self.rewards = np.zeros((buffer_size,), dtype=np.float32)
-        # self.next_states = torch.zeros((buffer_size, *env.observation_space.shape), dtype=torch.float32, device=self.device)
         self.next_states = np.zeros((buffer_size, *env.observation_space.shape), dtype=np.float32)
-        # self.dones = torch.zeros((buffer_size,), dtype=torch.int, device=self.device)
         self.dones = np.zeros((buffer_size,), dtype=np.int8)
         
+        if self.goal_shape is not None:
+            self.desired_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
+            self.state_achieved_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
+            self.next_state_achieved_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
+        
         self.counter = 0
-        # self.gen = torch.Generator(device=self.device)
         self.gen = np.random.default_rng()
         
-    def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool):
-        """Adds a new transition to the replay buffer.
-        Args:
-            state (np.ndarray): The state.
-            action (np.ndarray): The action.
-            reward (float): The reward.
-            next_state (np.ndarray): The next state.
-            done (bool): Whether the episode is done.
-        """
+    def add(self, state:np.ndarray, action:np.ndarray, reward:float, next_state:np.ndarray, done:bool,
+            state_achieved_goal:np.ndarray=None, next_state_achieved_goal:np.ndarray=None, desired_goal:np.ndarray=None):
+        """Add a transition to the replay buffer."""
         index = self.counter % self.buffer_size
-        # self.states[index] = torch.from_numpy(state).to(self.device)
         self.states[index] = state
-        # self.actions[index] = torch.from_numpy(action).to(self.device)
         self.actions[index] = action
-        # self.rewards[index] = torch.tensor(reward).to(self.device)
         self.rewards[index] = reward
-        # self.next_states[index] = torch.from_numpy(next_state).to(self.device)
         self.next_states[index] = next_state
-        # self.dones[index] = torch.tensor(done).to(self.device)
         self.dones[index] = done
+        
+        if self.goal_shape is not None:
+            if desired_goal is None or state_achieved_goal is None or next_state_achieved_goal is None:
+                raise ValueError("Desired goal, state achieved goal, and next state achieved goal must be provided when use_goals is True.")
+            self.state_achieved_goals[index] = state_achieved_goal
+            self.next_state_achieved_goals[index] = next_state_achieved_goal
+            self.desired_goals[index] = desired_goal
+        
         self.counter = self.counter + 1
         
-    def sample(self, batch_size: int):
-        """Samples a batch of transitions from the replay buffer.
-        Args:
-            batch_size (int): The batch size.
-        Returns:
-            A tuple of (states, actions, rewards, next_states, dones).
-        """
+    def sample(self, batch_size:int):
         size = min(self.counter, self.buffer_size)
         indices = self.gen.integers(0, size, (batch_size,))
-        return (
-            self.states[indices],
-            self.actions[indices],
-            self.rewards[indices],
-            self.next_states[indices],
-            self.dones[indices],
-        )
+        
+        if self.goal_shape is not None:
+            return (
+                self.states[indices],
+                self.actions[indices],
+                self.rewards[indices],
+                self.next_states[indices],
+                self.dones[indices],
+                self.state_achieved_goals[indices],
+                self.next_state_achieved_goals[indices],
+                self.desired_goals[indices],
+            )
+        else:
+            return (
+                self.states[indices],
+                self.actions[indices],
+                self.rewards[indices],
+                self.next_states[indices],
+                self.dones[indices]
+            )
     
     def get_config(self):
         return {
@@ -173,6 +169,7 @@ class ReplayBuffer(Buffer):
             'config': {
                 "env": self.env.spec.id,
                 "buffer_size": self.buffer_size,
+                "goal_shape": self.goal_shape
             }
         }
 
@@ -299,10 +296,10 @@ class OUNoise(Noise):
     
 
 class Normalizer:
-    def __init__(self, size, eps=1e-2, default_clip_range=np.inf):
+    def __init__(self, size, eps=1e-2, clip_range=np.inf):
         self.size = size
         self.eps = eps
-        self.default_clip_range = default_clip_range
+        self.default_clip_range = clip_range
 
         self.local_sum = np.zeros(self.size, dtype=np.float32)
         self.local_sum_sq = np.zeros(self.size, dtype=np.float32)
