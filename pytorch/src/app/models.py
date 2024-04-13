@@ -563,12 +563,14 @@ class ValueModel(Model):
 
 
 class ActorModel(Model):
-    def __init__(self, env, cnn_model=None, dense_layers=None, optimizer: str = 'Adam',
+    
+    def __init__(self, env, cnn_model=None, dense_layers=None, goal_shape:tuple=None, optimizer: str = 'Adam',
                  optimizer_params:dict={}, learning_rate=0.0001, normalize:bool=False):
         super().__init__()
         self.env = env
         self.layer_config = dense_layers
         self.cnn_model = cnn_model
+        self.goal_shape = goal_shape
         self.optimizer_class = optimizer
         self.optimizer_params = optimizer_params
         self.learning_rate = learning_rate
@@ -578,14 +580,32 @@ class ActorModel(Model):
         self.output_layer = nn.ModuleDict()
         self.output_activation = nn.ModuleDict()
         
+        # if self.cnn_model:
+        #     obs_shape = env.observation_space.shape
+        #     dummy_input = torch.zeros(1, *obs_shape, device=self.device)
+        #     dummy_input = dummy_input.permute(0, 3, 1, 2)
+        #     cnn_output = self.cnn_model(dummy_input)
+        #     input_size = cnn_output.view(cnn_output.size(0), -1).shape[1]
+        # else:
+        #     input_size = env.observation_space.shape[0]
+
+        # Adding support for goal
         if self.cnn_model:
             obs_shape = env.observation_space.shape
             dummy_input = torch.zeros(1, *obs_shape, device=self.device)
             dummy_input = dummy_input.permute(0, 3, 1, 2)
             cnn_output = self.cnn_model(dummy_input)
-            input_size = cnn_output.view(cnn_output.size(0), -1).shape[1]
+            cnn_output_size = cnn_output.size(1)
+            
+            if self.goal_shape is not None:
+                input_size = cnn_output_size + self.goal_shape[0]
+            else:
+                input_size = cnn_output_size
         else:
             input_size = env.observation_space.shape[0]
+            
+            if self.goal_shape is not None:
+                input_size += self.goal_shape[0]
         
         
         # Add dense layers
@@ -627,10 +647,16 @@ class ActorModel(Model):
         self.to(self.device) 
 
 
-    def forward(self, x):
+    def forward(self, x, goal=None):
         x = x.to(self.device)
+        if goal is not None:
+            goal = goal.to(self.device)
+
         if self.cnn_model:
             x = self.cnn_model(x)
+
+        if self.goal_shape is not None:
+            x = torch.cat([x, goal], dim=1)
 
         for layer in self.dense_layers.values():
             x = layer(x)
@@ -640,6 +666,7 @@ class ActorModel(Model):
         
         for layer in self.output_activation.values():
             pi = layer(mu)
+        
         pi = pi * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device)
         
         return mu, pi
@@ -651,6 +678,7 @@ class ActorModel(Model):
             'cnn_model': self.cnn_model.get_config() if self.cnn_model is not None else None,
             'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
+            'goal_shape': self.goal_shape,
             'optimizer': self.optimizer.__class__.__name__,
             'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
@@ -666,6 +694,7 @@ class ActorModel(Model):
             env=self.env,
             cnn_model=self.cnn_model,
             dense_layers=self.layer_config,
+            goal_shape=self.goal_shape,
             optimizer=self.optimizer_class,
             optimizer_params=self.optimizer_params,
             learning_rate=self.learning_rate,
@@ -708,6 +737,7 @@ class ActorModel(Model):
             if cnn_model_config:
                 cnn_model = cnn_models.CNN(cnn_model_config['layers'], env)
             dense_layers = obj_config.get("dense_layers", [])
+            goal_shape = obj_config.get("goal_shape", None)
             optimizer = obj_config.get("optimizer", "Adam")
             optimizer_params = obj_config.get("optimizer_params", ())
             learning_rate = obj_config.get("learning_rate", 0.0001)
@@ -715,20 +745,21 @@ class ActorModel(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
 
-        actor_model = cls(env, cnn_model, dense_layers, optimizer, optimizer_params, learning_rate, normalize)
+        actor_model = cls(env, cnn_model, dense_layers, goal_shape, optimizer, optimizer_params, learning_rate, normalize)
         actor_model.load_state_dict(torch.load(model_path))
 
         return actor_model
 
 
 class CriticModel(Model):
-    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, optimizer: str = 'Adam',
-                 optimizer_params:dict={}, learning_rate=0.001, normalize:bool=False):
+    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, goal_shape:tuple=None,
+                 optimizer: str = 'Adam', optimizer_params:dict={}, learning_rate=0.001, normalize:bool=False):
         super().__init__()
         self.env = env
         self.cnn_model = cnn_model
         self.state_config = state_layers
         self.merged_config = merged_layers
+        self.goal_shape = goal_shape
         self.optimizer_class = optimizer
         self.optimizer_params = optimizer_params
         self.learning_rate = learning_rate
@@ -739,14 +770,23 @@ class CriticModel(Model):
         self.merged_layers = nn.ModuleDict()
         self.output_layer = nn.ModuleDict()
 
+        # Adding support for goal
         if self.cnn_model:
             obs_shape = env.observation_space.shape
             dummy_input = torch.zeros(1, *obs_shape, device=self.device)
             dummy_input = dummy_input.permute(0, 3, 1, 2)
             cnn_output = self.cnn_model(dummy_input)
-            input_size = cnn_output.view(cnn_output.size(0), -1).shape[1]
+            cnn_output_size = cnn_output.size(1)
+            
+            if self.goal_shape is not None:
+                input_size = cnn_output_size + self.goal_shape[0]
+            else:
+                input_size = cnn_output_size
         else:
             input_size = env.observation_space.shape[0]
+            
+            if self.goal_shape is not None:
+                input_size += self.goal_shape[0]
 
         # Define state processing layers
         for i, (units, activation, _) in enumerate(self.state_config):
@@ -768,12 +808,15 @@ class CriticModel(Model):
 
         # Define merged layers
         for i, (units, activation, _) in enumerate(self.merged_config):
-            self.merged_layers[f'critic_merged_dense_{i}'] = nn.Linear(input_size + action_input_size, units)
-
+            if i == 0:
+                # For the first merged layer, concatenate state (and goal, if present) with action
+                self.merged_layers[f'critic_merged_dense_{i}'] = nn.Linear(input_size + action_input_size, units)
+            else:
+                # For subsequent merged layers, use the output size of the previous layer as input size
+                self.merged_layers[f'critic_merged_dense_{i}'] = nn.Linear(input_size, units)
             # add normalization layer if normalize
             if self.normalize:
                 self.merged_layers[f'critic_merged_normalize_{i}'] = nn.LayerNorm(units)
-
             # add activation layer
             if activation == 'relu':
                 self.merged_layers[f'critic_merged_activation_{i}'] = nn.ReLU()
@@ -802,13 +845,19 @@ class CriticModel(Model):
          # Move the model to the specified device
         self.to(self.device)
 
-    def forward(self, state, action):
+    def forward(self, state, action, goal=None):
         state = state.to(self.device)
         action = action.to(self.device)
+        if goal is not None:
+            goal = goal.to(self.device)
+
         if self.cnn_model:
             state = self.cnn_model(state)
         else:
             state = state.view(state.size(0), -1)  # Flatten state input if not using a cnn_model
+
+        if self.goal_shape is not None:
+            state = torch.cat([state, goal], dim=1)
 
         for layer in self.state_layers.values():
             state = layer(state)
@@ -833,6 +882,7 @@ class CriticModel(Model):
             'num_layers': len(self.state_layers) + len(self.merged_layers),
             'state_layers': self.state_config,
             'merged_layers': self.merged_config,
+            'goal_shape': self.goal_shape,
             'optimizer': self.optimizer.__class__.__name__,
             'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
@@ -848,6 +898,7 @@ class CriticModel(Model):
             cnn_model=self.cnn_model,
             state_layers=self.state_config,
             merged_layers=self.merged_config,
+            goal_shape=self.goal_shape,
             optimizer=self.optimizer_class,
             optimizer_params=self.optimizer_params,
             learning_rate=self.learning_rate,
@@ -895,6 +946,7 @@ class CriticModel(Model):
                 cnn_model = cnn_models.CNN(cnn_model_config['layers'], env)
             state_layers = obj_config.get("state_layers", [])
             merged_layers = obj_config.get("merged_layers", [])
+            goal_shape = obj_config.get("goal_shape", None)
             optimizer = obj_config.get("optimizer", "Adam")
             learning_rate = obj_config.get("learning_rate", 0.0001)
             optimizer_params = obj_config.get("optimizer_params", ())
@@ -902,7 +954,7 @@ class CriticModel(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
 
-        model = cls(env, cnn_model, state_layers, merged_layers, optimizer, optimizer_params, learning_rate, normalize)
+        model = cls(env, cnn_model, state_layers, merged_layers, goal_shape, optimizer, optimizer_params, learning_rate, normalize)
         model.load_state_dict(torch.load(model_path))
 
         return model

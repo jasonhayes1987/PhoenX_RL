@@ -8,6 +8,7 @@ from typing import List
 from pathlib import Path
 import time
 import datetime
+import inspect
 
 import rl_callbacks
 import models
@@ -16,6 +17,7 @@ import wandb
 import wandb_support
 import helper
 import dash_callbacks
+import gym_helper
 
 import torch
 import torch.nn as nn
@@ -824,11 +826,14 @@ class DDPG(Agent):
         critic_model: models.CriticModel,
         discount=0.99,
         tau=0.001,
+        action_epsilon: float = 0.0,
         replay_buffer: helper.ReplayBuffer = None,
         batch_size: int = 64,
         noise = None,
+        normalize_inputs: bool = False,
+        normalizer_kwargs: dict = None,
         callbacks: List = [],
-        save_dir: str = "models/",
+        save_dir: str = "models/ddpg/",
         _DEBUG: bool = False
     ):
         self.env = env
@@ -839,12 +844,21 @@ class DDPG(Agent):
         self.target_critic_model = self.clone_model(self.critic_model)
         self.discount = discount
         self.tau = tau
+        self.action_epsilon = action_epsilon
         self.replay_buffer = replay_buffer
         self.batch_size = batch_size
         self.noise = noise
+        self.normalize_inputs = normalize_inputs
+        if self.normalize_inputs:
+            if normalizer_kwargs is None:
+                normalizer_kwargs = {}
+            self.state_normalizer = helper.Normalizer(size=self.env.observation_space.shape, **normalizer_kwargs)
         
         self.save_dir = save_dir
         self._DEBUG = _DEBUG
+
+        # instantiate internal attribute use_her to be switched by HER class if using DDPG
+        self._use_her = False
         
         self.callbacks = callbacks
         if callbacks:
@@ -920,6 +934,13 @@ class DDPG(Agent):
         )
     
 
+    def _init_her(self, goal_shape, eps=None, clip_range=None):
+            self.normalize_inputs = True
+            self._use_her = True
+            self.state_normalizer = helper.Normalizer(size=self.env.observation_space.shape, eps=eps, clip_range=clip_range)
+            self.goal_normalizer = helper.Normalizer(size=goal_shape, eps=eps, clip_range=clip_range)
+
+
     def _initialize_env(self, render=False, render_freq=10, context=None):
         """Initializes a new environment."""
         if render:
@@ -939,25 +960,70 @@ class DDPG(Agent):
 
         return gym.make(self.env.spec)
     
-    def get_action(self, state):
-        # make sure state is a tensor
-        state = torch.tensor(state, dtype=torch.float32, device=self.actor_model.device)
+    def get_action(self, state, goal=None, grad=True):
 
-        # permute state to (C,H,W) if actor using cnn model
-        if self.actor_model.cnn_model:
-            state = state.permute(2, 0, 1).unsqueeze(0)
+        # check if using epsilon greedy
+        if self.action_epsilon > 0.0:
+            # if random number is less than epsilon, sample random action
+            if np.random.random() < self.action_epsilon:
+                action_np = self.env.action_space.sample()
+                noise_np = np.zeros_like(action_np)
+            
+            else:
+                # if gradient tracking is true
+                if grad:
+                    # normalize state if self.normalize_inputs
+                    if self.normalize_inputs:
+                        state = self.state_normalizer.normalize(state)
+                    
+                    # make sure state is a tensor and on correct device
+                    state = torch.tensor(state, dtype=torch.float32, device=self.actor_model.device)
 
-        _, pi = self.actor_model(state)
-        noise = self.noise()
+                    # permute state to (C,H,W) if actor using cnn model
+                    if self.actor_model.cnn_model:
+                        state = state.permute(2, 0, 1).unsqueeze(0)
 
-        # Convert the action space bounds to a tensor on the same device
-        action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
-        action_space_low = torch.tensor(self.env.action_space.low, dtype=torch.float32, device=self.actor_model.device)
+                    _, pi = self.actor_model(state, goal)
+                    noise = self.noise()
 
-        action = (pi + noise).clip(action_space_low, action_space_high)
+                    # Convert the action space bounds to a tensor on the same device
+                    action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
+                    action_space_low = torch.tensor(self.env.action_space.low, dtype=torch.float32, device=self.actor_model.device)
 
-        noise_np = noise.cpu().detach().numpy().flatten()
-        action_np = action.cpu().detach().numpy().flatten()
+                    action = (pi + noise).clip(action_space_low, action_space_high)
+
+                    noise_np = noise.cpu().detach().numpy().flatten()
+                    action_np = action.cpu().detach().numpy().flatten()
+
+                else:
+                    with torch.no_grad():
+                        # normalize state if self.normalize_inputs
+                        if self.normalize_inputs:
+                            state = self.state_normalizer.normalize(state)
+
+                        # make sure state is a tensor and on correct device
+                        state = torch.tensor(state, dtype=torch.float32, device=self.actor_model.device)
+                        # normalize goal if self._use_her
+                        if self._use_her:
+                            goal = self.goal_normalizer.normalize(goal)
+                            # make sure goal is a tensor and on correct device
+                            goal = torch.tensor(goal, dtype=torch.float32, device=self.actor_model.device)
+                        
+                        # permute state to (C,H,W) if actor using cnn model
+                        if self.actor_model.cnn_model:
+                            state = state.permute(2, 0, 1).unsqueeze(0)
+
+                        _, pi = self.actor_model(state, goal)
+                        noise = self.noise()
+
+                        # Convert the action space bounds to a tensor on the same device
+                        action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
+                        action_space_low = torch.tensor(self.env.action_space.low, dtype=torch.float32, device=self.actor_model.device)
+
+                        action = (pi + noise).clip(action_space_low, action_space_high)
+
+                        noise_np = noise.cpu().detach().numpy().flatten()
+                        action_np = action.cpu().detach().numpy().flatten()
 
         # Loop over the noise and action values and log them to wandb
         for i, (a,n) in enumerate(zip(action_np, noise_np)):
@@ -976,13 +1042,32 @@ class DDPG(Agent):
         
         with torch.no_grad():
             # sample a batch of experiences from the replay buffer
-            states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+            # if using HER
+            if self._use_her:
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
+            else:
+                states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+            
+            # if normalize states if self.normalize_inputs
+            if self.normalize_inputs:
+                states = self.state_normalizer.normalize(states)
+                next_states = self.state_normalizer.normalize(next_states)
+            
             # convert to tensors
             states = torch.tensor(states, dtype=torch.float32, device=self.actor_model.device)
             actions = torch.tensor(actions, dtype=torch.float32, device=self.actor_model.device)
             rewards = torch.tensor(rewards, dtype=torch.float32, device=self.actor_model.device)
             next_states = torch.tensor(next_states, dtype=torch.float32, device=self.actor_model.device)
             dones = torch.tensor(dones, dtype=torch.int8, device=self.actor_model.device)
+
+            # if using HER, normalize goals and convert to tensors
+            if self._use_her:
+                desired_goals = self.goal_normalizer.normalize(desired_goals)
+                # convert desired goals to tensor and place on correct device
+                desired_goals = torch.tensor(desired_goals, dtype=torch.float32, device=self.actor_model.device)
+            else:
+                # set desired goals to None
+                desired_goals = None
 
             # permute states and next states if using cnn
             if self.actor_model.cnn_model:
@@ -994,12 +1079,12 @@ class DDPG(Agent):
             dones = dones.unsqueeze(1)
 
             # get target values 
-            _, target_actions = self.target_actor_model(next_states)
-            target_critic_values = self.target_critic_model(next_states, target_actions)
+            _, target_actions = self.target_actor_model(next_states, desired_goals)
+            target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
             targets = rewards + self.discount * target_critic_values * (1 - dones)
         
         # get current critic values and calculate critic loss
-        prediction = self.critic_model(states, actions)
+        prediction = self.critic_model(states, actions, desired_goals)
         critic_loss = F.mse_loss(prediction, targets)
         
         # update critic
@@ -1008,9 +1093,11 @@ class DDPG(Agent):
         self.critic_model.optimizer.step()
         
         # update actor
-        _, action_values = self.actor_model(states)
-        critic_values = self.critic_model(states, action_values)
+        pre_act_values, action_values = self.actor_model(states, desired_goals)
+        critic_values = self.critic_model(states, action_values, desired_goals)
         actor_loss = -critic_values.mean()
+        if self._use_her:
+            actor_loss += pre_act_values.pow(2).mean()
         self.actor_model.optimizer.zero_grad()
         actor_loss.backward()
         self.actor_model.optimizer.step()
@@ -1206,6 +1293,7 @@ class DDPG(Agent):
             # close the environment
             self.env.close()
 
+
     def get_config(self):
         return {
                 "agent_type": self.__class__.__name__,
@@ -1214,12 +1302,14 @@ class DDPG(Agent):
                 "critic_model": self.critic_model.get_config(),
                 "discount": self.discount,
                 "tau": self.tau,
+                "action_epsilon": self.action_epsilon,
                 "replay_buffer": self.replay_buffer.get_config(),
                 "batch_size": self.batch_size,
                 "noise": self.noise.get_config(),
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir
             }
+
 
     def save(self):
         """Saves the model."""
@@ -1242,8 +1332,9 @@ class DDPG(Agent):
         #         if isinstance(callback, rl_callbacks.WandbCallback):
         #             callback.save(self.save_dir + "/wandb_config.json")
 
+
     @classmethod
-    def load(cls, folder: str = "models", load_weights=True):
+    def load(cls, folder: str = "models/ddpg", load_weights=True):
         """Loads the model."""
         # load reinforce agent config
         with open(
@@ -1270,6 +1361,7 @@ class DDPG(Agent):
             critic_model = critic_model,
             discount=obj_config["discount"],
             tau=obj_config["tau"],
+            action_epsilon=obj_config["action_epsilon"],
             replay_buffer=replay_buffer, # need to change to load from base class
             batch_size=obj_config["batch_size"],
             noise=noise, # need to change to load from base class
@@ -1288,6 +1380,293 @@ class DDPG(Agent):
 
         return agent
 
+
+class HER(Agent):
+
+    def __init__(self, agent:Agent, strategy:str='final', num_goals:int=4, desired_goal:callable=None,
+                 achieved_goal:callable=None, reward_fn:callable=None, normalizer_clip:float=5.0,\
+                 normalizer_eps:float=0.01, save_dir: str = "models/her/"):
+        super().__init__()
+        self.agent = agent
+        self.strategy = strategy
+        self.num_goals = num_goals
+        self.desired_goal = desired_goal
+        self.achieved_goal = achieved_goal
+        self.reward_fn = reward_fn
+        self.normalizer_clip = normalizer_clip
+        self.normalizer_eps = normalizer_eps
+        self.save_dir = save_dir
+
+        # reset state environment to initiate normalizers
+        _,_ = self.agent.env.reset()
+
+        # get goal shape to pass to agent to initialize normalizers
+        goal_shape = self.desired_goal(self.agent.env).shape
+        # instantiate state and goal normalizer objects in agent
+        self.agent._init_her(goal_shape, eps=self.normalizer_eps, clip_range=self.normalizer_clip)
+        
+    
+    def train(self, epochs:int, num_cycles:int, num_episodes:int, num_updates:int, render:bool=False, render_freq:int=10, save_dir: str = None):
+        
+        # set models to train mode
+        self.agent.actor_model.train()
+        self.agent.critic_model.train()
+
+        if save_dir:
+            self.save_dir = save_dir
+        if self.agent.callbacks:
+            for callback in self.agent.callbacks:
+                if isinstance(callback, rl_callbacks.WandbCallback):
+                    callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config)
+
+                else:
+                    callback.on_train_begin(logs=self.agent._config)
+
+        # instantiate new environment
+        self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
+        
+        # initialize step counter (for logging)
+        self._step_counter = 1
+        self._episode_counter = 1
+        self._cycle_counter = 1
+        # set best reward
+        best_reward = self.agent.env.reward_range[0]
+        # instantiate list to store reward history
+        reward_history = []
+        # instantiate lists to store time history
+        episode_time_history = []
+        step_time_history = []
+        learning_time_history = []
+        steps_per_episode_history = []  # List to store steps per episode
+        for epoch in range(epochs):
+            for cycle in range(num_cycles):
+                self._cycle_counter += 1
+                for episode in range(num_episodes):
+                    self._episode_counter += 1
+                    if self.agent.callbacks:
+                        for callback in self.agent.callbacks:
+                            callback.on_train_epoch_begin(epoch=self._step_counter, logs=None)
+                    episode_start_time = time.time()
+                    # reset noise
+                    if type(self.agent.noise) == helper.OUNoise:
+                        self.agent.noise.reset()
+                    # reset environment
+                    state, _ = self.agent.env.reset()
+                    # instantiate empty lists to store current episode trajectory
+                    states, actions, next_states, dones, state_achieved_goals, \
+                    next_state_achieved_goals, desired_goals = [], [], [], [], [], [], []
+                    # set desired goal
+                    desired_goal = self.desired_goal(self.agent.env)
+                    # set achieved goal
+                    state_achieved_goal = self.achieved_goal(self.agent.env)
+                    # add initial state and goals to local normalizer stats
+                    self.agent.state_normalizer.update_local_stats(state)
+                    self.agent.goal_normalizer.update_local_stats(desired_goal)
+                    self.agent.goal_normalizer.update_local_stats(state_achieved_goal)
+                    # set done flag
+                    done = False
+                    # reset episode reward to 0
+                    episode_reward = 0
+                    # reset steps counter for the episode
+                    episode_steps = 0
+
+                    while not done:
+                        # start step timer
+                        step_start_time = time.time()
+                        # get normalized values for state and desired goal
+                        state_norm = self.agent.state_normalizer.normalize(state)
+                        desired_goal_norm = self.agent.goal_normalizer.normalize(desired_goal)
+                        # get action
+                        action = self.agent.get_action(state_norm, desired_goal_norm, grad=False)
+                        # take action
+                        next_state, reward, term, trunc, _ = self.agent.env.step(action)
+                        # calculate and log step time
+                        step_time = time.time() - step_start_time
+                        step_time_history.append(step_time)
+                        # get next state achieved goal
+                        next_state_achieved_goal = self.achieved_goal(self.agent.env)
+                        # add next state and next state achieved goal to normalizers
+                        self.agent.state_normalizer.update_local_stats(next_state)
+                        self.agent.goal_normalizer.update_local_stats(next_state_achieved_goal)
+                        # store trajectory in replay buffer (non normalized!)
+                        self.agent.replay_buffer.add(state, action, reward, next_state, done,\
+                                                        state_achieved_goal, next_state_achieved_goal, desired_goal)
+                        
+                        # append step state, action, next state, and goals to respective lists
+                        states.append(state)
+                        actions.append(action)
+                        next_states.append(next_state)
+                        dones.append(done)
+                        state_achieved_goals.append(state_achieved_goal)
+                        next_state_achieved_goals.append(next_state_achieved_goal)
+                        desired_goals.append(desired_goal)
+
+                        # add to episode reward and increment steps counter
+                        episode_reward += reward
+                        episode_steps += 1
+                        # update state and state achieved goal
+                        state = next_state
+                        state_achieved_goal = next_state_achieved_goal
+                        # update done flag
+                        if term or trunc:
+                            done = True
+                        # log step metrics
+                        self.agent._train_step_config["step reward"] = reward
+                        self.agent._train_step_config["step time"] = step_time
+                        # log to wandb if using wandb callback
+                        if self.agent.callbacks:
+                            for callback in self.agent.callbacks:
+                                callback.on_train_step_end(step=self._step_counter, logs=self.agent._train_step_config)
+                        if not done:
+                            self._step_counter += 1
+                    
+                    # package episode states, actions, next states, and goals into trajectory tuple
+                    trajectory = (states, actions, next_states, dones, state_achieved_goals, next_state_achieved_goals, desired_goals)
+
+                    # store hindsight experience replay trajectory using current episode trajectory and goal strategy
+                    self.store_hindsight_trajectory(trajectory)
+
+                        
+                    # check if enough samples in replay buffer and if so, learn from experiences
+                    if self.agent.replay_buffer.counter > self.agent.batch_size:
+                        learn_time = time.time()
+                        for _ in range(num_updates):
+                            actor_loss, critic_loss = self.agent.learn()
+                        self.agent._train_step_config["actor loss"] = actor_loss
+                        self.agent._train_step_config["critic loss"] = critic_loss
+                
+                    learning_time_history.append(time.time() - learn_time)
+                    episode_time = time.time() - episode_start_time
+                    episode_time_history.append(episode_time)
+                    reward_history.append(episode_reward)
+                    steps_per_episode_history.append(episode_steps) 
+                    avg_reward = np.mean(reward_history[-100:])
+                    avg_episode_time = np.mean(episode_time_history[-100:])
+                    avg_step_time = np.mean(step_time_history[-100:])
+                    avg_learn_time = np.mean(learning_time_history[-100:])
+                    avg_steps_per_episode = np.mean(steps_per_episode_history[-100:])  # Calculate average steps per episode
+
+                    self.agent._train_episode_config['episode'] = episode
+                    self.agent._train_episode_config["episode reward"] = episode_reward
+                    self.agent._train_episode_config["avg reward"] = avg_reward
+                    self.agent._train_episode_config["episode time"] = episode_time
+
+                    # check if best reward
+                    if avg_reward > best_reward:
+                        best_reward = avg_reward
+                        self.agent._train_episode_config["best"] = True
+                        # save model
+                        self.save()
+                    else:
+                        self.agent._train_episode_config["best"] = False
+
+                    if self.agent.callbacks:
+                        for callback in self.agent.callbacks:
+                            callback.on_train_epoch_end(epoch=self._step_counter, logs=self.agent._train_episode_config)
+
+
+                # perform soft update on target networks
+                self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
+                self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
+
+            # print metrics to terminal log
+            print(f"epoch {epoch} cycle {self._cycle_counter} episode {self._episode_counter}, score {episode_reward}, avg_score {avg_reward}, episode_time {episode_time:.2f}s, avg_episode_time {avg_episode_time:.2f}s, avg_step_time {avg_step_time:.6f}s, avg_learn_time {avg_learn_time:.6f}s, avg_steps_per_episode {avg_steps_per_episode:.2f}")
+
+        # if callbacks, call on train end
+        if self.agent.callbacks:
+            for callback in self.agent.callbacks:
+                callback.on_train_end(logs=self.agent._train_episode_config)
+        # close the environment
+        self.agent.env.close()
+
+    def store_hindsight_trajectory(self, trajectory):
+        """
+        Stores a hindsight experience replay trajectory in the replay buffer.
+        Args:
+            trajectory: tuple of states, actions, next states, dones, state achieved goals, next state achieved goals, and desired goals
+        """
+        states, actions, next_states, dones, state_achieved_goals, next_state_achieved_goals, desired_goals = trajectory
+        
+        # loop over each step in the trajectory to set new achieved goals, calculate new reward, and save to replay buffer
+        for idx, (state, action, next_state, done, state_achieved_goal, next_state_achieved_goal, desired_goal) in enumerate(zip(states, actions, next_states, dones, state_achieved_goals, next_state_achieved_goals, desired_goals)):
+
+            if self.strategy == "final":
+                new_desired_goal = next_state_achieved_goals[-1]
+                new_reward = self.reward_fn(state_achieved_goal, next_state_achieved_goal, new_desired_goal)
+                self.agent.replay_buffer.add(state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal)
+
+            if self.strategy == 'future':
+                for i in range(self.num_goals):
+                    if idx + i + 1 >= len(states):
+                        break
+                    goal_idx = np.random.randint(idx + 1, len(states))
+                    new_desired_goal = next_state_achieved_goals[goal_idx]
+                    new_reward = self.reward_fn(state_achieved_goal, next_state_achieved_goal, new_desired_goal)
+                    self.agent.replay_buffer.add(state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal)
+
+        
+
+
+
+
+    def get_config(self):
+        config = {
+            "agent_type": self.__class__.__name__,
+            "agent": self.agent.get_config(),
+            "strategy": self.strategy,
+            "num_goals": self.num_goals,
+            "desired_goal": self.desired_goal.__name__,
+            "achieved_goal": self.achieved_goal.__name__,
+            "save_dir": self.save_dir,
+        }
+
+        if callable(self.reward_fn) and self.reward_fn.__name__ == '<lambda>':
+            config["reward_fn"] = inspect.getsource(self.reward_fn).strip()
+        else:
+            config["reward_fn"] = self.reward_fn.__name__
+
+        return config
+    
+    def save(self):
+        """Saves the model."""
+        obj_config = self.get_config()
+
+        # makes directory if it doesn't exist
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # writes and saves JSON file of DDPG agent config
+        with open(self.save_dir + "/obj_config.json", "w", encoding="utf-8") as f:
+            json.dump(obj_config, f)
+
+        # save agent
+        self.agent.save()
+
+    @classmethod
+    def load(cls, folder: str = "models/her", load_weights=True):
+        """Loads the model."""
+        # load reinforce agent config
+        with open(
+            Path(folder).joinpath(Path("obj_config.json")), "r", encoding="utf-8"
+        ) as f:
+            obj_config = json.load(f)
+
+        # Resolve function names to actual functions
+        obj_config["desired_goal"] = getattr(gym_helper, obj_config["desired_goal"])
+        obj_config["achieved_goal"] = getattr(gym_helper, obj_config["achieved_goal"])
+
+        if 'lambda' in obj_config["reward_fn"]:
+            obj_config["reward_fn"] = eval(obj_config["reward_fn"])
+        else:
+            obj_config["reward_fn"] = getattr(gym_helper, obj_config["reward_fn"])
+
+        # load agent
+        agent = load_agent_from_config(obj_config["agent"]["save_dir"], load_weights)
+
+        # return HER agent
+        return cls(agent, obj_config["strategy"], obj_config["num_goals"], obj_config["desired_goal"], obj_config["achieved_goal"], obj_config["reward_fn"], obj_config["save_dir"])
+        
+
+    
 
 def load_agent_from_config(config_path, load_weights=True):
     """Loads an agent from a config file."""
