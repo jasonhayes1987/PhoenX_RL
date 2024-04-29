@@ -276,12 +276,6 @@ class DashCallback(Callback):
         pass
 
     def on_test_epoch_end(self, epoch, logs=None):
-        pass
-
-    def on_test_step_begin(self, step, logs=None):
-        pass
-
-    def on_test_step_end(self, step, logs=None):
         self._episode_num += 1
         logs['episode'] = self._episode_num
 
@@ -291,6 +285,12 @@ class DashCallback(Callback):
                 json.dump(logs, f)
         except Exception as e:
             print(f"Failed to send update to Dash app: {e}")
+
+    def on_test_step_begin(self, step, logs=None):
+        pass
+
+    def on_test_step_end(self, step, logs=None):
+        pass
 
     def _config(self, agent):
         pass

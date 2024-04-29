@@ -15,15 +15,21 @@ networkx
 jinja2
 fsspec
 # setuptools was removed from default python install
-setuptools ; python_version >= "3.12"
+setuptools #; python_version >= "3.12"
 packaging
 optree>=0.9.1
 lark
 ipykernel
+# jaxlib==0.4.26
 gymnasium[all]
+gymnasium-robotics
 pandas
 flask
 dash
 dash-bootstrap-components
 wandb
 natsort
+moviepy
+ffmpeg
+decorator==4.0.2
+cupy
