@@ -80,26 +80,28 @@ def build_layers(sweep_config):
     if sweep_config.model_type == "Reinforce" or sweep_config.model_type == "ActorCritic":
         # get policy layers
         policy_layers = []
-        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_num_layers"] + 1):
-            policy_layers.append(
-                (
-                    sweep_config[sweep_config.model_type][f"policy_units_layer_{layer_num}_{sweep_config.model_type}"],
-                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_activation"],
+        if sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_num_layers"] > 0:
+            for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_num_layers"] + 1):
+                policy_layers.append(
+                    (
+                        sweep_config[sweep_config.model_type][f"policy_units_layer_{layer_num}_{sweep_config.model_type}"],
+                        sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_policy_activation"],
+                    )
                 )
-            )
         # get value layers
         value_layers = []
-        for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_num_layers"] + 1):
-            value_layers.append(
-                (
-                    sweep_config[sweep_config.model_type][f"value_units_layer_{layer_num}_{sweep_config.model_type}"],
-                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_activation"],
+        if sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_num_layers"] > 0:
+            for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_num_layers"] + 1):
+                value_layers.append(
+                    (
+                        sweep_config[sweep_config.model_type][f"value_units_layer_{layer_num}_{sweep_config.model_type}"],
+                        sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_value_activation"],
+                    )
                 )
-            )
 
         return policy_layers, value_layers
     
-    elif sweep_config.model_type == "DDPG":
+    elif sweep_config.model_type == "DDPG" or sweep_config.model_type == "HER_DDPG":
         
         # Get actor CNN layers if present
         actor_cnn_layers = []
@@ -234,7 +236,7 @@ def build_layers(sweep_config):
         for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_merged_num_layers"] + 1):
             critic_merged_layers.append(
                 (
-                    sweep_config[sweep_config.model_type][f"critic_units_merged_layer_{layer_num}_DDPG"],
+                    sweep_config[sweep_config.model_type][f"critic_units_merged_layer_{layer_num}_{sweep_config.model_type}"],
                     sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_activation"],
                     sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"],
                 )
@@ -334,6 +336,21 @@ def _run_sweep(sweep_config, episodes_per_sweep, save_dir):
             save_dir=save_dir,
         )
     elif wandb.config.model_type == "DDPG":
+        actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
+        agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+        rl_agent = agent.build(
+            env=env,
+            actor_cnn_layers = actor_cnn_layers,
+            critic_cnn_layers = critic_cnn_layers,
+            actor_layers=actor_layers,
+            critic_state_layers=critic_state_layers,
+            critic_merged_layers=critic_merged_layers,
+            callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+            config=wandb.config,
+            save_dir=save_dir,
+        )
+
+    elif wandb.config.model_type == "HER_DDPG":
         actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
         agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
         rl_agent = agent.build(

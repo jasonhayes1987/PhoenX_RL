@@ -31,6 +31,7 @@ import pandas as pd
 
 import layouts
 import helper
+import gym_helper
 import utils
 import models
 import cnn_models
@@ -119,129 +120,133 @@ def register_callbacks(app, shared_data):
     @app.callback(
         Output({'type':'optimizer-options', 'model':MATCH, 'agent':MATCH}, 'children'),
         Input({'type':'optimizer', 'model':MATCH, 'agent':MATCH}, 'value'),
-        State({'type':'optimizer-options', 'model':MATCH, 'agent':MATCH}, 'id')
+        State({'type':'optimizer-options', 'model':MATCH, 'agent':MATCH}, 'id'),
+        prevent_initial_call=True,
     )
     def update_agent_optimizer_params(optimizer, optimizer_id):
-        if optimizer == 'Adam':
-            return html.Div([
-                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                dcc.Slider(
-                    id=
-                    {
-                        'type':'adam-weight-decay',
-                        'model':optimizer_id['model'],
-                        'agent':optimizer_id['agent'],
-                    },
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    value=0.01,
-                    marks={0:'0.0', 1:'1.0'},
-                    tooltip={"placement": "bottom", "always_visible": True},
-                )
-            ])
+        agent_type = optimizer_id['agent']
+        model_type = optimizer_id['model']
+        return utils.create_optimizer_params_input(agent_type, model_type, optimizer)
+        # if optimizer == 'Adam':
+        #     return html.Div([
+        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+        #         dcc.Slider(
+        #             id=
+        #             {
+        #                 'type':'adam-weight-decay',
+        #                 'model':optimizer_id['model'],
+        #                 'agent':optimizer_id['agent'],
+        #             },
+        #             min=0.0,
+        #             max=1.0,
+        #             step=0.01,
+        #             value=0.01,
+        #             marks={0:'0.0', 1:'1.0'},
+        #             tooltip={"placement": "bottom", "always_visible": True},
+        #         )
+        #     ])
         
-        elif optimizer == 'Adagrad':
-            return html.Div([
-                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                dcc.Slider(
-                    id=
-                    {
-                        'type':'adagrad-weight-decay',
-                        'model':optimizer_id['model'],
-                        'agent':optimizer_id['agent'],
-                    },
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    value=0.01,
-                    marks={0:'0.0', 1:'1.0'},
-                    tooltip={"placement": "bottom", "always_visible": True},
-                ),
-                html.Label("Learning Rate Decay", style={'text-decoration': 'underline'}),
-                dcc.Slider(
-                    id=
-                    {
-                        'type':'adagrad-lr-decay',
-                        'model':optimizer_id['model'],
-                        'agent':optimizer_id['agent'],
-                    },
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    value=0.01,
-                    marks={0:'0.0', 1:'1.0'},
-                    tooltip={"placement": "bottom", "always_visible": True},
-                )
-            ])
+        # elif optimizer == 'Adagrad':
+        #     return html.Div([
+        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+        #         dcc.Slider(
+        #             id=
+        #             {
+        #                 'type':'adagrad-weight-decay',
+        #                 'model':optimizer_id['model'],
+        #                 'agent':optimizer_id['agent'],
+        #             },
+        #             min=0.0,
+        #             max=1.0,
+        #             step=0.01,
+        #             value=0.01,
+        #             marks={0:'0.0', 1:'1.0'},
+        #             tooltip={"placement": "bottom", "always_visible": True},
+        #         ),
+        #         html.Label("Learning Rate Decay", style={'text-decoration': 'underline'}),
+        #         dcc.Slider(
+        #             id=
+        #             {
+        #                 'type':'adagrad-lr-decay',
+        #                 'model':optimizer_id['model'],
+        #                 'agent':optimizer_id['agent'],
+        #             },
+        #             min=0.0,
+        #             max=1.0,
+        #             step=0.01,
+        #             value=0.01,
+        #             marks={0:'0.0', 1:'1.0'},
+        #             tooltip={"placement": "bottom", "always_visible": True},
+        #         )
+        #     ])
         
-        elif optimizer == 'RMSprop':
-            return html.Div([
-                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                dcc.Slider(
-                    id=
-                    {
-                        'type':'rmsprop-weight-decay',
-                        'model':optimizer_id['model'],
-                        'agent':optimizer_id['agent'],
-                    },
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    value=0.01,
-                    marks={0:'0.0', 1:'1.0'},
-                    tooltip={"placement": "bottom", "always_visible": True},
-                ),
-                html.Label("Momentum", style={'text-decoration': 'underline'}),
-                dcc.Slider(
-                    id=
-                    {
-                        'type':'rmsprop-momentum',
-                        'model':optimizer_id['model'],
-                        'agent':optimizer_id['agent'],
-                    },
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    value=0.01,
-                    marks={0:'0.0', 1:'1.0'},
-                    tooltip={"placement": "bottom", "always_visible": True},
-                )
-            ])
+        # elif optimizer == 'RMSprop':
+        #     return html.Div([
+        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+        #         dcc.Slider(
+        #             id=
+        #             {
+        #                 'type':'rmsprop-weight-decay',
+        #                 'model':optimizer_id['model'],
+        #                 'agent':optimizer_id['agent'],
+        #             },
+        #             min=0.0,
+        #             max=1.0,
+        #             step=0.01,
+        #             value=0.01,
+        #             marks={0:'0.0', 1:'1.0'},
+        #             tooltip={"placement": "bottom", "always_visible": True},
+        #         ),
+        #         html.Label("Momentum", style={'text-decoration': 'underline'}),
+        #         dcc.Slider(
+        #             id=
+        #             {
+        #                 'type':'rmsprop-momentum',
+        #                 'model':optimizer_id['model'],
+        #                 'agent':optimizer_id['agent'],
+        #             },
+        #             min=0.0,
+        #             max=1.0,
+        #             step=0.01,
+        #             value=0.01,
+        #             marks={0:'0.0', 1:'1.0'},
+        #             tooltip={"placement": "bottom", "always_visible": True},
+        #         )
+        #     ])
         
-        elif optimizer == 'SGD':
-            return html.Div([
-                html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                dcc.Slider(
-                    id=
-                    {
-                        'type':'sgd-weight-decay',
-                        'model':optimizer_id['model'],
-                        'agent':optimizer_id['agent'],
-                    },
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    value=0.01,
-                    marks={0:'0.0', 1:'1.0'},
-                    tooltip={"placement": "bottom", "always_visible": True},
-                ),
-                html.Label("Momentum", style={'text-decoration': 'underline'}),
-                dcc.Slider(
-                    id=
-                    {
-                        'type':'sgd-momentum',
-                        'model':optimizer_id['model'],
-                        'agent':optimizer_id['agent'],
-                    },
-                    min=0.0,
-                    max=1.0,
-                    step=0.01,
-                    value=0.01,
-                    marks={0:'0.0', 1:'1.0'},
-                    tooltip={"placement": "bottom", "always_visible": True},
-                )
-            ])
+        # elif optimizer == 'SGD':
+        #     return html.Div([
+        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
+        #         dcc.Slider(
+        #             id=
+        #             {
+        #                 'type':'sgd-weight-decay',
+        #                 'model':optimizer_id['model'],
+        #                 'agent':optimizer_id['agent'],
+        #             },
+        #             min=0.0,
+        #             max=1.0,
+        #             step=0.01,
+        #             value=0.01,
+        #             marks={0:'0.0', 1:'1.0'},
+        #             tooltip={"placement": "bottom", "always_visible": True},
+        #         ),
+        #         html.Label("Momentum", style={'text-decoration': 'underline'}),
+        #         dcc.Slider(
+        #             id=
+        #             {
+        #                 'type':'sgd-momentum',
+        #                 'model':optimizer_id['model'],
+        #                 'agent':optimizer_id['agent'],
+        #             },
+        #             min=0.0,
+        #             max=1.0,
+        #             step=0.01,
+        #             value=0.01,
+        #             marks={0:'0.0', 1:'1.0'},
+        #             tooltip={"placement": "bottom", "always_visible": True},
+        #         )
+        #     ])
 
         
     @app.callback(
@@ -716,6 +721,58 @@ def register_callbacks(app, shared_data):
     def update_kernel_initializer_options(selected_initializer, initializer_id):
         # Use the utility function to get the initializer inputs
         return utils.get_kernel_initializer_inputs(selected_initializer, initializer_id)
+    
+    @app.callback(
+        Output({'type': 'goal-strategy-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'goal-strategy', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'goal-strategy', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_goal_strategy_options(strategy, strategy_id):
+        agent_type = strategy_id['agent']
+        return utils.update_goal_strategy_options(agent_type, strategy)
+    
+    @app.callback(
+        Output({'type': 'goal-strategy-options-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'goal-strategy-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'goal-strategy-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_goal_strategy_hyperparam_options(strategy, strategy_id):
+        agent_type = strategy_id['agent']
+        options = []
+        for strat in strategy:
+            options.append(utils.update_goal_strategy_hyperparam_options(agent_type, strat))
+        
+        return options
+    
+    @app.callback(
+        Output({'type': 'normalize-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'normalize-input', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'normalize-input', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_normalize_options(normalize, normalize_id):
+        if normalize == 'True':
+            agent_type = normalize_id['agent']
+            if agent_type == 'DDPG':
+                return utils.create_input_normalizer_options_input(agent_type)
+        return html.Div()
+    
+    @app.callback(
+        Output({'type': 'normalize-options-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'normalize-input-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'normalize-input-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_normalize_hyperparam_options(normalize, normalize_id):
+        for norm in normalize:
+            if norm == 'True':
+                agent_type = normalize_id['agent']
+                model_type = normalize_id['model']
+                # if agent_type == 'DDPG':
+                return utils.create_input_normalizer_options_hyperparam_input(agent_type, model_type)
+        return html.Div()
         
     @app.callback(
         Output('callback-selection', 'children'),
@@ -768,20 +825,27 @@ def register_callbacks(app, shared_data):
             # env = gym.make("CartPole-v1")
 
             learning_rate=10**utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        value_type='learning-rate',
-                        value_model='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='learning-rate',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
 
             policy_optimizer = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    value_type='optimizer',
-                    value_model='policy',
-                    agent_type=agent_type_dropdown_value,
-                )
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='optimizer',
+                model_type='policy',
+                agent_type=agent_type_dropdown_value,
+            )
+            
+            policy_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='policy',
+                all_values=all_values,
+                all_ids=all_ids
+            )
             
             policy_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
@@ -803,8 +867,8 @@ def register_callbacks(app, shared_data):
                 utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='activation-function',
-                    value_model='policy',
+                    id_type='activation-function',
+                    model_type='policy',
                     agent_type=agent_type_dropdown_value,
                 ),
                 policy_initializer,
@@ -817,16 +881,24 @@ def register_callbacks(app, shared_data):
                     env=gym.make(env),
                     dense_layers=policy_layers,
                     optimizer=policy_optimizer,
+                    optimizer_params=policy_opt_params,
                     learning_rate=learning_rate,
                 )
 
             value_optimizer = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='optimizer',
-                    value_model='value',
+                    id_type='optimizer',
+                    model_type='value',
                     agent_type=agent_type_dropdown_value,
                 )
+            
+            value_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='value',
+                all_values=all_values,
+                all_ids=all_ids
+            )
 
             value_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
@@ -848,21 +920,18 @@ def register_callbacks(app, shared_data):
                 utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='activation-function',
-                    value_model='value',
+                    id_type='activation-function',
+                    model_type='value',
                     agent_type=agent_type_dropdown_value,
                 ),
                 value_initializer,
             )
-
-            ##DEBUG
-            # print("Value layers:", value_layers)
-
             
             value_model = models.ValueModel(
                 env=gym.make(env),
                 dense_layers=value_layers,
                 optimizer=value_optimizer,
+                optimizer_params=value_opt_params,
                 learning_rate=learning_rate,
             )
 
@@ -872,8 +941,8 @@ def register_callbacks(app, shared_data):
                 discount=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
-                        value_type='discount',
-                        value_model='none',
+                        id_type='discount',
+                        model_type='none',
                         agent_type=agent_type_dropdown_value,
                     ),
 
@@ -884,31 +953,31 @@ def register_callbacks(app, shared_data):
                     value_model=value_model,
                     discount=discount,
                     callbacks=utils.get_callbacks(callbacks, project),
-                    save_dir=os.path.join(os.getcwd(), 'assets'),
+                    save_dir=os.path.join(os.getcwd(), 'assets/models/reinforce/'),
                 )
 
-            elif agent_type_dropdown_value == "Actor Critic":
+            elif agent_type_dropdown_value == "ActorCritic":
 
                 discount=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
-                        value_type='discount',
-                        value_model='none',
+                        id_type='discount',
+                        model_type='none',
                         agent_type=agent_type_dropdown_value,
                     ),
 
                 policy_trace_decay=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
-                        value_type='trace-decay',
-                        value_model='policy',
+                        id_type='trace-decay',
+                        model_type='policy',
                         agent_type=agent_type_dropdown_value,
                     )
                 value_trace_decay=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
-                        value_type='trace-decay',
-                        value_model='value',
+                        id_type='trace-decay',
+                        model_type='value',
                         agent_type=agent_type_dropdown_value,
                     )
 
@@ -920,7 +989,7 @@ def register_callbacks(app, shared_data):
                     policy_trace_decay=policy_trace_decay,
                     value_trace_decay=value_trace_decay,
                     callbacks=utils.get_callbacks(callbacks, project),
-                    save_dir=os.path.join(os.getcwd(), 'assets'),
+                    save_dir=os.path.join(os.getcwd(), 'assets/models/actor_critic/'),
                 )
 
         elif agent_type_dropdown_value == "DDPG":
@@ -928,23 +997,29 @@ def register_callbacks(app, shared_data):
             # env = gym.make("Pendulum-v1")
 
             # Set actor params
-            
             # Set actor learning rate
             actor_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='learning-rate',
-                    value_model='actor',
+                    id_type='learning-rate',
+                    model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 )
 
             actor_optimizer = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='optimizer',
-                    value_model='actor',
+                    id_type='optimizer',
+                    model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 )
+            
+            actor_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='actor',
+                all_values=all_values,
+                all_ids=all_ids
+            )
 
             actor_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
@@ -979,11 +1054,19 @@ def register_callbacks(app, shared_data):
                 utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='activation-function',
-                    value_model='actor',
+                    id_type='activation-function',
+                    model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
                 actor_initializer,
+            )
+
+            actor_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
             )
 
             # Create actor model
@@ -991,8 +1074,10 @@ def register_callbacks(app, shared_data):
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
+                optimizer=actor_optimizer,
+                optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
-                optimizer=actor_optimizer
+                normalize_layers=actor_normalize_layers,
             )
             
             #DEBUG
@@ -1007,18 +1092,25 @@ def register_callbacks(app, shared_data):
             critic_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='learning-rate',
-                    value_model='critic',
+                    id_type='learning-rate',
+                    model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 )
             
             critic_optimizer = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='optimizer',
-                    value_model='critic',
+                    id_type='optimizer',
+                    model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 )
+            
+            critic_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='critic',
+                all_values=all_values,
+                all_ids=all_ids
+            )
 
             critic_initializer = utils.format_kernel_initializer_config(
                 all_values=all_values,
@@ -1040,8 +1132,8 @@ def register_callbacks(app, shared_data):
                 utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='activation-function',
-                    value_model='critic',
+                    id_type='activation-function',
+                    model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
                 critic_initializer,
@@ -1072,13 +1164,20 @@ def register_callbacks(app, shared_data):
                 utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
-                    value_type='activation-function',
-                    value_model='critic',
+                    id_type='activation-function',
+                    model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
                 critic_initializer,
             )
            
+            critic_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='critic',
+                agent_type=agent_type_dropdown_value,
+            )
            
             critic_model = models.CriticModel(
                 env=env,
@@ -1086,7 +1185,9 @@ def register_callbacks(app, shared_data):
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
                 learning_rate=critic_learning_rate,
-                optimizer=critic_optimizer
+                optimizer=critic_optimizer,
+                optimizer_params=critic_opt_params,
+                normalize_layers=critic_normalize_layers,
             )
 
             #DEBUG
@@ -1100,48 +1201,413 @@ def register_callbacks(app, shared_data):
 
             # Set DDPG params
 
-            discount=utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    value_type='discount',
-                    value_model='none',
-                    agent_type=agent_type_dropdown_value,
+            discount = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'discount',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
                 )
             
             tau=utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    value_type='tau',
-                    value_model='none',
-                    agent_type=agent_type_dropdown_value,
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'tau',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
                 )
             
-            batch_size=utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    value_type='batch-size',
-                    value_model='none',
-                    agent_type=agent_type_dropdown_value,
+            epsilon = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'epsilon-greedy',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            batch_size = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'batch-size',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
                 )
             
             noise=utils.create_noise_object(
-                    env=env,
+                    env = env,
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            normalize_inputs = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'normalize-input',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            clip_value = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'clip-value',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            agent = rl_agents.DDPG(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = discount,
+                tau = tau,
+                action_epsilon = epsilon,
+                replay_buffer = helper.ReplayBuffer(env, 100000),
+                batch_size = batch_size,
+                noise = noise,
+                normalize_inputs = normalize_inputs,
+                normalize_kwargs = {'clip_range':clip_value},
+                callbacks = utils.get_callbacks(callbacks, project),
+                save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
+            )
+
+        elif agent_type_dropdown_value == "HER_DDPG":
+
+            # get goal and reward functions and goal shape
+            desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
+            goal_shape = desired_goal_func(env).shape
+
+            print(f'desired goal: {desired_goal_func}')
+            print(f'achieved goal: {achieved_goal_func}')
+            print(f'reward func: {reward_func}')
+
+            # Set actor params
+            # Set actor learning rate
+            actor_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
+                    id_type='learning-rate',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                )
+
+            actor_optimizer = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='optimizer',
+                    model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 )
             
-            agent = rl_agents.DDPG(
+            actor_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='actor',
+                all_values=all_values,
+                all_ids=all_ids
+            )
+
+            actor_initializer = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor',
+                agent_type=agent_type_dropdown_value
+            )
+
+            actor_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'actor',
+                agent_type_dropdown_value
+            )
+
+            if actor_conv_layers:
+                actor_cnn=cnn_models.CNN(actor_conv_layers, env)
+            else:
+                actor_cnn=None
+
+
+            actor_dense_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='actor',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                actor_initializer,
+            )
+
+            actor_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            # Create actor model
+            actor_model = models.ActorModel(
                 env=env,
-                actor_model=actor_model,
-                critic_model=critic_model,
-                discount=discount,
-                tau=tau,
-                replay_buffer=helper.ReplayBuffer(env, 100000),
-                batch_size=batch_size,
-                noise=noise,
-                callbacks=utils.get_callbacks(callbacks, project),
-                save_dir=os.path.join(os.getcwd(), 'assets'),
+                cnn_model=actor_cnn,
+                dense_layers=actor_dense_layers,
+                goal_shape=goal_shape,
+                optimizer=actor_optimizer,
+                optimizer_params=actor_opt_params,
+                learning_rate=actor_learning_rate,
+                normalize_layers=actor_normalize_layers,
+            )
+            
+            #DEBUG
+            # print(f'actor cnn model: {actor_cnn}')
+            # print(f'actor dense layers: {actor_dense_layers}')
+            # print(f'actor optimizer: {actor_optimizer}')
+            # print(f'actor learning rate: {actor_learning_rate}')
+            # print(f'actor model: {actor_model}')
+            
+            # Set critic params
+
+            critic_learning_rate=10**utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='learning-rate',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            critic_optimizer = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='optimizer',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            critic_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='critic',
+                all_values=all_values,
+                all_ids=all_ids
+            )
+
+            critic_initializer = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic',
+                agent_type=agent_type_dropdown_value
+            )
+            
+            critic_state_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='critic-state',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                critic_initializer,
+            )
+           
+            critic_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'critic',
+                agent_type_dropdown_value
+            )
+
+            if critic_conv_layers:
+                critic_cnn = cnn_models.CNN(critic_conv_layers, env)
+            else:
+                critic_cnn = None
+
+            critic_merged_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='critic-merged',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                critic_initializer,
+            )
+           
+            critic_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='critic',
+                agent_type=agent_type_dropdown_value,
+            )
+           
+            critic_model = models.CriticModel(
+                env=env,
+                cnn_model=critic_cnn,
+                state_layers=critic_state_layers,
+                merged_layers=critic_merged_layers,
+                goal_shape=goal_shape,
+                learning_rate=critic_learning_rate,
+                optimizer=critic_optimizer,
+                optimizer_params=critic_opt_params,
+                normalize_layers=critic_normalize_layers,
+            )
+
+            #DEBUG
+            # print(f'critic cnn model: {critic_cnn}')
+            # print(f'critic state layers: {critic_state_layers}')
+            # print(f'critic merged layers: {critic_merged_layers}')
+            # print(f'critic optimizer: {critic_optimizer}')
+            # print(f'critic learning rate: {critic_learning_rate}')
+            # print(f'critic model: {critic_model}')
+
+
+            # Set DDPG params
+
+            discount = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'discount',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            tau=utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'tau',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            epsilon = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'epsilon-greedy',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            batch_size = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'batch-size',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            noise=utils.create_noise_object(
+                    env = env,
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            normalize_inputs = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'normalize-input',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            clip_value = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'clip-value',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            ddpg_agent = rl_agents.DDPG(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = discount,
+                tau = tau,
+                action_epsilon = epsilon,
+                replay_buffer = helper.ReplayBuffer(env, 100000, goal_shape),
+                batch_size = batch_size,
+                noise = noise,
+                normalize_inputs = normalize_inputs,
+                normalize_kwargs = {'clip_range':clip_value},
+                callbacks = utils.get_callbacks(callbacks, project),
+                save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
+            )
+
+            # set HER specific hyperparams
+            strategy = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='goal-strategy',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            num_goals = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='future-goals',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            tolerance = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='goal-tolerance',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            normalizer_clip = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'clip-value',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            # create HER object
+            agent = rl_agents.HER(
+                ddpg_agent,
+                strategy=strategy,
+                tolerance=tolerance,
+                num_goals=num_goals,
+                desired_goal=desired_goal_func,
+                achieved_goal=achieved_goal_func,
+                reward_fn=reward_func,
+                normalizer_clip=normalizer_clip,
+                save_dir = os.path.join(os.getcwd(), 'assets/models/her/'),
             )
             
         # save agent
@@ -1352,76 +1818,109 @@ def register_callbacks(app, shared_data):
         return "", "", gym_params  # Default empty state
 
     @app.callback(
-        Output({'type':'hidden-div', 'page':MATCH}, 'children'),
-        Input({'type':'start', 'page':MATCH}, 'n_clicks'),
-        State({'type':'start', 'page':MATCH}, 'id'),
-        State('agent-store', 'data'),
-        State({'type':'storage', 'page':MATCH}, 'data'),
-        State({'type':'env-dropdown', 'page':MATCH}, 'value'),
-        State({'type':'num-episodes', 'page':MATCH}, 'value'),
-        State({'type':'render-option', 'page':MATCH}, 'value'),
-        State({'type':'render-freq', 'page':MATCH}, 'value'),
+        Output({'type':'hidden-div', 'page':'/train-agent'}, 'data'),
+        Input({'type':'start', 'page':'/train-agent'}, 'n_clicks'),
+        State({'type':'start', 'page':'/train-agent'}, 'id'),
+        State({'type':'agent-store', 'page':'/train-agent'}, 'data'),
+        State({'type':'storage', 'page':'/train-agent'}, 'data'),
+        State({'type':'env-dropdown', 'page':'/train-agent'}, 'value'),
+        State({'type':'num-episodes', 'page':'/train-agent'}, 'value'),
+        State({'type':'render-option', 'page':'/train-agent'}, 'value'),
+        State({'type':'render-freq', 'page':'/train-agent'}, 'value'),
+        State({'type':'epochs', 'page':'/train-agent'}, 'value'),
+        State({'type':'cycles', 'page':'/train-agent'}, 'value'),
+        State({'type':'learning-cycles', 'page':'/train-agent'}, 'value'),
     )
-    def start_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq):
+    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, learning_cycles):
         #DEBUG
         # print("Start callback called.")
         if n_clicks > 0:
+            # clear the renders in the train folder
+            agent_type = agent_data['agent_type']
+            if agent_type == "HER":
+                agent_type = agent_data['agent']['agent_type']
+            if os.path.exists(f'assets/models/{agent_type}/renders/training'):
+                utils.delete_renders(f"assets/models/{agent_type}/renders/training")
             # Use the agent_data['save_dir'] to load your agent
             if agent_data:  # Check if agent_data is not empty
-                # save_dir = agent_data['save_dir']
-                #DEBUG
-                # print(f"agent data: {agent_data}")
-                # task = train_model_task.delay(save_dir, num_episodes, render_option, render_freq)
                 render = 'RENDER' in render_option
-                # set target for thread (train/test) dependent on page id
-                if id['page'] == '/train-agent':
-                    target = utils.train_model
-                    #DEBUG
-                    # print("Training target set")
-                elif id['page'] == '/test-agent':
-                    target = utils.test_model
-                    #DEBUG
-                    # print("Testing target set")
-                else:
-                    raise ValueError("Invalid page")
-
-                thread = threading.Thread(target=target, args=(agent_data, env_name, num_episodes, render, render_freq))
-                #DEBUG
-                # print("thread set")
-                thread.daemon = True  # This ensures the thread will be automatically cleaned up when the main process exits
+                thread = threading.Thread(target=utils.train_model, args=(agent_data, env_name, num_episodes, render, render_freq, epochs, cycles, learning_cycles))
+                thread.daemon = True 
                 thread.start()
-                #DEBUG
-                # print("thread started")
+      
+        raise PreventUpdate
+    
+    @app.callback(
+        Output({'type':'hidden-div', 'page':'/test-agent'}, 'data'),
+        Input({'type':'start', 'page':'/test-agent'}, 'n_clicks'),
+        State({'type':'start', 'page':'/test-agent'}, 'id'),
+        State({'type':'agent-store', 'page':'/test-agent'}, 'data'),
+        State({'type':'storage', 'page':'/test-agent'}, 'data'),
+        State({'type':'env-dropdown', 'page':'/test-agent'}, 'value'),
+        State({'type':'num-episodes', 'page':'/test-agent'}, 'value'),
+        State({'type':'render-option', 'page':'/test-agent'}, 'value'),
+        State({'type':'render-freq', 'page':'/test-agent'}, 'value'),
+    )
+    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq):
+        #DEBUG
+        # print("Start callback called.")
+        if n_clicks > 0:
+            print(f'render options:{render_option}')
+            print(f'render freq:{render_freq}')
+            # clear the renders in the test folder
+            agent_type = agent_data['agent_type']
+            if agent_type == "HER":
+                agent_type = agent_data['agent']['agent_type']
+            if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
+                utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
+            # Use the agent_data['save_dir'] to load your agent
+            if agent_data:  # Check if agent_data is not empty
+                render = 'RENDER' in render_option
+                thread = threading.Thread(target=utils.test_model, args=(agent_data, env_name, num_episodes, render, render_freq))
+                thread.daemon = True 
+                thread.start()
       
         raise PreventUpdate
             
     
     @app.callback(
-        Output('agent-store', 'data'),
-        Output('output-agent-load', 'children'),
-        Input({'type':'upload-agent-config', 'page':ALL}, 'contents'),
-        prevent_initial_call=True,
-)
-    def store_agent(contents):
-        # Uploads and stores the agent's obj_config.json to reference to load
-        # into memory when required
-        for content in contents:
-            #DEBUG
-            # print(f'content: {content}')
-            if content is not None:
-                # Split the content into metadata and the base64 encoded string
-                _, encoded = content.split(',')
-                decoded = base64.b64decode(encoded)           
-                config = json.loads(decoded.decode('utf-8'))
-                #DEBUG
-                # print(f'config: {config}')
-                # save_dir = config.get('save_dir')
-                
-                # Here, instead of loading the agent, save its config or directory to dcc.Store
-                return config, html.Div([
-                    "Config loaded successfully from: ", html.Code(config['save_dir'])
-                ])
-        return {}, "Please upload a file."
+    Output({'type':'agent-store', 'page':MATCH}, 'data'),
+    Output({'type':'output-agent-load', 'page':MATCH}, 'children'),
+    Input({'type':'upload-agent-config', 'page':MATCH}, 'contents'),
+    State({'type':'upload-agent-config', 'page':MATCH}, 'id'),
+    prevent_initial_call=True,
+    )
+    def store_agent(contents, upload_id):
+        # for content, page in zip(contents, id):
+        print(f'content: {contents}')
+        if contents is not None:
+            _, encoded = contents.split(',')
+            decoded = base64.b64decode(encoded)           
+            config = json.loads(decoded.decode('utf-8'))
+            
+            success_message = html.Div([
+            dbc.Alert(f"Config loaded successfully from: {config['save_dir']}", color="success")
+            ])
+            
+            return config, success_message
+    
+        return {}, "Please upload a file.", {'display': 'none'}
+    
+
+    @app.callback(
+    Output({'type': 'her-options', 'page': '/train-agent'}, 'style'),
+    Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
+    State({'type':'agent-store', 'page': '/train-agent'}, 'id'),
+    prevent_initial_call = True,
+    )
+    def update_her_options(agent_data, data_id):
+
+        if agent_data['agent_type'] == 'HER':
+            her_options_style = {'display': 'block'}
+        else:
+            her_options_style = {'display': 'none'}
+        
+        return her_options_style
     
 
     @app.callback(
@@ -1541,9 +2040,10 @@ def register_callbacks(app, shared_data):
         State({'type': 'interval-component', 'page': MATCH}, 'id'),
         State({'type': 'start', 'page': MATCH}, 'n_clicks')],
         State({'type': 'video-carousel', 'page': MATCH}, 'id'),
+        State({'type':'agent-store', 'page':MATCH}, 'data'),
         prevent_initial_call=True
     )
-    def update_video_data(prev_clicks, next_clicks, n_intervals, data, interval_id, start_clicks, carousel_id):
+    def update_video_data(prev_clicks, next_clicks, n_intervals, data, interval_id, start_clicks, carousel_id, agent_data):
         # check if start has been clicked before trying to update        
         ctx = dash.callback_context
         triggered_id, prop = ctx.triggered[0]['prop_id'].split('.')
@@ -1552,7 +2052,7 @@ def register_callbacks(app, shared_data):
 
         # Initial load or automatic update triggered by the interval component
         if 'interval-component' in triggered_id and start_clicks > 0:
-            video_filenames = utils.get_video_files(interval_id['page'])
+            video_filenames = utils.get_video_files(interval_id['page'], agent_data)
             if video_filenames:
                 data['video_list'] = video_filenames
                 # Optionally reset current video to 0 or keep it as is
@@ -1560,7 +2060,7 @@ def register_callbacks(app, shared_data):
                 # video_files = data['video_list']
                 current_video = data.get('current_video', 0)
                 current_filename = video_filenames[current_video]
-                video_item = utils.generate_video_items([current_filename], carousel_id['page'])[0]
+                video_item = utils.generate_video_items([current_filename], carousel_id['page'], agent_data)[0]
                 
                 #DEBUG
                 # print(f'data: {data}')
@@ -1587,7 +2087,7 @@ def register_callbacks(app, shared_data):
 
             video_files = data['video_list']
             current_filename = video_files[current_video]
-            video_item = utils.generate_video_items([current_filename], carousel_id['page'])[0]
+            video_item = utils.generate_video_items([current_filename], carousel_id['page'], agent_data)[0]
 
             return data, video_item, current_filename
 
@@ -1652,118 +2152,17 @@ def register_callbacks(app, shared_data):
         tabs = []
         for agent_type in selected_agent_types:
             if agent_type == 'Reinforce':
-                tabs.append(
-                    dcc.Tab([
-                        html.Div([
-                            # utils.generate_reinforce_hyperparam_component(),
-                            # html.H3('Reinforce Hyperparameters'),
-                            utils.generate_learning_rate_hyperparam_component(agent_type, 'none'),
-                            utils.generate_discount_hyperparam_component(agent_type, 'none'),
-                            dcc.Tabs([
-                                dcc.Tab([
-                                    # html.H4("Policy Model Configuration"),
-                                    utils.generate_hidden_layer_hyperparam_component(agent_type, 'policy'),
-                                    utils.generate_kernel_initializer_hyperparam_component(agent_type, 'policy'),
-                                    html.Hr(),
-                                    utils.generate_activation_function_hyperparam_component(agent_type, 'policy'),
-                                    utils.generate_optimizer_hyperparam_component(agent_type, 'policy'),
-                                ],
-                                label="Policy Model"),
-                                dcc.Tab([
-                                    # html.H4("Value Model Configuration"),
-                                    utils.generate_hidden_layer_hyperparam_component(agent_type, 'value'),
-                                    utils.generate_kernel_initializer_hyperparam_component(agent_type, 'value'),
-                                    html.Hr(),
-                                    utils.generate_activation_function_hyperparam_component(agent_type, 'value'),
-                                    utils.generate_optimizer_hyperparam_component(agent_type, 'value'),
-                                ],
-                                label="Value Model"),
-                            ])
-                        ])
-                    ],
-                    label=agent_type)
-                )
+                tabs.append(utils.create_reinforce_hyperparam_input(agent_type))
+            
             elif agent_type == 'ActorCritic':
-                tabs.append(
-                    dcc.Tab([
-                        html.Div([
-                            # utils.generate_actor_critic_hyperparam_component(),
-                            # html.H3('Actor Critic Hyperparameters'),
-                            utils.generate_learning_rate_hyperparam_component(agent_type, 'none'),
-                            utils.generate_discount_hyperparam_component(agent_type, 'none'),
-                            dcc.Tabs([
-                                dcc.Tab([
-                                    # html.H4("Policy Model Configuration"),
-                                    utils.generate_hidden_layer_hyperparam_component(agent_type, 'policy'),
-                                    utils.generate_kernel_initializer_hyperparam_component(agent_type, 'policy'),
-                                    html.Hr(),
-                                    utils.generate_activation_function_hyperparam_component(agent_type, 'policy'),
-                                    utils.generate_optimizer_hyperparam_component(agent_type, 'policy'),
-                                    utils.generate_trace_decay_hyperparam_componenent(agent_type, 'policy'),
-                                ],
-                                label="Policy Model"),
-                                dcc.Tab([
-                                    # html.H4("Value Model Configuration"),
-                                    utils.generate_hidden_layer_hyperparam_component(agent_type, 'value'),
-                                    utils.generate_kernel_initializer_hyperparam_component(agent_type, 'value'),
-                                    html.Hr(),
-                                    utils.generate_activation_function_hyperparam_component(agent_type, 'value'),
-                                    utils.generate_optimizer_hyperparam_component(agent_type, 'value'),
-                                    utils.generate_trace_decay_hyperparam_componenent(agent_type, 'value'),
-                                ],
-                                label="Value Model")
-                            ])
-                        ])
-                    ],
-                    label=agent_type)
-                )
+                tabs.append(utils.create_actor_critic_hyperparam_input(agent_type))
+            
             elif agent_type == 'DDPG':
-                tabs.append(
-                    dcc.Tab([
-                        html.Div([
-                            # utils.generate_actor_critic_hyperparam_component(),
-                            # html.H3('DDPG Hyperparameters'),
-                            utils.generate_batch_hyperparam_componenent(agent_type, 'none'),
-                            # utils.generate_replay_buffer_hyperparam_component(agent_type, 'none'), # under development
-                            utils.generate_noise_hyperparam_componenent(agent_type, 'none'),
-                            html.Hr(),
-                            utils.generate_tau_hyperparam_componenent(agent_type, 'none'),
-                            utils.generate_discount_hyperparam_component(agent_type, 'none'),
-                            dcc.Tabs([
-                                dcc.Tab([
-                                    # html.H4("Actor Model Configuration"),
-                                    utils.generate_learning_rate_hyperparam_component(agent_type, 'actor'),
-                                    utils.generate_cnn_layer_hyperparam_component(agent_type, 'actor'),
-                                    utils.generate_hidden_layer_hyperparam_component(agent_type, 'actor'),
-                                    utils.generate_kernel_initializer_hyperparam_component(agent_type, 'actor'),
-                                    html.Hr(),
-                                    utils.generate_activation_function_hyperparam_component(agent_type, 'actor'),
-                                    utils.generate_optimizer_hyperparam_component(agent_type, 'actor'),
-                                ],
-                                label='Actor Model'),
-                                dcc.Tab([
-                                    # html.H4("Critic Model Configuration"),
-                                    utils.generate_learning_rate_hyperparam_component(agent_type, 'critic'),
-                                    html.Hr(),
-                                    utils.generate_cnn_layer_hyperparam_component(agent_type, 'critic'),
-                                    html.H4("Critic State Input Layer Configuration"),
-                                    utils.generate_hidden_layer_hyperparam_component(agent_type, 'critic-state'),
-                                    html.Hr(),
-                                    html.H4("Critic Merged (State + Action) Input Layer Configuration"),
-                                    utils.generate_hidden_layer_hyperparam_component(agent_type, 'critic-merged'),
-                                    html.Hr(),
-                                    utils.generate_kernel_initializer_hyperparam_component(agent_type, 'critic'),
-                                    html.Hr(),
-                                    utils.generate_activation_function_hyperparam_component(agent_type, 'critic'),
-                                    utils.generate_optimizer_hyperparam_component(agent_type, 'critic'),
-                                ],
-                                label='Critic Model')
-                            ])
-                        ])
-                    ],
-                    label=agent_type)
-                )
-        
+                tabs.append(utils.create_ddpg_hyperparam_input(agent_type))
+
+            elif agent_type == 'HER_DDPG':
+                tabs.append(utils.create_her_ddpg_hyperparam_input(agent_type))
+
         return tabs
     
 

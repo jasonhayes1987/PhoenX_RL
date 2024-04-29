@@ -27,7 +27,9 @@ def build_agent(page):
                 options=[
                     {'label': 'Reinforce', 'value': 'Reinforce'},
                     {'label': 'Actor Critic', 'value': 'ActorCritic'},
-                    {'label': 'DDPG', 'value': 'DDPG'},
+                    {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
+                    {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
+                    {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
                 ],
                 placeholder="Select Agent Type",
             ),
@@ -48,13 +50,14 @@ def train_agent(page):
    
     return dbc.Container([
         html.H1("Train Agent", style={'textAlign': 'center'}),
+        dcc.Store(id={'type':'agent-store', 'page':page}),
         utils.upload_component(page),
-        html.Div(id='output-agent-load'),
+        html.Div(id={'type':'output-agent-load', 'page':page}),
         utils.env_dropdown_component(page),
         html.Div(id={'type':'env-description', 'page':page}),
         html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
         html.Div(id={'type':'gym-params', 'page':page}),
-        utils.parameter_settings_component(page),
+        utils.run_agent_settings_component(page),
         dbc.Button("Start",
             id={
                 'type': 'start',
@@ -102,13 +105,14 @@ def test_agent(page):
     
     return dbc.Container([
         html.H1("Test Agent", style={'textAlign': 'center'}),
+        dcc.Store(id={'type':'agent-store', 'page':page}),
         utils.upload_component(page),
-        html.Div(id='output-agent-load'),
+        html.Div(id={'type':'output-agent-load', 'page':page}),
         utils.env_dropdown_component(page),
         html.Div(id={'type':'env-description', 'page':page}),
         html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
         html.Div(id={'type':'gym-params', 'page':page}),
-        utils.parameter_settings_component(page),
+        utils.run_agent_settings_component(page),
         dbc.Button("Start",
             id={
                 'type': 'start',
@@ -224,11 +228,10 @@ def hyperparameter_search(page):
                 options=[
                     {'label': 'Reinforce', 'value': 'Reinforce'},
                     {'label': 'Actor Critic', 'value': 'ActorCritic'},
-                    {'label': 'DDPG', 'value': 'DDPG'},
-                    {'label': 'TD3', 'value': 'TD3'},
-                    {'label': 'DQN', 'value': 'DQN'},
-                    {'label': 'PPO', 'value': 'PPO'},
-                    {'label': 'A3C', 'value': 'A3C'}
+                    {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
+                    {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
+                    {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
+                   
                 ],    
                 value=[],
                 multi=True,
