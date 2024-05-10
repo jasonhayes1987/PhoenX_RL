@@ -21,8 +21,9 @@ optree>=0.9.1
 lark
 ipykernel
 # jaxlib==0.4.26
-gymnasium[all]
-gymnasium-robotics
+# mujoco==3.1.1
+gymnasium[all]==1.0.0a1
+# gymnasium-robotics
 pandas
 flask
 dash
@@ -32,4 +33,5 @@ natsort
 moviepy
 ffmpeg
 decorator==4.0.2
-cupy
+# cupy
+# mpi4py # installed via conda
