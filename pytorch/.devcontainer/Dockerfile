@@ -11,22 +11,33 @@ RUN conda init
 
 # Install system packages
 RUN apt-get update && apt-get install -y \
-    #build-essential \
+    build-essential \
     #ca-certificates \
     #gdb \
     #gfortran \
     htop \
     git \
     swig \
+    cmake \
     wget \
-    libglfw3 \
+    gcc \
+    # libglfw3 \
+    libglfw3-dev \
     libglew-dev \
+    # libglew2.0 \
+    libopengl0 \
+    python3-opengl \
+    libglu1-mesa-dev \
+    libgl1-mesa-dev \
+    libosmesa6-dev \ 
+    python3-opengl \
+    patchelf \
+    ffmpeg \
     libgl1-mesa-glx \
-    libosmesa6 \
-    libopenmpi-dev \
+    # libopenmpi-dev \
     libglib2.0-0 \
-    # libosmesa6-dev \
-    # mesa-utils libgl1-mesa-glx \
+    gdb \
+    mesa-utils libgl1-mesa-glx \
     && rm -rf /var/lib/apt/lists/*
 
 # install libstdcxx-ng from conda-forge
@@ -58,23 +69,10 @@ RUN conda install -y -c conda-forge libstdcxx-ng
 #       && cd / \
 #       && rm -rf /tmp/openmpi-build
 
-# Set environment variables
-ENV MUJOCO_GL=egl
-ENV PYOPENGL_PLATFORM=egl
-
 # Run the conda command to set the environment variables
-RUN conda env config vars set MUJOCO_GL=egl PYOPENGL_PLATFORM=egl
+# RUN conda env config vars set MUJOCO_GL=egl PYOPENGL_PLATFORM=egl
 # RUN conda deactivate && conda activate
 
-# Get and install Mujoco
-RUN mkdir -p /root/.mujoco \
-    && wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz \
-    && tar -xf mujoco.tar.gz -C /root/.mujoco \
-    && rm mujoco.tar.gz
-
-ENV LD_LIBRARY_PATH /root/.mujoco/mujoco314/bin:${LD_LIBRARY_PATH}
-ENV LD_LIBRARY_PATH /usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
-ENV LD_PRELOAD /usr/lib/x86_64-linux-gnu/libstdc++.so.6
 
 # Ignore uninstall of blinker
 RUN pip install --ignore-installed blinker
@@ -90,9 +88,52 @@ RUN conda install -y mpi4py
 # install cuda aware version of mpi
 # RUN conda install -c conda-forge mpi4py openmpi
 
-# upgrade mujoco to 3.1.4 python bindings
+# Uninstall mujoco-py
 RUN pip uninstall mujoco-py -y
-RUN pip install mujoco==3.1.4
+
+# Get and install Mujoco
+# RUN mkdir -p /root/.mujoco \
+#     && wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz \
+#     && tar -xf mujoco.tar.gz -C /root/.mujoco \
+#     && rm mujoco.tar.gz
+
+RUN mkdir -p /root/.mujoco \
+    && wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz \
+    && tar -xf mujoco.tar.gz -C /root/.mujoco \
+    && rm mujoco.tar.gz \
+    && echo "export LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:$LD_LIBRARY_PATH" >> /root/.bashrc \
+    && echo "export LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:$LD_LIBRARY_PATH" >> /root/.profile \
+    && ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1.4 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 \
+    && ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so
+
+# RUN pip install mujoco==3.1.4
+
+# Get and install Mujoco 2.3.7 (Testing for robotics 1.2.4)
+# RUN mkdir -p /root/.mujoco \
+#     && wget https://github.com/google-deepmind/mujoco/releases/download/2.3.7/mujoco-2.3.7-linux-x86_64.tar.gz -O mujoco.tar.gz \
+#     && tar -xf mujoco.tar.gz -C /root/.mujoco \
+#     && rm mujoco.tar.gz
+
+# RUN pip install mujoco-py
+# RUN pip install mujoco==2.3.7
+
+
+# Set environment variables
+ENV MUJOCO_GL=egl
+ENV PYOPENGL_PLATFORM=egl
+# ENV LD_LIBRARY_PATH=/root/.mujoco/mujoco314/bin:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+
+
+# Install gymnasium-robotics now that Mujoco is installed
+# RUN pip install gymnasium-robotics
+
+# Pull most recent robotics repo (pip install seems outdated 1.2.4)
+RUN mkdir -p /tmp/robotics \
+    && git clone https://github.com/Farama-Foundation/Gymnasium-Robotics.git \
+    && cd Gymnasium-Robotics \
+    && pip install -e .
 
 # # Create a new user and add to sudo group
 # RUN adduser --disabled-password --gecos '' vscode && \

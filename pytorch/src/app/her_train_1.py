@@ -2,25 +2,31 @@ import os
 import random
 import numpy as np
 import torch as T
-from mpi4py import MPI
+# from mpi4py import MPI
 
 
 import gymnasium as gym
 import gymnasium_robotics as gym_robo
 from rl_agents import HER, DDPG
 from models import ActorModel, CriticModel
-from helper import MPIHelper, ReplayBuffer, NormalNoise
+from helper import NormalNoise, MPIHelper
 from gym_helper import get_her_goal_functions
 from rl_callbacks import WandbCallback
+import wandb
 
 def main():
+
+    mpi_helper = MPIHelper()
+
+    if mpi_helper.is_main_process():
+        # Login to wandb
+        wandb.login(key=)
+    
     # Set device
     device = 'cpu'
 
-    # mpi_helper = MPIHelper()
-
     # Create gym environment
-    env_id = "FetchPickAndPlace-v2"
+    env_id = 'FetchReach-v2'
     env = gym.make(env_id)
 
     # Get reward functions for environment
@@ -36,7 +42,7 @@ def main():
             64,
             "relu",
             {
-                "kaiming uniform": {
+                "default": {
                 }
             },
         ),
@@ -44,7 +50,7 @@ def main():
             64,
             "relu",
             {
-                "kaiming uniform": {\
+                "default": {\
                 }
             },
         ),
@@ -52,18 +58,26 @@ def main():
             64,
             "relu",
             {
-                "kaiming uniform": {
+                "default": {
                 }
             },
         )
     ]
 
-    actor = ActorModel(env, cnn_model=None, dense_layers=dense_layers, goal_shape=goal_shape,
+    actor = ActorModel(env, cnn_model=None, dense_layers=dense_layers, output_layer='default', goal_shape=goal_shape,
                        optimizer='Adam', optimizer_params={'weight_decay':0.0},
-                       learning_rate=0.00001, normalize_layers=False, device=device)
+                       learning_rate=0.001, normalize_layers=False, clamp_output=None, device=device)
 
     # build critic
     state_layers = [
+        (
+            64,
+            "relu",
+            {
+                "default": {
+                }
+            },
+        ),
     ]
 
     merged_layers = [
@@ -71,7 +85,7 @@ def main():
             64,
             "relu",
             {
-                "kaiming uniform": {
+                "default": {
                 }
             },
         ),
@@ -79,27 +93,19 @@ def main():
             64,
             "relu",
             {
-                "kaiming uniform": {
-                }
-            },
-        ),
-        (
-            64,
-            "relu",
-            {
-                "kaiming uniform": {
+                "default": {
                 }
             },
         ),
     ]
 
     critic = CriticModel(env=env, cnn_model=None, state_layers=state_layers,
-                         merged_layers=merged_layers, goal_shape=goal_shape,
+                         merged_layers=merged_layers, output_layer='default', goal_shape=goal_shape,
                          optimizer="Adam", optimizer_params={'weight_decay':0.0},
-                         learning_rate=0.00001, normalize_layers=False, device=device)
+                         learning_rate=0.001, normalize_layers=False, device=device)
 
     # Instantiate replay buffer
-    replay_buffer = ReplayBuffer(env, 100000, goal_shape)
+    # replay_buffer = ReplayBuffer(env, 100000, goal_shape)
     # Instantiate noise object
     noise = NormalNoise(shape=env.action_space.shape, mean=0.0, stddev=0.05, device=device)
 
@@ -109,12 +115,11 @@ def main():
                       critic_model=critic,
                       discount=0.98,
                       tau=0.05,
-                      action_epsilon=0.3,
-                      replay_buffer=replay_buffer,
+                      action_epsilon=0.2,
                       batch_size=128,
                       noise=noise,
-                      callbacks=[WandbCallback("Fetch_Pick_Place_v2")],
-                      save_dir="fetch_pick_place_v2/models/ddpg/"
+                      callbacks=[WandbCallback("FetchReach-v2")],
+                    #   save_dir="fetch_reach_v2_a/models/ddpg/"
                       )
 
     # Instantiate HER object
@@ -126,16 +131,19 @@ def main():
               achieved_goal=achieved_goal_func,
               reward_fn=reward_func,
               normalizer_clip=5.0,
-              save_dir="fetch_pick_place_v2/models/her/"
+              save_dir="fetch_reach_v2_a/models/her/"
             )
+    
+    # if hasattr(her.agent.env, "distance_threshold"):
+    print(f'distance threshold: {her.agent.env.get_wrapper_attr("distance_threshold")}')
 
     # Run the training process
-    her.train(epochs=200,
+    her.train(num_epochs=10,
               num_cycles=50,
-              num_episodes=16,
+              num_episodes=10,
               num_updates=40,
               render=True,
-              render_freq=1000)
+              render_freq=500)
 
 if __name__ == '__main__':
     os.environ['OMP_NUM_THREADS'] = '1'
