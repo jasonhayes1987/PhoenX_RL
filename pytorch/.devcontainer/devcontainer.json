@@ -18,7 +18,8 @@
                ],
     "forwardPorts": [8080],
     "mounts": [
-      "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app,target=/app,type=bind,consistency=cached"
+      // "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app,target=/app,type=bind,consistency=cached"
+      "source=C:/Users/jason/OneDrive/Documents/AI/Projects/RL Agents/RL_Agents/pytorch/src/app,target=/app,type=bind,consistency=cached"
       // "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app/tensorboard/logs,target=/app/tensorboard/logs,type=bind,consistency=cached"
     ],
   // Use 'forwardPorts' to make a list of ports inside the container available locally.
