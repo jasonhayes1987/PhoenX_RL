@@ -1,5 +1,5 @@
 {
-    "name": "RL_Agents app",
+    "name": "Tensorflow RL_Agents",
     "build": {
       "context": "..",
       "dockerfile": "Dockerfile",
