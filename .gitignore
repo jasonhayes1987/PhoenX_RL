@@ -168,3 +168,4 @@ tmp*/
 *.sock
 __autograph_*.py
 *.csv
+*.mp4
