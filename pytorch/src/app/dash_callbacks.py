@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import subprocess
 import multiprocessing
 from multiprocessing import Queue
 from queue import Empty
@@ -25,6 +26,7 @@ import plotly.express as px
 
 
 import gymnasium as gym
+import gymnasium_robotics as gym_robo
 import wandb
 # import tensorflow as tf
 import pandas as pd
@@ -268,15 +270,13 @@ def register_callbacks(app, shared_data):
                 }
                 inputs.append(html.Div([
                     html.Label(f'Neurons in Hidden Layer {i}', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id=input_id,
+                        type='number',
                         min=1,
                         max=1024,
                         step=1,
-                        value=512,  # Default position
-                        marks={0:'0', 1024:'1024'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        value=512,
                     ),
                 ]))
 
@@ -365,49 +365,46 @@ def register_callbacks(app, shared_data):
             if layer_type == 'conv':
                 return html.Div([
                     html.Label(f'Filters in Conv Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type': 'conv-filters',
                             'model': model_type,
                             'agent': agent,
                             'index': index,
                         },
+                        type='number',
                         min=1,
                         max=1024,
                         step=1,
                         value=32,
-                        marks={1:'1', 1024:'1024'},
-                        tooltip={"placement": "bottom", "always_visible": True},
                     ),
                     html.Label(f'Kernel Size in Conv Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type': 'conv-kernel-size',
                             'model': model_type,
                             'agent': agent,
                             'index': index,
                         },
+                        type='number',
                         min=1,
                         max=10,
                         step=1,
                         value=3,
-                        marks={1:'1', 10:'10'},
-                        tooltip={"placement": "bottom", "always_visible": True},
                     ),
                     html.Label(f'Kernel Stride in Conv Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type': 'conv-stride',
                             'model': model_type,
                             'agent': agent,
                             'index': index,
                         },
+                        type='number',
                         min=1,
                         max=10,
                         step=1,
                         value=3,
-                        marks={1:'1', 10:'10'},
-                        tooltip={"placement": "bottom", "always_visible": True},
                     ),
                     html.Label(f'Input Padding in Conv Layer {index}', style={'text-decoration': 'underline'}),
                     dcc.RadioItems(
@@ -427,19 +424,18 @@ def register_callbacks(app, shared_data):
                     html.Div(
                         [
                             html.Label('Custom Padding (pixels)', style={'text-decoration': 'underline'}),
-                            dcc.Slider(
+                            dcc.Input(
                                 id={
                                     'type': 'conv-padding-custom',
                                     'model': model_type,
                                     'agent': agent,
                                     'index': index,
                                 },
+                                type='number',
                                 min=0,
                                 max=10,
                                 step=1,
                                 value=1,
-                                marks={0:'0', 10:'10'},
-                                tooltip={"placement": "bottom", "always_visible": True},
                             ),
                         ],
                         id={
@@ -465,70 +461,66 @@ def register_callbacks(app, shared_data):
             if layer_type == 'pool':
                 return html.Div([
                     html.Label(f'Kernel Size of Pooling Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type': 'pool-kernel-size',
                             'model': model_type,
                             'agent': agent,
                             'index': index,
                         },
+                        type='number',
                         min=1,
                         max=10,
                         step=1,
                         value=3,
-                        marks={1:'1', 10:'10'},
-                        tooltip={"placement": "bottom", "always_visible": True},
                     ),
                     html.Label(f'Kernel Stride in Pooling Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type': 'pool-stride',
                             'model': model_type,
                             'agent': agent,
                             'index': index,
                         },
+                        type='number',
                         min=1,
                         max=10,
                         step=1,
                         value=3,
-                        marks={1:'1', 10:'10'},
-                        tooltip={"placement": "bottom", "always_visible": True},
                     ),
                 ])
             if layer_type == 'batchnorm':
                 return html.Div([
                     html.Label(f'Number of Features for BatchNorm Layer {index} (set to number of input channels)', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type': 'batch-features',
                             'model': model_type,
                             'agent': agent,
                             'index': index,
                         },
+                        type='number',
                         min=1,
                         max=1024,
                         step=1,
                         value=32,
-                        marks={1:'1', 1024:'1024'},
-                        tooltip={"placement": "bottom", "always_visible": True},
                     ),
                 ])
             if layer_type == 'dropout':
                 return html.Div([
                     html.Label(f'Probability of Zero-ed Element for Dropout Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type': 'dropout-prob',
                             'model': model_type,
                             'agent': agent,
                             'index': index,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
                         step=0.1,
                         value=0.5,
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
                     ),
                 ])
     
@@ -581,132 +573,116 @@ def register_callbacks(app, shared_data):
             if noise_type == "Ornstein-Uhlenbeck":
                 inputs = html.Div([
                     html.Label('Mean', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'ou-mean',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
                         step=0.01,
-                        value=0.0,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        value=0.0,
                     ),
                     html.Label('Mean Reversion', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'ou-sigma',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
                         step=0.01,
-                        value=0.15,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        value=0.15,
                     ),
                     html.Label('Volatility', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'ou-theta',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
                         step=0.01,
-                        value=0.2,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        value=0.2,
                     ),
                     html.Label('Time Delta', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'ou-dt',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
                         step=0.01,
-                        value=1.0,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        value=1.0,
                     ),
                 ])
 
             elif noise_type == "Normal":
                 inputs = html.Div([
                     html.Label('Mean', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'normal-mean',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
-                        step=0.1,
-                        value=0.0,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        step=0.01,
+                        value=0.0,
                     ),
                     html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'normal-stddv',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
-                        step=0.1,
-                        value=1.0,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        step=0.01,
+                        value=1.0,
                     ),
                 ])
 
             elif noise_type == "Uniform":
                 inputs = html.Div([
                     html.Label('Minimum Value', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'uniform-min',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
-                        step=0.1,
-                        value=0.1,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        step=0.01,
+                        value=0.1,
                     ),
                     html.Label('Maximum Value', style={'text-decoration': 'underline'}),
-                    dcc.Slider(
+                    dcc.Input(
                         id={
                             'type':'uniform-max',
                             'model':'none',
                             'agent': agent_type,
                         },
+                        type='number',
                         min=0.0,
                         max=1.0,
-                        step=0.1,
-                        value=1.0,  # Default position
-                        marks={0.0:'0.0', 1.0:'1.0'},
-                        tooltip={"placement": "bottom", "always_visible": True},
-                        included=False,
+                        step=0.01,
+                        value=1.0,
                     ),
                 ])
             return inputs
@@ -818,13 +794,14 @@ def register_callbacks(app, shared_data):
 
         # Set environment parameter
         env = gym.make(env_selection)
+        print(f'env spec: {env.spec}')
 
         # set params if agent is reinforce or actor critic
         if agent_type_dropdown_value == "Reinforce" or agent_type_dropdown_value == "ActorCritic":
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("CartPole-v1")
 
-            learning_rate=10**utils.get_specific_value(
+            learning_rate=utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='learning-rate',
@@ -945,6 +922,14 @@ def register_callbacks(app, shared_data):
                         model_type='none',
                         agent_type=agent_type_dropdown_value,
                     ),
+                
+                save_dir = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='save-dir',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+                )
 
                 
                 agent = rl_agents.Reinforce(
@@ -953,7 +938,7 @@ def register_callbacks(app, shared_data):
                     value_model=value_model,
                     discount=discount,
                     callbacks=utils.get_callbacks(callbacks, project),
-                    save_dir=os.path.join(os.getcwd(), 'assets/models/reinforce/'),
+                    save_dir=os.path.join(os.getcwd(), save_dir),
                 )
 
             elif agent_type_dropdown_value == "ActorCritic":
@@ -980,6 +965,14 @@ def register_callbacks(app, shared_data):
                         model_type='value',
                         agent_type=agent_type_dropdown_value,
                     )
+                
+                save_dir = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='save-dir',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+                )
 
                 agent = rl_agents.ActorCritic(
                     env=gym.make(env),
@@ -989,7 +982,7 @@ def register_callbacks(app, shared_data):
                     policy_trace_decay=policy_trace_decay,
                     value_trace_decay=value_trace_decay,
                     callbacks=utils.get_callbacks(callbacks, project),
-                    save_dir=os.path.join(os.getcwd(), 'assets/models/actor_critic/'),
+                    save_dir=os.path.join(os.getcwd(), save_dir),
                 )
 
         elif agent_type_dropdown_value == "DDPG":
@@ -998,7 +991,7 @@ def register_callbacks(app, shared_data):
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=10**utils.get_specific_value(
+            actor_learning_rate=utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1061,6 +1054,14 @@ def register_callbacks(app, shared_data):
                 actor_initializer,
             )
 
+            actor_output_layer_kernel = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='kernel-function',
+                    model_type='actor-output',
+                    agent_type=agent_type_dropdown_value,
+                ),
+
             actor_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
@@ -1069,15 +1070,36 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
+            actor_clamp_output = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='clamp-output',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            if actor_clamp_output:
+                clamp_value = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='clamp-value',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
+            )
+            else:
+                clamp_value = None
+
             # Create actor model
             actor_model = models.ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
+                output_layer_kernel=actor_output_layer_kernel,
                 optimizer=actor_optimizer,
                 optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
                 normalize_layers=actor_normalize_layers,
+                clamp_output=clamp_value,
             )
             
             #DEBUG
@@ -1089,7 +1111,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=10**utils.get_specific_value(
+            critic_learning_rate=utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1170,6 +1192,14 @@ def register_callbacks(app, shared_data):
                 ),
                 critic_initializer,
             )
+
+            critic_output_layer_kernel = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='kernel-function',
+                    model_type='critic-output',
+                    agent_type=agent_type_dropdown_value,
+                ),
            
             critic_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1184,6 +1214,7 @@ def register_callbacks(app, shared_data):
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
+                output_layer_kernel=critic_output_layer_kernel,
                 learning_rate=critic_learning_rate,
                 optimizer=critic_optimizer,
                 optimizer_params=critic_opt_params,
@@ -1255,6 +1286,14 @@ def register_callbacks(app, shared_data):
                 model_type = 'none',
                 agent_type = agent_type_dropdown_value,
             )
+
+            save_dir = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='save-dir',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
             
             agent = rl_agents.DDPG(
                 env = env,
@@ -1267,24 +1306,28 @@ def register_callbacks(app, shared_data):
                 batch_size = batch_size,
                 noise = noise,
                 normalize_inputs = normalize_inputs,
-                normalize_kwargs = {'clip_range':clip_value},
+                normalizer_clip = clip_value,
                 callbacks = utils.get_callbacks(callbacks, project),
-                save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
+                save_dir = os.path.join(os.getcwd(), save_dir),
             )
 
         elif agent_type_dropdown_value == "HER_DDPG":
 
             # get goal and reward functions and goal shape
             desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
+            
+            # Reset env in order to instantiate and get goal shape
+            _,_ = env.reset()
             goal_shape = desired_goal_func(env).shape
 
             print(f'desired goal: {desired_goal_func}')
             print(f'achieved goal: {achieved_goal_func}')
             print(f'reward func: {reward_func}')
+            print(f'goal shape: {goal_shape}')
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=10**utils.get_specific_value(
+            actor_learning_rate=utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1349,6 +1392,14 @@ def register_callbacks(app, shared_data):
                 actor_initializer,
             )
 
+            actor_output_layer_kernel = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='kernel-function',
+                    model_type='actor-output',
+                    agent_type=agent_type_dropdown_value,
+                ),
+
             actor_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
@@ -1357,11 +1408,15 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
+            #DEBUG
+            print(f'actor dense layers: {actor_dense_layers}')
+            print(f'actor output kernel: {actor_output_layer_kernel}, type: {type(actor_output_layer_kernel)}')
             # Create actor model
             actor_model = models.ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
+                output_layer_kernel=actor_output_layer_kernel,
                 goal_shape=goal_shape,
                 optimizer=actor_optimizer,
                 optimizer_params=actor_opt_params,
@@ -1378,7 +1433,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=10**utils.get_specific_value(
+            critic_learning_rate=utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1461,6 +1516,14 @@ def register_callbacks(app, shared_data):
                 ),
                 critic_initializer,
             )
+
+            critic_output_layer_kernel = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='kernel-function',
+                    model_type='critic-output',
+                    agent_type=agent_type_dropdown_value,
+                ),
            
             critic_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1475,6 +1538,7 @@ def register_callbacks(app, shared_data):
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
+                output_layer_kernel=critic_output_layer_kernel,
                 goal_shape=goal_shape,
                 learning_rate=critic_learning_rate,
                 optimizer=critic_optimizer,
@@ -1559,7 +1623,7 @@ def register_callbacks(app, shared_data):
                 batch_size = batch_size,
                 noise = noise,
                 normalize_inputs = normalize_inputs,
-                normalize_kwargs = {'clip_range':clip_value},
+                normalizer_clip = clip_value,
                 callbacks = utils.get_callbacks(callbacks, project),
                 save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
             )
@@ -1597,6 +1661,23 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
+            # Get device
+            device = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            save_dir = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='save-dir',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
             # create HER object
             agent = rl_agents.HER(
                 ddpg_agent,
@@ -1607,7 +1688,8 @@ def register_callbacks(app, shared_data):
                 achieved_goal=achieved_goal_func,
                 reward_fn=reward_func,
                 normalizer_clip=normalizer_clip,
-                save_dir = os.path.join(os.getcwd(), 'assets/models/her/'),
+                device=device,
+                save_dir = os.path.join(os.getcwd(), save_dir),
             )
             
         # save agent
@@ -1699,118 +1781,7 @@ def register_callbacks(app, shared_data):
     )
     def update_env_info(env_name, id):
         if env_name:
-            env_data = {
-        "CartPole-v0": {
-            "description": "Balance a pole on a cart; the goal is to prevent it from falling.",
-            "gif_url": "https://gymnasium.farama.org/_images/cart_pole.gif",
-        },
-        "CartPole-v1": {
-            "description": "Similar to CartPole-v0 but with a different set of parameters for a harder challenge.",
-            "gif_url": "https://gymnasium.farama.org/_images/cart_pole.gif",
-        },
-        "MountainCar-v0": {
-            "description": "A car is on a one-dimensional track between two mountains; the goal is to drive up the mountain on the right.",
-            "gif_url": "https://gymnasium.farama.org/_images/mountain_car.gif",
-        },
-        "MountainCarContinuous-v0": {
-            "description": "A continuous control version of the MountainCar environment.",
-            "gif_url": "https://gymnasium.farama.org/_images/mountain_car.gif",
-        },
-        "Pendulum-v1": {
-            "description": "Control a frictionless pendulum to keep it upright.",
-            "gif_url": "https://gymnasium.farama.org/_images/pendulum.gif",
-        },
-        "Acrobot-v1": {
-            "description": "A 2-link robot that swings up to reach a given height.",
-            "gif_url": "https://gymnasium.farama.org/_images/acrobot.gif",
-        },
-        "LunarLander-v2": {
-            "description": "Lunar Lander description",
-            "gif_url": "https://gymnasium.farama.org/_images/lunar_lander.gif",
-        },
-        "LunarLanderContinuous-v2": {
-            "description": "A continuous control version of the LunarLander environment.",
-            "gif_url": "https://gymnasium.farama.org/_images/lunar_lander.gif",
-        },
-        "BipedalWalker-v3": {
-            "description": "Control a two-legged robot to walk through rough terrain without falling.",
-            "gif_url": "https://gymnasium.farama.org/_images/bipedal_walker.gif",
-        },
-        "BipedalWalkerHardcore-v3": {
-            "description": "A more challenging version of BipedalWalker with harder terrain and obstacles.",
-            "gif_url": "https://gymnasium.farama.org/_images/bipedal_walker.gif",
-        },
-        "CarRacing-v2": {
-            "description": "A car racing environment where the goal is to complete a track as quickly as possible.",
-            "gif_url": "https://gymnasium.farama.org/_images/car_racing.gif",
-        },
-        "Blackjack-v1": {
-            "description": "A classic Blackjack card game environment.",
-            "gif_url": "https://gymnasium.farama.org/_images/blackjack1.gif",
-        },
-        "FrozenLake-v1": {
-            "description": "Navigate a grid world to reach a goal without falling into holes, akin to crossing a frozen lake.",
-            "gif_url": "https://gymnasium.farama.org/_images/frozen_lake.gif",
-        },
-        "FrozenLake8x8-v1": {
-            "description": "An 8x8 version of the FrozenLake environment, providing a larger and more complex grid.",
-            "gif_url": "https://gymnasium.farama.org/_images/frozen_lake.gif",
-        },
-        "CliffWalking-v0": {
-            "description": "A grid-based environment where the agent must navigate cliffs to reach a goal.",
-            "gif_url": "https://gymnasium.farama.org/_images/cliff_walking.gif",
-        },
-        "Taxi-v3": {
-            "description": "A taxi must pick up and drop off passengers at designated locations.",
-            "gif_url": "https://gymnasium.farama.org/_images/taxi.gif",
-        },
-        "Reacher-v4": {
-            "description": "Control a robotic arm to reach a target location",
-            "gif_url": "https://gymnasium.farama.org/_images/reacher.gif",
-        },
-        "Pusher-v4": {
-            "description": "A robot arm needs to push objects to a target location.",
-            "gif_url": "https://gymnasium.farama.org/_images/pusher.gif",
-        },
-        "InvertedPendulum-v4": {
-            "description": "Balance a pendulum in the upright position on a moving cart",
-            "gif_url": "https://gymnasium.farama.org/_images/inverted_pendulum.gif",
-        },
-        "InvertedDoublePendulum-v4": {
-            "description": "A more complex version of the InvertedPendulum with two pendulums to balance.",
-            "gif_url": "https://gymnasium.farama.org/_images/inverted_double_pendulum.gif",
-        },
-        "HalfCheetah-v4": {
-            "description": "Control a 2D cheetah robot to make it run as fast as possible.",
-            "gif_url": "https://gymnasium.farama.org/_images/half_cheetah.gif",
-        },
-        "Hopper-v4": {
-            "description": "Make a two-dimensional one-legged robot hop forward as fast as possible.",
-            "gif_url": "https://gymnasium.farama.org/_images/hopper.gif",
-        },
-        "Swimmer-v4": {
-            "description": "Control a snake-like robot to make it swim through water.",
-            "gif_url": "https://gymnasium.farama.org/_images/swimmer.gif",
-        },
-        "Walker2d-v4": {
-            "description": "A bipedal robot walking simulation aiming to move forward as fast as possible.",
-            "gif_url": "https://gymnasium.farama.org/_images/walker2d.gif",
-        },
-        "Ant-v4": {
-            "description": "Control a four-legged robot to explore a terrain.",
-            "gif_url": "https://gymnasium.farama.org/_images/ant.gif",
-        },
-        "Humanoid-v4": {
-            "description": "A two-legged humanoid robot that learns to walk and balance.",
-            "gif_url": "https://gymnasium.farama.org/_images/humanoid.gif",
-        },
-        "HumanoidStandup-v4": {
-            "description": "The goal is to make a humanoid stand up from a prone position.",
-            "gif_url": "https://gymnasium.farama.org/_images/humanoid_standup.gif",
-        },
-    }
-            description = env_data[env_name]['description']
-            gif_url = env_data[env_name]['gif_url']
+            description, gif_url = utils.get_env_data(env_name)
             gym_params = {}
             if id['page'] != "/build-agent":
                 gym_params = utils.generate_gym_extra_params_container(env_name)
@@ -1830,8 +1801,9 @@ def register_callbacks(app, shared_data):
         State({'type':'epochs', 'page':'/train-agent'}, 'value'),
         State({'type':'cycles', 'page':'/train-agent'}, 'value'),
         State({'type':'learning-cycles', 'page':'/train-agent'}, 'value'),
+        State({'type':'workers', 'page':'/train-agent'}, 'value'),
     )
-    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, learning_cycles):
+    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, learning_cycles, workers):
         #DEBUG
         # print("Start callback called.")
         if n_clicks > 0:
@@ -1841,11 +1813,42 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_data['agent']['agent_type']
             if os.path.exists(f'assets/models/{agent_type}/renders/training'):
                 utils.delete_renders(f"assets/models/{agent_type}/renders/training")
+            
             # Use the agent_data['save_dir'] to load your agent
             if agent_data:  # Check if agent_data is not empty
                 render = 'RENDER' in render_option
-                thread = threading.Thread(target=utils.train_model, args=(agent_data, env_name, num_episodes, render, render_freq, epochs, cycles, learning_cycles))
-                thread.daemon = True 
+                use_mpi = agent_data.get('use_mpi', False)
+
+                # Update the configuration with render settings
+                agent_data['render'] = render
+                agent_data['render_freq'] = render_freq
+                
+                # Update additional settings for HER agent
+                if agent_type == 'HER':
+                    agent_data['num_epochs'] = epochs
+                    agent_data['num_cycles'] = cycles
+                    agent_data['num_learning_cycles'] = learning_cycles
+            
+                # Save the updated configuration to a file
+                config_path = agent_data['save_dir'] + '/config.json'
+                with open(config_path, 'w') as f:
+                    json.dump(agent_data, f)
+
+                if use_mpi:
+                    if agent_type == 'HER':
+                        script_path = 'train_her.py'
+                    elif agent_type == 'DDPG':
+                        script_path = 'train_ddpg.py'
+                    else:
+                        raise ValueError(f"Unsupported agent type for MPI: {agent_type}")
+                    
+                    num_workers = workers
+                
+                    mpi_command = f"mpirun -np {num_workers} python {script_path} {config_path}"
+                    subprocess.Popen(mpi_command, shell=True)
+                
+                thread = threading.Thread(target=utils.train_model, args=(agent_data, env_name, num_episodes, render, render_freq, epochs, cycles, learning_cycles, workers))
+                thread.daemon = True
                 thread.start()
       
         raise PreventUpdate
@@ -1906,14 +1909,12 @@ def register_callbacks(app, shared_data):
     
         return {}, "Please upload a file.", {'display': 'none'}
     
-
     @app.callback(
     Output({'type': 'her-options', 'page': '/train-agent'}, 'style'),
     Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
-    State({'type':'agent-store', 'page': '/train-agent'}, 'id'),
     prevent_initial_call = True,
     )
-    def update_her_options(agent_data, data_id):
+    def update_her_options(agent_data):
 
         if agent_data['agent_type'] == 'HER':
             her_options_style = {'display': 'block'}
@@ -1921,6 +1922,62 @@ def register_callbacks(app, shared_data):
             her_options_style = {'display': 'none'}
         
         return her_options_style
+    
+    @app.callback(
+    Output({'type': 'mpi-options', 'page': '/train-agent'}, 'style'),
+    Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
+    prevent_initial_call = True,
+    )
+    def update_mpi_options(agent_data):
+
+        if agent_data['agent_type'] in ['DDPG', 'HER']:
+            mpi_options_style = {'display': 'block'}
+        else:
+            mpi_options_style = {'display': 'none'}
+        
+        return mpi_options_style
+    
+    @app.callback(
+    Output({'type': 'workers', 'page': '/train-agent'}, 'style'),
+    Input({'type':'mpi', 'page': '/train-agent'}, 'value'),
+    prevent_initial_call = True,
+    )
+    def update_workers_option(use_mpi):
+
+        if use_mpi:
+            workers_style = {'display': 'block'}
+        else:
+            workers_style = {'display': 'none'}
+        
+        return workers_style
+    
+    @app.callback(
+    Output({'type': 'clamp-value', 'model':MATCH, 'agent':MATCH}, 'style'),
+    Input({'type':'clamp-output', 'model':MATCH, 'agent':MATCH}, 'value'),
+    prevent_initial_call = True,
+    )
+    def update_clamp_options(clamp_output):
+
+        if clamp_output:
+            clamp_options_style = {'display': 'block'}
+        else:
+            clamp_options_style = {'display': 'none'}
+        
+        return clamp_options_style
+    
+    # @app.callback(
+    # Output({'type': 'ddpg-workers', 'page': '/train-agent'}, 'style'),
+    # Input({'type':'ddpg-mpi', 'page': '/train-agent'}, 'value'),
+    # prevent_initial_call = True,
+    # )
+    # def update_ddpg_workers_option(use_mpi):
+
+    #     if use_mpi:
+    #         workers_style = {'display': 'block'}
+    #     else:
+    #         workers_style = {'display': 'none'}
+        
+    #     return workers_style
     
 
     @app.callback(
@@ -2181,20 +2238,28 @@ def register_callbacks(app, shared_data):
                     children=[
                         html.Div([
                             html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                            dcc.RangeSlider(
+                            dcc.Dropdown(
                                 id=
                                 {
                                     'type': 'adam-weight-decay-hyperparam',
                                     'model': optimizer_id['model'],
                                     'agent': optimizer_id['agent']
                                 },
-                                min=0.0,
-                                max=1.0,
-                                step=0.01,
-                                value=[0.01, 0.1],
-                                marks={0: '0.0', 1: '1.0'},
-                                tooltip={"placement": "bottom", "always_visible": True},
-                                allowCross=True,
+                               options=[
+                                    {'label': '0.0', 'value': 0.0},
+                                    {'label': '0.1', 'value': 0.1},
+                                    {'label': '0.2', 'value': 0.2},
+                                    {'label': '0.3', 'value': 0.3},
+                                    {'label': '0.4', 'value': 0.4},
+                                    {'label': '0.5', 'value': 0.5},
+                                    {'label': '0.6', 'value': 0.6},
+                                    {'label': '0.7', 'value': 0.7},
+                                    {'label': '0.8', 'value': 0.8},
+                                    {'label': '0.9', 'value': 0.9},
+                                    {'label': '0.99', 'value': 0.99},
+                                    {'label': '1.0', 'value': 1.0},
+                                ],
+                                multi=True,
                             )
                         ])
                     ]
@@ -2205,36 +2270,52 @@ def register_callbacks(app, shared_data):
                     children=[
                         html.Div([
                             html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                            dcc.RangeSlider(
+                            dcc.Dropdown(
                                 id=
                                 {
                                     'type': 'adagrad-weight-decay-hyperparam',
                                     'model': optimizer_id['model'],
                                     'agent': optimizer_id['agent']
                                 },
-                                min=0.0,
-                                max=1.0,
-                                step=0.01,
-                                value=[0.01, 0.1],
-                                marks={0: '0.0', 1: '1.0'},
-                                tooltip={"placement": "bottom", "always_visible": True},
-                                allowCross=True,
+                                options=[
+                                    {'label': '0.0', 'value': 0.0},
+                                    {'label': '0.1', 'value': 0.1},
+                                    {'label': '0.2', 'value': 0.2},
+                                    {'label': '0.3', 'value': 0.3},
+                                    {'label': '0.4', 'value': 0.4},
+                                    {'label': '0.5', 'value': 0.5},
+                                    {'label': '0.6', 'value': 0.6},
+                                    {'label': '0.7', 'value': 0.7},
+                                    {'label': '0.8', 'value': 0.8},
+                                    {'label': '0.9', 'value': 0.9},
+                                    {'label': '0.99', 'value': 0.99},
+                                    {'label': '1.0', 'value': 1.0},
+                                ],
+                                multi=True,
                             ),
                             html.Label("Learning Rate Decay", style={'text-decoration': 'underline'}),
-                            dcc.RangeSlider(
+                            dcc.Dropdown(
                                 id=
                                 {
                                     'type': 'adagrad-lr-decay-hyperparam',
                                     'model': optimizer_id['model'],
                                     'agent': optimizer_id['agent']
                                 },
-                                min=0.0,
-                                max=1.0,
-                                step=0.01,
-                                value=[0.01, 0.1],
-                                marks={0: '0.0', 1: '1.0'},
-                                tooltip={"placement": "bottom", "always_visible": True},
-                                allowCross=True,
+                                options=[
+                                    {'label': '0.0', 'value': 0.0},
+                                    {'label': '0.1', 'value': 0.1},
+                                    {'label': '0.2', 'value': 0.2},
+                                    {'label': '0.3', 'value': 0.3},
+                                    {'label': '0.4', 'value': 0.4},
+                                    {'label': '0.5', 'value': 0.5},
+                                    {'label': '0.6', 'value': 0.6},
+                                    {'label': '0.7', 'value': 0.7},
+                                    {'label': '0.8', 'value': 0.8},
+                                    {'label': '0.9', 'value': 0.9},
+                                    {'label': '0.99', 'value': 0.99},
+                                    {'label': '1.0', 'value': 1.0},
+                                ],
+                                multi=True,
                             )
                         ])
                     ]
@@ -2245,36 +2326,52 @@ def register_callbacks(app, shared_data):
                     children=[
                         html.Div([
                             html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                            dcc.RangeSlider(
+                            dcc.Dropdown(
                                 id=
                                 {
                                     'type': 'rmsprop-weight-decay-hyperparam',
                                     'model': optimizer_id['model'],
                                     'agent': optimizer_id['agent']
                                 },
-                                min=0.0,
-                                max=1.0,
-                                step=0.01,
-                                value=[0.01, 0.1],
-                                marks={0: '0.0', 1: '1.0'},
-                                tooltip={"placement": "bottom", "always_visible": True},
-                                allowCross=True,
+                                options=[
+                                    {'label': '0.0', 'value': 0.0},
+                                    {'label': '0.1', 'value': 0.1},
+                                    {'label': '0.2', 'value': 0.2},
+                                    {'label': '0.3', 'value': 0.3},
+                                    {'label': '0.4', 'value': 0.4},
+                                    {'label': '0.5', 'value': 0.5},
+                                    {'label': '0.6', 'value': 0.6},
+                                    {'label': '0.7', 'value': 0.7},
+                                    {'label': '0.8', 'value': 0.8},
+                                    {'label': '0.9', 'value': 0.9},
+                                    {'label': '0.99', 'value': 0.99},
+                                    {'label': '1.0', 'value': 1.0},
+                                ],
+                                multi=True,
                             ),
                             html.Label("Momentum", style={'text-decoration': 'underline'}),
-                            dcc.RangeSlider(
+                            dcc.Dropdown(
                                 id=
                                 {
                                     'type': 'rmsprop-momentum-hyperparam',
                                     'model': optimizer_id['model'],
                                     'agent': optimizer_id['agent']
                                 },
-                                min=0.0,
-                                max=1.0,
-                                step=0.01,
-                                value=[0.01, 0.1],
-                                marks={0: '0.0', 1: '1.0'},
-                                tooltip={"placement": "bottom", "always_visible": True},
-                                allowCross=True,
+                                options=[
+                                    {'label': '0.0', 'value': 0.0},
+                                    {'label': '0.1', 'value': 0.1},
+                                    {'label': '0.2', 'value': 0.2},
+                                    {'label': '0.3', 'value': 0.3},
+                                    {'label': '0.4', 'value': 0.4},
+                                    {'label': '0.5', 'value': 0.5},
+                                    {'label': '0.6', 'value': 0.6},
+                                    {'label': '0.7', 'value': 0.7},
+                                    {'label': '0.8', 'value': 0.8},
+                                    {'label': '0.9', 'value': 0.9},
+                                    {'label': '0.99', 'value': 0.99},
+                                    {'label': '1.0', 'value': 1.0},
+                                ],
+                                multi=True,
                             )
                         ])
                     ]
@@ -2285,36 +2382,52 @@ def register_callbacks(app, shared_data):
                     children=[
                         html.Div([
                             html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-                            dcc.RangeSlider(
+                            dcc.Dropdown(
                                 id=
                                 {
                                     'type': 'sgd-weight-decay-hyperparam',
                                     'model': optimizer_id['model'],
                                     'agent': optimizer_id['agent']
                                 },
-                                min=0.0,
-                                max=1.0,
-                                step=0.01,
-                                value=[0.01, 0.1],
-                                marks={0: '0.0', 1: '1.0'},
-                                tooltip={"placement": "bottom", "always_visible": True},
-                                allowCross=True,
+                                options=[
+                                    {'label': '0.0', 'value': 0.0},
+                                    {'label': '0.1', 'value': 0.1},
+                                    {'label': '0.2', 'value': 0.2},
+                                    {'label': '0.3', 'value': 0.3},
+                                    {'label': '0.4', 'value': 0.4},
+                                    {'label': '0.5', 'value': 0.5},
+                                    {'label': '0.6', 'value': 0.6},
+                                    {'label': '0.7', 'value': 0.7},
+                                    {'label': '0.8', 'value': 0.8},
+                                    {'label': '0.9', 'value': 0.9},
+                                    {'label': '0.99', 'value': 0.99},
+                                    {'label': '1.0', 'value': 1.0},
+                                ],
+                                multi=True,
                             ),
                             html.Label("Momentum", style={'text-decoration': 'underline'}),
-                            dcc.RangeSlider(
+                            dcc.Dropdown(
                                 id=
                                 {
                                     'type': 'sgd-momentum-hyperparam',
                                     'model': optimizer_id['model'],
                                     'agent': optimizer_id['agent']
                                 },
-                                min=0.0,
-                                max=1.0,
-                                step=0.01,
-                                value=[0.01, 0.1],
-                                marks={0: '0.0', 1: '1.0'},
-                                tooltip={"placement": "bottom", "always_visible": True},
-                                allowCross=True,
+                                options=[
+                                    {'label': '0.0', 'value': 0.0},
+                                    {'label': '0.1', 'value': 0.1},
+                                    {'label': '0.2', 'value': 0.2},
+                                    {'label': '0.3', 'value': 0.3},
+                                    {'label': '0.4', 'value': 0.4},
+                                    {'label': '0.5', 'value': 0.5},
+                                    {'label': '0.6', 'value': 0.6},
+                                    {'label': '0.7', 'value': 0.7},
+                                    {'label': '0.8', 'value': 0.8},
+                                    {'label': '0.9', 'value': 0.9},
+                                    {'label': '0.99', 'value': 0.99},
+                                    {'label': '1.0', 'value': 1.0},
+                                ],
+                                multi=True,
                             )
                         ])
                     ]

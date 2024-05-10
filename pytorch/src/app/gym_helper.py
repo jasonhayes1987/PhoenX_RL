@@ -187,8 +187,14 @@ def fetch_slide_achieved_goal(env):
 
 def fetch_slide_reward(env, action=None, state_achieved_goal=None, next_state_achieved_goal=None, desired_goal=None, tolerance=None):
     
+    #DEBUG
+    # print(f'next state achieved goal: {next_state_achieved_goal}')
+    # print(f'desired goal: {desired_goal}')
     distance = np.linalg.norm(next_state_achieved_goal - desired_goal, axis=-1)
     reward = env.get_wrapper_attr("compute_reward")(next_state_achieved_goal, desired_goal, None)
+    #DEBUG
+    # print(f'distance: {distance}')
+    # print(f'reward: {reward}')
 
     if distance <= tolerance:
         return reward, 1

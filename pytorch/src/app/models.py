@@ -25,17 +25,23 @@ class Model(nn.Module):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
 
-    def _init_weights(self, module_dict, layer_config, prefix: str = ''):
+    def _init_weights(self, module_dict, layer_config):
         config_index = 0
 
         for layer_name, layer in module_dict.items():
             if 'dense' in layer_name:
-                _, _, init_config = layer_config[config_index]
+                if isinstance(layer_config, list):
+                    _, _, init_config = layer_config[config_index]
+                elif isinstance(layer_config, str):
+                    init_config=layer_config
 
                 ##DEBUG
                 # print(f'layer {prefix}_dense_{config_index} using {init_config} for {layer}')
                 
                 if isinstance(init_config, dict):
+                    if 'default' in init_config:
+                        pass
+
                     if 'variance scaling' in init_config:
                         # print('dict variance scaling')
                         torch_utils.VarianceScaling_(layer.weight, **init_config['variance scaling'])
@@ -69,6 +75,9 @@ class Model(nn.Module):
                         nn.init.constant_(layer.bias, **init_config['constant'])
                 
                 elif isinstance(init_config, str):
+                    if init_config == 'default':
+                        pass
+
                     if init_config == 'variance scaling':
                         torch_utils.VarianceScaling_(layer.weight)
 
@@ -304,30 +313,34 @@ class PolicyModel(Model):
 
         # Save the model parameters
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
-        obj_config = self.get_config()
+        config = self.get_config()
 
-        with open(model_dir / "obj_config.json", "w", encoding="utf-8") as f:
-            json.dump(obj_config, f)
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
 
     @classmethod
-    def load(cls, folder):
-        model_dir = Path(folder) / "policy_model"
-        obj_config_path = model_dir / "obj_config.json"
+    def load(cls, config_path, load_weights=True):
+        model_dir = Path(config_path) / "policy_model"
+        config_path = model_dir / "config.json"
         model_path = model_dir / 'pytorch_model.onnx'
 
-        if obj_config_path.is_file():
-            with open(obj_config_path, "r", encoding="utf-8") as f:
-                obj_config = json.load(f)
-            env = obj_config.get("env", "Custom/UnknownEnv")
-            dense_layers = obj_config.get("dense_layers", [])
-            optimizer = obj_config.get("optimizer", "Adam")
-            learning_rate = obj_config.get("learning_rate", 0.0001)
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            env = config.get("env")
+            dense_layers = config.get("dense_layers")
+            optimizer = config.get("optimizer")
+            learning_rate = config.get("learning_rate")
         else:
-            raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
+            raise FileNotFoundError(f"No configuration file found in {config_path}")
 
         model = cls(env, dense_layers, optimizer, learning_rate)
-        model.load_state_dict(torch.load(model_path))
+
+        # Load weights if True
+        if load_weights:
+            model.load_state_dict(torch.load(model_path))
 
         return model
 
@@ -533,53 +546,59 @@ class ValueModel(Model):
         # Save the model parameters
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
 
-        obj_config = {
+        config = {
             "env": self.env.spec.id,
             "dense_layers": self.layer_config,
             "optimizer": self.optimizer_class,
             "learning_rate": self.learning_rate,
         }
 
-        with open(model_dir / "obj_config.json", "w", encoding="utf-8") as f:
-            json.dump(obj_config, f)
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
 
 
     @classmethod
-    def load(cls, folder):
-        model_dir = Path(folder) / "value_model"
-        obj_config_path = model_dir / "obj_config.json"
+    def load(cls, config_path, load_weights:bool=True):
+        model_dir = Path(config_path) / "value_model"
+        config_path = model_dir / "config.json"
         model_path = model_dir / 'pytorch_model.onnx'
 
-        if obj_config_path.is_file():
-            with open(obj_config_path, "r", encoding="utf-8") as f:
-                obj_config = json.load(f)
-            env = obj_config.get("env", "Custom/UnknownEnv")
-            dense_layers = obj_config.get("dense_layers", [])
-            optimizer = obj_config.get("optimizer", "Adam")
-            learning_rate = obj_config.get("learning_rate", 0.0001)
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            env = config.get("env")
+            dense_layers = config.get("dense_layers")
+            optimizer = config.get("optimizer")
+            learning_rate = config.get("learning_rate")
         else:
-            raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
+            raise FileNotFoundError(f"No configuration file found in {config_path}")
 
         model = cls(env, dense_layers, optimizer, learning_rate)
-        model.load_state_dict(torch.load(model_path))
+
+        # Load weights if True
+        if load_weights:
+            model.load_state_dict(torch.load(model_path))
 
         return model
 
 
 class ActorModel(Model):
     
-    def __init__(self, env, cnn_model=None, dense_layers=None, goal_shape:tuple=None, optimizer: str = 'Adam',
-                 optimizer_params:dict={}, learning_rate=0.0001, normalize_layers:bool=False, device=None):
+    def __init__(self, env, cnn_model=None, dense_layers=None, output_layer_kernel=None, goal_shape:tuple=None, optimizer: str = 'Adam',
+                 optimizer_params:dict={}, learning_rate=0.0001, normalize_layers:bool=False,
+                 clamp_output:float=None, device=None):
         super().__init__()
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.env = env
         self.layer_config = dense_layers
+        self.output_config = output_layer_kernel
         self.cnn_model = cnn_model
         self.goal_shape = goal_shape
         self.optimizer_class = optimizer
         self.optimizer_params = optimizer_params
         self.learning_rate = learning_rate
         self.normalize_layers = normalize_layers
+        self.clamp_output = clamp_output
 
         # set internal attributes
         # get observation space
@@ -619,6 +638,9 @@ class ActorModel(Model):
             if self.goal_shape is not None:
                 input_size += self.goal_shape[0]
         
+        # DEBUG
+        print(f'actor layer config: {self.layer_config}')
+        print(f'actor input size: {input_size}')
         
         # Add dense layers
         for i, (units, activation, _) in enumerate(self.layer_config):
@@ -638,19 +660,22 @@ class ActorModel(Model):
             input_size = units
         
         # Initialize weights
-        self._init_weights(self.dense_layers, self.layer_config, 'actor')
+        self._init_weights(self.dense_layers, self.layer_config)
 
         # add output layer to dict
-        self.output_layer['actor_output'] = nn.Linear(input_size, env.action_space.shape[0])
+        self.output_layer['actor_dense_output'] = nn.Linear(input_size, env.action_space.shape[0])
         self.output_activation['actor_output_activation'] = nn.Tanh()
 
-         # output layer initialization dependent on presence of cnn model  
-        if self.cnn_model:
-            nn.init.uniform_(self.output_layer['actor_output'].weight, -3e-4, 3e-4)
-            nn.init.uniform_(self.output_layer['actor_output'].bias, -3e-4, 3e-4)
-        else:
-            nn.init.uniform_(self.output_layer['actor_output'].weight, -3e-3, 3e-3)
-            nn.init.uniform_(self.output_layer['actor_output'].bias, -3e-3, 3e-3)
+        # output layer initialization dependent on presence of cnn model  
+        # if self.cnn_model:
+        #     nn.init.uniform_(self.output_layer['actor_output'].weight, -3e-4, 3e-4)
+        #     nn.init.uniform_(self.output_layer['actor_output'].bias, -3e-4, 3e-4)
+        # else:
+        #     nn.init.uniform_(self.output_layer['actor_output'].weight, -3e-3, 3e-3)
+        #     nn.init.uniform_(self.output_layer['actor_output'].bias, -3e-3, 3e-3)
+
+        # UPDATE output layer kernel initializer to be hyperparam
+        self._init_weights(self.output_layer, self.output_config)
 
         # Initialize optimizer
         self.optimizer = self._init_optimizer()
@@ -680,10 +705,16 @@ class ActorModel(Model):
         for layer in self.output_activation.values():
             pi = layer(mu)
         
-        pi = pi * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device)
+        if self.clamp_output is not None:
+            # print('clamp output fired...')
+            pi = torch.clamp(pi * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device), -self.clamp_output, self.clamp_output)
+            # print(f'pi: {pi}')
+            return mu, pi
         
+        # print('unclamped output fired')
+        pi = pi * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device)
+        # print(f'pi: {pi}')
         return mu, pi
-
 
     def get_config(self):
         config = {
@@ -691,11 +722,13 @@ class ActorModel(Model):
             'cnn_model': self.cnn_model.get_config() if self.cnn_model is not None else None,
             'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
+            'output_layer_kernel':self.output_config,
             'goal_shape': self.goal_shape,
             'optimizer': self.optimizer.__class__.__name__,
             'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
             'normalize_layers': self.normalize_layers,
+            'clamp_output': self.clamp_output,
         }
 
         return config
@@ -707,11 +740,13 @@ class ActorModel(Model):
             env=self.env,
             cnn_model=self.cnn_model,
             dense_layers=self.layer_config,
+            output_layer_kernel=self.output_config,
             goal_shape=self.goal_shape,
             optimizer=self.optimizer_class,
             optimizer_params=self.optimizer_params,
             learning_rate=self.learning_rate,
             normalize_layers=self.normalize_layers,
+            clamp_output=self.clamp_output,
             device=self.device
         )
         
@@ -731,49 +766,55 @@ class ActorModel(Model):
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
         torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
-        obj_config = self.get_config()
+        config = self.get_config()
 
-        with open(model_dir / "obj_config.json", "w", encoding="utf-8") as f:
-            json.dump(obj_config, f)
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
 
 
     @classmethod
-    def load(cls, folder):
-        model_dir = Path(folder) / "policy_model"
-        obj_config_path = model_dir / "obj_config.json"
-        model_path = model_dir / 'pytorch_model.pt'
+    def load(cls, config_path, load_weights=True):
+        model_dir = Path(config_path) + "policy_model"
+        config_path = model_dir + "config.json"
+        model_path = model_dir + 'pytorch_model.pt'
 
-        if obj_config_path.is_file():
-            with open(obj_config_path, "r", encoding="utf-8") as f:
-                obj_config = json.load(f)
-            env = gym.make(obj_config.get("env", "Custom/UnknownEnv"))
-            cnn_model = obj_config.get("cnn_model", None)
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            env = gym.make(config.get("env"))
+            cnn_model = config.get("cnn_model", None)
             if cnn_model:
                 cnn_model = cnn_models.CNN(cnn_model['layers'], env)
-            dense_layers = obj_config.get("dense_layers", [])
-            goal_shape = obj_config.get("goal_shape", None)
-            optimizer = obj_config.get("optimizer", "Adam")
-            optimizer_params = obj_config.get("optimizer_params", ())
-            learning_rate = obj_config.get("learning_rate", 0.0001)
-            normalize = obj_config.get("normalize", False)
+            dense_layers = config.get("dense_layers")
+            goal_shape = config.get("goal_shape", None)
+            optimizer = config.get("optimizer")
+            optimizer_params = config.get("optimizer_params")
+            learning_rate = config.get("learning_rate")
+            normalize = config.get("normalize", False)
+            clamp_output = config.get("clamp_output", None)
         else:
-            raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
+            raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        actor_model = cls(env, cnn_model, dense_layers, goal_shape, optimizer, optimizer_params, learning_rate, normalize)
-        actor_model.load_state_dict(torch.load(model_path))
+        actor_model = cls(env, cnn_model, dense_layers, goal_shape, optimizer, optimizer_params, learning_rate, normalize, clamp_output)
+        
+        # Load weights if True
+        if load_weights:
+            actor_model.load_state_dict(torch.load(model_path))
 
         return actor_model
 
 
 class CriticModel(Model):
-    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, goal_shape:tuple=None,
-                 optimizer: str = 'Adam', optimizer_params:dict={}, learning_rate=0.001, normalize_layers:bool=False, device=None):
+    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, output_layer_kernel=None,
+                 goal_shape:tuple=None, optimizer: str = 'Adam', optimizer_params:dict={},
+                 learning_rate=0.001, normalize_layers:bool=False, device=None):
         super().__init__()
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.env = env
         self.cnn_model = cnn_model
         self.state_config = state_layers
         self.merged_config = merged_layers
+        self.output_config = output_layer_kernel
         self.goal_shape = goal_shape
         self.optimizer_class = optimizer
         self.optimizer_params = optimizer_params
@@ -847,20 +888,23 @@ class CriticModel(Model):
             input_size = units
 
         # Initialize state and merged layers' weights
-        self._init_weights(self.state_layers, self.state_config, 'critic_state')
-        self._init_weights(self.merged_layers, self.merged_config, 'critic_merged')
+        self._init_weights(self.state_layers, self.state_config)
+        self._init_weights(self.merged_layers, self.merged_config)
 
         # add output layer to merged layers
-        self.output_layer['critic_output'] = nn.Linear(input_size, 1)
+        self.output_layer['critic_dense_output'] = nn.Linear(input_size, 1)
 
         # Output layer kernel initialization dependent on presence of cnn model
-        if self.cnn_model:
-            nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-4, 3e-4)
-            nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-4, 3e-4)
-        else:
-            nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-3, 3e-3)
-            nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-3, 3e-3)
+        # if self.cnn_model:
+        #     nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-4, 3e-4)
+        #     nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-4, 3e-4)
+        # else:
+        #     nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-3, 3e-3)
+        #     nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-3, 3e-3)
         
+        # UPDATE output layer kernel to be hyperparam
+        self._init_weights(self.output_layer, self.output_config)
+
         # Define the optimizer
         self.optimizer = self._init_optimizer()
 
@@ -904,6 +948,7 @@ class CriticModel(Model):
             'num_layers': len(self.state_layers) + len(self.merged_layers),
             'state_layers': self.state_config,
             'merged_layers': self.merged_config,
+            'output_layer_kernel': self.output_config,
             'goal_shape': self.goal_shape,
             'optimizer': self.optimizer.__class__.__name__,
             'optimizer_params': self.optimizer_params,
@@ -920,6 +965,7 @@ class CriticModel(Model):
             cnn_model=self.cnn_model,
             state_layers=self.state_config,
             merged_layers=self.merged_config,
+            output_layer_kernel=self.output_config,
             goal_shape=self.goal_shape,
             optimizer=self.optimizer_class,
             optimizer_params=self.optimizer_params,
@@ -948,37 +994,40 @@ class CriticModel(Model):
         torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
         torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
-        obj_config = self.get_config()
+        config = self.get_config()
 
-        with open(model_dir / "obj_config.json", "w", encoding="utf-8") as f:
-            json.dump(obj_config, f)
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
 
 
     @classmethod
-    def load(cls, folder):
-        model_dir = Path(folder) / "value_model"
-        obj_config_path = model_dir / "obj_config.json"
-        model_path = model_dir / 'pytorch_model.pt'
+    def load(cls, config_path, load_weights=True):
+        model_dir = Path(config_path) + "value_model"
+        config_path = model_dir + "config.json"
+        model_path = model_dir + 'pytorch_model.pt'
 
-        if obj_config_path.is_file():
-            with open(obj_config_path, "r", encoding="utf-8") as f:
-                obj_config = json.load(f)
-            env = gym.make(obj_config.get("env", "Custom/UnknownEnv"))
-            cnn_model = obj_config.get("cnn_model", None)
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            env = gym.make(config.get("env"))
+            cnn_model = config.get("cnn_model", None)
             if cnn_model:
                 cnn_model = cnn_models.CNN(cnn_model['layers'], env)
-            state_layers = obj_config.get("state_layers", [])
-            merged_layers = obj_config.get("merged_layers", [])
-            goal_shape = obj_config.get("goal_shape", None)
-            optimizer = obj_config.get("optimizer", "Adam")
-            learning_rate = obj_config.get("learning_rate", 0.0001)
-            optimizer_params = obj_config.get("optimizer_params", ())
-            normalize = obj_config.get("normalize", False)
+            state_layers = config.get("state_layers")
+            merged_layers = config.get("merged_layers")
+            goal_shape = config.get("goal_shape", None)
+            optimizer = config.get("optimizer")
+            learning_rate = config.get("learning_rate")
+            optimizer_params = config.get("optimizer_params")
+            normalize = config.get("normalize", False)
         else:
-            raise FileNotFoundError(f"No configuration file found in {obj_config_path}")
+            raise FileNotFoundError(f"No configuration file found in {config_path}")
 
         model = cls(env, cnn_model, state_layers, merged_layers, goal_shape, optimizer, optimizer_params, learning_rate, normalize)
-        model.load_state_dict(torch.load(model_path))
+        
+        # Load weights if True
+        if load_weights:
+            model.load_state_dict(torch.load(model_path))
 
         return model
 
