@@ -801,7 +801,7 @@ def register_callbacks(app, shared_data):
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("CartPole-v1")
 
-            learning_rate=utils.get_specific_value(
+            learning_rate=10**utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='learning-rate',
@@ -991,7 +991,7 @@ def register_callbacks(app, shared_data):
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=utils.get_specific_value(
+            actor_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1014,7 +1014,7 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            actor_initializer = utils.format_kernel_initializer_config(
+            actor_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='actor',
@@ -1051,10 +1051,10 @@ def register_callbacks(app, shared_data):
                     model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
-                actor_initializer,
+                actor_hidden_kernel,
             )
 
-            actor_output_layer_kernel = utils.get_specific_value(
+            actor_output_kernel = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='kernel-function',
@@ -1094,7 +1094,7 @@ def register_callbacks(app, shared_data):
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
-                output_layer_kernel=actor_output_layer_kernel,
+                output_layer_kernel=actor_output_kernel,
                 optimizer=actor_optimizer,
                 optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
@@ -1111,7 +1111,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=utils.get_specific_value(
+            critic_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1134,7 +1134,7 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            critic_initializer = utils.format_kernel_initializer_config(
+            critic_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='critic',
@@ -1158,7 +1158,7 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
            
             critic_conv_layers = utils.format_cnn_layers(
@@ -1190,10 +1190,10 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
 
-            critic_output_layer_kernel = utils.get_specific_value(
+            critic_output_kernel = utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='kernel-function',
@@ -1214,7 +1214,7 @@ def register_callbacks(app, shared_data):
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
-                output_layer_kernel=critic_output_layer_kernel,
+                output_layer_kernel=critic_output_kernel,
                 learning_rate=critic_learning_rate,
                 optimizer=critic_optimizer,
                 optimizer_params=critic_opt_params,
@@ -1313,6 +1313,15 @@ def register_callbacks(app, shared_data):
 
         elif agent_type_dropdown_value == "HER_DDPG":
 
+            # Get device
+            device = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
             # get goal and reward functions and goal shape
             desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
             
@@ -1327,7 +1336,7 @@ def register_callbacks(app, shared_data):
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=utils.get_specific_value(
+            actor_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1350,10 +1359,17 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            actor_initializer = utils.format_kernel_initializer_config(
+            actor_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor',
+                value_model='actor-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+
+            actor_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-output',
                 agent_type=agent_type_dropdown_value
             )
 
@@ -1389,16 +1405,8 @@ def register_callbacks(app, shared_data):
                     model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
-                actor_initializer,
+                actor_hidden_kernel,
             )
-
-            actor_output_layer_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='actor-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
 
             actor_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1408,20 +1416,41 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
+            actor_clamp_output = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='clamp-output',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            if actor_clamp_output:
+                clamp_value = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='clamp-value',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
+            )
+            else:
+                clamp_value = None
+
             #DEBUG
             print(f'actor dense layers: {actor_dense_layers}')
-            print(f'actor output kernel: {actor_output_layer_kernel}, type: {type(actor_output_layer_kernel)}')
+            print(f'actor output kernel: {actor_output_kernel}, type: {type(actor_output_kernel)}')
             # Create actor model
             actor_model = models.ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
-                output_layer_kernel=actor_output_layer_kernel,
+                output_layer_kernel=actor_output_kernel,
                 goal_shape=goal_shape,
                 optimizer=actor_optimizer,
                 optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
                 normalize_layers=actor_normalize_layers,
+                clamp_output=clamp_value,
+                device=device,
             )
             
             #DEBUG
@@ -1433,7 +1462,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=utils.get_specific_value(
+            critic_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1456,10 +1485,17 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            critic_initializer = utils.format_kernel_initializer_config(
+            critic_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='critic',
+                value_model='critic-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+
+            critic_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-output',
                 agent_type=agent_type_dropdown_value
             )
             
@@ -1480,7 +1516,7 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
            
             critic_conv_layers = utils.format_cnn_layers(
@@ -1514,16 +1550,8 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
-
-            critic_output_layer_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='critic-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
            
             critic_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1538,12 +1566,13 @@ def register_callbacks(app, shared_data):
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
-                output_layer_kernel=critic_output_layer_kernel,
+                output_layer_kernel=critic_output_kernel,
                 goal_shape=goal_shape,
                 learning_rate=critic_learning_rate,
                 optimizer=critic_optimizer,
                 optimizer_params=critic_opt_params,
                 normalize_layers=critic_normalize_layers,
+                device=device,
             )
 
             #DEBUG
@@ -1659,15 +1688,6 @@ def register_callbacks(app, shared_data):
                 id_type = 'clip-value',
                 model_type = 'none',
                 agent_type = agent_type_dropdown_value,
-            )
-
-            # Get device
-            device = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
             )
 
             save_dir = utils.get_specific_value(
