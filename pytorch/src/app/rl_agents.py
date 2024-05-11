@@ -2735,7 +2735,7 @@ class HER(Agent):
             "reward_fn": self.reward_fn.__name__,
             "normalizer_clip": self.normalizer_clip,
             "normalizer_eps": self.normalizer_eps,
-            "replay_buffer": self.replay_buffer.get_config(),
+            "replay_buffer_size": self.replay_buffer_size,
             "device": self.device,
             "save_dir": self.save_dir,
         }
@@ -2793,7 +2793,8 @@ class HER(Agent):
         # instantiate HER model
         her = cls(agent, config["strategy"], config["tolerance"], config["num_goals"],
                   config["desired_goal"], config["achieved_goal"], config["reward_fn"],
-                  config['normalizer_clip'], config['normalizer_eps'], config["save_dir"])
+                  config['normalizer_clip'], config['normalizer_eps'], config["replay_buffer_size"],
+                  config["device"], config["save_dir"])
 
         # load agent normalizers
         agent.state_normalizer = helper.Normalizer.load_state(config['save_dir'] + "state_normalizer.npz")
@@ -2821,7 +2822,6 @@ class HER(Agent):
 
 def load_agent_from_config(config, load_weights=True):
     """Loads an agent from a loaded config file."""
-
     agent_type = config["agent_type"]
 
     # Use globals() to get a reference to the class

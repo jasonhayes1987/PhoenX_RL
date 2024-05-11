@@ -399,7 +399,7 @@ def load(agent_data, env_name):
         #DEBUG
         # print('env name matches!')
         # Load the agent
-        return rl_agents.load_agent_from_config(agent_data['save_dir'])
+        return rl_agents.load_agent_from_config(agent_data)
 
     # else (they don't match) change params to match new environment action space
     # check what the agent type is to update params accordingly
@@ -937,7 +937,7 @@ def run_agent_settings_component(page, agent_type=None):
         ),
         dcc.Checklist(
             options=[
-                {'label': 'Render Testing Episodes', 'value': 'RENDER'}
+                {'label': 'Render Episodes', 'value': 'RENDER'}
             ],
             id={
                 'type': 'render-option',
@@ -1950,7 +1950,7 @@ def create_actor_model_input(agent_type):
             create_normalize_layers_input(agent_type, 'actor'),
             create_clamp_output_input(agent_type, 'actor'),
             html.Label("Hidden Layers Kernel Initializers"),
-            create_kernel_input(agent_type, 'actor'),
+            create_kernel_input(agent_type, 'actor-hidden'),
             html.Label("Output Layer Kernel Initializer"),
             create_kernel_input(agent_type, 'actor-output'),
             create_activation_input(agent_type, 'actor'),
@@ -1969,7 +1969,7 @@ def create_critic_model_input(agent_type):
             create_dense_layers_input(agent_type, 'critic-merged'),
             create_normalize_layers_input(agent_type, 'critic'),
             html.Label("Hidden Layers Kernel Initializers"),
-            create_kernel_input(agent_type, 'critic'),
+            create_kernel_input(agent_type, 'critic-hidden'),
             html.Label("Output Layer Kernel Initializer"),
             create_kernel_input(agent_type, 'critic-output'),
             create_activation_input(agent_type, 'critic'),

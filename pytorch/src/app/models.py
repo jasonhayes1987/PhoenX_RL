@@ -27,89 +27,123 @@ class Model(nn.Module):
 
     def _init_weights(self, module_dict, layer_config):
         config_index = 0
+        #DEBUG
+        print(f'layer config: {layer_config}')
+        print(f'layer config type: {type(layer_config)}')
 
         for layer_name, layer in module_dict.items():
             if 'dense' in layer_name:
                 if isinstance(layer_config, list):
                     _, _, init_config = layer_config[config_index]
-                elif isinstance(layer_config, str):
+                elif isinstance(layer_config, dict) or isinstance(layer_config, str):
                     init_config=layer_config
+                    print(f'init config: {init_config}')
 
                 ##DEBUG
-                # print(f'layer {prefix}_dense_{config_index} using {init_config} for {layer}')
+                print(f'{layer_name} using {init_config} for {layer}')
                 
                 if isinstance(init_config, dict):
                     if 'default' in init_config:
+                        print('default fired')
                         pass
 
                     if 'variance scaling' in init_config:
-                        # print('dict variance scaling')
+                        print('dict variance scaling')
                         torch_utils.VarianceScaling_(layer.weight, **init_config['variance scaling'])
                     
                     elif 'xavier uniform' in init_config:
+                        print('xavier uniform')
                         nn.init.xavier_uniform_(layer.weight, **init_config['xavier uniform'])
 
                     elif 'xavier normal' in init_config:
+                        print('xavier normal')
                         nn.init.xavier_normal_(layer.weight, **init_config['xavier normal'])
 
                     elif 'kaiming uniform' in init_config:
+                        print('kaiming uniform')
                         nn.init.kaiming_uniform_(layer.weight, **init_config['kaiming uniform'])
                     
                     elif 'kaiming normal' in init_config:
+                        print('kaiming normal')
                         nn.init.kaiming_normal_(layer.weight, **init_config['kaiming normal'])
 
                     elif 'truncated normal' in init_config:
+                        print('truncated normal')
                         nn.init.trunc_normal_(layer.weight, **init_config['truncated normal'])
                         nn.init.trunc_normal_(layer.bias, **init_config['truncated normal'])
 
                     elif 'uniform' in init_config:
+                        print('uniform')
                         nn.init.uniform_(layer.weight, **init_config['uniform'])
                         nn.init.uniform_(layer.bias, **init_config['uniform'])
 
                     elif 'normal' in init_config:
+                        print('normal')
                         nn.init.normal_(layer.weight, **init_config['normal'])
                         nn.init.normal_(layer.bias, **init_config['normal'])
 
                     elif 'constant' in init_config:
+                        print('constant')
                         nn.init.constant_(layer.weight, **init_config['constant'])
                         nn.init.constant_(layer.bias, **init_config['constant'])
+
+                    elif 'ones' in init_config:
+                        print('ones')
+                        nn.init.ones_(layer.weight)
+                        nn.init.ones_(layer.bias)
+
+                    elif 'zeros' in init_config:
+                        print('zeros')
+                        nn.init.zeros_(layer.weight)
+                        nn.init.zeros_(layer.bias)
                 
                 elif isinstance(init_config, str):
                     if init_config == 'default':
+                        print('default')
                         pass
 
                     if init_config == 'variance scaling':
+                        print('variance scaling')
                         torch_utils.VarianceScaling_(layer.weight)
 
                     elif init_config == 'xavier uniform':
+                        print('xavier uniform')
                         nn.init.xavier_normal_(layer.weight)
 
                     elif init_config == 'xavier normal':
+                        print('xavier normal')
                         nn.init.xavier_normal_(layer.weight)
 
                     elif init_config == 'kaiming uniform':
+                        print('kaiming uniform')
                         nn.init.kaiming_uniform_(layer.weight)
 
                     elif init_config == 'kaiming normal':
+                        print('kaiming normal')
                         nn.init.kaiming_normal_(layer.weight)
                     
                     elif init_config == 'truncated normal':
+                        print('truncated normal')
                         nn.init.trunc_normal_(layer.weight)
                         nn.init.trunc_normal_(layer.bias)
 
                     elif init_config == 'uniform':
+                        print('uniform')
                         nn.init.uniform_(layer.weight)
                         nn.init.uniform_(layer.bias)
 
                     elif init_config == 'normal':
+                        print('normal')
                         nn.init.normal_(layer.weight)
                         nn.init.normal_(layer.bias)
 
                     elif init_config == 'ones':
+                        print('ones')
                         nn.init.ones_(layer.weight)
                         nn.init.ones_(layer.bias)
 
                     elif init_config == 'zeros':
+                        print('zeros')
                         nn.init.zeros_(layer.weight)
                         nn.init.zeros_(layer.bias)
                 
@@ -197,7 +231,7 @@ class PolicyModel(Model):
             input_size = units
 
         # initialize dense layer weights
-        self._init_weights(self.dense_layers, self.layer_config, 'policy')
+        self._init_weights(self.dense_layers, self.layer_config)
 
         # add output layers to dict
         self.dense_layers['policy_output'] = nn.Linear(input_size, env.action_space.n)
@@ -392,7 +426,7 @@ class ValueModel(Model):
             input_size = units
         
         # initialize dense layer weights
-        self._init_weights(self.dense_layers, self.layer_config, 'value')
+        self._init_weights(self.dense_layers, self.layer_config)
 
         # add output layers to dict
         self.dense_layers['value_output'] = nn.Linear(input_size, 1)
@@ -584,7 +618,7 @@ class ValueModel(Model):
 
 class ActorModel(Model):
     
-    def __init__(self, env, cnn_model=None, dense_layers=None, output_layer_kernel=None, goal_shape:tuple=None, optimizer: str = 'Adam',
+    def __init__(self, env, cnn_model=None, dense_layers=None, output_layer_kernel:dict=None, goal_shape:tuple=None, optimizer: str = 'Adam',
                  optimizer_params:dict={}, learning_rate=0.0001, normalize_layers:bool=False,
                  clamp_output:float=None, device=None):
         super().__init__()
@@ -637,10 +671,6 @@ class ActorModel(Model):
             
             if self.goal_shape is not None:
                 input_size += self.goal_shape[0]
-        
-        # DEBUG
-        print(f'actor layer config: {self.layer_config}')
-        print(f'actor input size: {input_size}')
         
         # Add dense layers
         for i, (units, activation, _) in enumerate(self.layer_config):
@@ -774,9 +804,9 @@ class ActorModel(Model):
 
     @classmethod
     def load(cls, config_path, load_weights=True):
-        model_dir = Path(config_path) + "policy_model"
-        config_path = model_dir + "config.json"
-        model_path = model_dir + 'pytorch_model.pt'
+        model_dir = Path(config_path) / "policy_model"
+        config_path = model_dir / "config.json"
+        model_path = model_dir / 'pytorch_model.pt'
 
         if config_path.is_file():
             with open(config_path, "r", encoding="utf-8") as f:
@@ -786,6 +816,7 @@ class ActorModel(Model):
             if cnn_model:
                 cnn_model = cnn_models.CNN(cnn_model['layers'], env)
             dense_layers = config.get("dense_layers")
+            output_layer_kernel = config.get("output_layer_kernel")
             goal_shape = config.get("goal_shape", None)
             optimizer = config.get("optimizer")
             optimizer_params = config.get("optimizer_params")
@@ -795,7 +826,7 @@ class ActorModel(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        actor_model = cls(env, cnn_model, dense_layers, goal_shape, optimizer, optimizer_params, learning_rate, normalize, clamp_output)
+        actor_model = cls(env, cnn_model, dense_layers, output_layer_kernel, goal_shape, optimizer, optimizer_params, learning_rate, normalize, clamp_output)
         
         # Load weights if True
         if load_weights:
@@ -805,7 +836,7 @@ class ActorModel(Model):
 
 
 class CriticModel(Model):
-    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, output_layer_kernel=None,
+    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, output_layer_kernel:dict=None,
                  goal_shape:tuple=None, optimizer: str = 'Adam', optimizer_params:dict={},
                  learning_rate=0.001, normalize_layers:bool=False, device=None):
         super().__init__()
@@ -1002,9 +1033,9 @@ class CriticModel(Model):
 
     @classmethod
     def load(cls, config_path, load_weights=True):
-        model_dir = Path(config_path) + "value_model"
-        config_path = model_dir + "config.json"
-        model_path = model_dir + 'pytorch_model.pt'
+        model_dir = Path(config_path) / "value_model"
+        config_path = model_dir / "config.json"
+        model_path = model_dir / 'pytorch_model.pt'
 
         if config_path.is_file():
             with open(config_path, "r", encoding="utf-8") as f:
@@ -1015,6 +1046,7 @@ class CriticModel(Model):
                 cnn_model = cnn_models.CNN(cnn_model['layers'], env)
             state_layers = config.get("state_layers")
             merged_layers = config.get("merged_layers")
+            output_layer_kernel = config.get("output_layer_kernel")
             goal_shape = config.get("goal_shape", None)
             optimizer = config.get("optimizer")
             learning_rate = config.get("learning_rate")
@@ -1023,7 +1055,7 @@ class CriticModel(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        model = cls(env, cnn_model, state_layers, merged_layers, goal_shape, optimizer, optimizer_params, learning_rate, normalize)
+        model = cls(env, cnn_model, state_layers, merged_layers, output_layer_kernel, goal_shape, optimizer, optimizer_params, learning_rate, normalize)
         
         # Load weights if True
         if load_weights:
