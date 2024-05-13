@@ -1654,7 +1654,7 @@ def register_callbacks(app, shared_data):
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
                 callbacks = utils.get_callbacks(callbacks, project),
-                save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
+                # save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
             )
 
             # set HER specific hyperparams
@@ -1821,9 +1821,13 @@ def register_callbacks(app, shared_data):
         State({'type':'epochs', 'page':'/train-agent'}, 'value'),
         State({'type':'cycles', 'page':'/train-agent'}, 'value'),
         State({'type':'learning-cycles', 'page':'/train-agent'}, 'value'),
+        State({'type':'mpi', 'page':'/train-agent'}, 'value'),
         State({'type':'workers', 'page':'/train-agent'}, 'value'),
+        State({'type':'load-weights', 'page':'/train-agent'}, 'value'),
+        State({'type':'seed', 'page':'/train-agent'}, 'value'),
+        State({'type':'run-number', 'page':'/train-agent'}, 'value'),
     )
-    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, learning_cycles, workers):
+    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, use_mpi, workers, load_weights, seed, run_number):
         #DEBUG
         # print("Start callback called.")
         if n_clicks > 0:
@@ -1834,43 +1838,39 @@ def register_callbacks(app, shared_data):
             if os.path.exists(f'assets/models/{agent_type}/renders/training'):
                 utils.delete_renders(f"assets/models/{agent_type}/renders/training")
             
-            # Use the agent_data['save_dir'] to load your agent
+            # Use the agent_data['save_dir'] to load agent
             if agent_data:  # Check if agent_data is not empty
                 render = 'RENDER' in render_option
-                use_mpi = agent_data.get('use_mpi', False)
+                # use_mpi = agent_data.get('use_mpi', False)
 
                 # Update the configuration with render settings
+                agent_data['num_episodes'] = num_episodes
                 agent_data['render'] = render
                 agent_data['render_freq'] = render_freq
+                agent_data['load_weights'] = load_weights
+                agent_data['seed'] = seed
+                agent_data['run_number'] = run_number
+
+                # Add MPI settings to config if DDPG or HER
+                if agent_data['agent_type'] == 'HER' or agent_data['agent_type'] == 'DDPG':
+                    agent_data['use_mpi'] = use_mpi
+                    agent_data['num_workers'] = workers
                 
                 # Update additional settings for HER agent
-                if agent_type == 'HER':
+                if agent_data['agent_type'] == 'HER':
                     agent_data['num_epochs'] = epochs
                     agent_data['num_cycles'] = cycles
-                    agent_data['num_learning_cycles'] = learning_cycles
+                    agent_data['num_updates'] = num_updates
             
-                # Save the updated configuration to a file
-                config_path = agent_data['save_dir'] + '/config.json'
+                # Save the updated configuration to a train config file
+                config_path = agent_data['save_dir'] + '/train_config.json'
                 with open(config_path, 'w') as f:
                     json.dump(agent_data, f)
 
-                if use_mpi:
-                    if agent_type == 'HER':
-                        script_path = 'train_her.py'
-                    elif agent_type == 'DDPG':
-                        script_path = 'train_ddpg.py'
-                    else:
-                        raise ValueError(f"Unsupported agent type for MPI: {agent_type}")
-                    
-                    num_workers = workers
-                
-                    mpi_command = f"mpirun -np {num_workers} python {script_path} {config_path}"
-                    subprocess.Popen(mpi_command, shell=True)
-                
-                thread = threading.Thread(target=utils.train_model, args=(agent_data, env_name, num_episodes, render, render_freq, epochs, cycles, learning_cycles, workers))
-                thread.daemon = True
-                thread.start()
-      
+                script_path = 'train.py'
+                run_command = f"python {script_path} {config_path}"
+                subprocess.Popen(run_command, shell=True)
+
         raise PreventUpdate
     
     @app.callback(
@@ -1883,27 +1883,94 @@ def register_callbacks(app, shared_data):
         State({'type':'num-episodes', 'page':'/test-agent'}, 'value'),
         State({'type':'render-option', 'page':'/test-agent'}, 'value'),
         State({'type':'render-freq', 'page':'/test-agent'}, 'value'),
+        State({'type':'load-weights', 'page':'/test-agent'}, 'value'),
+        State({'type':'seed', 'page':'/test-agent'}, 'value'),
+        State({'type':'run-number', 'page':'/test-agent'}, 'value'),
     )
-    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq):
-        #DEBUG
-        # print("Start callback called.")
-        if n_clicks > 0:
-            print(f'render options:{render_option}')
-            print(f'render freq:{render_freq}')
-            # clear the renders in the test folder
-            agent_type = agent_data['agent_type']
-            if agent_type == "HER":
-                agent_type = agent_data['agent']['agent_type']
-            if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
-                utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
-            # Use the agent_data['save_dir'] to load your agent
-            if agent_data:  # Check if agent_data is not empty
+    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, load_weights, seed, run_nubmer):
+
+        print('test agent fired...')
+        try:
+            if n_clicks > 0 and agent_data:
+                #DEBUG
+                print('n clicks and agent data passed')
+                # clear the renders in the train folder
+                agent_type = agent_data['agent_type']
+                if agent_type == "HER":
+                    agent_type = agent_data['agent']['agent_type']
+                if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
+                    utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
+
+                # Update the configuration with render settings
                 render = 'RENDER' in render_option
-                thread = threading.Thread(target=utils.test_model, args=(agent_data, env_name, num_episodes, render, render_freq))
-                thread.daemon = True 
-                thread.start()
-      
-        raise PreventUpdate
+                agent_data['render'] = render
+                agent_data['num_episodes'] = num_episodes
+                agent_data['render_freq'] = render_freq
+                agent_data['load_weights'] = load_weights
+                agent_data['seed'] = seed
+                agent_data['run_number'] = run_number
+
+                # Save the updated configuration to a file
+                config_path = agent_data['save_dir'] + '/test_config.json'
+                with open(config_path, 'w') as f:
+                    json.dump(agent_data, f)
+                
+                script_path = 'test.py'
+                #DEBUG
+                print(f'script set to {script_path}')
+                run_command = f"python {script_path} {config_path}"
+                subprocess.Popen(run_command, shell=True)
+
+            raise PreventUpdate
+
+        except KeyError as e:
+            print(f"KeyError: {str(e)}")
+            # Handle the case when a required key is missing in agent_data
+            # You can choose to raise an exception, return an error message, or take appropriate action
+
+        except FileNotFoundError as e:
+            print(f"FileNotFoundError: {str(e)}")
+            # Handle the case when the specified file or directory is not found
+            # You can choose to raise an exception, return an error message, or take appropriate action
+
+        except subprocess.SubprocessError as e:
+            print(f"SubprocessError: {str(e)}")
+            # Handle the case when there is an error executing the subprocess
+            # You can choose to raise an exception, return an error message, or take appropriate action
+
+        except Exception as e:
+            print(f"An unexpected error occurred: {str(e)}")
+    # Handle any other unexpected exceptions
+    # You can choose to raise an exception, return an error message, or take appropriate action
+
+        # if n_clicks > 0:
+        #     # clear the renders in the train folder
+        #     agent_type = agent_data['agent_type']
+        #     if agent_type == "HER":
+        #         agent_type = agent_data['agent']['agent_type']
+        #     if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
+        #         utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
+            
+        #     # Use the agent_data['save_dir'] to load agent
+        #     if agent_data:  # Check if agent_data is not empty
+        #         render = 'RENDER' in render_option
+
+        #         # Update the configuration with render settings
+        #         agent_data['num_episodes'] = num_episodes
+        #         agent_data['render'] = render
+        #         agent_data['render_freq'] = render_freq
+        #         agent_data['load_weights'] = load_weights
+                
+        #         # Save the updated configuration to a file
+        #         config_path = agent_data['save_dir'] + '/test_config.json'
+        #         with open(config_path, 'w') as f:
+        #             json.dump(agent_data, f)
+
+        #         script_path = 'test.py'
+        #         run_command = f"python {script_path} {config_path}"
+        #         subprocess.Popen(run_command, shell=True)
+
+        # raise PreventUpdate
             
     
     @app.callback(
@@ -1915,7 +1982,6 @@ def register_callbacks(app, shared_data):
     )
     def store_agent(contents, upload_id):
         # for content, page in zip(contents, id):
-        print(f'content: {contents}')
         if contents is not None:
             _, encoded = contents.split(',')
             decoded = base64.b64decode(encoded)           
@@ -2014,10 +2080,14 @@ def register_callbacks(app, shared_data):
     Output({'type':'storage', 'page':MATCH}, 'data'),
     [Input({'type':'interval-component', 'page':MATCH}, 'n_intervals')],
     [State({'type':'storage', 'page':MATCH}, 'data'),
+     State({'type':'agent-store', 'page':MATCH}, 'data'),
      State({'type':'num-episodes', 'page':MATCH}, 'value'),
-     State('url', 'pathname')]
+     State({'type':'epochs', 'page':MATCH}, 'value'),
+     State({'type':'cycles', 'page':MATCH}, 'value'),
+     State('url', 'pathname')],
+     prevent_initial_call = True,
 )
-    def update_data(n, storage_data, num_episodes, pathname):
+    def update_data(n, storage_data, agent_config, num_episodes, num_epochs, num_cycles, pathname):
         if num_episodes is not None:
             if pathname == '/train-agent':
                 file_name = 'training_data.json'
@@ -2038,14 +2108,12 @@ def register_callbacks(app, shared_data):
             except (FileNotFoundError, json.JSONDecodeError):
                 data = {}  # Use an empty dict if there's an issue reading the file
             
-            #DEBUG
-            # print(f'current data: {storage_data}')
-            # print(f'new data: {data}')
 
             # if the new data dict isn't empty, update storage data
             if data != {}:
-                #DEBUG
-                # print('updating data...')
+                # Need to determine agent type in order to correctly calculate num_episodes and progress
+                if agent_config['agent_type'] == 'HER':
+                    num_episodes = num_epochs * num_cycles * num_episodes
                 storage_data['data'] = data
                 storage_data['progress'] = round(data['episode']/num_episodes, ndigits=2)
                 if storage_data['progress'] == 1.0:

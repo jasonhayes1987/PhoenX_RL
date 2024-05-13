@@ -3,6 +3,10 @@ import json
 import logging
 import subprocess
 
+import random
+import numpy as np
+import torch as T
+
 from rl_agents import load_agent_from_config
 
 # Configure logging
@@ -10,43 +14,56 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def train_agent(config):
     try:
+        
         agent_type = config['agent_type']
         load_weights = config['load_weights']
         num_episodes = config['num_episodes']
         render = config['render']
         render_freq = config['render_freq']
         save_dir = config['save_dir']
+        seed = config['seed']
+        run_number = config['run_number']
+
         # MPI flag
         use_mpi = config.get('use_mpi', False)
+
+        # set seed
+        random.seed(seed)
+        np.random.seed(seed)
+        T.manual_seed(seed)
+        T.cuda.manual_seed(seed)
+
+        print(f'seed: {seed}')
 
         assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
             agent = load_agent_from_config(config, load_weights)
+            print('agent config loaded')
 
-        if agent_type == 'HER':
+            if agent_type == 'HER':
 
-            if use_mpi:
-                num_workers = config['num_workers']
-                # Execute the MPI command for HER agent
-                mpi_command = f"mpirun -np {num_workers} python her_train_mpi.py {sys.argv[1]}"
-                subprocess.run(mpi_command, shell=True, check=True)
+                if use_mpi:
+                    num_workers = config['num_workers']
+                    # Execute the MPI command for HER agent
+                    mpi_command = f"mpirun -np {num_workers} python train_her_mpi.py {sys.argv[1]}"
+                    subprocess.run(mpi_command, shell=True, check=True)
+                
+                else:
+                    num_epochs = config['num_epochs']
+                    num_cycles = config['num_cycles']
+                    num_updates = config['num_updates']
+                    agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir, run_number)
             
             else:
-                num_epochs = config['num_epochs']
-                num_cycles = config['num_cycles']
-                num_updates = config['num_updates']
-                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir)
-        
-        else:
 
-            if use_mpi and agent_type == 'DDPG':
-                num_workers = config['num_workers']
-                mpi_command = f"mpirun -np {num_workers} python train_ddpg.py {sys.argv[1]}"
-                subprocess.run(mpi_command, shell=True, check=True)
-            
-            else:
-                agent.train(num_episodes, render, render_freq, save_dir)
+                if use_mpi and agent_type == 'DDPG':
+                    num_workers = config['num_workers']
+                    mpi_command = f"mpirun -np {num_workers} python train_ddpg_mpi.py {sys.argv[1]}"
+                    subprocess.run(mpi_command, shell=True, check=True)
+                
+                else:
+                    agent.train(num_episodes, render, render_freq)
 
     except KeyError as e:
         logging.error(f"Missing configuration parameter: {str(e)}")

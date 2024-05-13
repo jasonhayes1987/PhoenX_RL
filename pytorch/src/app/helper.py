@@ -2,7 +2,7 @@
 
 # from tensorflow.keras import optimizers
 # from tensorflow import random
-import torch
+import torch as T
 from torch import optim
 from torch.distributions import uniform, normal
 import threading
@@ -107,7 +107,7 @@ class ReplayBuffer(Buffer):
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         
         # set internal attributes
         # get observation space
@@ -201,7 +201,7 @@ class SharedReplayBuffer(Buffer):
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
 
         # self.lock = manager.Lock()
         self.lock = threading.Lock()
@@ -443,9 +443,9 @@ class UniformNoise(Noise):
     def __init__(self, shape, minval=0, maxval=1, device=None):
         super().__init__()
         self.shape = shape
-        self.device = self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.minval = torch.tensor(minval, device=self.device)
-        self.maxval = torch.tensor(maxval, device=self.device)
+        self.device = self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
+        self.minval = T.tensor(minval, device=self.device)
+        self.maxval = T.tensor(maxval, device=self.device)
         
         self.noise_gen = uniform.Uniform(low=self.minval, high=self.maxval)
 
@@ -474,7 +474,7 @@ class NormalNoise:
     def __init__(self, shape, mean=0.0, stddev=1.0, device=None):
         super().__init__()
         self.shape = shape
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         self.mean = np.array(mean, dtype=np.float32)
         self.stddev = np.array(stddev, dtype=np.float32)
 
@@ -483,8 +483,8 @@ class NormalNoise:
 
     def reset_noise_gen(self):
         # Convert numpy mean and stddev to tensors just for noise generation
-        mean_tensor = torch.tensor(self.mean, device=self.device)
-        stddev_tensor = torch.tensor(self.stddev, device=self.device)
+        mean_tensor = T.tensor(self.mean, device=self.device)
+        stddev_tensor = T.tensor(self.stddev, device=self.device)
         self.noise_gen = normal.Normal(loc=mean_tensor, scale=stddev_tensor)
 
     def __call__(self):
@@ -527,26 +527,26 @@ class OUNoise(Noise):
     def __init__(self, shape: tuple, mean: float = 0.0, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2, device=None):
         """Initializes a new Ornstein-Uhlenbeck noise process."""
         super().__init__()
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         self.shape = shape
-        self.mean = torch.tensor(mean, device=self.device)
-        self.mu = torch.ones(self.shape, device=self.device) * self.mean
-        self.theta = torch.tensor(theta, device=self.device)
-        self.sigma = torch.tensor(sigma, device=self.device)
-        self.dt = torch.tensor(dt, device=self.device)
-        self.x_prev = torch.ones(self.shape, device=self.device) * self.mean
+        self.mean = T.tensor(mean, device=self.device)
+        self.mu = T.ones(self.shape, device=self.device) * self.mean
+        self.theta = T.tensor(theta, device=self.device)
+        self.sigma = T.tensor(sigma, device=self.device)
+        self.dt = T.tensor(dt, device=self.device)
+        self.x_prev = T.ones(self.shape, device=self.device) * self.mean
 
     def __call__(self):
         """Samples a new noise vector."""
-        dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * torch.randn(self.shape, device=self.device)
+        dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * T.randn(self.shape, device=self.device)
         x = self.x_prev + dx
         self.x_prev = x
         return x
 
-    def reset(self, mu: torch.tensor = None):
+    def reset(self, mu: T.tensor = None):
         """Resets the noise process."""
-        self.mu = torch.ones(self.shape, device=self.device) * self.mean if mu is None else torch.tensor(mu, device=self.device)
-        self.x_prev = torch.ones(self.shape, device=self.device) * self.mu
+        self.mu = T.ones(self.shape, device=self.device) * self.mean if mu is None else T.tensor(mu, device=self.device)
+        self.x_prev = T.ones(self.shape, device=self.device) * self.mu
 
     def get_config(self):
         return {
@@ -875,7 +875,7 @@ def sync_networks(network):
     comm.Bcast(params)
     idx = 0
     for p in network.parameters():
-        getattr(p, 'data').copy_(torch.tensor(
+        getattr(p, 'data').copy_(T.tensor(
             params[idx:idx + p.data.numel()]).view_as(p.data))
         idx += p.data.numel()
 
@@ -887,7 +887,7 @@ def sync_grads_sum(network):
     comm.Allreduce(grads, global_grads, op=MPI.SUM)
     idx = 0
     for p in network.parameters():
-        getattr(p, 'grad').copy_(torch.tensor(
+        getattr(p, 'grad').copy_(T.tensor(
             global_grads[idx:idx + p.data.numel()]).view_as(p.data))
         idx += p.data.numel()
 
@@ -901,7 +901,7 @@ def sync_grads_avg(network):
     global_grads /= workers
     idx = 0
     for p in network.parameters():
-        getattr(p, 'grad').copy_(torch.tensor(
+        getattr(p, 'grad').copy_(T.tensor(
             global_grads[idx:idx + p.data.numel()]).view_as(p.data))
         idx += p.data.numel()
 

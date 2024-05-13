@@ -7,7 +7,7 @@ from typing import List, Tuple
 from pathlib import Path
 # import time
 
-import torch
+import torch as T
 import torch.nn as nn
 from torch import optim
 
@@ -22,7 +22,7 @@ class Model(nn.Module):
     def __init__(self):
         super().__init__()
         # Set the device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
     def _init_weights(self, module_dict, layer_config):
@@ -210,7 +210,7 @@ class PolicyModel(Model):
         # self.optimizer.learning_rate = self.learning_rate
 
         # # Set the device
-        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # device = T.device("cuda" if T.cuda.is_available() else "cpu")
         # self.device = device
 
         self.dense_layers = nn.ModuleDict()
@@ -346,8 +346,8 @@ class PolicyModel(Model):
         model_dir.mkdir(parents=True, exist_ok=True)
 
         # Save the model parameters
-        torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
         config = self.get_config()
 
@@ -374,7 +374,7 @@ class PolicyModel(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(torch.load(model_path))
+            model.load_state_dict(T.load(model_path))
 
         return model
 
@@ -405,7 +405,7 @@ class ValueModel(Model):
         self.learning_rate = learning_rate
 
         # # Set the device
-        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # device = T.device("cuda" if T.cuda.is_available() else "cpu")
         # self.device = device
 
         self.dense_layers = nn.ModuleDict()
@@ -578,7 +578,7 @@ class ValueModel(Model):
         model_dir.mkdir(parents=True, exist_ok=True)
 
         # Save the model parameters
-        torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
 
         config = {
             "env": self.env.spec.id,
@@ -611,7 +611,7 @@ class ValueModel(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(torch.load(model_path))
+            model.load_state_dict(T.load(model_path))
 
         return model
 
@@ -622,7 +622,7 @@ class ActorModel(Model):
                  optimizer_params:dict={}, learning_rate=0.0001, normalize_layers:bool=False,
                  clamp_output:float=None, device=None):
         super().__init__()
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         self.env = env
         self.layer_config = dense_layers
         self.output_config = output_layer_kernel
@@ -647,7 +647,7 @@ class ActorModel(Model):
         
         # if self.cnn_model:
         #     obs_shape = env.observation_space.shape
-        #     dummy_input = torch.zeros(1, *obs_shape, device=self.device)
+        #     dummy_input = T.zeros(1, *obs_shape, device=self.device)
         #     dummy_input = dummy_input.permute(0, 3, 1, 2)
         #     cnn_output = self.cnn_model(dummy_input)
         #     input_size = cnn_output.view(cnn_output.size(0), -1).shape[1]
@@ -657,7 +657,7 @@ class ActorModel(Model):
         # Adding support for goal
         if self.cnn_model:
             # obs_shape = env.observation_space.shape
-            dummy_input = torch.zeros(1, *self._obs_space_shape, device=self.device)
+            dummy_input = T.zeros(1, *self._obs_space_shape, device=self.device)
             dummy_input = dummy_input.permute(0, 3, 1, 2)
             cnn_output = self.cnn_model(dummy_input)
             cnn_output_size = cnn_output.size(1)
@@ -724,7 +724,7 @@ class ActorModel(Model):
             x = self.cnn_model(x)
 
         if self.goal_shape is not None:
-            x = torch.cat([x, goal], dim=-1)
+            x = T.cat([x, goal], dim=-1)
 
         for layer in self.dense_layers.values():
             x = layer(x)
@@ -737,12 +737,12 @@ class ActorModel(Model):
         
         if self.clamp_output is not None:
             # print('clamp output fired...')
-            pi = torch.clamp(pi * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device), -self.clamp_output, self.clamp_output)
+            pi = T.clamp(pi * T.tensor(self.env.action_space.high, dtype=T.float32, device=self.device), -self.clamp_output, self.clamp_output)
             # print(f'pi: {pi}')
             return mu, pi
         
         # print('unclamped output fired')
-        pi = pi * torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.device)
+        pi = pi * T.tensor(self.env.action_space.high, dtype=T.float32, device=self.device)
         # print(f'pi: {pi}')
         return mu, pi
 
@@ -793,8 +793,8 @@ class ActorModel(Model):
         model_dir.mkdir(parents=True, exist_ok=True)
 
         # Save the model parameters
-        torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
         config = self.get_config()
 
@@ -830,7 +830,7 @@ class ActorModel(Model):
         
         # Load weights if True
         if load_weights:
-            actor_model.load_state_dict(torch.load(model_path))
+            actor_model.load_state_dict(T.load(model_path))
 
         return actor_model
 
@@ -840,7 +840,7 @@ class CriticModel(Model):
                  goal_shape:tuple=None, optimizer: str = 'Adam', optimizer_params:dict={},
                  learning_rate=0.001, normalize_layers:bool=False, device=None):
         super().__init__()
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         self.env = env
         self.cnn_model = cnn_model
         self.state_config = state_layers
@@ -867,7 +867,7 @@ class CriticModel(Model):
         # Adding support for goal
         if self.cnn_model:
             # obs_shape = env.observation_space.shape
-            dummy_input = torch.zeros(1, *self._obs_space_shape, device=self.device)
+            dummy_input = T.zeros(1, *self._obs_space_shape, device=self.device)
             dummy_input = dummy_input.permute(0, 3, 1, 2)
             cnn_output = self.cnn_model(dummy_input)
             cnn_output_size = cnn_output.size(1)
@@ -954,12 +954,12 @@ class CriticModel(Model):
         #     state = state.view(state.size(0), -1)  # Flatten state input if not using a cnn_model
 
         if self.goal_shape is not None:
-            state = torch.cat([state, goal], dim=-1)
+            state = T.cat([state, goal], dim=-1)
 
         for layer in self.state_layers.values():
             state = layer(state)
 
-        merged = torch.cat([state, action], dim=-1)
+        merged = T.cat([state, action], dim=-1)
         for layer in self.merged_layers.values():
             merged = layer(merged)
 
@@ -1022,8 +1022,8 @@ class CriticModel(Model):
         model_dir.mkdir(parents=True, exist_ok=True)
 
         # Save the model parameters
-        torch.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        torch.save(self.state_dict(), model_dir / 'pytorch_model.pt')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
         config = self.get_config()
 
@@ -1059,7 +1059,7 @@ class CriticModel(Model):
         
         # Load weights if True
         if load_weights:
-            model.load_state_dict(torch.load(model_path))
+            model.load_state_dict(T.load(model_path))
 
         return model
 
