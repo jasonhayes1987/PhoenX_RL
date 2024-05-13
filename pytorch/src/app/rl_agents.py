@@ -23,7 +23,7 @@ from helper import Buffer, ReplayBuffer, SharedReplayBuffer, Normalizer, SharedN
 import dash_callbacks
 import gym_helper
 
-import torch
+import torch as T
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
@@ -79,7 +79,7 @@ class ActorCritic(Agent):
     ):
         
         # Set the device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
         self.env = env
@@ -169,18 +169,18 @@ class ActorCritic(Agent):
 
     def _set_traces(self):
         for weights in self.policy_model.parameters():
-            self.policy_trace.append(torch.zeros_like(weights, device=self.device))
+            self.policy_trace.append(T.zeros_like(weights, device=self.device))
             #DEBUG
             print(f'policy trace shape: {weights.size()}')
 
         for weights in self.value_model.parameters():
-            self.value_trace.append(torch.zeros_like(weights, device=self.device))
+            self.value_trace.append(T.zeros_like(weights, device=self.device))
             #DEBUG
             print(f'value trace shape: {weights.size()}')
 
 
     def _update_traces(self):
-        with torch.no_grad():
+        with T.no_grad():
             for i, weights in enumerate(self.policy_model.parameters()):
                 self.policy_trace[i] = (
                     self.discount * self.policy_trace_decay * self.policy_trace[i]
@@ -191,11 +191,11 @@ class ActorCritic(Agent):
 
         # log to train step
         for i, (v_trace, p_trace) in enumerate(zip(self.value_trace, self.policy_trace)):
-            self._train_step_config[f"value trace {i}"] = torch.histc(v_trace, bins=20)
-            self._train_step_config[f"policy trace {i}"] = torch.histc(p_trace, bins=20)
+            self._train_step_config[f"value trace {i}"] = T.histc(v_trace, bins=20)
+            self._train_step_config[f"policy trace {i}"] = T.histc(p_trace, bins=20)
 
     def get_action(self, state):
-        state =  torch.from_numpy(state).to(self.device)
+        state =  T.from_numpy(state).to(self.device)
         logits = self.policy_model(state)
         self.probabilities = F.softmax(logits, dim=-1)
         probabilities_dist = Categorical(probs=self.probabilities)
@@ -204,7 +204,7 @@ class ActorCritic(Agent):
         
         return action.item()
 
-    def train(self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
+    def train(self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None, run_number=None):
         """Trains the model for 'episodes' number of episodes."""
         # set models to train mode
         self.policy_model.train()
@@ -215,7 +215,7 @@ class ActorCritic(Agent):
         if self.callbacks:
             for callback in self.callbacks:
                 if isinstance(callback, rl_callbacks.WandbCallback):
-                    callback.on_train_begin((self.policy_model, self.value_model,), logs=self._config)
+                    callback.on_train_begin((self.policy_model, self.value_model,), logs=self._config, run_number=run_number)
 
                 else:
                     callback.on_train_begin(logs=self._config)
@@ -285,10 +285,10 @@ class ActorCritic(Agent):
         self.policy_model.optimizer.zero_grad()
         self.value_model.optimizer.zero_grad()
 
-        state = torch.tensor(state, device=self.device)
-        reward = torch.tensor(reward, device=self.device)
-        next_state = torch.tensor(next_state, device=self.device)
-        done = torch.tensor(done, device=self.device, dtype=torch.float32)
+        state = T.tensor(state, device=self.device)
+        reward = T.tensor(reward, device=self.device)
+        next_state = T.tensor(next_state, device=self.device)
+        done = T.tensor(done, device=self.device, dtype=T.float32)
 
         state_value = self.value_model(state)
         next_state_value = self.value_model(next_state)
@@ -304,7 +304,7 @@ class ActorCritic(Agent):
         self._update_traces()
 
         #copy traces to weight gradients
-        with torch.no_grad():
+        with T.no_grad():
             for i, weights in enumerate(self.policy_model.parameters()):
                 weights.grad = self.policy_trace[i]
 
@@ -455,7 +455,7 @@ class Reinforce(Agent):
         save_dir: str = "models/",
     ):
         # Set the device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
         self.env = env
@@ -537,14 +537,14 @@ class Reinforce(Agent):
         """Compute expected returns per timestep."""
 
         returns = []
-        discounted_sum = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        discounted_sum = T.tensor(0.0, dtype=T.float32, device=self.device)
         for reward in reversed(rewards):
             discounted_sum = reward + self.discount * discounted_sum
             returns.append(discounted_sum)
-        return torch.tensor(returns[::-1], dtype=torch.float32, device=self.device)
+        return T.tensor(returns[::-1], dtype=T.float32, device=self.device)
 
     def get_action(self, state):
-        state =  torch.from_numpy(state).to(self.device)
+        state =  T.from_numpy(state).to(self.device)
         logits = self.policy_model(state)
         probabilities = F.softmax(logits, dim=-1)
         probabilities_dist = Categorical(probs=probabilities)
@@ -562,8 +562,8 @@ class Reinforce(Agent):
         self.value_model.optimizer.zero_grad()
 
         # convert to tensors
-        states = torch.tensor(states, dtype=torch.float32, device=self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+        states = T.tensor(states, dtype=T.float32, device=self.device)
+        rewards = T.tensor(rewards, dtype=T.float32, device=self.device)
         returns = self.get_return(rewards)
         
         policy_loss = 0
@@ -605,7 +605,7 @@ class Reinforce(Agent):
         self.value_model.optimizer.step()
 
 
-    def train(self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
+    def train(self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None, run_number=None):
         """Trains the model for 'episodes' number of episodes."""
 
         # set models to train mode
@@ -619,7 +619,7 @@ class Reinforce(Agent):
         if self.callbacks:
             for callback in self.callbacks:
                 if isinstance(callback, rl_callbacks.WandbCallback):
-                    callback.on_train_begin((self.policy_model, self.value_model,), logs=self._config)
+                    callback.on_train_begin((self.policy_model, self.value_model,), logs=self._config, run_number=run_number)
         
         # instantiate new environment
         self.env = self._initialize_env(render, render_freq, 'train')
@@ -842,7 +842,6 @@ class DDPG(Agent):
         normalizer_eps:float=0.01,
         callbacks: List = [],
         save_dir: str = "models",
-        _DEBUG: bool = False
     ):
         self.env = env
         self.actor_model = actor_model
@@ -870,8 +869,11 @@ class DDPG(Agent):
         if self.normalize_inputs:
             self.state_normalizer = helper.Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip)
         
-        self.save_dir = save_dir + "/ddpg/"
-        self._DEBUG = _DEBUG
+        # self.save_dir = save_dir + "/ddpg/"
+        if save_dir is not None and "/ddpg/" not in save_dir:
+                self.save_dir = save_dir + "/ddpg/"
+        elif save_dir is not None and "/ddpg/" in save_dir:
+                self.save_dir = save_dir
 
         # instantiate internal attribute use_her to be switched by HER class if using DDPG
         self._use_her = False
@@ -1080,30 +1082,35 @@ class DDPG(Agent):
         # check if get action is for testing
         if test:
             # print(f'action test fired')
-            with torch.no_grad():
+            with T.no_grad():
                 # print('no grad fired')
                 # normalize state if self.normalize_inputs
                 if self.normalize_inputs:
                     state = self.state_normalizer.normalize(state)
                 # (HER) else if using HER, normalize using passed normalizer
                 elif self._use_her:
+                    #DEBUG
+                    print('used passed state normalizer')
                     state = state_normalizer.normalize(state)
 
                 # make sure state is a tensor and on correct device
-                state = torch.tensor(state, dtype=torch.float32, device=self.actor_model.device)
+                state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
                 
                 # (HER) normalize goal if self._use_her using passed normalizer
                 if self._use_her:
                     goal = goal_normalizer.normalize(goal)
                     # make sure goal is a tensor and on correct device
-                    goal = torch.tensor(goal, dtype=torch.float32, device=self.actor_model.device)
+                    goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
+                    #DEBUG
+                    print('used passed goal normalizer')
                 
                 # permute state to (C,H,W) if actor using cnn model
                 if self.actor_model.cnn_model:
                     state = state.permute(2, 0, 1).unsqueeze(0)
 
                 # get action
-                _, action = self.actor_model(state, goal)
+                # _, action = self.actor_model(state, goal)
+                _, action = self.target_actor_model(state, goal) # use target network for testing
                 # transfer action to cpu, detach from any graphs, tranform to numpy, and flatten
                 action_np = action.cpu().detach().numpy().flatten()
         
@@ -1128,14 +1135,14 @@ class DDPG(Agent):
                         state = state_normalizer.normalize(state)
                     
                     # make sure state is a tensor and on correct device
-                    state = torch.tensor(state, dtype=torch.float32, device=self.actor_model.device)
+                    state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
                     
                     # (HER) normalize goal if self._use_her using passed normalizer
                     if self._use_her:
                         goal = goal_normalizer.normalize(goal)
                         # print(f'normalized goal: {goal}')
                         # make sure goal is a tensor and on correct device
-                        goal = torch.tensor(goal, dtype=torch.float32, device=self.actor_model.device)
+                        goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
 
                     # permute state to (C,H,W) if actor using cnn model
                     if self.actor_model.cnn_model:
@@ -1147,8 +1154,8 @@ class DDPG(Agent):
                     # print(f'noise: {noise}')
 
                     # Convert the action space bounds to a tensor on the same device
-                    action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
-                    action_space_low = torch.tensor(self.env.action_space.low, dtype=torch.float32, device=self.actor_model.device)
+                    action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+                    action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
 
                     action = (pi + noise).clip(action_space_low, action_space_high)
                     # print(f'action + noise: {action}')
@@ -1158,7 +1165,7 @@ class DDPG(Agent):
                     # print(f'action np: {action_np}')
 
                 else:
-                    with torch.no_grad():
+                    with T.no_grad():
                         # print('without grad fired')
                         # normalize state if self.normalize_inputs
                         if self.normalize_inputs:
@@ -1168,12 +1175,12 @@ class DDPG(Agent):
                             state = state_normalizer.normalize(state)
 
                         # make sure state is a tensor and on correct device
-                        state = torch.tensor(state, dtype=torch.float32, device=self.actor_model.device)
+                        state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
                         # normalize goal if self._use_her
                         if self._use_her:
                             goal = goal_normalizer.normalize(goal)
                             # make sure goal is a tensor and on correct device
-                            goal = torch.tensor(goal, dtype=torch.float32, device=self.actor_model.device)
+                            goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                         
                         # permute state to (C,H,W) if actor using cnn model
                         if self.actor_model.cnn_model:
@@ -1183,8 +1190,8 @@ class DDPG(Agent):
                         noise = self.noise()
 
                         # Convert the action space bounds to a tensor on the same device
-                        action_space_high = torch.tensor(self.env.action_space.high, dtype=torch.float32, device=self.actor_model.device)
-                        action_space_low = torch.tensor(self.env.action_space.low, dtype=torch.float32, device=self.actor_model.device)
+                        action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+                        action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
 
                         action = (pi + noise).clip(action_space_low, action_space_high)
 
@@ -1252,14 +1259,14 @@ class DDPG(Agent):
         #     print(f'desired_goals: {desired_goals}')
         
         # Convert to tensors
-        states = torch.tensor(states, dtype=torch.float32, device=self.actor_model.device)
-        actions = torch.tensor(actions, dtype=torch.float32, device=self.actor_model.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.actor_model.device)
-        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.actor_model.device)
-        dones = torch.tensor(dones, dtype=torch.int8, device=self.actor_model.device)
+        states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
+        actions = T.tensor(actions, dtype=T.float32, device=self.actor_model.device)
+        rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
+        next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
+        dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
         # if using HER, convert desired goals to tensors
         if self._use_her:
-            desired_goals = torch.tensor(desired_goals, dtype=torch.float32, device=self.actor_model.device)
+            desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
         else:
             # set desired goals to None
             desired_goals = None
@@ -1280,9 +1287,9 @@ class DDPG(Agent):
         # print(f'Agent {dist.get_rank()}: target_critic_values: {target_critic_values}')
         targets = rewards + self.discount * target_critic_values# * (1 - dones)
         # if self.normalizer_clip:
-        #     targets = torch.clamp(targets, min=-self.normalizer_clip, max=self.normalizer_clip)
+        #     targets = T.clamp(targets, min=-self.normalizer_clip, max=self.normalizer_clip)
         if self._use_her:
-            targets = torch.clamp(targets, min=-1/(1-self.discount), max=0)
+            targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
 
         # get current critic values and calculate critic loss
         prediction = self.critic_model(states, actions, desired_goals)
@@ -1294,7 +1301,7 @@ class DDPG(Agent):
         if self._use_her:
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached critic optimization')
             # Synchronize gradients
-            ## TORCH.DIST CUDA ##
+            ## T.DIST CUDA ##
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
             # for param in self.critic_model.parameters():
             #     if param.grad is not None:
@@ -1329,7 +1336,7 @@ class DDPG(Agent):
         actor_loss.backward()
         if self._use_her:
             # Synchronize Gradients
-            ## TORCH.DIST CUDA ##
+            ## T.DIST CUDA ##
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached actor optimization')
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
             # for param in self.actor_model.parameters():
@@ -1363,25 +1370,30 @@ class DDPG(Agent):
         
     
     def soft_update(self, current, target):
-        with torch.no_grad():
+        with T.no_grad():
             for current_params, target_params in zip(current.parameters(), target.parameters()):
                 target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
 
 
     def train(
-        self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
+        self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None, run_number=None):
         """Trains the model for 'episodes' number of episodes."""
 
         # set models to train mode
         self.actor_model.train()
         self.critic_model.train()
 
-        if save_dir:
+        if save_dir is not None and save_dir.split("/")[-2] != "ddpg":
+            self.save_dir = save_dir + "/ddpg/"
+            print(f'new save dir: {self.save_dir}')
+        elif save_dir is not None and save_dir.split("/")[-2] == "ddpg":
             self.save_dir = save_dir
+            print(f'new save dir: {self.save_dir}')
+        
         if self.callbacks:
             for callback in self.callbacks:
                 if isinstance(callback, rl_callbacks.WandbCallback):
-                    callback.on_train_begin((self.critic_model, self.actor_model,), logs=self._config)
+                    callback.on_train_begin((self.critic_model, self.actor_model,), logs=self._config, run_number=run_number)
 
                 else:
                     callback.on_train_begin(logs=self._config)
@@ -1510,7 +1522,7 @@ class DDPG(Agent):
 
         self._step = 1
         # set the model to calculate no gradients during evaluation
-        with torch.no_grad():
+        with T.no_grad():
             for i in range(num_episodes):
                 if self.callbacks:
                     for callback in self.callbacks:
@@ -1580,8 +1592,8 @@ class DDPG(Agent):
         """Saves the model."""
 
         # Change self.save_dir if save_dir
-        if save_dir:
-            self.save_dir = save_dir + "/ddpg/"
+        # if save_dir is not None:
+        #     self.save_dir = save_dir + "/ddpg/"
 
         config = self.get_config()
 
@@ -1619,9 +1631,12 @@ class DDPG(Agent):
         actor_model = models.ActorModel.load(config['save_dir'], load_weights)
         # load value model
         critic_model = models.CriticModel.load(config['save_dir'], load_weights)
-        # load replay buffer
-        config['replay_buffer']['config']['env'] = gym.make(config['env'])
-        replay_buffer = helper.ReplayBuffer(**config["replay_buffer"]["config"])
+        # load replay buffer if not None
+        if config['replay_buffer'] is not None:
+            config['replay_buffer']['config']['env'] = gym.make(config['env'])
+            replay_buffer = helper.ReplayBuffer(**config["replay_buffer"]["config"])
+        else:
+            replay_buffer = None
         # load noise
         noise = helper.Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
         # if normalizer, load
@@ -1672,10 +1687,19 @@ class HER(Agent):
         self.normalizer_eps = normalizer_eps
         self.replay_buffer_size = replay_buffer_size
         self.device = device
-        self.save_dir = save_dir + "/her/"
-        # change save dir of agent to be in save dir of HER
-        agent_name = self.agent.save_dir.split("/")[-2]
-        self.agent.save_dir = self.save_dir + "/" + agent_name + "/"
+        if save_dir is not None and "/her/" not in save_dir:
+            self.save_dir = save_dir + "/her/"
+            # change save dir of agent to be in save dir of HER
+            agent_name = self.agent.save_dir.split("/")[-2]
+            #DEBUG
+            print(f'agent name: {agent_name}')
+            self.agent.save_dir = self.save_dir + agent_name + "/"
+            print(f'new save dir: {self.agent.save_dir}')
+        elif save_dir is not None and "her" in save_dir:
+            self.save_dir = save_dir
+            # change save dir of agent to be in save dir of HER
+            agent_name = self.agent.save_dir.split("/")[-2]
+            self.agent.save_dir = self.save_dir + agent_name + "/"
 
         # update callback configs b/c changed save_dir
         if self.agent.callbacks:
@@ -1706,7 +1730,7 @@ class HER(Agent):
         # if hasattr(self.agent.env, "distance_threshold"):
         self.agent.env.__setattr__("distance_threshold", self.tolerance)
 
-        ## TORCH.DIST for CUDA ##
+        ## T.DIST for CUDA ##
         # Capture the actor and critic state_dicts to pass to worker agents models
         # self._actor_params = [value.cpu().numpy() for key, value in self.agent.actor_model.state_dict().items()]
         # self._critic_params = [value.cpu().numpy() for key, value in self.agent.critic_model.state_dict().items()]
@@ -1894,7 +1918,7 @@ class HER(Agent):
     
     # def numpy_to_model(self, model, numpy_params):
     #     for param, numpy_data in zip(model.parameters(), numpy_params):
-    #         param.data.copy_(torch.from_numpy(numpy_data).to(param.device))
+    #         param.data.copy_(T.from_numpy(numpy_data).to(param.device))
         
     ## TRAIN METHOD FOR TORCH DIST CUDA ##
     # def train(self, epochs:int=10, num_cycles:int=50, num_episodes:int=16, num_updates:int=40, num_workers:int=4, render:bool=False, render_freq:int=10, save_dir: str = None):
@@ -1921,15 +1945,31 @@ class HER(Agent):
     #     os.environ['MASTER_PORT'] = '12355'
     #     dist.init_process_group("gloo", rank=rank, world_size=self.num_workers)
     #     # Set device to the single GPU available
-    #     torch.cuda.set_device(0)
+    #     T.cuda.set_device(0)
     #     print(f"Process {rank+1} out of {self.num_workers} is initialized.")
 
     def train(self, num_epochs:int, num_cycles:int, num_episodes:int, num_updates:int,
-              render:bool, render_freq:int, save_dir:str=None):
+              render:bool, render_freq:int, save_dir=None, run_number=None):
 
+        if save_dir is not None and save_dir.split("/")[-2] != "her":
+            self.save_dir = save_dir + "/her/"
+            # change save dir of agent to be in save dir of HER
+            agent_name = self.agent.save_dir.split("/")[-2]
+            #DEBUG
+            print(f'agent name: {agent_name}')
+            self.agent.save_dir = self.save_dir + agent_name + "/"
+            print(f'new save dir: {self.agent.save_dir}')
+        elif save_dir is not None and save_dir.split("/")[-2] == "her":
+            self.save_dir = save_dir
+            # change save dir of agent to be in save dir of HER
+            agent_name = self.agent.save_dir.split("/")[-2]
+            self.agent.save_dir = self.save_dir + agent_name + "/"
+        
         # set models to train mode
         self.agent.actor_model.train()
         self.agent.critic_model.train()
+        self.agent.target_actor_model.train()
+        self.agent.target_critic_model.train()
 
         # Add train config setting to wandb config
         self.agent._config['num epochs'] = num_epochs
@@ -1945,7 +1985,7 @@ class HER(Agent):
                     if isinstance(callback, rl_callbacks.WandbCallback):
                         # print(f'agent {rank} config:')
                         # print(agent._config)
-                        callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config)
+                        callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config, run_number=run_number)
                         # print('on train begin callback fired')
                     else:
                         callback.on_train_begin(logs=self.agent._config)
@@ -2262,7 +2302,7 @@ class HER(Agent):
 
         
 
-    #     # torch.cuda.set_device(self.device)
+    #     # T.cuda.set_device(self.device)
     #     # agent.actor_model.to(self.device)
     #     # agent.critic_model.to(self.device)
     #     # set models to train mode
@@ -2576,45 +2616,45 @@ class HER(Agent):
         # set model in eval mode
         self.agent.actor_model.eval()
         self.agent.critic_model.eval()
+        self.agent.target_actor_model.eval()
+        self.agent.target_critic_model.eval()
 
         if self.agent.callbacks:
             for callback in self.agent.callbacks:
                 callback.on_test_begin(logs=self.agent._config)
+                #DEBUG
+                print('on test begin callback called...')
 
         # instantiate new environment
         self.agent.env = self.agent._initialize_env(render, render_freq, context='test')
 
         # instantiate list to store reward, step time, and episode time history
         reward_history = []
-        step_time_history = []
         self._step = 1
+        success_counter = 0.0
         # set the model to calculate no gradients during evaluation
-        with torch.no_grad():
+        with T.no_grad():
             for i in range(num_episodes):
                 if self.agent.callbacks:
                     for callback in self.agent.callbacks:
-                        callback.on_test_epoch_begin(epoch=self._step, logs=None) # update to pass any logs if needed
+                        callback.on_test_epoch_begin(epoch=self._step, logs=None)
 
                 state, _ = self.agent.env.reset()
+                if isinstance(state, dict): # if state is a dict, extract observation (robotics)
+                    state = state["observation"]
                 # set desired goal
                 desired_goal = self.desired_goal_func(self.agent.env)
                 done = False
                 episode_reward = 0
                 while not done:
-                    # start step timer
-                    step_start_time = time.time()
-                    # get normalized values for state and desired goal
-                    state = self.agent.state_normalizer.normalize(state)
-                    desired_goal = self.agent.goal_normalizer.normalize(desired_goal)
                     # get action
-                    action = self.agent.get_action(state, desired_goal, grad=False, test=True)
+                    action = self.agent.get_action(state, desired_goal, grad=False, test=True,
+                                                   state_normalizer=self.state_normalizer,
+                                                   goal_normalizer=self.goal_normalizer)
                     next_state, reward, term, trunc, _ = self.agent.env.step(action)
                     # extract observation from next state if next_state is dict (robotics)
                     if isinstance(next_state, dict):
                         next_state = next_state['observation']
-                    # calculate and log step time
-                    step_time = time.time() - step_start_time
-                    step_time_history.append(step_time)
                     if term or trunc:
                         done = True
                     episode_reward += reward
@@ -2623,13 +2663,20 @@ class HER(Agent):
 
                 reward_history.append(episode_reward)
                 avg_reward = np.mean(reward_history[-100:])
-                self.agent._test_episode_config["episode_reward"] = episode_reward
-                self.agent._test_episode_config["avg_reward"] = avg_reward
+                self.agent._test_episode_config["episode reward"] = episode_reward
+                self.agent._test_episode_config["avg reward"] = avg_reward
+                # calculate success rate
+                goal_distance = np.linalg.norm(self.achieved_goal_func(self.agent.env) - desired_goal, axis=-1)
+                success = (goal_distance <= self.tolerance).astype(np.float32)
+                success_counter += success
+                success_perc = success_counter / (i+1)
+                # store success rate to train episode config
+                self.agent._test_episode_config["success rate"] = success_perc
                 if self.agent.callbacks:
                     for callback in self.agent.callbacks:
                         callback.on_test_epoch_end(epoch=self._step, logs=self.agent._test_episode_config)
 
-                print(f"episode {i+1}, score {episode_reward}, avg_score {avg_reward}")
+                print(f"episode {i+1}, score {episode_reward}, avg_score {avg_reward}, success {success_perc}")
 
             if self.agent.callbacks:
                 for callback in self.agent.callbacks:
@@ -2716,7 +2763,7 @@ class HER(Agent):
     #     self.replay_buffer.cleanup()
     #     self.state_normalizer.cleanup()
     #     self.goal_normalizer.cleanup()
-    #     torch.cuda.empty_cache()
+    #     T.cuda.empty_cache()
     #     if dist.is_initialized():
     #         dist.destroy_process_group()
     #         print("Process group destroyed")
@@ -2747,12 +2794,13 @@ class HER(Agent):
 
         return config
     
-    def save(self, save_dir=None):
+    def save(self):
         """Saves the model."""
 
-        # Change self.save_dir if save_dir
-        if save_dir:
-            self.save_dir = save_dir + "/her/"
+        # Change self.save_dir if save_dir 
+        # if save_dir is not None:
+        #     self.save_dir = save_dir + "/her/"
+        #     print(f'new save dir: {self.save_dir}')
 
         config = self.get_config()
 
@@ -2764,10 +2812,11 @@ class HER(Agent):
             json.dump(config, f)
 
         # save agent
-        if save_dir:
-            self.agent.save(self.save_dir)
-        else:
-            self.agent.save()
+        # if save_dir is not None:
+        #     self.agent.save(self.save_dir)
+        #     print(f'new agent save dir: {self.agent.save_dir}')
+        # else:
+        self.agent.save()
 
         self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
         self.goal_normalizer.save_state(self.save_dir + "goal_normalizer.npz")
