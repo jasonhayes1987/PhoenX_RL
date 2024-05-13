@@ -1,3 +1,4 @@
+import os
 import json
 import requests
 
@@ -70,19 +71,20 @@ class WandbCallback(Callback):
         self.chkpt_freq = chkpt_freq
         # self._ckpt_counter = 1
 
-    def on_train_begin(self, models, logs=None):
+    def on_train_begin(self, models, logs=None, run_number=None):
         """Initializes W&B run for training."""
         ##DEBUG
         # print(f"WANDB on_train_begin called: {self.model_type}")
 
         if not self._sweep:
-            next_run_number = wandb_support.get_next_run_number(self.project_name)
+            if run_number is None:
+                run_number = wandb_support.get_next_run_number(self.project_name)
 
             wandb.init(
                 project=self.project_name,
-                name=f"train-{next_run_number}",
+                name=f"train-{run_number}",
                 tags=["train", self.model_type],
-                group=f"group-{next_run_number}",
+                group=f"group-{run_number}",
                 job_type="train",
                 config=logs,
             )
@@ -118,10 +120,12 @@ class WandbCallback(Callback):
 
         wandb.log(logs, step=step)
 
-    def on_test_begin(self, logs=None):
+    def on_test_begin(self, logs=None, run_number=None):
         """Initializes W&B run for testing."""
 
-        run_number = wandb_support.get_run_number_from_name(self.run_name)
+        if run_number is None:
+            run_number = wandb_support.get_run_number_from_name(self.run_name)
+        
         wandb.init(
             project=self.project_name,
             job_type="test",
@@ -142,6 +146,7 @@ class WandbCallback(Callback):
 
     def on_test_epoch_end(self, epoch, logs=None):
         """Finishes W&B run for epoch."""
+        wandb.log(logs, step=epoch)
 
     def on_test_step_begin(self, step, logs=None):
         """Initializes W&B run for testing batch."""
@@ -255,6 +260,7 @@ class DashCallback(Callback):
 
         try:
             # write logs to json file to be loaded into Dash app for updating status
+            os.makedirs("assets", exist_ok=True)
             with open("assets/training_data.json", 'w') as f:
                 json.dump(logs, f)
         except Exception as e:

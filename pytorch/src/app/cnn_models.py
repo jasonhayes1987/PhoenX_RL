@@ -11,7 +11,7 @@ class CNN(nn.Module):
         self.env = env
 
         # Set the device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
         
         # Instantiate empty ModuleDict to hold CNN layers

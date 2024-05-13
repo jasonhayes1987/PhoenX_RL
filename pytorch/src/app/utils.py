@@ -505,6 +505,8 @@ def load(agent_data, env_name):
             callbacks = [rl_callbacks.load(callback['class_name'], callback['config']) for callback in agent_data['callbacks']],
             save_dir=agent_data['save_dir'],
         )
+
+        #TODO: ADD IF HER
     
     return agent
 
@@ -937,6 +939,16 @@ def run_agent_settings_component(page, agent_type=None):
         ),
         dcc.Checklist(
             options=[
+                {'label': 'Load Weights', 'value': True}
+            ],
+            id={
+                'type': 'load-weights',
+                'page': page,
+            },
+            value=[True]
+        ),
+        dcc.Checklist(
+            options=[
                 {'label': 'Render Episodes', 'value': 'RENDER'}
             ],
             id={
@@ -954,6 +966,24 @@ def run_agent_settings_component(page, agent_type=None):
             placeholder="Every 'n' Episodes",
             min=1,
             disabled=True,
+        ),
+        dcc.Input(
+            id={
+                'type': 'seed',
+                'page': page,
+            },
+            type='number',
+            placeholder="Random Seed",
+            min=1,
+        ),
+        dcc.Input(
+            id={
+                'type': 'run-number',
+                'page': page,
+            },
+            type='number',
+            placeholder="WANDB Run Number (blank for None)",
+            min=1,
         ),
         
         html.Div(
@@ -1211,10 +1241,10 @@ def create_uniform_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=0.01,
+                min=-0.99,
                 max=0.99,
-                step=0.01,
-                value=0.99,  # Default position
+                step=0.001,
+                value=-0.99,  # Default position
             ),
 
             html.Label('Maximum', style={'text-decoration': 'underline'}),
@@ -1225,9 +1255,10 @@ def create_uniform_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=0.01,
+                min=-0.99,
                 max=0.99,
-                step=0.01,
+                step=0.001,
+                value=0.99
             ),
             html.Hr(),
     ])

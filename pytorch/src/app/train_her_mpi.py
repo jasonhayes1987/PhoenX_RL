@@ -18,12 +18,13 @@ def train_agent(config):
         render = config['render']
         render_freq = config['render_freq']
         save_dir = config['save_dir']
+        run_number = config['run_number']
 
         assert agent_type == 'HER', f"Unsupported agent type: {agent_type}"
 
         if agent_type:
             agent = HER.load(config, load_weights)
-            agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir)
+            agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir, run_number)
 
     except KeyError as e:
         logging.error(f"Missing configuration parameter: {str(e)}")
