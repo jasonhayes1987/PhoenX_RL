@@ -1,6 +1,8 @@
 import sys
 import json
+import time
 import logging
+import argparse
 import subprocess
 
 import random
@@ -12,20 +14,32 @@ from rl_agents import load_agent_from_config
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def train_agent(config):
+parser = argparse.ArgumentParser(description='Train Agent')
+parser.add_argument('--agent_config', type=str, required=True, help='Path to the agent configuration file')
+parser.add_argument('--train_config', type=str, required=True, help='Path to the train configuration file')
+
+args = parser.parse_args()
+
+agent_config_path = args.agent_config
+train_config_path = args.train_config
+
+def train_agent(agent_config, train_config):
     try:
         
-        agent_type = config['agent_type']
-        load_weights = config['load_weights']
-        num_episodes = config['num_episodes']
-        render = config['render']
-        render_freq = config['render_freq']
-        save_dir = config['save_dir']
-        seed = config['seed']
-        run_number = config['run_number']
+        agent_type = agent_config['agent_type']
+        load_weights = train_config['load_weights']
+        num_episodes = train_config['num_episodes']
+        render = train_config['render']
+        render_freq = train_config['render_freq']
+        save_dir = agent_config['save_dir'] if train_config['save_dir'] is None else train_config['save_dir']
+        #DEBUG
+        print(f'training save dir: {save_dir}')
+        seed = train_config['seed']
+        run_number = train_config['run_number']
+        num_runs = train_config['num_runs']
 
         # MPI flag
-        use_mpi = config.get('use_mpi', False)
+        use_mpi = train_config.get('use_mpi', False)
 
         # set seed
         random.seed(seed)
@@ -38,32 +52,41 @@ def train_agent(config):
         assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
-            agent = load_agent_from_config(config, load_weights)
+            agent = load_agent_from_config(agent_config, load_weights)
             print('agent config loaded')
 
             if agent_type == 'HER':
 
                 if use_mpi:
-                    num_workers = config['num_workers']
+                    num_workers = train_config['num_workers']
                     # Execute the MPI command for HER agent
-                    mpi_command = f"mpirun -np {num_workers} python train_her_mpi.py {sys.argv[1]}"
-                    subprocess.run(mpi_command, shell=True, check=True)
+                    mpi_command = f"mpirun -np {num_workers} python train_her_mpi.py --agent_config {agent_config_path} --train_config {train_config_path}"
+                    for i in range(num_runs):
+                        subprocess.Popen(mpi_command, shell=True)
+                        print(f'training run {i+1} initiated')
+                        # time.sleep(5)
                 
                 else:
-                    num_epochs = config['num_epochs']
-                    num_cycles = config['num_cycles']
-                    num_updates = config['num_updates']
-                    agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir, run_number)
+                    num_epochs = agent_config['num_epochs']
+                    num_cycles = agent_config['num_cycles']
+                    num_updates = agent_config['num_updates']
+                    for i in range(num_runs):
+                        agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir, run_number)
+                        print(f'training run {i+1} initiated')
             
             else:
 
                 if use_mpi and agent_type == 'DDPG':
-                    num_workers = config['num_workers']
-                    mpi_command = f"mpirun -np {num_workers} python train_ddpg_mpi.py {sys.argv[1]}"
-                    subprocess.run(mpi_command, shell=True, check=True)
+                    num_workers = train_config['num_workers']
+                    mpi_command = f"mpirun -np {num_workers} python train_ddpg_mpi.py --agent_config {agent_config_path} --train_config {train_config_path}"
+                    for i in range(num_runs):
+                        subprocess.Popen(mpi_command, shell=True)
+                        print(f'training run {i+1} initiated')
                 
                 else:
-                    agent.train(num_episodes, render, render_freq)
+                    for i in range(num_runs):
+                        agent.train(num_episodes, render, render_freq)
+                        print(f'training run {i+1} initiated')
 
     except KeyError as e:
         logging.error(f"Missing configuration parameter: {str(e)}")
@@ -78,20 +101,17 @@ def train_agent(config):
         raise
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        config_path = sys.argv[1]
+    try:
+        with open(agent_config_path, 'r', encoding="utf-8") as f:
+            agent_config = json.load(f)
 
-        try:
-            with open(config_path, 'r', encoding="utf-8") as f:
-                config = json.load(f)
+        with open(train_config_path, 'r', encoding="utf-8") as f:
+            train_config = json.load(f)
 
-            train_agent(config)
+        train_agent(agent_config, train_config)
 
-        except FileNotFoundError:
-            logging.error(f"Configuration file not found: {config_path}")
+    except FileNotFoundError as e:
+        logging.error(f"Configuration file not found: {str(e)}")
 
-        except json.JSONDecodeError:
-            logging.error(f"Invalid JSON format in configuration file: {config_path}")
-
-    else:
-        logging.error("Configuration file path not provided.")
+    except json.JSONDecodeError as e:
+        logging.error(f"Invalid JSON format in configuration file: {str(e)}")

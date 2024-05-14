@@ -1826,8 +1826,11 @@ def register_callbacks(app, shared_data):
         State({'type':'load-weights', 'page':'/train-agent'}, 'value'),
         State({'type':'seed', 'page':'/train-agent'}, 'value'),
         State({'type':'run-number', 'page':'/train-agent'}, 'value'),
+        State({'type':'num-runs', 'page':'/train-agent'}, 'value'),
+        State({'type':'save-dir', 'page':'/train-agent'}, 'value'),
+        prevent_initial_call=True,
     )
-    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, use_mpi, workers, load_weights, seed, run_number):
+    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, use_mpi, workers, load_weights, seed, run_number, num_runs, save_dir):
         #DEBUG
         # print("Start callback called.")
         if n_clicks > 0:
@@ -1840,35 +1843,42 @@ def register_callbacks(app, shared_data):
             
             # Use the agent_data['save_dir'] to load agent
             if agent_data:  # Check if agent_data is not empty
+                # Create an empty dict for train_config.json
+                train_config = {}
                 render = 'RENDER' in render_option
                 # use_mpi = agent_data.get('use_mpi', False)
 
                 # Update the configuration with render settings
-                agent_data['num_episodes'] = num_episodes
-                agent_data['render'] = render
-                agent_data['render_freq'] = render_freq
-                agent_data['load_weights'] = load_weights
-                agent_data['seed'] = seed
-                agent_data['run_number'] = run_number
+                train_config['num_episodes'] = num_episodes
+                train_config['render'] = render
+                train_config['render_freq'] = render_freq
+                train_config['load_weights'] = load_weights
+                train_config['seed'] = seed
+                train_config['run_number'] = run_number
+                train_config['num_runs'] = num_runs
+                train_config['save_dir'] = save_dir
 
                 # Add MPI settings to config if DDPG or HER
                 if agent_data['agent_type'] == 'HER' or agent_data['agent_type'] == 'DDPG':
-                    agent_data['use_mpi'] = use_mpi
-                    agent_data['num_workers'] = workers
+                    train_config['use_mpi'] = use_mpi
+                    train_config['num_workers'] = workers
                 
                 # Update additional settings for HER agent
                 if agent_data['agent_type'] == 'HER':
-                    agent_data['num_epochs'] = epochs
-                    agent_data['num_cycles'] = cycles
-                    agent_data['num_updates'] = num_updates
+                    train_config['num_epochs'] = epochs
+                    train_config['num_cycles'] = cycles
+                    train_config['num_updates'] = num_updates
             
                 # Save the updated configuration to a train config file
-                config_path = agent_data['save_dir'] + '/train_config.json'
-                with open(config_path, 'w') as f:
-                    json.dump(agent_data, f)
+                train_config_path = agent_data['save_dir'] + '/train_config.json'
+                with open(train_config_path, 'w') as f:
+                    json.dump(train_config, f)
+
+                # Set the config path of the agent
+                agent_config_path = agent_data['save_dir'] + '/config.json'
 
                 script_path = 'train.py'
-                run_command = f"python {script_path} {config_path}"
+                run_command = f"python {script_path} --agent_config {agent_config_path} --train_config {train_config_path}"
                 subprocess.Popen(run_command, shell=True)
 
         raise PreventUpdate
@@ -1886,8 +1896,10 @@ def register_callbacks(app, shared_data):
         State({'type':'load-weights', 'page':'/test-agent'}, 'value'),
         State({'type':'seed', 'page':'/test-agent'}, 'value'),
         State({'type':'run-number', 'page':'/test-agent'}, 'value'),
+        State({'type':'num-runs', 'page':'/test-agent'}, 'value'),
+        prevent_initial_call=True,
     )
-    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, load_weights, seed, run_nubmer):
+    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, load_weights, seed, run_number, num_runs):
 
         print('test agent fired...')
         try:
@@ -1901,24 +1913,30 @@ def register_callbacks(app, shared_data):
                 if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
                     utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
 
+                # Create empty dict for test_config.json
+                test_config = {}
                 # Update the configuration with render settings
                 render = 'RENDER' in render_option
-                agent_data['render'] = render
-                agent_data['num_episodes'] = num_episodes
-                agent_data['render_freq'] = render_freq
-                agent_data['load_weights'] = load_weights
-                agent_data['seed'] = seed
-                agent_data['run_number'] = run_number
+                test_config['render'] = render
+                test_config['num_episodes'] = num_episodes
+                test_config['render_freq'] = render_freq
+                test_config['load_weights'] = load_weights
+                test_config['seed'] = seed
+                test_config['run_number'] = run_number
+                test_config['num_runs'] = num_runs
 
                 # Save the updated configuration to a file
-                config_path = agent_data['save_dir'] + '/test_config.json'
-                with open(config_path, 'w') as f:
-                    json.dump(agent_data, f)
+                test_config_path = agent_data['save_dir'] + '/test_config.json'
+                with open(test_config_path, 'w') as f:
+                    json.dump(test_config, f)
+
+                # Set the config path of the agent
+                agent_config_path = agent_data['save_dir'] + '/config.json'
                 
                 script_path = 'test.py'
                 #DEBUG
                 print(f'script set to {script_path}')
-                run_command = f"python {script_path} {config_path}"
+                run_command = f"python {script_path} --agent_config {agent_config_path} --test_config {test_config_path}"
                 subprocess.Popen(run_command, shell=True)
 
             raise PreventUpdate

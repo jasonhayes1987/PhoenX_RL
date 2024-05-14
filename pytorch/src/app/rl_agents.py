@@ -1383,6 +1383,7 @@ class DDPG(Agent):
         self.actor_model.train()
         self.critic_model.train()
 
+        # Update save_dir if passed
         if save_dir is not None and save_dir.split("/")[-2] != "ddpg":
             self.save_dir = save_dir + "/ddpg/"
             print(f'new save dir: {self.save_dir}')
@@ -1505,12 +1506,20 @@ class DDPG(Agent):
         self.env.close()
 
        
-    def test(self, num_episodes, render, render_freq):
+    def test(self, num_episodes, render, render_freq, save_dir):
         """Runs a test over 'num_episodes'."""
 
         # set model in eval mode
         self.actor_model.eval()
         self.critic_model.eval()
+
+        # Update save_dir if passed
+        if save_dir is not None and save_dir.split("/")[-2] != "ddpg":
+            self.save_dir = save_dir + "/ddpg/"
+            print(f'new save dir: {self.save_dir}')
+        elif save_dir is not None and save_dir.split("/")[-2] == "ddpg":
+            self.save_dir = save_dir
+            print(f'new save dir: {self.save_dir}')
 
         # instantiate list to store reward history
         reward_history = []
@@ -1951,19 +1960,21 @@ class HER(Agent):
     def train(self, num_epochs:int, num_cycles:int, num_episodes:int, num_updates:int,
               render:bool, render_freq:int, save_dir=None, run_number=None):
 
-        if save_dir is not None and save_dir.split("/")[-2] != "her":
-            self.save_dir = save_dir + "/her/"
-            # change save dir of agent to be in save dir of HER
-            agent_name = self.agent.save_dir.split("/")[-2]
-            #DEBUG
-            print(f'agent name: {agent_name}')
-            self.agent.save_dir = self.save_dir + agent_name + "/"
-            print(f'new save dir: {self.agent.save_dir}')
-        elif save_dir is not None and save_dir.split("/")[-2] == "her":
-            self.save_dir = save_dir
-            # change save dir of agent to be in save dir of HER
-            agent_name = self.agent.save_dir.split("/")[-2]
-            self.agent.save_dir = self.save_dir + agent_name + "/"
+        if save_dir is not None and len(save_dir.split("/")) >= 2:
+            if save_dir.split("/")[-2] != "her":
+                self.save_dir = save_dir + "/her/"
+                # change save dir of agent to be in save dir of HER
+                agent_name = self.agent.save_dir.split("/")[-2]
+                #DEBUG
+                print(f'agent name: {agent_name}')
+                self.agent.save_dir = self.save_dir + agent_name + "/"
+                print(f'new save dir: {self.agent.save_dir}')
+        elif save_dir is not None and len(save_dir.split("/")) >= 2:
+            if save_dir.split("/")[-2] == "her":
+                self.save_dir = save_dir
+                # change save dir of agent to be in save dir of HER
+                agent_name = self.agent.save_dir.split("/")[-2]
+                self.agent.save_dir = self.save_dir + agent_name + "/"
         
         # set models to train mode
         self.agent.actor_model.train()
