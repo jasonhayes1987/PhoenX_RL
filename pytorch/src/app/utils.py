@@ -859,7 +859,7 @@ def get_env_data(env_name):
 
     return description, gif_url
 
-# Testing settings component
+# Training settings component
 def run_agent_settings_component(page, agent_type=None):
     return html.Div([
         html.Div(
@@ -983,9 +983,25 @@ def run_agent_settings_component(page, agent_type=None):
             },
             type='number',
             placeholder="WANDB Run Number (blank for None)",
+        ),
+        dcc.Input(
+            id={
+                'type': 'num-runs',
+                'page': page,
+            },
+            type='number',
+            placeholder="Number of Runs",
             min=1,
         ),
-        
+        html.Label('Save Directory:', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+                'type':'save-dir',
+                'page':page,
+            },
+            type='text',
+            placeholder='path/to/model'
+        ),
         html.Div(
             id={
                 'type':'hidden-div',
@@ -1048,7 +1064,7 @@ def create_save_dir_input(agent_type):
                     'agent':agent_type
                 },
                 type='text',
-                placeholder='path/to/model/'
+                placeholder='path/to/model'
             )
         ]
     )
