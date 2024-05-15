@@ -2618,6 +2618,16 @@ def register_callbacks(app, shared_data):
         return tabs, hide_header
     
     @app.callback(
+        Output('her-options-hyperparam', 'hidden'),
+        Input('agent-type-selector', 'value'),
+        prevent_initial_call=True
+    )
+    def update_her_hyperparam_options(agent_types):
+        if 'HER_DDPG' in agent_types:
+            return False
+        return True
+    
+    @app.callback(
         Output({'type': 'noise-options-tabs', 'model': MATCH, 'agent': MATCH}, 'children'),
         Output({'type': 'noise-options-header' , 'model': MATCH, 'agent': MATCH}, 'hidden'),
         Input({'type': 'noise-function-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
@@ -2649,13 +2659,16 @@ def register_callbacks(app, shared_data):
         State('agent-type-selector', 'value'),
         State('num-sweeps', 'value'),
         State('num-episodes', 'value'),
+        State('num-epochs', 'value'),
+        State('num-cycles', 'value'),
+        State('num-updates', 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, num_sweeps, num_episodes, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
         # extract any additional gym env params
         params = utils.extract_gym_params(env_params)
@@ -2677,7 +2690,7 @@ def register_callbacks(app, shared_data):
             )
             #DEBUG
             print(f'wandb config: {sweep_config}')
-            thread = threading.Thread(target=wandb_support.hyperparameter_sweep, args=(sweep_config, num_sweeps, num_episodes, os.path.join(os.getcwd(), 'assets')))
+            thread = threading.Thread(target=wandb_support.hyperparameter_sweep, args=(sweep_config, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, os.path.join(os.getcwd(), 'assets')))
             #DEBUG
             # print("thread set")
             thread.daemon = True  # This ensures the thread will be automatically cleaned up when the main process exits

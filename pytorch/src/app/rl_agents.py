@@ -1855,6 +1855,8 @@ class HER(Agent):
         
         critic_normalize_layers = config[config.model_type][f"{config.model_type}_critic_normalize_layers"]
 
+        
+        
         # Check if CNN layers and if so, build CNN model
         if actor_cnn_layers:
             actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
@@ -1865,10 +1867,16 @@ class HER(Agent):
             critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
         else:
             critic_cnn_model = None
+
+        # get desired, achieved, reward func for env
+        desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
+        goal_shape = desired_goal_func(env).shape
         
         actor_model = models.ActorModel(env = env,
                                         cnn_model = actor_cnn_model,
                                         dense_layers = actor_layers,
+                                        output_layer_kernel=
+                                        goal_shape=goal_shape,
                                         optimizer = actor_optimizer,
                                         optimizer_params = actor_optimizer_params,
                                         learning_rate = actor_learning_rate,
@@ -1878,6 +1886,8 @@ class HER(Agent):
                                           cnn_model = critic_cnn_model,
                                           state_layers = critic_state_layers,
                                           merged_layers = critic_merged_layers,
+                                          output_layer_kernel=
+                                          goal_shape=goal_shape,
                                           optimizer = critic_optimizer,
                                           optimizer_params = critic_optimizer_params,
                                           learning_rate = critic_learning_rate,
@@ -1894,10 +1904,6 @@ class HER(Agent):
 
         # get action epsilon
         action_epsilon = config[config.model_type][f"{config.model_type}_epsilon_greedy"]
-
-        # get desired, achieved, reward func for env
-        desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
-        goal_shape = desired_goal_func(env).shape
 
         ddpg_agent= DDPG(
             env = env,

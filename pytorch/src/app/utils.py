@@ -2201,7 +2201,9 @@ def create_ddpg_hyperparam_input(agent_type):
                     generate_learning_rate_hyperparam_component(agent_type, 'actor'),
                     generate_cnn_layer_hyperparam_component(agent_type, 'actor'),
                     generate_hidden_layer_hyperparam_component(agent_type, 'actor'),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'actor'),
                     generate_optimizer_hyperparam_component(agent_type, 'actor'),
@@ -2218,7 +2220,9 @@ def create_ddpg_hyperparam_input(agent_type):
                     html.H4("Critic Merged (State + Action) Input Layer Configuration"),
                     generate_hidden_layer_hyperparam_component(agent_type, 'critic-merged'),
                     html.Hr(),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'critic'),
                     generate_optimizer_hyperparam_component(agent_type, 'critic'),
@@ -2245,18 +2249,20 @@ def create_her_ddpg_hyperparam_input(agent_type):
             html.Hr(),
             html.H6("Input Normalizers"),
             create_input_normalizer_options_hyperparam_input(agent_type, 'none'),
-            create_input_normalizer_options_hyperparam_input(agent_type, 'none'),
             # Actor config
             dcc.Tabs([
                 dcc.Tab([
                     generate_learning_rate_hyperparam_component(agent_type, 'actor'),
                     generate_cnn_layer_hyperparam_component(agent_type, 'actor'),
                     generate_hidden_layer_hyperparam_component(agent_type, 'actor'),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'actor'),
                     generate_optimizer_hyperparam_component(agent_type, 'actor'),
                     create_normalize_layers_hyperparam_input(agent_type, 'actor'),
+                    create_clamp_output_hyperparam_input(agent_type, 'actor'),
                 ],
                 label='Actor Model'),
                 # Critic config
@@ -2270,7 +2276,9 @@ def create_her_ddpg_hyperparam_input(agent_type):
                     html.H4("Critic Merged (State + Action) Input Layer Configuration"),
                     generate_hidden_layer_hyperparam_component(agent_type, 'critic-merged'),
                     html.Hr(),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'critic'),
                     generate_optimizer_hyperparam_component(agent_type, 'critic'),
@@ -2616,9 +2624,9 @@ def generate_hidden_units_per_layer_hyperparam_component(agent_type, model_type,
         )
     ])
 
-def generate_kernel_initializer_hyperparam_component(agent_type, model_type):
+def generate_kernel_initializer_hyperparam_component(agent_type, model_type, layer_type):
     return html.Div([
-        html.H5('Hidden Layers Kernel Initializer'),
+        html.H5(f'{layer_type} Kernel Initializer'),
         dcc.Dropdown(
             id={
                 'type':'kernel-function-hyperparam',
@@ -3489,7 +3497,7 @@ def create_input_normalizer_options_hyperparam_input(agent_type, model_type):
             html.Label(f'Minimum/Maximum Clip Value', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
-                    'type':'clip-value-hyperparam',
+                    'type':'norm-clip-value-hyperparam',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -3555,6 +3563,41 @@ def create_normalize_layers_hyperparam_input(agent_type, model_type):
                 options=[{'label': i, 'value': i=='True'} for i in ['True', 'False']],
                 placeholder="Normalize Layers",
                 multi=True,
+            ),
+        ]
+    )
+
+def create_clamp_output_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            dcc.Dropdown(
+                id={
+                    'type':'clamp-value-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': '0.01', 'value': 0.01},
+                    {'label': '0.02', 'value': 0.02},
+                    {'label': '0.03', 'value': 0.03},
+                    {'label': '0.04', 'value': 0.04},
+                    {'label': '0.05', 'value': 0.05},
+                    {'label': '0.06', 'value': 0.06},
+                    {'label': '0.07', 'value': 0.07},
+                    {'label': '0.08', 'value': 0.08},
+                    {'label': '0.09', 'value': 0.09},
+                    {'label': '0.1', 'value': 0.1},
+                    {'label': '0.2', 'value': 0.2},
+                    {'label': '0.3', 'value': 0.3},
+                    {'label': '0.4', 'value': 0.4},
+                    {'label': '0.5', 'value': 0.5},
+                    {'label': '0.6', 'value': 0.6},
+                    {'label': '0.7', 'value': 0.7},
+                    {'label': '0.8', 'value': 0.8},
+                    {'label': '0.9', 'value': 0.9},
+                    {'label': '1.0 (no clamp)', 'value': 1.0}, # Equals no clamp
+                ],
+                placeholder="Clamp Value",
             ),
         ]
     )
@@ -3708,7 +3751,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # normalize input options
             for value in sweep_config["parameters"][agent]["parameters"][f"{agent}_normalize_input"]['values']:
                 if value == 'True':
-                    value_range = get_specific_value(all_values, all_ids, 'state-clip-value-hyperparam', 'none', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'norm-clip-value-hyperparam', 'none', agent)
                     config = {"values": value_range}
                 sweep_config["parameters"][agent]["parameters"][f"{agent}_normalize_clip"] = config
             
@@ -3736,11 +3779,15 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG actor activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_activation"]}')
 
-            # actor kernel initializer
+            # actor hidden layers kernel initializer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"] = \
-                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent)}
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-hidden', agent)}
             #DEBUG
             # print(f'DDPG actor kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"]}')
+
+            # actor output layer kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-output', agent)}
 
             # actor optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"] = \
@@ -3823,11 +3870,15 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG critic activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_activation"]}')
 
-            # critic kernel initializer
+            # critic hidden layers kernel initializer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"] = \
-                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent)}
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-hidden', agent)}
             #DEBUG
             # print(f'DDPG critic kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"]}')
+
+            # critic output layer kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-output', agent)}
 
             # critic optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer"] = \
@@ -3932,10 +3983,10 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # print(f'DDPG noise set to {config}')
 
             # kernel options       
-            # actor kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent):
-                if f"{agent}_actor_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]={"parameters":{}}
+            # actor hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-hidden', agent):
+                if f"{agent}_actor_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]={"parameters":{}}
 
                 # initialize empty config dictionary for parameters
                 config = {}
@@ -4009,14 +4060,93 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                         "uniform", "normal", "truncated_normal", "variance_scaling"]:
                         raise ValueError(f"Unknown kernel: {kernel}")
                     
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = config
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG actor kernel set to {config}')
 
-            # critic kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent):
-                if f"{agent}_critic_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]={"parameters":{}}
+            # actor output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-output', agent):
+                if f"{agent}_actor_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]={"parameters":{}}
+
+                # initialize empty config dictionary for parameters
+                config = {}
+
+                if kernel == "constant":
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)
+                    config = {"values": value_range}
+       
+                elif kernel == "variance_scaling":
+                    # scale
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)
+                    config["scale"] = {"values": value_range}
+
+                    # mode
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor', agent)}
+
+                    # distribution
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent)}
+
+                elif kernel == "uniform":
+                    # maxval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)
+                    config["maxval"] = {"values": value_range}
+
+                    # minval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)
+                    config["minval"] = {"values": value_range}
+
+                elif kernel == "normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)
+                    config["stddev"] = {"values": value_range}
+        
+                elif kernel == "truncated_normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)
+                    config["stddev"] = {"values": value_range}
+
+                elif kernel == "xavier_uniform":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "xavier_normal":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "kaiming_uniform":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor', agent)
+                    config["mode"] = {"values": values}
+
+
+                elif kernel == "kaiming_normal":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor', agent)
+                    config["mode"] = {"values": values}
+
+                    
+                else:
+                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                        raise ValueError(f"Unknown kernel: {kernel}")
+                    
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]["parameters"] = config
+
+            # critic hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-hidden', agent):
+                if f"{agent}_critic_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]={"parameters":{}}
 
                 # initialize empty config dictionary for parameters
                 config = {}
@@ -4089,9 +4219,87 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                         "uniform", "normal", "truncated_normal", "variance_scaling"]:
                         raise ValueError(f"Unknown kernel: {kernel}")
                     
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = config
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG critic kernel set to {config}')
+
+            # critic output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-output', agent):
+                if f"{agent}_critic_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]={"parameters":{}}
+
+                # initialize empty config dictionary for parameters
+                config = {}
+
+                if kernel == "constant":
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)
+                    config = {"values": value_range}
+       
+                elif kernel == "variance_scaling":
+                    # scale
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)
+                    config["scale"] = {"values": value_range}
+
+                    # mode
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic', agent)}
+
+                    # distribution
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent)}
+
+                elif kernel == "uniform":
+                    # maxval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)
+                    config["maxval"] = {"values": value_range}
+
+                    # minval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)
+                    config["minval"] = {"values": value_range}
+
+                elif kernel == "normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)
+                    config["stddev"] = {"values": value_range}
+        
+                elif kernel == "truncated_normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)
+                    config["stddev"] = {"values": value_range}
+
+                elif kernel == "xavier_uniform":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "xavier_normal":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "kaiming_uniform":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic', agent)
+                    config["mode"] = {"values": values}
+
+                elif kernel == "kaiming_normal":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic', agent)
+                    config["mode"] = {"values": values}
+
+                    
+                else:
+                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                        raise ValueError(f"Unknown kernel: {kernel}")
+                    
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]["parameters"] = config
 
             # CNN layer params
             # Actor CNN layers
@@ -4296,8 +4504,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             sweep_config["parameters"][agent]["parameters"][f"{agent}_epsilon_greedy"] = config
 
             # normalize input options
-            # state
-            value_range = get_specific_value(all_values, all_ids, 'clip-value-hyperparam', 'none', agent)
+            value_range = get_specific_value(all_values, all_ids, 'norm-clip-value-hyperparam', 'none', agent)
             config = {"values": value_range}
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_normalizer_clip"] = config
@@ -4326,7 +4533,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG actor activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_activation"]}')
 
-            # actor kernel initializer
+            # actor hidden layer kernel initializer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"] = \
                 {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent)}
             #DEBUG
@@ -4372,6 +4579,10 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # actor normalize layers
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_normalize_layers"] = \
                 {"values": get_specific_value(all_values, all_ids, 'normalize-layers-hyperparam', 'actor', agent)}
+
+            # actor clamp output
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_clamp_output"] = \
+                {"values": get_specific_value(all_values, all_ids, 'clamp-value-hyperparam', 'actor', agent)}
 
             # critic cnn layers
             value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'critic', agent)
@@ -4831,6 +5042,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 sweep_config["parameters"][agent]["parameters"][f"critic_units_merged_layer_{i}_{agent}"] = {
                     "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
                 }
+
 
                                     
         # elif agent == "Reinforce" or agent == "ActorCritic":

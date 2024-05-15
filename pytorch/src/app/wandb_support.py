@@ -265,6 +265,9 @@ def hyperparameter_sweep(
     sweep_config,
     num_sweeps: int,
     episodes_per_sweep: int,
+    epochs_per_sweep: int = None,
+    cycles_per_sweep: int = None,
+    updates_per_sweep: int = None,
     save_dir: str = "models",
 ):
     """Runs a hyperparameter sweep of the specified agent.
@@ -284,7 +287,7 @@ def hyperparameter_sweep(
     wandb.agent(
         sweep_id,
         function=lambda: _run_sweep(
-            sweep_config, episodes_per_sweep, save_dir
+            sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep, save_dir
         ),
         count=num_sweeps,
         project=sweep_config["project"],
@@ -292,7 +295,7 @@ def hyperparameter_sweep(
     wandb.teardown()
 
 
-def _run_sweep(sweep_config, episodes_per_sweep, save_dir):
+def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep, save_dir):
     """Runs a single sweep of the hyperparameter search.
 
     Args:
