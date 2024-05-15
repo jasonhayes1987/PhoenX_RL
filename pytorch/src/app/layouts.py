@@ -215,6 +215,27 @@ def hyperparameter_search(page):
                 type='number',
                 placeholder='Episodes per Sweep',
             ),
+            html.Div(
+                id='her-options-hyperparam',
+                hidden=True,
+                children=[
+                    dcc.Input(
+                        id='num-epochs',
+                        type='number',
+                        placeholder='Epochs per Sweep',
+                    ),
+                    dcc.Input(
+                        id='num-cycles',
+                        type='number',
+                        placeholder='Cycles per Episode',
+                    ),
+                    dcc.Input(
+                        id='num-updates',
+                        type='number',
+                        placeholder='Updates per Episode',
+                    ),
+                ]
+            ),
             html.Hr(),
         ],
         md=6,

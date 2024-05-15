@@ -737,7 +737,7 @@ class ActorModel(Model):
         
         if self.clamp_output is not None:
             # print('clamp output fired...')
-            pi = T.clamp(pi * T.tensor(self.env.action_space.high, dtype=T.float32, device=self.device), -self.clamp_output, self.clamp_output)
+            pi = T.clamp(pi, -self.clamp_output, self.clamp_output) * T.tensor(self.env.action_space.high, dtype=T.float32, device=self.device)
             # print(f'pi: {pi}')
             return mu, pi
         
