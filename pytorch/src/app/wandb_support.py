@@ -217,8 +217,27 @@ def build_layers(sweep_config):
                 kernel = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"]
                 params = {}
                 if kernel == "constant":
-                    params["value"] = 
+                    params["value"] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_value"]
 
+                elif kernel == 'variance_scaling':
+                    params['scale'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_scale"]
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mode"]
+                    params['distribution'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_distribution"]
+
+                elif kernel == 'normal':
+                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mean"]
+                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_stddev"]
+
+                elif kernel == 'uniform':
+                    params['minval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_minval"]
+                    params['maxval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_maxval"]
+                
+                elif kernel == 'truncated_normal':
+                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mean"]
+                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_stddev"]
+
+                elif kernel == "kaiming_normal":
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mode"]
 
         # get actor hidden layers
         actor_layers = []
