@@ -4051,66 +4051,66 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {}
 
                 if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)
-                    config = {"values": value_range}
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-hidden', agent)
+                    config["value"] = {"values": value_range}
        
                 elif kernel == "variance_scaling":
                     # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-hidden', agent)
                     config["scale"] = {"values": value_range}
 
                     # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor', agent)}
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-hidden', agent)}
 
                     # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent)}
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-hidden', agent)}
 
                 elif kernel == "uniform":
                     # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-hidden', agent)
                     config["maxval"] = {"values": value_range}
 
                     # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-hidden', agent)
                     config["minval"] = {"values": value_range}
 
                 elif kernel == "normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-hidden', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-hidden', agent)
                     config["stddev"] = {"values": value_range}
         
                 elif kernel == "truncated_normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-hidden', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-hidden', agent)
                     config["stddev"] = {"values": value_range}
 
                 elif kernel == "xavier_uniform":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-hidden', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "xavier_normal":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-hidden', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "kaiming_uniform":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-hidden', agent)
                     config["mode"] = {"values": values}
 
 
                 elif kernel == "kaiming_normal":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-hidden', agent)
                     config["mode"] = {"values": values}
 
                     
@@ -4132,66 +4132,66 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {}
 
                 if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)
-                    config = {"values": value_range}
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-output', agent)
+                    config["value"] = {"values": value_range}
        
                 elif kernel == "variance_scaling":
                     # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-output', agent)
                     config["scale"] = {"values": value_range}
 
                     # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor', agent)}
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-output', agent)}
 
                     # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent)}
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-output', agent)}
 
                 elif kernel == "uniform":
                     # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-output', agent)
                     config["maxval"] = {"values": value_range}
 
                     # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-output', agent)
                     config["minval"] = {"values": value_range}
 
                 elif kernel == "normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-output', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-output', agent)
                     config["stddev"] = {"values": value_range}
         
                 elif kernel == "truncated_normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-output', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-output', agent)
                     config["stddev"] = {"values": value_range}
 
                 elif kernel == "xavier_uniform":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-output', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "xavier_normal":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-output', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "kaiming_uniform":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-output', agent)
                     config["mode"] = {"values": values}
 
 
                 elif kernel == "kaiming_normal":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-output', agent)
                     config["mode"] = {"values": values}
 
                     
@@ -4211,65 +4211,65 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {}
 
                 if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)
-                    config = {"values": value_range}
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-hidden', agent)
+                    config["value"] = {"values": value_range}
        
                 elif kernel == "variance_scaling":
                     # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-hidden', agent)
                     config["scale"] = {"values": value_range}
 
                     # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic', agent)}
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-hidden', agent)}
 
                     # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent)}
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-hidden', agent)}
 
                 elif kernel == "uniform":
                     # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-hidden', agent)
                     config["maxval"] = {"values": value_range}
 
                     # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-hidden', agent)
                     config["minval"] = {"values": value_range}
 
                 elif kernel == "normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-hidden', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-hidden', agent)
                     config["stddev"] = {"values": value_range}
         
                 elif kernel == "truncated_normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-hidden', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-hidden', agent)
                     config["stddev"] = {"values": value_range}
 
                 elif kernel == "xavier_uniform":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-hidden', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "xavier_normal":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-hidden', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "kaiming_uniform":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-hidden', agent)
                     config["mode"] = {"values": values}
 
                 elif kernel == "kaiming_normal":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-hidden', agent)
                     config["mode"] = {"values": values}
 
                     
@@ -4291,65 +4291,65 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 config = {}
 
                 if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)
-                    config = {"values": value_range}
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-output', agent)
+                    config["value"] = {"values": value_range}
        
                 elif kernel == "variance_scaling":
                     # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-output', agent)
                     config["scale"] = {"values": value_range}
 
                     # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic', agent)}
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-output', agent)}
 
                     # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent)}
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-output', agent)}
 
                 elif kernel == "uniform":
                     # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-output', agent)
                     config["maxval"] = {"values": value_range}
 
                     # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-output', agent)
                     config["minval"] = {"values": value_range}
 
                 elif kernel == "normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-output', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-output', agent)
                     config["stddev"] = {"values": value_range}
         
                 elif kernel == "truncated_normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-output', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-output', agent)
                     config["stddev"] = {"values": value_range}
 
                 elif kernel == "xavier_uniform":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-output', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "xavier_normal":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-output', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "kaiming_uniform":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-output', agent)
                     config["mode"] = {"values": values}
 
                 elif kernel == "kaiming_normal":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-output', agent)
                     config["mode"] = {"values": values}
 
                     
@@ -4793,75 +4793,75 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # print(f'DDPG noise set to {config}')
 
             # kernel options       
-            # actor kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent):
-                if f"{agent}_actor_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]={"parameters":{}}
+            # actor hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-hidden', agent):
+                if f"{agent}_actor_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]={"parameters":{}}
 
                 # initialize empty config dictionary for parameters
                 config = {}
 
                 if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)
-                    config = {"values": value_range}
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-hidden', agent)
+                    config["value"] = {"values": value_range}
        
                 elif kernel == "variance_scaling":
                     # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-hidden', agent)
                     config["scale"] = {"values": value_range}
 
                     # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor', agent)}
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-hidden', agent)}
 
                     # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent)}
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-hidden', agent)}
 
                 elif kernel == "uniform":
                     # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-hidden', agent)
                     config["maxval"] = {"values": value_range}
 
                     # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-hidden', agent)
                     config["minval"] = {"values": value_range}
 
                 elif kernel == "normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-hidden', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-hidden', agent)
                     config["stddev"] = {"values": value_range}
         
                 elif kernel == "truncated_normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-hidden', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-hidden', agent)
                     config["stddev"] = {"values": value_range}
 
                 elif kernel == "xavier_uniform":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-hidden', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "xavier_normal":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-hidden', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "kaiming_uniform":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-hidden', agent)
                     config["mode"] = {"values": values}
 
 
                 elif kernel == "kaiming_normal":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-hidden', agent)
                     config["mode"] = {"values": values}
 
                     
@@ -4870,78 +4870,79 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                         "uniform", "normal", "truncated_normal", "variance_scaling"]:
                         raise ValueError(f"Unknown kernel: {kernel}")
                     
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = config
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG actor kernel set to {config}')
 
-            # critic kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent):
-                if f"{agent}_critic_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]={"parameters":{}}
+            # actor output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-output', agent):
+                if f"{agent}_actor_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]={"parameters":{}}
 
                 # initialize empty config dictionary for parameters
                 config = {}
 
                 if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)
-                    config = {"values": value_range}
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-output', agent)
+                    config["value"] = {"values": value_range}
        
                 elif kernel == "variance_scaling":
                     # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-output', agent)
                     config["scale"] = {"values": value_range}
 
                     # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic', agent)}
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-output', agent)}
 
                     # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent)}
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-output', agent)}
 
                 elif kernel == "uniform":
                     # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-output', agent)
                     config["maxval"] = {"values": value_range}
 
                     # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-output', agent)
                     config["minval"] = {"values": value_range}
 
                 elif kernel == "normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-output', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-output', agent)
                     config["stddev"] = {"values": value_range}
         
                 elif kernel == "truncated_normal":
                     # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-output', agent)
                     config["mean"] = {"values": value_range}
 
                     # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-output', agent)
                     config["stddev"] = {"values": value_range}
 
                 elif kernel == "xavier_uniform":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-output', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "xavier_normal":
                     # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic', agent)
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-output', agent)
                     config["gain"] = {"values": value_range}
 
                 elif kernel == "kaiming_uniform":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-output', agent)
                     config["mode"] = {"values": values}
+
 
                 elif kernel == "kaiming_normal":
                     # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic', agent)
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-output', agent)
                     config["mode"] = {"values": values}
 
                     
@@ -4950,7 +4951,165 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                         "uniform", "normal", "truncated_normal", "variance_scaling"]:
                         raise ValueError(f"Unknown kernel: {kernel}")
                     
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = config
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]["parameters"] = config
+
+            # critic hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-hidden', agent):
+                if f"{agent}_critic_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]={"parameters":{}}
+
+                # initialize empty config dictionary for parameters
+                config = {}
+
+                if kernel == "constant":
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-hidden', agent)
+                    config["value"] = {"values": value_range}
+       
+                elif kernel == "variance_scaling":
+                    # scale
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-hidden', agent)
+                    config["scale"] = {"values": value_range}
+
+                    # mode
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-hidden', agent)}
+
+                    # distribution
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-hidden', agent)}
+
+                elif kernel == "uniform":
+                    # maxval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-hidden', agent)
+                    config["maxval"] = {"values": value_range}
+
+                    # minval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-hidden', agent)
+                    config["minval"] = {"values": value_range}
+
+                elif kernel == "normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-hidden', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-hidden', agent)
+                    config["stddev"] = {"values": value_range}
+        
+                elif kernel == "truncated_normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-hidden', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-hidden', agent)
+                    config["stddev"] = {"values": value_range}
+
+                elif kernel == "xavier_uniform":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-hidden', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "xavier_normal":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-hidden', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "kaiming_uniform":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-hidden', agent)
+                    config["mode"] = {"values": values}
+
+                elif kernel == "kaiming_normal":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-hidden', agent)
+                    config["mode"] = {"values": values}
+
+                    
+                else:
+                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                        raise ValueError(f"Unknown kernel: {kernel}")
+                    
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]["parameters"] = config
+            #DEBUG
+            # print(f'DDPG critic kernel set to {config}')
+
+            # critic output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-output', agent):
+                if f"{agent}_critic_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]={"parameters":{}}
+
+                # initialize empty config dictionary for parameters
+                config = {}
+
+                if kernel == "constant":
+                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-output', agent)
+                    config["value"] = {"values": value_range}
+       
+                elif kernel == "variance_scaling":
+                    # scale
+                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-output', agent)
+                    config["scale"] = {"values": value_range}
+
+                    # mode
+                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-output', agent)}
+
+                    # distribution
+                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-output', agent)}
+
+                elif kernel == "uniform":
+                    # maxval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-output', agent)
+                    config["maxval"] = {"values": value_range}
+
+                    # minval
+                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-output', agent)
+                    config["minval"] = {"values": value_range}
+
+                elif kernel == "normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-output', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-output', agent)
+                    config["stddev"] = {"values": value_range}
+        
+                elif kernel == "truncated_normal":
+                    # mean
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-output', agent)
+                    config["mean"] = {"values": value_range}
+
+                    # stddev
+                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-output', agent)
+                    config["stddev"] = {"values": value_range}
+
+                elif kernel == "xavier_uniform":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-output', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "xavier_normal":
+                    # gain
+                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-output', agent)
+                    config["gain"] = {"values": value_range}
+
+                elif kernel == "kaiming_uniform":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-output', agent)
+                    config["mode"] = {"values": values}
+
+                elif kernel == "kaiming_normal":
+                    # mode
+                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-output', agent)
+                    config["mode"] = {"values": values}
+
+                    
+                else:
+                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                        raise ValueError(f"Unknown kernel: {kernel}")
+                    
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG critic kernel set to {config}')
 
