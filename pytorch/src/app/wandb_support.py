@@ -211,6 +211,15 @@ def build_layers(sweep_config):
                     # append to critic_cnn_layers
                     critic_cnn_layers.append({layer_type: {"num_features": num_features}})
 
+        # Create kernel initializer params
+        for model in ['actor', 'critic']:
+            for layer in ['hidden', 'output']:
+                kernel = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"]
+                params = {}
+                if kernel == "constant":
+                    params["value"] = 
+
+
         # get actor hidden layers
         actor_layers = []
         for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_num_layers"] + 1):
