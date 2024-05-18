@@ -4568,6 +4568,12 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_normalizer_clip"] = config
 
+            # Device
+            value_range = get_specific_value(all_values, all_ids, 'norm-clip-value-hyperparam', 'none', agent)
+            config = {"values": value_range}
+            
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_normalizer_clip"] = config
+
             # actor cnn layers
             value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'actor', agent)
             if value_range[0] == value_range[1]:
