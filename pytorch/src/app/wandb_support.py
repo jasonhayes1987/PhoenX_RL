@@ -402,7 +402,12 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
         )
 
     elif wandb.config.model_type == "HER_DDPG":
+        #DEBUG
+        print(f'passed wandb config: {wandb.config}')
         actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
+        #DEBUG
+        print('build layers output')
+        print(f'kernels: {kernels}')
         agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
         rl_agent = agent.build(
             env=env,
@@ -416,6 +421,9 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             config=wandb.config,
             save_dir=save_dir,
         )
+
+        #DEBUG
+        print(f'HER AGENT config: {rl_agent.get_config()}')
 
     rl_agent.train(episodes_per_sweep)
 
