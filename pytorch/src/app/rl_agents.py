@@ -933,6 +933,7 @@ class DDPG(Agent):
         actor_layers,
         critic_state_layers,
         critic_merged_layers,
+        kernels,
         callbacks,
         config,#: wandb.config,
         save_dir: str = "models/",
@@ -1801,6 +1802,7 @@ class HER(Agent):
         actor_layers,
         critic_state_layers,
         critic_merged_layers,
+        kernels,
         callbacks,
         config,#: wandb.config,
         save_dir: str = "models/",
@@ -1871,22 +1873,27 @@ class HER(Agent):
         # get desired, achieved, reward func for env
         desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
         goal_shape = desired_goal_func(env).shape
+
+        # Get actor clamp value
+        clamp_output = config[config.model_type][f"{config.model_type}_actor_clamp_output"]
         
         actor_model = models.ActorModel(env = env,
                                         cnn_model = actor_cnn_model,
                                         dense_layers = actor_layers,
-                                        output_layer_kernel=
+                                        output_layer_kernel=kernels[f'actor_output_kernel'],
                                         goal_shape=goal_shape,
                                         optimizer = actor_optimizer,
                                         optimizer_params = actor_optimizer_params,
                                         learning_rate = actor_learning_rate,
-                                        normalize_layers = actor_normalize_layers
+                                        normalize_layers = actor_normalize_layers,
+                                        clamp_output=clamp_output,
+                                        device=
         )
         critic_model = models.CriticModel(env = env,
                                           cnn_model = critic_cnn_model,
                                           state_layers = critic_state_layers,
                                           merged_layers = critic_merged_layers,
-                                          output_layer_kernel=
+                                          output_layer_kernel=kernels[f'critic_output_kernel'],
                                           goal_shape=goal_shape,
                                           optimizer = critic_optimizer,
                                           optimizer_params = critic_optimizer_params,

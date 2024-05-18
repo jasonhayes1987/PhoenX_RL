@@ -211,34 +211,50 @@ def build_layers(sweep_config):
                     # append to critic_cnn_layers
                     critic_cnn_layers.append({layer_type: {"num_features": num_features}})
 
+        # Create empty dict to store kernel params
+        kernels = {}
         # Create kernel initializer params
         for model in ['actor', 'critic']:
             for layer in ['hidden', 'output']:
                 kernel = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"]
                 params = {}
                 if kernel == "constant":
-                    params["value"] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_value"]
+                    params["value"] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"value"]
 
                 elif kernel == 'variance_scaling':
-                    params['scale'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_scale"]
-                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mode"]
-                    params['distribution'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_distribution"]
+                    params['scale'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"scale"]
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"mode"]
+                    params['distribution'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"distribution"]
 
                 elif kernel == 'normal':
-                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mean"]
-                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_stddev"]
+                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"mean"]
+                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"stddev"]
 
                 elif kernel == 'uniform':
-                    params['minval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_minval"]
-                    params['maxval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_maxval"]
+                    params['minval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"minval"]
+                    params['maxval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"maxval"]
                 
                 elif kernel == 'truncated_normal':
-                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mean"]
-                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_stddev"]
+                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"mean"]
+                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"stddev"]
+
+                elif kernel == "xavier_uniform":
+                    params['gain'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
+
+                elif kernel == "xavier_normal":
+                    params['gain'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
+
+                elif kernel == "kaiming_uniform":
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
 
                 elif kernel == "kaiming_normal":
-                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"][f"{kernel}_mode"]
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
 
+                # Create dict with kernel and params
+                kernels[f'{model}_{layer}_kernel'] = {kernel:params}
+
+        
+        
         # get actor hidden layers
         actor_layers = []
         for layer_num in range(1, sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_num_layers"] + 1):
@@ -246,7 +262,7 @@ def build_layers(sweep_config):
                 (
                     sweep_config[sweep_config.model_type][f"actor_units_layer_{layer_num}_{sweep_config.model_type}"],
                     sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_activation"],
-                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_actor_kernel_initializer"],
+                    kernels['actor_hidden_kernel'],
                 )
             )
         # get critic state hidden layers
@@ -256,7 +272,7 @@ def build_layers(sweep_config):
                 (
                     sweep_config[sweep_config.model_type][f"critic_units_state_layer_{layer_num}_{sweep_config.model_type}"],
                     sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_activation"],
-                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"],
+                    kernels['critic_hidden_kernel'],
                 )
             )
         # get critic merged hidden layers
@@ -266,11 +282,11 @@ def build_layers(sweep_config):
                 (
                     sweep_config[sweep_config.model_type][f"critic_units_merged_layer_{layer_num}_{sweep_config.model_type}"],
                     sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_activation"],
-                    sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_critic_kernel_initializer"],
+                    kernels['critic_hidden_kernel'],
                 )
             )
 
-        return actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers
+        return actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels
 
 
 def load_model_from_run(run_name: str, project_name: str, load_weights: bool = True):
@@ -367,7 +383,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             save_dir=save_dir,
         )
     elif wandb.config.model_type == "DDPG":
-        actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
+        actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
         agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
         rl_agent = agent.build(
             env=env,
@@ -376,13 +392,14 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             actor_layers=actor_layers,
             critic_state_layers=critic_state_layers,
             critic_merged_layers=critic_merged_layers,
+            kernels,
             callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
             save_dir=save_dir,
         )
 
     elif wandb.config.model_type == "HER_DDPG":
-        actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers = build_layers(wandb.config)
+        actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
         agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
         rl_agent = agent.build(
             env=env,
@@ -391,6 +408,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             actor_layers=actor_layers,
             critic_state_layers=critic_state_layers,
             critic_merged_layers=critic_merged_layers,
+            kernels,
             callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
             save_dir=save_dir,
