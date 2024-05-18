@@ -253,6 +253,9 @@ def build_layers(sweep_config):
                 # Create dict with kernel and params
                 kernels[f'{model}_{layer}_kernel'] = {kernel:params}
 
+        #DEBUG
+        print(f'kernels: {kernels}')
+
         
         
         # get actor hidden layers
@@ -392,7 +395,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             actor_layers=actor_layers,
             critic_state_layers=critic_state_layers,
             critic_merged_layers=critic_merged_layers,
-            kernels,
+            kernels=kernels,
             callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
             save_dir=save_dir,
@@ -408,7 +411,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             actor_layers=actor_layers,
             critic_state_layers=critic_state_layers,
             critic_merged_layers=critic_merged_layers,
-            kernels,
+            kernels=kernels,
             callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
             save_dir=save_dir,
