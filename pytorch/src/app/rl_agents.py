@@ -1754,8 +1754,8 @@ class HER(Agent):
 
         # if agent env is gymnasium-robotics env, should set distance-threshold
         # attr to tolerance
-        # if hasattr(self.agent.env, "distance_threshold"):
-        self.agent.env.__setattr__("distance_threshold", self.tolerance)
+        if self.agent.env.get_wrapper_attr("distance_threshold"):
+            self.agent.env.__setattr__("distance_threshold", self.tolerance)
 
         ## T.DIST for CUDA ##
         # Capture the actor and critic state_dicts to pass to worker agents models
@@ -1822,13 +1822,9 @@ class HER(Agent):
         kernels,
         callbacks,
         config,#: wandb.config,
-        save_dir: str = "models/",
     ):
         """Builds the agent."""
-        # TODO
-        # add replay buffer size to HER constructor (need to add to wandb config app func)
-
-
+        
         # Actor
         actor_learning_rate=config[config.model_type][f"{config.model_type}_actor_learning_rate"]
         actor_optimizer = config[config.model_type][f"{config.model_type}_actor_optimizer"]
@@ -1931,6 +1927,13 @@ class HER(Agent):
         # get action epsilon
         action_epsilon = config[config.model_type][f"{config.model_type}_epsilon_greedy"]
 
+        # Replay buffer size
+        replay_buffer_size = config[config.model_type][f"{config.model_type}_replay_buffer_size"]
+        print(f'REPLAY BUFFER SIZE: {replay_buffer_size}')
+
+        # Save dir
+        save_dir = config[config.model_type][f"{config.model_type}_save_dir"]
+
         ddpg_agent= DDPG(
             env = env,
             actor_model = actor_model,
@@ -1942,10 +1945,9 @@ class HER(Agent):
             batch_size = config[config.model_type][f"{config.model_type}_batch_size"],
             noise = helper.Noise.create_instance(config[config.model_type][f"{config.model_type}_noise"], shape=env.action_space.shape, **config[config.model_type][f"{config.model_type}_noise_{config[config.model_type][f'{config.model_type}_noise']}"]),
             callbacks = callbacks,
-            save_dir = save_dir,
         )
 
-        return cls(
+        her = cls(
             agent = ddpg_agent,
             strategy = strategy,
             tolerance = tolerance,
@@ -1954,40 +1956,15 @@ class HER(Agent):
             achieved_goal = achieved_goal_func,
             reward_fn = reward_func,
             normalizer_clip = normalizer_clip,
-            # replay_buffer_size = 
+            replay_buffer_size = replay_buffer_size,
+            device = device,
+            save_dir = save_dir,
         )
+
+        her.save()
+
+        return her
     
-    # def numpy_to_model(self, model, numpy_params):
-    #     for param, numpy_data in zip(model.parameters(), numpy_params):
-    #         param.data.copy_(T.from_numpy(numpy_data).to(param.device))
-        
-    ## TRAIN METHOD FOR TORCH DIST CUDA ##
-    # def train(self, epochs:int=10, num_cycles:int=50, num_episodes:int=16, num_updates:int=40, num_workers:int=4, render:bool=False, render_freq:int=10, save_dir: str = None):
-
-    #     # Update save directory if passed
-    #     if save_dir:
-    #         self.save_dir = save_dir
-
-    #     # Set num_workers attr
-    #     self.num_workers = num_workers
-
-    #     # Spawn processes to start training in parallel
-    #     spawn(self.train_worker,
-    #           args=(self.agent, self._actor_params, self._critic_params, epochs, num_cycles,
-    #                 num_episodes, num_updates, num_workers, render, render_freq, save_dir),
-    #           nprocs=self.num_workers, join=True)
-        
-    #     # Wait for all processes to finish
-    #     self.cleanup()
-
-    # def setup_worker(self, rank):
-    #     # Register the worker to the distributed environment
-    #     os.environ['MASTER_ADDR'] = 'localhost'
-    #     os.environ['MASTER_PORT'] = '12355'
-    #     dist.init_process_group("gloo", rank=rank, world_size=self.num_workers)
-    #     # Set device to the single GPU available
-    #     T.cuda.set_device(0)
-    #     print(f"Process {rank+1} out of {self.num_workers} is initialized.")
 
     def train(self, num_epochs:int, num_cycles:int, num_episodes:int, num_updates:int,
               render:bool, render_freq:int, save_dir=None, run_number=None):

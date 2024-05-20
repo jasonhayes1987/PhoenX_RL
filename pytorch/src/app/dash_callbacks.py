@@ -2042,8 +2042,8 @@ def register_callbacks(app, shared_data):
         return mpi_options_style
     
     @app.callback(
-    Output({'type': 'workers', 'page': '/train-agent'}, 'style'),
-    Input({'type':'mpi', 'page': '/train-agent'}, 'value'),
+    Output({'type': 'workers', 'page': MATCH}, 'style'),
+    Input({'type':'mpi', 'page': MATCH}, 'value'),
     prevent_initial_call = True,
     )
     def update_workers_option(use_mpi):
@@ -2656,19 +2656,22 @@ def register_callbacks(app, shared_data):
         State('goal-type', 'value'),
         State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
         State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
+        State({'type':'seed', 'page':'/hyperparameter-search'}, 'value'),
         State('agent-type-selector', 'value'),
         State('num-sweeps', 'value'),
         State('num-episodes', 'value'),
         State('num-epochs', 'value'),
         State('num-cycles', 'value'),
         State('num-updates', 'value'),
+        State({'type':'mpi', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'workers', 'page':'/hyperparameter-search'}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
         # extract any additional gym env params
         params = utils.extract_gym_params(env_params)
@@ -2688,15 +2691,40 @@ def register_callbacks(app, shared_data):
                 all_indexed_values,
                 all_indexed_ids
             )
-            #DEBUG
-            print(f'wandb config: {sweep_config}')
-            thread = threading.Thread(target=wandb_support.hyperparameter_sweep, args=(sweep_config, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, os.path.join(os.getcwd(), 'assets')))
-            #DEBUG
-            # print("thread set")
-            thread.daemon = True  # This ensures the thread will be automatically cleaned up when the main process exits
-            thread.start()
-            #DEBUG
-            # print("thread started")
+
+            if sweep_config:  # Check if sweep_config is not empty
+                # Create an empty dict for sweep_config.json
+                train_config = {}
+                # Add config options to run_config
+                train_config['num_sweeps'] = num_sweeps
+                train_config['num_episodes'] = num_episodes
+                train_config['seed'] = seed if seed is not None else None
+
+                # Add MPI config if not None else None
+                train_config['use_mpi'] = use_mpi if use_mpi is not None else None
+                train_config['num_workers'] = num_workers if num_workers is not None else None
+                
+                # Update additional settings for HER agent
+                train_config['num_epochs'] = num_epochs if num_epochs is not None else None
+                train_config['num_cycles'] = num_cycles if num_cycles is not None else None
+                train_config['num_updates'] = num_updates if num_updates is not None else None
+            
+                # Save the updated configuration to a train config file
+                os.makedirs('sweep', exist_ok=True)
+                train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
+                with open(train_config_path, 'w') as f:
+                    json.dump(train_config, f)
+
+                # Save and Set the sweep config path
+                sweep_config_path = os.path.join(os.getcwd(), 'sweep/sweep_config.json')
+                with open(sweep_config_path, 'w') as f:
+                    json.dump(sweep_config, f)
+
+                script_path = 'sweep.py'
+                run_command = f"python {script_path} --sweep_config {sweep_config_path} --train_config {train_config_path}"
+                subprocess.Popen(run_command, shell=True)
+
+        raise PreventUpdate
 
 
     @app.callback(
