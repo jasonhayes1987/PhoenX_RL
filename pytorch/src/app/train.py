@@ -31,12 +31,12 @@ def train_agent(agent_config, train_config):
         num_episodes = train_config['num_episodes']
         render = train_config.get('render', False)
         render_freq = train_config.get('render_freq', 0)
-        save_dir = agent_config['save_dir'] if train_config['save_dir'] is None else train_config['save_dir']
+        save_dir = train_config.get('save_dir', agent_config['save_dir'])
         #DEBUG
         print(f'training save dir: {save_dir}')
         seed = train_config['seed']
         run_number = train_config['run_number']
-        num_runs = train_config['num_runs']
+        num_runs = train_config.get('num_runs', 1)
 
         # MPI flag
         use_mpi = train_config.get('use_mpi', False)
