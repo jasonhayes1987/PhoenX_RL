@@ -2034,12 +2034,27 @@ def register_callbacks(app, shared_data):
     )
     def update_mpi_options(agent_data):
 
-        if agent_data['agent_type'] in ['DDPG', 'HER']:
+        if agent_data['agent_type'] in ['DDPG', 'HER_DDPG']:
             mpi_options_style = {'display': 'block'}
         else:
             mpi_options_style = {'display': 'none'}
         
         return mpi_options_style
+    
+    @app.callback(
+    Output({'type': 'mpi-options', 'page': '/hyperparameter-search'}, 'hidden'),
+    Input({'type':'agent-type-selector', 'page': '/hyperparameter-search'}, 'value'),
+    prevent_initial_call = True,
+    )
+    def update_mpi_hyperparam_options(agent_types):
+
+        # if any(agent in ['DDPG', 'HER'] for agent in agent_types):
+        if agent_types:
+            mpi_hidden = False
+        else:
+            mpi_hidden = True
+        
+        return mpi_hidden
     
     @app.callback(
     Output({'type': 'workers', 'page': MATCH}, 'style'),
@@ -2308,7 +2323,7 @@ def register_callbacks(app, shared_data):
     
     @app.callback(
         Output('agent-options-tabs', 'children'),
-        Input('agent-type-selector', 'value')
+        Input({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value')
     )
     def update_hyperparam_inputs(selected_agent_types):
         # This function updates the inputs based on selected agent types
@@ -2619,7 +2634,7 @@ def register_callbacks(app, shared_data):
     
     @app.callback(
         Output('her-options-hyperparam', 'hidden'),
-        Input('agent-type-selector', 'value'),
+        Input({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
         prevent_initial_call=True
     )
     def update_her_hyperparam_options(agent_types):
@@ -2657,7 +2672,7 @@ def register_callbacks(app, shared_data):
         State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
         State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
         State({'type':'seed', 'page':'/hyperparameter-search'}, 'value'),
-        State('agent-type-selector', 'value'),
+        State({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
         State('num-sweeps', 'value'),
         State('num-episodes', 'value'),
         State('num-epochs', 'value'),

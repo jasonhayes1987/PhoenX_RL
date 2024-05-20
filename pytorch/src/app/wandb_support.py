@@ -425,10 +425,17 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
     
     rl_agent.save()
 
-    #TODO - Add save_dir to agent config
+    
 
     agent_config_path = rl_agent.save_dir + '/config.json'
     train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
+    # Import train config to add run number
+    with open(train_config_path, 'r') as file:
+        train_config = json.load(file)
+    train_config['run_number'] = run_number
+    # Save updated train config
+    with open(train_config_path, 'w') as file:
+        json.dump(train_config, file)
 
     run_command = f"python train.py --agent_config {agent_config_path} --train_config {train_config_path}"
     subprocess.Popen(run_command, shell=True)
