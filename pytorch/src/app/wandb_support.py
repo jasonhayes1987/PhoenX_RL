@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import os
 import ast
+import subprocess
 
 import numpy as np
 # import tensorflow as tf
@@ -219,36 +220,36 @@ def build_layers(sweep_config):
                 kernel = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_initializer"]
                 params = {}
                 if kernel == "constant":
-                    params["value"] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"value"]
+                    params["val"] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_value"]
 
                 elif kernel == 'variance_scaling':
-                    params['scale'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"scale"]
-                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"mode"]
-                    params['distribution'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"distribution"]
+                    params['scale'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_scale"]
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
+                    params['distribution'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_distribution"]
 
                 elif kernel == 'normal':
-                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"mean"]
-                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"stddev"]
+                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
+                    params['std'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
 
                 elif kernel == 'uniform':
-                    params['minval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"minval"]
-                    params['maxval'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"maxval"]
+                    params['a'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_minval"]
+                    params['b'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_maxval"]
                 
                 elif kernel == 'truncated_normal':
-                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"mean"]
-                    params['stddev'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"stddev"]
+                    params['mean'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
+                    params['std'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
 
                 elif kernel == "xavier_uniform":
-                    params['gain'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
+                    params['gain'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
 
                 elif kernel == "xavier_normal":
-                    params['gain'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
+                    params['gain'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
 
                 elif kernel == "kaiming_uniform":
-                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
 
                 elif kernel == "kaiming_normal":
-                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"gain"]
+                    params['mode'] = sweep_config[sweep_config.model_type][f"{sweep_config.model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
 
                 # Create dict with kernel and params
                 kernels[f'{model}_{layer}_kernel'] = {kernel:params}
@@ -315,7 +316,6 @@ def hyperparameter_sweep(
     epochs_per_sweep: int = None,
     cycles_per_sweep: int = None,
     updates_per_sweep: int = None,
-    save_dir: str = "models",
 ):
     """Runs a hyperparameter sweep of the specified agent.
 
@@ -324,7 +324,6 @@ def hyperparameter_sweep(
         sweep_config (dict): The sweep configuration.
         num_sweeps (int): The number of sweeps to run.
         episodes_per_sweep (int): The number of episodes to train per sweep.
-        save_dir (str): The directory to save the model to.
     """
     #DEBUG
     print(f'hyperparameter_sweep fired...')
@@ -334,7 +333,7 @@ def hyperparameter_sweep(
     wandb.agent(
         sweep_id,
         function=lambda: _run_sweep(
-            sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep, save_dir
+            sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep,
         ),
         count=num_sweeps,
         project=sweep_config["project"],
@@ -342,7 +341,7 @@ def hyperparameter_sweep(
     wandb.teardown()
 
 
-def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep, save_dir):
+def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep):
     """Runs a single sweep of the hyperparameter search.
 
     Args:
@@ -383,7 +382,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             value_layers=value_layers,
             callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
-            save_dir=save_dir,
+            save_dir=wandb.config.save_dir,
         )
     elif wandb.config.model_type == "DDPG":
         actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
@@ -398,7 +397,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             kernels=kernels,
             callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
-            save_dir=save_dir,
+            save_dir=wandb.config.save_dir,
         )
 
     elif wandb.config.model_type == "HER_DDPG":
@@ -419,13 +418,20 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             kernels=kernels,
             callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
             config=wandb.config,
-            save_dir=save_dir,
         )
 
         #DEBUG
         print(f'HER AGENT config: {rl_agent.get_config()}')
+    
+    rl_agent.save()
 
-    rl_agent.train(episodes_per_sweep)
+    #TODO - Add save_dir to agent config
+
+    agent_config_path = rl_agent.save_dir + '/config.json'
+    train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
+
+    run_command = f"python train.py --agent_config {agent_config_path} --train_config {train_config_path}"
+    subprocess.Popen(run_command, shell=True)
 
 
 

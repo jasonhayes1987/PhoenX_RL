@@ -967,15 +967,7 @@ def run_agent_settings_component(page, agent_type=None):
             min=1,
             disabled=True,
         ),
-        dcc.Input(
-            id={
-                'type': 'seed',
-                'page': page,
-            },
-            type='number',
-            placeholder="Random Seed",
-            min=1,
-        ),
+        generate_seed_component(page),
         dcc.Input(
             id={
                 'type': 'run-number',
@@ -2246,6 +2238,7 @@ def create_her_ddpg_hyperparam_input(agent_type):
             create_epsilon_greedy_hyperparam_input(agent_type, 'none'),
             generate_batch_hyperparam_componenent(agent_type, 'none'),
             generate_noise_hyperparam_componenent(agent_type, 'none'),
+            create_replay_buffer_size_hyperparam_component(agent_type, 'none'),
             html.Hr(),
             html.H6("Input Normalizers"),
             create_input_normalizer_options_hyperparam_input(agent_type, 'none'),
@@ -3413,8 +3406,29 @@ def generate_normal_noise_hyperparam_inputs(agent_type, model_type):
     ],
     label='Normal')
 
-def generate_replay_buffer_hyperparam_component(agent_type, model_type):
+def create_replay_buffer_hyperparam_component(agent_type, model_type):
     pass
+
+def create_replay_buffer_size_hyperparam_component(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Buffer Size', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'buffer-size-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': '100,000', 'value': 100_000},
+                    {'label': '500,000', 'value': 500_000},
+                    {'label': '1,000,000', 'value': 1_000_000}
+                    ],
+                placeholder="Replay Buffer Size",
+                multi=True,
+            ),
+        ]
+    )
 
 def create_goal_strategy_hyperparam_input(agent_type, model_type):
     return html.Div(
@@ -3644,17 +3658,17 @@ def future_goal_strategy_hyperparam_options(agent_type):
         ]
     )
 
-def generate_seed_component(agent_type, model_type):
+def generate_seed_component(page):
     return html.Div([
         html.Label('Seed', style={'text-decoration': 'underline'}),
         dcc.Input(
             id={
                 'type':'seed',
-                'model': model_type,
-                'agent': agent_type
+                'page': page,
             },
             type='number',
-            placeholder="Leave blank for random seed"
+            min=1,
+            placeholder="Blank for random"
         ),
     ])
 
@@ -4426,6 +4440,10 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                     "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
                 }
 
+            # Add save dir
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_save_dir"] = \
+                {"value": get_specific_value(all_values, all_ids, 'save-dir', 'none', agent)}
+
         if agent == "HER_DDPG":
             sweep_config["parameters"][agent]["parameters"] = {}
 
@@ -4663,8 +4681,9 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 {"values": get_specific_value(all_values, all_ids, 'normalize-layers-hyperparam', 'critic', agent)}
             
             
-            # replay buffer # NOT NEEDED
-            # sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer"] = {"values": ["ReplayBuffer"]}
+            # replay buffer size
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer_size"] = \
+                {"values": get_specific_value(all_values, all_ids, 'buffer-size-hyperparam', 'none', agent)}
             #DEBUG
             # print(f'DDPG replay buffer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer"]}')
 
@@ -5193,6 +5212,10 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                     "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
                 }
 
+            # Add save dir
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_save_dir"] = \
+                {"value": get_specific_value(all_values, all_ids, 'save-dir', 'none', agent)}
+
 
                                     
         # elif agent == "Reinforce" or agent == "ActorCritic":
@@ -5541,19 +5564,19 @@ def get_extra_gym_params(env_spec_id):
     elif env_spec_id.startswith('FetchReach') or env_spec_id.startswith('FetchPush') or \
             env_spec_id.startswith('FetchSlide') or env_spec_id.startswith('FetchPickAndPlace'):
         extra_params = {
-            'reward_type': {
-                'type': 'string',
-                'default': 'sparse',
-                'description': "Type of reward function ('sparse' or 'dense')"
+            'max_episode_steps': {
+                'type': 'int',
+                'default': 50,
+                'description': "Number of steps per episode"
             }
         }
 
     elif env_spec_id.startswith('HandReach') or env_spec_id.startswith('HandManipulate'):
         extra_params = {
-            'distance_threshold': {
-                'type': 'float',
-                'default': 0.01,
-                'description': 'Threshold for the distance to the goal'
+            'max_episode_steps': {
+                'type': 'int',
+                'default': 50,
+                'description': "Number of steps per episode"
             }
         }
 

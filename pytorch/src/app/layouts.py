@@ -236,6 +236,37 @@ def hyperparameter_search(page):
                     ),
                 ]
             ),
+            html.Div(
+                id={
+                    'type': 'mpi-options',
+                    'page': page,
+                },
+                style={'display': 'none'},
+                children=[
+                    html.Label('Use MPI', style={'text-decoration': 'underline'}),
+                    dcc.RadioItems(
+                        id={
+                            'type': 'mpi',
+                            'page': page,
+                        },
+                        options=[
+                        {'label': 'Yes', 'value': True},
+                        {'label': 'No', 'value': False},
+                        ],
+                    ),
+                    dcc.Input(
+                        id={
+                            'type': 'workers',
+                            'page': page,
+                        },
+                        type='number',
+                        placeholder="Number of Workers",
+                        min=1,
+                        style={'display': 'none'},
+                    ),
+                ]
+            ),
+            utils.generate_seed_component(page),
             html.Hr(),
         ],
         md=6,
@@ -258,7 +289,6 @@ def hyperparameter_search(page):
                 multi=True,
                 placeholder="Select Agent(s)",
             ),
-            utils.generate_seed_component('none', 'none'),
             html.Div(
                 id='agent-hyperparameters-inputs',
                 children=[
