@@ -241,7 +241,7 @@ def hyperparameter_search(page):
                     'type': 'mpi-options',
                     'page': page,
                 },
-                style={'display': 'none'},
+                hidden=True,
                 children=[
                     html.Label('Use MPI', style={'text-decoration': 'underline'}),
                     dcc.RadioItems(
@@ -276,7 +276,10 @@ def hyperparameter_search(page):
         [
             html.H3('Agent Configuration'),
             dcc.Dropdown(
-                id='agent-type-selector',
+                id={
+                    'type':'agent-type-selector',
+                    'page':page,
+                    },
                 options=[
                     {'label': 'Reinforce', 'value': 'Reinforce'},
                     {'label': 'Actor Critic', 'value': 'ActorCritic'},
