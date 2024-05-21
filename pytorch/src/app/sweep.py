@@ -28,7 +28,6 @@ train_config_path = args.train_config
 def sweep(sweep_config, train_config):
     try:
 
-        
         hyperparameter_sweep(
             sweep_config,
             train_config['num_sweeps'],

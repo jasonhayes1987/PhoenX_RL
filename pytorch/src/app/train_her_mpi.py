@@ -20,14 +20,14 @@ train_config_path = args.train_config
 def train_agent(agent_config, train_config):
     try:
         agent_type = agent_config['agent_type']
-        load_weights = train_config['load_weights']
-        num_epochs = train_config['num_epochs']
-        num_cycles = train_config['num_cycles']
+        load_weights = train_config.get('load_weights', False)
+        num_epochs = train_config.get('num_epochs', None)
+        num_cycles = train_config.get('num_cycles', None)
         num_episodes = train_config['num_episodes']
-        num_updates = train_config['num_updates']
-        render = train_config['render']
-        render_freq = train_config['render_freq']
-        save_dir = agent_config['save_dir'] if train_config['save_dir'] is None else train_config['save_dir']
+        num_updates = train_config.get('num_updates', None)
+        render = train_config.get('render', False)
+        render_freq = train_config.get('render_freq', 0)
+        save_dir = train_config.get('save_dir', agent_config['save_dir'])
         run_number = train_config['run_number']
 
         assert agent_type == 'HER', f"Unsupported agent type: {agent_type}"
