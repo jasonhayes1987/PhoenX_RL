@@ -1886,6 +1886,8 @@ class HER(Agent):
 
         # get desired, achieved, reward func for env
         desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
+        # Reset env state to initiate state to detect correct goal shape
+        _,_ = env.reset()
         goal_shape = desired_goal_func(env).shape
 
         # Get actor clamp value
