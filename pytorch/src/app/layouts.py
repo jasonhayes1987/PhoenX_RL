@@ -241,7 +241,7 @@ def hyperparameter_search(page):
                     'type': 'mpi-options',
                     'page': page,
                 },
-                hidden=True,
+                style={'display': 'none'},
                 children=[
                     html.Label('Use MPI', style={'text-decoration': 'underline'}),
                     dcc.RadioItems(

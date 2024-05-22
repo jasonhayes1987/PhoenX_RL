@@ -868,6 +868,7 @@ def run_agent_settings_component(page, agent_type=None):
                 'page': page,
             },
             style={'display': 'none'},
+            # hidden=True,
             children=[
                 html.Label('Use MPI', style={'text-decoration': 'underline'}),
                 dcc.RadioItems(
@@ -1319,9 +1320,9 @@ def create_constant_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=0.01,
+                min=0.001,
                 max=0.99,
-                step=0.01,
+                step=0.001,
                 value=0.99,
             ),
             html.Hr(),
