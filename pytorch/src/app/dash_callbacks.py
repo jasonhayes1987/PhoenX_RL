@@ -2034,27 +2034,34 @@ def register_callbacks(app, shared_data):
     )
     def update_mpi_options(agent_data):
 
-        if agent_data['agent_type'] in ['DDPG', 'HER_DDPG']:
+        if agent_data['agent_type'] in ['DDPG', 'HER']:
             mpi_options_style = {'display': 'block'}
+        
         else:
             mpi_options_style = {'display': 'none'}
         
         return mpi_options_style
     
     @app.callback(
-    Output({'type': 'mpi-options', 'page': '/hyperparameter-search'}, 'hidden'),
+    Output({'type': 'mpi-options', 'page': '/hyperparameter-search'}, 'style'),
     Input({'type':'agent-type-selector', 'page': '/hyperparameter-search'}, 'value'),
     prevent_initial_call = True,
     )
     def update_mpi_hyperparam_options(agent_types):
 
-        # if any(agent in ['DDPG', 'HER'] for agent in agent_types):
-        if agent_types:
-            mpi_hidden = False
-        else:
-            mpi_hidden = True
+        print(f'agent types: {agent_types}')
+
+        if any(agent in ['DDPG', 'HER_DDPG'] for agent in agent_types):
+        # if agent_types:
+            print(f'hyperparam options true')
+            mpi_options = {'display': 'block'}
         
-        return mpi_hidden
+        else:
+            print(f'hyperparam options false')
+            mpi_options = {'display': 'none'}
+        
+        print(f'mpi options: {mpi_options}')
+        return mpi_options
     
     @app.callback(
     Output({'type': 'workers', 'page': MATCH}, 'style'),

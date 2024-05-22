@@ -67,9 +67,9 @@ def train_agent(agent_config, train_config):
                         # time.sleep(5)
                 
                 else:
-                    num_epochs = agent_config['num_epochs']
-                    num_cycles = agent_config['num_cycles']
-                    num_updates = agent_config['num_updates']
+                    num_epochs = train_config['num_epochs']
+                    num_cycles = train_config['num_cycles']
+                    num_updates = train_config['num_updates']
                     for i in range(num_runs):
                         agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir, run_number)
                         print(f'training run {i+1} initiated')
