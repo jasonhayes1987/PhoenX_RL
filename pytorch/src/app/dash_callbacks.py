@@ -2807,39 +2807,39 @@ def register_callbacks(app, shared_data):
             return {'display': 'block'}
         return {'display': 'none'}
         
-    @app.callback(
-        Output('hidden-div-fetch-process', 'children'),
-        Input({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
-        State({'type': 'projects-dropdown', 'page': '/hyperparameter-search'}, 'value'),
-        State('sweep-name', 'value'),
-    )
-    def start_data_fetch_processes(n_clicks, project, sweep_name):
-        if n_clicks > 0:
-            # Create and start the fetch_data_process
-            # print('start data fetch process called')
-            fetch_data_thread = threading.Thread(target=fetch_data_process, args=(project, sweep_name, shared_data))
-            fetch_data_thread.start()
+    # @app.callback(
+    #     Output('hidden-div-fetch-process', 'children'),
+    #     Input({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
+    #     State({'type': 'projects-dropdown', 'page': '/hyperparameter-search'}, 'value'),
+    #     State('sweep-name', 'value'),
+    # )
+    # def start_data_fetch_processes(n_clicks, project, sweep_name):
+    #     if n_clicks > 0:
+    #         # Create and start the fetch_data_process
+    #         # print('start data fetch process called')
+    #         fetch_data_thread = threading.Thread(target=fetch_data_process, args=(project, sweep_name, shared_data))
+    #         fetch_data_thread.start()
 
-        return None
+    #     return None
 
-    @app.callback(
-        Output('hidden-div-matrix-process', 'children'),
-        Input('start-matrix-process-interval', 'n_intervals'),
-        State({'type':'hyperparameter-selector', 'page':'/hyperparameter-search'}, 'value'),
-        State({'type':'bin-slider', 'page':'/hyperparameter-search'}, 'value'),
-        State({'type':'z-score-checkbox', 'page':'/hyperparameter-search'}, 'value'),
-        State({'type':'reward-threshold', 'page':'/hyperparameter-search'}, 'value'),
-        State({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
-    )
-    def start_matrix_process(n, hyperparameters, bins, zscore_option, reward_threshold, n_clicks):
-    # Create and start the update_heatmap_process
-        if n_clicks > 0:
-            z_score = 'zscore' in zscore_option
-            # print('start matrix process callback called')
-            update_heatmap_thread = threading.Thread(target=update_heatmap_process, args=(shared_data, hyperparameters, bins, z_score, reward_threshold))
-            update_heatmap_thread.start()
+    # @app.callback(
+    #     Output('hidden-div-matrix-process', 'children'),
+    #     Input('start-matrix-process-interval', 'n_intervals'),
+    #     State({'type':'hyperparameter-selector', 'page':'/hyperparameter-search'}, 'value'),
+    #     State({'type':'bin-slider', 'page':'/hyperparameter-search'}, 'value'),
+    #     State({'type':'z-score-checkbox', 'page':'/hyperparameter-search'}, 'value'),
+    #     State({'type':'reward-threshold', 'page':'/hyperparameter-search'}, 'value'),
+    #     State({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
+    # )
+    # def start_matrix_process(n, hyperparameters, bins, zscore_option, reward_threshold, n_clicks):
+    # # Create and start the update_heatmap_process
+    #     if n_clicks > 0:
+    #         z_score = 'zscore' in zscore_option
+    #         # print('start matrix process callback called')
+    #         update_heatmap_thread = threading.Thread(target=update_heatmap_process, args=(shared_data, hyperparameters, bins, z_score, reward_threshold))
+    #         update_heatmap_thread.start()
         
-        return None
+    #     return None
 
 
     @app.callback(
