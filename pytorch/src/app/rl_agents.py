@@ -1931,7 +1931,6 @@ class HER(Agent):
 
         # Replay buffer size
         replay_buffer_size = config[config.model_type][f"{config.model_type}_replay_buffer_size"]
-        print(f'REPLAY BUFFER SIZE: {replay_buffer_size}')
 
         # Save dir
         save_dir = config[config.model_type][f"{config.model_type}_save_dir"]
@@ -2178,8 +2177,8 @@ class HER(Agent):
                                 # print(agent._train_step_config)
                                 for callback in self.agent.callbacks:
                                     callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
-                        if not done:
-                            step_counter += 1
+                        # if not done:
+                        #     step_counter += 1 # Added step counter increment at top of if not done loop
 
                     # calculate success rate
                     # goal_distance = np.linalg.norm(next_state_achieved_goal - desired_goal, axis=-1)

@@ -356,18 +356,18 @@ def hyperparameter_search(page):
             dcc.Store(id={'type':'heatmap-data-store', 'page':page}),
             dcc.Interval(
                 id='heatmap-store-data-interval',
-                interval=1*1000,
+                interval=10*1000,
                 n_intervals=0
             ),
             dcc.Interval(
                 id='start-fetch-process-interval',
-                interval=1000,
+                interval=10*1000,
                 n_intervals=0,
                 max_intervals=1,
             ),
             dcc.Interval(
                 id='start-matrix-process-interval',
-                interval=1000,
+                interval=10*1000,
                 n_intervals=0,
             ),
             html.Div(id='hidden-div-fetch-process', style={'display': 'none'}),
