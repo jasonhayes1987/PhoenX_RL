@@ -28,8 +28,8 @@ class Model(nn.Module):
     def _init_weights(self, module_dict, layer_config):
         config_index = 0
         #DEBUG
-        print(f'layer config: {layer_config}')
-        print(f'layer config type: {type(layer_config)}')
+        # print(f'layer config: {layer_config}')
+        # print(f'layer config type: {type(layer_config)}')
 
         for layer_name, layer in module_dict.items():
             if 'dense' in layer_name:
@@ -37,113 +37,90 @@ class Model(nn.Module):
                     _, _, init_config = layer_config[config_index]
                 elif isinstance(layer_config, dict) or isinstance(layer_config, str):
                     init_config=layer_config
-                    print(f'init config: {init_config}')
+                    # print(f'init config: {init_config}')
 
                 ##DEBUG
-                print(f'{layer_name} using {init_config} for {layer}')
+                # print(f'{layer_name} using {init_config} for {layer}')
                 
                 if isinstance(init_config, dict):
                     if 'default' in init_config:
-                        print('default fired')
                         pass
 
                     if 'variance scaling' in init_config:
-                        print('dict variance scaling')
                         torch_utils.VarianceScaling_(layer.weight, **init_config['variance scaling'])
                     
                     elif 'xavier uniform' in init_config:
-                        print('xavier uniform')
                         nn.init.xavier_uniform_(layer.weight, **init_config['xavier uniform'])
 
                     elif 'xavier normal' in init_config:
-                        print('xavier normal')
                         nn.init.xavier_normal_(layer.weight, **init_config['xavier normal'])
 
                     elif 'kaiming uniform' in init_config:
-                        print('kaiming uniform')
                         nn.init.kaiming_uniform_(layer.weight, **init_config['kaiming uniform'])
                     
                     elif 'kaiming normal' in init_config:
-                        print('kaiming normal')
                         nn.init.kaiming_normal_(layer.weight, **init_config['kaiming normal'])
 
                     elif 'truncated normal' in init_config:
-                        print('truncated normal')
                         nn.init.trunc_normal_(layer.weight, **init_config['truncated normal'])
                         nn.init.trunc_normal_(layer.bias, **init_config['truncated normal'])
 
                     elif 'uniform' in init_config:
-                        print('uniform')
                         nn.init.uniform_(layer.weight, **init_config['uniform'])
                         nn.init.uniform_(layer.bias, **init_config['uniform'])
 
                     elif 'normal' in init_config:
-                        print('normal')
                         nn.init.normal_(layer.weight, **init_config['normal'])
                         nn.init.normal_(layer.bias, **init_config['normal'])
 
                     elif 'constant' in init_config:
-                        print('constant')
                         nn.init.constant_(layer.weight, **init_config['constant'])
                         nn.init.constant_(layer.bias, **init_config['constant'])
 
                     elif 'ones' in init_config:
-                        print('ones')
                         nn.init.ones_(layer.weight)
                         nn.init.ones_(layer.bias)
 
                     elif 'zeros' in init_config:
-                        print('zeros')
                         nn.init.zeros_(layer.weight)
                         nn.init.zeros_(layer.bias)
                 
                 elif isinstance(init_config, str):
                     if init_config == 'default':
-                        print('default')
                         pass
 
                     if init_config == 'variance scaling':
-                        print('variance scaling')
                         torch_utils.VarianceScaling_(layer.weight)
 
                     elif init_config == 'xavier uniform':
-                        print('xavier uniform')
                         nn.init.xavier_normal_(layer.weight)
 
                     elif init_config == 'xavier normal':
-                        print('xavier normal')
                         nn.init.xavier_normal_(layer.weight)
 
                     elif init_config == 'kaiming uniform':
-                        print('kaiming uniform')
                         nn.init.kaiming_uniform_(layer.weight)
 
                     elif init_config == 'kaiming normal':
-                        print('kaiming normal')
                         nn.init.kaiming_normal_(layer.weight)
                     
                     elif init_config == 'truncated normal':
-                        print('truncated normal')
                         nn.init.trunc_normal_(layer.weight)
                         nn.init.trunc_normal_(layer.bias)
 
                     elif init_config == 'uniform':
-                        print('uniform')
                         nn.init.uniform_(layer.weight)
                         nn.init.uniform_(layer.bias)
 
                     elif init_config == 'normal':
-                        print('normal')
                         nn.init.normal_(layer.weight)
                         nn.init.normal_(layer.bias)
 
                     elif init_config == 'ones':
-                        print('ones')
                         nn.init.ones_(layer.weight)
                         nn.init.ones_(layer.bias)
 
                     elif init_config == 'zeros':
-                        print('zeros')
                         nn.init.zeros_(layer.weight)
                         nn.init.zeros_(layer.bias)
                 
@@ -925,15 +902,6 @@ class CriticModel(Model):
         # add output layer to merged layers
         self.output_layer['critic_dense_output'] = nn.Linear(input_size, 1)
 
-        # Output layer kernel initialization dependent on presence of cnn model
-        # if self.cnn_model:
-        #     nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-4, 3e-4)
-        #     nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-4, 3e-4)
-        # else:
-        #     nn.init.uniform_(self.output_layer['critic_output'].weight, -3e-3, 3e-3)
-        #     nn.init.uniform_(self.output_layer['critic_output'].bias, -3e-3, 3e-3)
-        
-        # UPDATE output layer kernel to be hyperparam
         self._init_weights(self.output_layer, self.output_config)
 
         # Define the optimizer
