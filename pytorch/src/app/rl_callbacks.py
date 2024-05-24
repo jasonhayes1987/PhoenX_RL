@@ -74,35 +74,37 @@ class WandbCallback(Callback):
     def on_train_begin(self, models, logs=None, run_number=None):
         """Initializes W&B run for training."""
 
-        # self._sweep = 'WANDB_SWEEP_ID' in os.environ
+        self._sweep = 'WANDB_SWEEP_ID' in os.environ
         
         # ##DEBUG
         # print(f'self._sweep = {self._sweep}')
 
 
-        # if not self._sweep:
-        if run_number is None:
-            run_number = wandb_support.get_next_run_number(self.project_name)
+        if not self._sweep:
+            if run_number is None:
+                run_number = wandb_support.get_next_run_number(self.project_name)
 
-        wandb.init(
-            project=self.project_name,
-            name=f"train-{run_number}",
-            tags=["train", self.model_type],
-            group=f"group-{run_number}",
-            job_type="train",
-            config=logs,
-        )
-        # tell wandb to watch models to store gradients and params
-        wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
+            wandb.init(
+                project=self.project_name,
+                name=f"train-{run_number}",
+                tags=["train", self.model_type],
+                group=f"group-{run_number}",
+                job_type="train",
+                config=logs,
+            )
+            # tell wandb to watch models to store gradients and params
+            wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
 
-        # save run name
-        self.run_name = wandb.run.name
+            # save run name
+            self.run_name = wandb.run.name
 
     def on_train_end(self, logs=None):
         """Finishes W&B run for training."""
 
         if not self._sweep:
             wandb.finish()
+        # else:
+        #     wandb.run.finish()
 
     def on_train_epoch_begin(self, epoch, logs=None):
         """Initializes W&B run for epoch."""
