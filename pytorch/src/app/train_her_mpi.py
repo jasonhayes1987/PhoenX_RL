@@ -28,7 +28,7 @@ def train_agent(agent_config, train_config):
         render = train_config.get('render', False)
         render_freq = train_config.get('render_freq', 0)
         save_dir = train_config.get('save_dir', agent_config['save_dir'])
-        run_number = train_config['run_number']
+        run_number = train_config.get('run_number', None)
 
         assert agent_type == 'HER', f"Unsupported agent type: {agent_type}"
 
