@@ -97,6 +97,9 @@ class WandbCallback(Callback):
 
             # save run name
             self.run_name = wandb.run.name
+        
+        else:
+            wandb.init()
 
     def on_train_end(self, logs=None):
         """Finishes W&B run for training."""
