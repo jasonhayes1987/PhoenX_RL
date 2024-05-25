@@ -31,22 +31,30 @@ navbar = dbc.NavbarSimple(
         dbc.NavItem(dbc.NavLink("Co-Occurrence Analysis", href="/co-occurrence-analysis")),
         dbc.NavItem(dbc.NavLink("WandB Utils", href="/wandb-utils")),
     ],
-    brand="RL Agent Training and Testing App",
-    brand_href="/",
-    color="primary",
+    brand="Phoenix AI",
+    brand_href="#",
+    color="dark",
     dark=True,
+    className="navbar",
     sticky="top",
 )
 
+# banner = html.Div([
+#     dbc.Container(
+#         [
+#             html.Img(src="https://img.freepik.com/free-photo/ai-machine-learning-hand-robot-human_587448-4824.jpg?t=st=1708716455~exp=1708720055~hmac=420ba1f82041709af10980bc6e9f9106b911414152f1a2b76154190a48e73e05&w=2000",
+#                      style={"width": "100%", "height": "150px"}),
+#         ],
+#         fluid=True,
+#         className="py-2",
+#     )
+# ])
+
 banner = html.Div([
-    dbc.Container(
-        [
-            html.Img(src="https://img.freepik.com/free-photo/ai-machine-learning-hand-robot-human_587448-4824.jpg?t=st=1708716455~exp=1708720055~hmac=420ba1f82041709af10980bc6e9f9106b911414152f1a2b76154190a48e73e05&w=2000",
-                     style={"width": "100%", "height": "150px"}),
-        ],
-        fluid=True,
-        className="py-2",
-    )
+    html.Div([
+        html.Img(src='/assets/phoenix_logo.png', className='logo'),
+        html.Div("Phoenix AI", className="header-title"),
+    ], className="header"),
 ])
 
 app.layout = dbc.Container(
@@ -67,4 +75,4 @@ if __name__ == "__main__":
 
     # Pass the shared data to the register_callbacks function
     dash_callbacks.register_callbacks(app, shared_data)
-    app.run(debug=False, dev_tools_ui=False, dev_tools_props_check=False)
+    app.run(debug=True, dev_tools_ui=True, dev_tools_props_check=True)
