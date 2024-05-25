@@ -28,7 +28,7 @@ args = parser.parse_args()
 sweep_config_path = args.sweep_config
 train_config_path = args.train_config
 
-def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep):
+def _run_sweep(sweep_config, train_config):
 
     # max_retries = 3
     # retry_delay = 10  # seconds
@@ -48,7 +48,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
             tags=["train"],
             group=f"group-{run_number}",
         )
-        # run.tags = run.tags + (wandb.config.model_type,)
+        run.tags = run.tags + (wandb.config.model_type,)
         #DEBUG
         # print(f"creating env { {param: value['value'] for param, value in sweep_config['parameters']['env']['parameters'].items()} }")
         env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
@@ -56,6 +56,7 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
         # print(f'env spec: {env.spec}')
 
         # check for agent type since constructors are different
+        # if wandb.config.model_type == "Reinforce" or wandb.config.model_type == "Actor Critic":
         if wandb.config.model_type == "Reinforce" or wandb.config.model_type == "Actor Critic":
             policy_layers, value_layers = build_layers(wandb.config)
             agent = get_agent_class_from_type(wandb.config.model_type)
@@ -110,13 +111,13 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
 
         agent_config_path = rl_agent.save_dir + '/config.json'
         train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
-        # Import train config to add run number
-        with open(train_config_path, 'r') as file:
-            train_config = json.load(file)
-        train_config['run_number'] = run_number
+        # # Import train config to add run number
+        # with open(train_config_path, 'r') as file:
+        #     train_config = json.load(file)
+        # train_config['run_number'] = run_number
         # Save updated train config
-        with open(train_config_path, 'w') as file:
-            json.dump(train_config, file)
+        # with open(train_config_path, 'w') as file:
+        #     json.dump(train_config, file)
 
         run_command = f"python train.py --agent_config {agent_config_path} --train_config {train_config_path}"
         subprocess.Popen(run_command, shell=True)
@@ -141,10 +142,7 @@ if __name__ == '__main__':
             sweep_id,
             function=lambda: _run_sweep(
                 sweep_config,
-                train_config["num_episodes"],
-                train_config["num_epochs"],
-                train_config["num_cycles"],
-                train_config["num_updates"],
+                train_config
             ),
             count=train_config["num_sweeps"],
             project=sweep_config["project"],

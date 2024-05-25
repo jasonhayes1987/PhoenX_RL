@@ -37,7 +37,7 @@ def train_agent(agent_config, train_config):
         #DEBUG
         print(f'training save dir: {save_dir}')
         seed = train_config['seed']
-        run_number = train_config['run_number']
+        run_number = train_config.get('run_number', None)
         # num_runs = train_config.get('num_runs', 1)
 
         # MPI flag
