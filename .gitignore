@@ -154,7 +154,7 @@ cython_debug/
 
 # Other
 model*/
-assets/
+# assets/
 artifacts/
 .vscode/
 vscode/
