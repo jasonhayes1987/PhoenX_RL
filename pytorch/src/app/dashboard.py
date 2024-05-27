@@ -16,45 +16,25 @@ import utils
 
 
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
-# celery_app = Celery('tasks', broker=broker_url)
-# celery_app.config_from_object('celery_config')
 
-# dash_callbacks.register_callbacks(app)  # Function to register callbacks
-
-navbar = dbc.NavbarSimple(
-    children=[
-        dbc.NavItem(dbc.NavLink("Home", href="/")),
-        dbc.NavItem(dbc.NavLink("Build Agent", href="/build-agent")),
-        dbc.NavItem(dbc.NavLink("Train Agent", href="/train-agent")),
-        dbc.NavItem(dbc.NavLink("Test Agent", href="/test-agent")),
-        dbc.NavItem(dbc.NavLink("Hyperparameter Search", href="/hyperparameter-search")),
-        dbc.NavItem(dbc.NavLink("Co-Occurrence Analysis", href="/co-occurrence-analysis")),
-        dbc.NavItem(dbc.NavLink("WandB Utils", href="/wandb-utils")),
+navbar = html.Div(
+    [
+        dbc.NavLink("Home", href="/", className="nav-link"),
+        dbc.NavLink("Build Agent", href="/build-agent", className="nav-link"),
+        dbc.NavLink("Train Agent", href="/train-agent", className="nav-link"),
+        dbc.NavLink("Test Agent", href="/test-agent", className="nav-link"),
+        dbc.NavLink("Hyperparameter Search", href="/hyperparameter-search", className="nav-link"),
+        dbc.NavLink("Co-Occurrence Analysis", href="/co-occurrence-analysis", className="nav-link"),
+        dbc.NavLink("WandB Utils", href="/wandb-utils", className="nav-link"),
     ],
-    brand="Phoenix AI",
-    brand_href="#",
-    color="dark",
-    dark=True,
     className="navbar",
-    sticky="top",
 )
-
-# banner = html.Div([
-#     dbc.Container(
-#         [
-#             html.Img(src="https://img.freepik.com/free-photo/ai-machine-learning-hand-robot-human_587448-4824.jpg?t=st=1708716455~exp=1708720055~hmac=420ba1f82041709af10980bc6e9f9106b911414152f1a2b76154190a48e73e05&w=2000",
-#                      style={"width": "100%", "height": "150px"}),
-#         ],
-#         fluid=True,
-#         className="py-2",
-#     )
-# ])
 
 banner = html.Div([
     html.Div([
-        html.Img(src='/assets/phoenix_logo.png', className='logo'),
-        html.Div("Phoenix AI", className="header-title"),
-    ], className="header"),
+        # html.Img(src='/assets/banner_edit.png', className='banner_img'),
+        # html.Div("Phoenix AI", className="header-title"),
+    ], className="banner"),
 ])
 
 app.layout = dbc.Container(
