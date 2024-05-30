@@ -2078,6 +2078,23 @@ def register_callbacks(app, shared_data):
         return workers_style
     
     @app.callback(
+    Output({'type': 'sweep-options', 'page': '/hyperparameter-search'}, 'style'),
+    Input({'type':'device', 'model': 'none', 'agent':ALL}, 'value'),
+    State('url', 'pathname'),
+    prevent_initial_call = True,
+    )
+    def update_sweep_option(device, page):
+
+        if page == '/hyperparameter-search':
+
+            if any([d=='cpu' for d in device]):
+                options = {'display': 'block'}
+            else:
+                options = {'display': 'none'}
+            
+            return options
+    
+    @app.callback(
     Output({'type': 'clamp-value', 'model':MATCH, 'agent':MATCH}, 'style'),
     Input({'type':'clamp-output', 'model':MATCH, 'agent':MATCH}, 'value'),
     prevent_initial_call = True,
@@ -2687,13 +2704,14 @@ def register_callbacks(app, shared_data):
         State('num-updates', 'value'),
         State({'type':'mpi', 'page':'/hyperparameter-search'}, 'value'),
         State({'type':'workers', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'num-sweep-agents', 'page':'/hyperparameter-search'}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
         # extract any additional gym env params
         params = utils.extract_gym_params(env_params)
@@ -2725,13 +2743,14 @@ def register_callbacks(app, shared_data):
                 # Add MPI config if not None else None
                 train_config['use_mpi'] = use_mpi if use_mpi is not None else None
                 train_config['num_workers'] = num_workers if num_workers is not None else None
+                train_config['num_agents'] = num_workers if num_workers is not None else None
                 
                 # Update additional settings for HER agent
                 train_config['num_epochs'] = num_epochs if num_epochs is not None else None
                 train_config['num_cycles'] = num_cycles if num_cycles is not None else None
-                train_config['num_updates'] = num_updates if num_updates is not None else None
+                train_config['num_updates'] = num_agents if num_updates is not None else 1
             
-                # Save the updated configuration to a train config file
+            #     # Save the updated configuration to a train config file
                 os.makedirs('sweep', exist_ok=True)
                 train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
                 with open(train_config_path, 'w') as f:
@@ -2742,9 +2761,10 @@ def register_callbacks(app, shared_data):
                 with open(sweep_config_path, 'w') as f:
                     json.dump(sweep_config, f)
 
-                script_path = 'sweep.py'
-                run_command = f"python {script_path} --sweep_config {sweep_config_path} --train_config {train_config_path}"
-                subprocess.Popen(run_command, shell=True)
+                command = ['python', 'sweep.py']
+
+                subprocess.Popen(command)
+            
 
         raise PreventUpdate
 

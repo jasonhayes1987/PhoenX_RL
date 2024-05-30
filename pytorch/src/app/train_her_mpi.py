@@ -17,6 +17,10 @@ args = parser.parse_args()
 agent_config_path = args.agent_config
 train_config_path = args.train_config
 
+def load_config(path):
+    with open(path, 'r', encoding="utf-8") as f:
+        return json.load(f)
+
 def train_agent(agent_config, train_config):
     try:
         agent_type = agent_config['agent_type']
@@ -50,11 +54,8 @@ def train_agent(agent_config, train_config):
 
 if __name__ == '__main__':
     try:
-        with open(agent_config_path, 'r', encoding="utf-8") as f:
-            agent_config = json.load(f)
-
-        with open(train_config_path, 'r', encoding="utf-8") as f:
-            train_config = json.load(f)
+        agent_config = load_config(agent_config_path)
+        train_config = load_config(train_config_path)
 
         train_agent(agent_config, train_config)
 
