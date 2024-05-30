@@ -3707,6 +3707,7 @@ def generate_wandb_project_dropdown(page):
             id={'type':'projects-dropdown', 'page':page},
             options=[{'label': project, 'value': project} for project in projects],
             placeholder="Select a W&B Project",
+            className="dropdown-field"
             )
         ])
 

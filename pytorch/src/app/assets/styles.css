@@ -3,11 +3,12 @@
 
 body {
     font-family: 'Roboto', sans-serif;
-    background-color: #000000; /* Fallback color */
+    background-color: #000000; /* Set body background color to black */
     color: #FFFFFF;
     position: relative; /* Needed to position the overlay */
 }
 
+/* Remove this section as we no longer use it for background image
 body::before {
     content: '';
     position: fixed;
@@ -15,32 +16,26 @@ body::before {
     left: 0;
     width: 100%;
     height: 100%;
-    background-image: url('/assets/phoenix_logo.png');
-    background-size: contain;
+    background-image: url('/assets/banner_7.png');
+    background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
-    opacity: 0.2; /* Adjust the opacity here */
-    z-index: -1; /* Ensure the overlay is behind the content */
+    opacity: 0.4;
+    z-index: -1;
 }
-
-/* .header {
-    background-color: transparent;
-    padding: 10px 20px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-} */
+*/
 
 .banner {
-    background-image: url('/assets/banner_edit.png');
-    background-size: cover; /* Cover the entire banner area */
-    background-position: center;
-    background-repeat: no-repeat;
-    height: 200px; /* Adjust height as needed */
+    background-image: url('/assets/banner_8.png'); /* Set the banner image */
+    background-size: contain; /* Cover the entire banner area */
+    background-position: center; /* Center the image */
+    background-repeat: no-repeat; /* Do not repeat the image */
+    height: 300px; /* Set the height of the banner */
     display: flex;
     align-items: center;
     justify-content: center;
     color: #FFFFFF;
+    /* Add text styles here if needed */
     font-size: 36px;
     font-weight: bold;
     text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.7);
@@ -49,21 +44,46 @@ body::before {
 .navbar {
     background: rgba(0, 0, 0, 0.5); /* Semi-transparent background */
     padding: 10px 20px;
-    border-top: 1px solid #00BFFF; /* Top border */
-    border-bottom: 1px solid #00BFFF; /* Bottom border */
     display: flex;
     justify-content: center;
 }
 
 .navbar a {
-    color: #00BFFF;
+    color: #bbd5df;
     margin: 0 15px;
     text-decoration: none;
     font-size: 18px;
+    font-weight: bold;
+    position: relative;
+    transition: color 0.3s ease, text-shadow 0.3s ease;
+}
+
+.navbar a::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: -5px;
+    width: 0;
+    height: 2px;
+    background-color: #00BFFF;
+    transition: width 0.3s ease, left 0.3s ease;
 }
 
 .navbar a:hover {
-    text-decoration: underline;
+    color: #00BFFF;
+    text-shadow: 0 0 8px #00BFFF;
+}
+
+.navbar a:hover::after {
+    width: 100%;
+    left: 0;
+}
+
+
+.container {
+    padding: 40px;
+    /* max-width: 800px; */
+    margin: auto;
 }
 
 .container {
@@ -81,17 +101,31 @@ body::before {
 }
 
 .dropdown-field {
-    background-color: #1A1A2E;
-    color: #FFFFFF;
+    background-color: #1A1A2E; /* Background color of the dropdown field */
+    color: #bbd5df;
     padding: 10px;
     border: 1px solid #00BFFF;
     border-radius: 4px;
     margin-bottom: 20px;
 }
 
-.dropdown-menu {
-    background-color: #1A1A2E;
+/* .dropdown-field:focus {
+    background-color: #333333;
+    border-color: #00BFFF;
+} */
+
+.Select-menu-outer {
+    background-color: #000000; /* Background color of the dropdown menu */
+}
+
+.Select-menu-outer .Select-option {
+    background-color: #1A1A2E; /* Background color of the dropdown items */
     color: #FFFFFF;
+}
+
+.Select-menu-outer .Select-option:hover {
+    background-color: #333333; /* Background color of dropdown items on hover */
+    color: #00BFFF;
 }
 
 .button {

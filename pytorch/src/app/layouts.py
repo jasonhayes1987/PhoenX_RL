@@ -266,6 +266,24 @@ def hyperparameter_search(page):
                     ),
                 ]
             ),
+            html.Div(
+                id={
+                    'type': 'sweep-options',
+                    'page': page,
+                },
+                style={'display': 'none'},
+                children=[
+                    dcc.Input(
+                        id={
+                            'type': 'num-sweep-agents',
+                            'page': page,
+                        },
+                        type='number',
+                        placeholder="Number of Sweep Agents",
+                        min=1,
+                    ),
+                ],
+            ),
             utils.generate_seed_component(page),
             html.Hr(),
         ],

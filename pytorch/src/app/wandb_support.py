@@ -313,11 +313,12 @@ def load_model_from_run(run_name: str, project_name: str, load_weights: bool = T
 
 def hyperparameter_sweep(
     sweep_config,
-    num_sweeps: int,
-    episodes_per_sweep: int,
-    epochs_per_sweep: int = None,
-    cycles_per_sweep: int = None,
-    updates_per_sweep: int = None,
+    train_config,
+    # num_sweeps: int,
+    # episodes_per_sweep: int,
+    # epochs_per_sweep: int = None,
+    # cycles_per_sweep: int = None,
+    # updates_per_sweep: int = None,
 ):
     """Runs a hyperparameter sweep of the specified agent.
 
@@ -334,16 +335,14 @@ def hyperparameter_sweep(
     # print(f'sweep id: {sweep_id}')
     wandb.agent(
         sweep_id,
-        function=lambda: _run_sweep(
-            sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep,
-        ),
-        count=num_sweeps,
+        function=lambda: _run_sweep(sweep_config, train_config,),
+        count=train_config['num_sweeps'],
         project=sweep_config["project"],
     )
     # wandb.teardown()
 
 
-def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sweep, updates_per_sweep):
+def _run_sweep(sweep_config, train_config):
     """Runs a single sweep of the hyperparameter search.
 
     Args:
@@ -362,17 +361,19 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
     for attempt in range(max_retries):
         try:
             run_number = get_next_run_number(sweep_config["project"])
+            # Add run number to train config
+            train_config['run_number'] = run_number
             #DEBUG
             # print(f'run number: {run_number}')
-            # run = wandb.init(
-            #     project=sweep_config["project"],
-            #     # settings=wandb.Settings(start_method='thread'),
-            #     job_type="train",
-            #     name=f"train-{run_number}",
-            #     tags=["train"],
-            #     group=f"group-{run_number}",
-            # )
-            # run.tags = run.tags + (wandb.config.model_type,)
+            run = wandb.init(
+                project=sweep_config["project"],
+                settings=wandb.Settings(start_method='thread'),
+                job_type="train",
+                name=f"train-{run_number}",
+                tags=["train"],
+                group=f"group-{run_number}",
+            )
+            run.tags = run.tags + (wandb.config.model_type,)
             #DEBUG
             # print(f"creating env { {param: value['value'] for param, value in sweep_config['parameters']['env']['parameters'].items()} }")
             env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
@@ -436,10 +437,10 @@ def _run_sweep(sweep_config, episodes_per_sweep, epochs_per_sweep, cycles_per_sw
 
             agent_config_path = rl_agent.save_dir + '/config.json'
             train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
-            # Import train config to add run number
-            with open(train_config_path, 'r') as file:
-                train_config = json.load(file)
-            train_config['run_number'] = run_number
+            # # Import train config to add run number
+            # with open(train_config_path, 'r') as file:
+            #     train_config = json.load(file)
+            # train_config['run_number'] = run_number
             # Save updated train config
             with open(train_config_path, 'w') as file:
                 json.dump(train_config, file)

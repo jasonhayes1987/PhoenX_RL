@@ -55,36 +55,22 @@ class Callback():
 class WandbCallback(Callback):
     """Wandb callback for Keras integration."""
 
-    def __init__(
-        self,
-        project_name: str,
-        run_name: str = None,
-        chkpt_freq: int = 100, #epochs
-        _sweep: bool = False,
-    ):
+    def __init__(self, project_name: str, run=None, chkpt_freq: int = 100):
         super().__init__()
         self.project_name = project_name
+        self.run = run
         self.save_dir = None
-        self.run_name = run_name
+        self.run_name = run.name if run else None
         self.model_type = None
-        self._sweep = _sweep
         self.chkpt_freq = chkpt_freq
-        # self._ckpt_counter = 1
 
     def on_train_begin(self, models, logs=None, run_number=None):
-        """Initializes W&B run for training."""
-
-        self._sweep = 'WANDB_SWEEP_ID' in os.environ
         
-        # ##DEBUG
-        # print(f'self._sweep = {self._sweep}')
-
-
-        if not self._sweep:
+        if not self.run:
             if run_number is None:
                 run_number = wandb_support.get_next_run_number(self.project_name)
 
-            wandb.init(
+            self.run = wandb.init(
                 project=self.project_name,
                 name=f"train-{run_number}",
                 tags=["train", self.model_type],
@@ -92,22 +78,14 @@ class WandbCallback(Callback):
                 job_type="train",
                 config=logs,
             )
-            # tell wandb to watch models to store gradients and params
             wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
-
-            # save run name
-            self.run_name = wandb.run.name
-        
-        else:
-            wandb.init()
+            self.run_name = self.run.name
 
     def on_train_end(self, logs=None):
         """Finishes W&B run for training."""
 
-        if not self._sweep:
+        if self.run:
             wandb.finish()
-        # else:
-        #     wandb.run.finish()
 
     def on_train_epoch_begin(self, epoch, logs=None):
         """Initializes W&B run for epoch."""
@@ -130,25 +108,23 @@ class WandbCallback(Callback):
         wandb.log(logs, step=step)
 
     def on_test_begin(self, logs=None, run_number=None):
-        """Initializes W&B run for testing."""
+        if not self.run:
+            if run_number is None:
+                run_number = wandb_support.get_run_number_from_name(self.run_name)
 
-        if run_number is None:
-            run_number = wandb_support.get_run_number_from_name(self.run_name)
-        
-        wandb.init(
-            project=self.project_name,
-            job_type="test",
-            tags=["test", self.model_type],
-            name=f"test-{run_number}",
-            group=f"group-{run_number}",
-            config=logs,
-        )
-        wandb.config.update({"model_type": self.model_type})
+            self.run = wandb.init(
+                project=self.project_name,
+                job_type="test",
+                tags=["test", self.model_type],
+                name=f"test-{run_number}",
+                group=f"group-{run_number}",
+                config=logs,
+            )
+            wandb.config.update({"model_type": self.model_type})
 
     def on_test_end(self, logs=None):
-        """Finishes W&B run for testing."""
-
-        wandb.finish()
+        if self.run:
+            wandb.finish()
 
     def on_test_epoch_begin(self, epoch, logs=None):
         """Initializes W&B run for epoch."""

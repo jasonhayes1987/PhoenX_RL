@@ -137,7 +137,7 @@ class ActorCritic(Agent):
             env, dense_layers=value_layers, optimizer=value_optimizer, learning_rate=value_learning_rate
         )
 
-        return cls(
+        agent = cls(
             env,
             policy_model,
             value_model,
@@ -147,6 +147,10 @@ class ActorCritic(Agent):
             callbacks,
             save_dir=save_dir,
         )
+
+        agent.save()
+
+        return agent
 
     def _initialize_env(self, render=False, render_freq=10, context=None):
         """Initializes a new environment."""
@@ -504,7 +508,7 @@ class Reinforce(Agent):
             env, dense_layers=value_layers, optimizer=value_optimizer, learning_rate=config.learning_rate
         )
 
-        return cls(
+        agent = cls(
             env,
             policy_model,
             value_model,
@@ -512,6 +516,10 @@ class Reinforce(Agent):
             callbacks,
             save_dir=save_dir,
         )
+
+        agent.save()
+
+        return agent
 
 
     def _initialize_env(self, render=False, render_freq=10, context=None):
@@ -1040,7 +1048,7 @@ class DDPG(Agent):
             # normalize_kwargs = config[config.model_type][f"{config.model_type}_normalize_clip"]
             normalizer_clip = config[config.model_type][f"{config.model_type}_normalize_clip"]
 
-        return cls(
+        agent = cls(
             env = env,
             actor_model = actor_model,
             critic_model = critic_model,
@@ -1056,6 +1064,10 @@ class DDPG(Agent):
             callbacks = callbacks,
             save_dir = save_dir,
         )
+
+        agent.save()
+
+        return agent
 
     def _init_her(self):
             # self.normalize_inputs = True
