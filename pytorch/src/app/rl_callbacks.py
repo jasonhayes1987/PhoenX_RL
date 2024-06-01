@@ -55,20 +55,20 @@ class Callback():
 class WandbCallback(Callback):
     """Wandb callback for Keras integration."""
 
-    def __init__(self, project_name: str, run=None, chkpt_freq: int = 100):
+    def __init__(self, project_name: str, chkpt_freq: int = 100, _sweep:bool=False):
         super().__init__()
         self.project_name = project_name
-        self.run = run
+        # self.run = run
         self.save_dir = None
-        self.run_name = run.name if run else None
+        self.run_name = run_name
         self.model_type = None
         self.chkpt_freq = chkpt_freq
+        self._sweep = _sweep
 
     def on_train_begin(self, models, logs=None, run_number=None):
         
-        if not self.run:
-            if run_number is None:
-                run_number = wandb_support.get_next_run_number(self.project_name)
+        if not self._sweep:
+            run_number = wandb_support.get_next_run_number(self.project_name)
 
             self.run = wandb.init(
                 project=self.project_name,
@@ -84,7 +84,7 @@ class WandbCallback(Callback):
     def on_train_end(self, logs=None):
         """Finishes W&B run for training."""
 
-        if self.run:
+        if not self._sweep:
             wandb.finish()
 
     def on_train_epoch_begin(self, epoch, logs=None):
@@ -108,9 +108,8 @@ class WandbCallback(Callback):
         wandb.log(logs, step=step)
 
     def on_test_begin(self, logs=None, run_number=None):
-        if not self.run:
-            if run_number is None:
-                run_number = wandb_support.get_run_number_from_name(self.run_name)
+        if not self._sweep:
+            run_number = wandb_support.get_run_number_from_name(self.run_name)
 
             self.run = wandb.init(
                 project=self.project_name,
@@ -123,7 +122,7 @@ class WandbCallback(Callback):
             wandb.config.update({"model_type": self.model_type})
 
     def on_test_end(self, logs=None):
-        if self.run:
+        if not self._sweep:
             wandb.finish()
 
     def on_test_epoch_begin(self, epoch, logs=None):
@@ -189,7 +188,8 @@ class WandbCallback(Callback):
             'class_name': self.__class__.__name__,
             'config': {
                 'project_name': self.project_name,
-                'run_name': self.run_name,
+                # 'run_name': self.run_name,
+                'chkpt_freq': self.chkpt_freq
             }
         }
 
