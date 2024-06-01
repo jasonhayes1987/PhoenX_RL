@@ -145,7 +145,7 @@ def test_agent(page):
 
 
 def hyperparameter_search(page):
-    left_column = dbc.Col(
+    right_column = dbc.Col(
         [
             html.H3('Wandb Project'),
             utils.generate_wandb_project_dropdown(page),
@@ -290,7 +290,7 @@ def hyperparameter_search(page):
         md=6,
     )
 
-    right_column = dbc.Col(
+    left_column = dbc.Col(
         [
             html.H3('Agent Configuration'),
             dcc.Dropdown(

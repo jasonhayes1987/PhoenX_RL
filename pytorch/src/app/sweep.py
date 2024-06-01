@@ -187,12 +187,13 @@ def train():
 
     callbacks = []
     if wandb.run:
-        callbacks.append(WandbCallback(project_name=wandb.run.project, run=wandb.run))
+        logger.debug("if wandb.run fired")
+        callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
 
     env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
     logger.debug(f"Environment created: {env}")
 
-    if config.model_type == 'HER':
+    if config.model_type == 'HER_DDPG':
         actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(config)
         agent_class = get_agent_class_from_type(config.model_type)
         rl_agent = agent_class.build(

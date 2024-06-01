@@ -60,7 +60,7 @@ class WandbCallback(Callback):
         self.project_name = project_name
         # self.run = run
         self.save_dir = None
-        self.run_name = run_name
+        # self.run_name = run_name
         self.model_type = None
         self.chkpt_freq = chkpt_freq
         self._sweep = _sweep
