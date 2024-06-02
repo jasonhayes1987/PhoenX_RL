@@ -140,6 +140,22 @@ logger = logging.getLogger(__name__)
 def load_config(path):
     with open(path, 'r', encoding="utf-8") as f:
         return json.load(f)
+    
+def setup_wandb(sweep_config):
+    try:
+        run_number = get_next_run_number(sweep_config["project"])
+        logger.debug(f"Run number: {run_number}")
+
+        wandb.init(
+            project=sweep_config["project"],
+            settings=wandb.Settings(start_method='thread'),
+            job_type="train",
+            name=f"train-{run_number}",
+            tags=["train"],
+            group=f"group-{run_number}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize Weights & Biases: {e}")
 
 def train():
     logger.debug("Entered train function")
@@ -154,17 +170,7 @@ def train():
     sweep_config = load_config(sweep_config_path)
     logger.debug(f"Loaded sweep config: {sweep_config}")
 
-    run_number = get_next_run_number(sweep_config["project"])
-    logger.debug(f"Run number: {run_number}")
-
-    wandb.init(
-        project=sweep_config["project"],
-        settings=wandb.Settings(start_method='thread'),
-        job_type="train",
-        name=f"train-{run_number}",
-        tags=["train"],
-        group=f"group-{run_number}",
-    )
+    setup_wandb(sweep_config)
 
     config = wandb.config
     logger.debug(f"Wandb config: {config}")
@@ -233,20 +239,28 @@ if __name__ == "__main__":
     sweep_config_path = "sweep/sweep_config.json"
     train_config_path = "sweep/train_config.json"
 
-    sweep_config = load_config(sweep_config_path)
-    train_config = load_config(train_config_path)
+    try:
+        sweep_config = load_config(sweep_config_path)
+        train_config = load_config(train_config_path)
 
-    logger.debug(f"Sweep config: {sweep_config}")
-    logger.debug(f"Train config: {train_config}")
+        logger.debug(f"Sweep config: {sweep_config}")
+        logger.debug(f"Train config: {train_config}")
 
-    sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
-    logger.debug(f"Sweep ID: {sweep_id}")
+        if sweep_config:
+            sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
+            logger.debug(f"Sweep ID: {sweep_id}")
 
-    wandb.agent(
-        sweep_id,
-        function=train,
-        count=train_config['num_sweeps'],
-        project=sweep_config["project"],
-    )
+            wandb.agent(
+                sweep_id,
+                function=train,
+                count=train_config['num_sweeps'],
+                project=sweep_config["project"],
+            )
+        else:
+            logger.error("Sweep configuration is None.")
+    except KeyError as e:
+        logger.error(f"KeyError in W&B stream handling: {e}")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
 
 
