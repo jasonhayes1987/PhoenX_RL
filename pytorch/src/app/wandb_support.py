@@ -868,28 +868,18 @@ def fetch_sweep_hyperparameters_single_run(project_name, sweep_name):
         flattened_config = helper.flatten_dict(config)
         for key in flattened_config.keys():
             if not key.startswith('_') and not key in ['wandb_version', 'state', 'env']:
-                logging.debug(f"key before:{key}")
+                print(f"key before:{key}")
                 key = parse_parameter_name(key)
-                logging.debug(f"key after:{key}")
+                print(f"key after:{key}")
                 hyperparameters.add(key)
 
     return list(hyperparameters)
 
 def parse_parameter_name(parameter_string):
-    # parts = parameter_string.split('_', 2)
+    # check if first 2 parts match the next 2 and if so, get rid of first 2 and return the rest
     parts = parameter_string.split('_') # update to split on _ without maxsplit
-    logging.debug(f"parts:{parts}")
-    # if len(parts) == 3:
-        # model_type, _, parameter_name = parts
-        # return f"{model_type}_{parameter_name}"
-    for i, p in enumerate(parts): # loop through each index in parts
-        logging.debug(f"i:{i}, p:{p}")
-        if i < len(parts)-1: # dont check the final index in parts b/c no next index to check
-            if parts[i] == parts[i+1]: # if the first string is repeated (model_type)
-                logging.debug(f"parts[i]:{parts[i]}")
-                logging.debug(f"parts[i+1]:{parts[i+1]}")
-                logging.debug(f"joined parts:{parts[i] + '_'.join(parts[i+1:])}")
-                return parts[i] + '_'.join(parts[i+1:]) # remove the repeated string and return the rest joined by '_'
+    if parts[:2] == parts[2:4]: # if the first string is repeated (model_type)
+        return '_'.join(parts[2:]) # remove the repeated string and return the rest joined by '_'
                                             
     else:
         return parameter_string
