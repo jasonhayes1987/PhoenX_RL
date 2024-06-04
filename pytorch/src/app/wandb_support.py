@@ -257,7 +257,7 @@ def build_layers(sweep_config):
                 kernels[f'{model}_{layer}_kernel'] = {kernel:params}
 
         #DEBUG
-        print(f'kernels: {kernels}')
+        # print(f'kernels: {kernels}')
 
         
         
@@ -769,7 +769,7 @@ def format_metrics(data: pd.DataFrame) -> pd.DataFrame:
     return data_hyperparams
 
 def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, avg_reward_threshold: int, bins: int, z_scores: bool = False) -> pd.DataFrame:
-    
+    print('calculate co occurrence matrix fired')
     # create an empty dict to store the bin ranges of each hyperparameter
     bin_ranges = {}
     # data_hyperparams = format_metrics(data)
@@ -868,9 +868,9 @@ def fetch_sweep_hyperparameters_single_run(project_name, sweep_name):
         flattened_config = helper.flatten_dict(config)
         for key in flattened_config.keys():
             if not key.startswith('_') and not key in ['wandb_version', 'state', 'env']:
-                print(f"key before:{key}")
+                # print(f"key before:{key}")
                 key = parse_parameter_name(key)
-                print(f"key after:{key}")
+                # print(f"key after:{key}")
                 hyperparameters.add(key)
 
     return list(hyperparameters)
