@@ -144,7 +144,7 @@ def load_config(path):
 def setup_wandb(sweep_config):
     try:
         run_number = get_next_run_number(sweep_config["project"])
-        logger.debug(f"Run number: {run_number}")
+        # logger.debug(f"Run number: {run_number}")
 
         wandb.init(
             project=sweep_config["project"],
@@ -158,22 +158,22 @@ def setup_wandb(sweep_config):
         logger.error(f"Failed to initialize Weights & Biases: {e}")
 
 def train():
-    logger.debug("Entered train function")
+    # logger.debug("Entered train function")
 
     # load train config
     train_config_path = "sweep/train_config.json"
     train_config = load_config(train_config_path)
-    logger.debug(f"Loaded train config: {train_config}")
+    # logger.debug(f"Loaded train config: {train_config}")
 
     # load sweep config
     sweep_config_path = "sweep/sweep_config.json"
     sweep_config = load_config(sweep_config_path)
-    logger.debug(f"Loaded sweep config: {sweep_config}")
+    # logger.debug(f"Loaded sweep config: {sweep_config}")
 
     setup_wandb(sweep_config)
 
     config = wandb.config
-    logger.debug(f"Wandb config: {config}")
+    # logger.debug(f"Wandb config: {config}")
 
     load_weights = train_config.get('load_weights', False)
     num_episodes = train_config['num_episodes']
@@ -193,11 +193,11 @@ def train():
 
     callbacks = []
     if wandb.run:
-        logger.debug("if wandb.run fired")
+        # logger.debug("if wandb.run fired")
         callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
 
     env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
-    logger.debug(f"Environment created: {env}")
+    # logger.debug(f"Environment created: {env}")
 
     if config.model_type == 'HER_DDPG':
         actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(config)
@@ -213,29 +213,29 @@ def train():
             callbacks=callbacks,
             config=config,
         )
-        logger.debug("Agent built")
+        # logger.debug("Agent built")
 
         if use_mpi:
             agent_config_path = rl_agent.save_dir + '/config.json'
             num_workers = train_config['num_workers']
             mpi_command = f"mpirun -np {num_workers} python train_her_mpi.py --agent_config {agent_config_path} --train_config {train_config_path}"
-            logger.debug(f"Running MPI command: {mpi_command}")
+            # logger.debug(f"Running MPI command: {mpi_command}")
             mpi_process = subprocess.Popen(mpi_command, env=os.environ.copy(), shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = mpi_process.communicate()
-            logger.debug(f"MPI STDOUT: {stdout.decode()}")
-            logger.debug(f"MPI STDERR: {stderr.decode()}")
+            # logger.debug(f"MPI STDOUT: {stdout.decode()}")
+            # logger.debug(f"MPI STDERR: {stderr.decode()}")
         else:
             num_epochs = train_config['num_epochs']
             num_cycles = train_config['num_cycles']
             num_updates = train_config['num_updates']
-            logger.debug("Starting single-process training")
+            # logger.debug("Starting single-process training")
             rl_agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir, run_number)
     
     else:
         logger.debug(f"Unsupported model type: {config.model_type}")
 
 if __name__ == "__main__":
-    logger.debug("Entered main")
+    # logger.debug("Entered main")
     sweep_config_path = "sweep/sweep_config.json"
     train_config_path = "sweep/train_config.json"
 
@@ -243,12 +243,12 @@ if __name__ == "__main__":
         sweep_config = load_config(sweep_config_path)
         train_config = load_config(train_config_path)
 
-        logger.debug(f"Sweep config: {sweep_config}")
-        logger.debug(f"Train config: {train_config}")
+        # logger.debug(f"Sweep config: {sweep_config}")
+        # logger.debug(f"Train config: {train_config}")
 
         if sweep_config:
             sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
-            logger.debug(f"Sweep ID: {sweep_id}")
+            # logger.debug(f"Sweep ID: {sweep_id}")
 
             wandb.agent(
                 sweep_id,

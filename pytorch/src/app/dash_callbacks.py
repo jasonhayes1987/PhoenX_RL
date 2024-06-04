@@ -51,25 +51,25 @@ def fetch_data_process(project, sweep_name, shared_data):
             metrics_data = wandb_support.get_metrics(project, sweep_name)
             formatted_data = wandb_support.format_metrics(metrics_data)
             shared_data['formatted_data'] = formatted_data
+            # print(f'fetch data process formatted data: {formatted_data}')
             # print("Data fetched and formatted successfully.")
-            time.sleep(10)  # Wait for 60 seconds before fetching data again
+            time.sleep(10)  # Wait before fetching data again
         except Exception as e:
             print(f"Error in fetch_data_process: {str(e)}")
             time.sleep(5)
 
 
 def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_threshold):
-    # while True
+    print(f'update heatmap process shared data: {shared_data}')
     try:
         if 'formatted_data' in shared_data:
             #DEBUG
-            # print(f'shared data: {shared_data}')
-            # print("Calculating co-occurrence matrix...")
+            print("Calculating co-occurrence matrix...")
             formatted_data = shared_data['formatted_data']
             # Convert the JSON string back to a pandas DataFrame
             # formatted_data = pd.read_json(data, orient='split')
             #DEBUG
-            print(f'formatted data passed to wandb_support: {formatted_data}')
+            # print(f'formatted data passed to wandb_support: {formatted_data}')
             matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
             #DEBUG
             # print(f'bin ranges returned from wandb_support: {bin_ranges}')
@@ -2711,7 +2711,7 @@ def register_callbacks(app, shared_data):
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def     begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
         # extract any additional gym env params
         params = utils.extract_gym_params(env_params)
@@ -2805,6 +2805,7 @@ def register_callbacks(app, shared_data):
         if matrix_data:
             # print(f'heatmap data: {data}')
             new_data = {'matrix_data': matrix_data, 'bin_ranges': bin_ranges}
+            print(f'new data:{new_data}')
             return new_data
         else:
             return None

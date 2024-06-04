@@ -371,7 +371,8 @@ def hyperparameter_search(page):
             ),
             
             utils.render_heatmap(page),
-            dcc.Store(id={'type':'heatmap-data-store', 'page':page}),
+            dcc.Store(id={'type':'heatmap-data-store', 'page':page},
+                  data={'formatted_data':None, 'matrix_data':None, 'bin_ranges':None}),
             dcc.Interval(
                 id='heatmap-store-data-interval',
                 interval=10*1000,
