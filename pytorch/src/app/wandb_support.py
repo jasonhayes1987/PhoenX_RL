@@ -689,147 +689,153 @@ def flush_cache():
 
 
 def get_sweep_from_name(project, sweep_name):
-    api = wandb.Api()
-    sweeps = api.project(project).sweeps()
-    
-    # Filter sweeps by name to find the matching sweep ID
-    for sweep in sweeps:
-        if sweep.name == sweep_name:
-            return sweep
-    else:
-        print(f"No sweep found with the name '{sweep_name}'.")
+    try:
+        api = wandb.Api()
+        sweeps = api.project(project).sweeps()
+        
+        # Filter sweeps by name to find the matching sweep ID
+        for sweep in sweeps:
+            if sweep.name == sweep_name:
+                return sweep
+        else:
+            print(f"No sweep found with the name '{sweep_name}'.")
+    except Exception as e:
+        print(f"An error occurred in get_sweep_from_name: {e}")
+        return None
 
 def get_sweeps_from_name(project):
-    api = wandb.Api()
-    sweeps = api.project(project).sweeps()
+    try:
+        api = wandb.Api()
+        sweeps = api.project(project).sweeps()
 
-    # Filter sweeps by name to find the matching sweep ID
-    sweeps_list = [sweep.name for sweep in sweeps]
-    return sweeps_list
+        # Filter sweeps by name to find the matching sweep ID
+        sweeps_list = [sweep.name for sweep in sweeps]
+        return sweeps_list
+    except Exception as e:
+        print(f"An error occurred in get_sweeps_from_name: {e}")
+        return []
 
 def get_runs_from_sweep(project, sweep):
-    api = wandb.Api()
-    runs = api.runs(path=project, filters={"sweep": sweep.id})
-    return runs
+    try:
+        api = wandb.Api()
+        runs = api.runs(path=project, filters={"sweep": sweep.id})
+        return runs
+    except Exception as e:
+        print(f"An error occurred in get_runs_from_sweep: {e}")
 
 def get_metrics(project: str, sweep_name: str = None):
-    api = wandb.Api()
-    # check if sweep is specified and if so, get the runs from the sweep
-    if sweep_name is not None:
-        sweep = get_sweep_from_name(project, sweep_name)
-        runs = get_runs_from_sweep(project, sweep)
-    else:
-        runs = api.runs(project)
+    try:
+        api = wandb.Api()
+        # check if sweep is specified and if so, get the runs from the sweep
+        if sweep_name is not None:
+            sweep = get_sweep_from_name(project, sweep_name)
+            runs = get_runs_from_sweep(project, sweep)
+        else:
+            runs = api.runs(project)
 
-    summary_list, config_list, name_list = [], [], []
+        summary_list, config_list, name_list = [], [], []
 
-    for run in runs:       
-        # call ._json_dict to omit large files
-        summary_list.append(run.summary._json_dict)
+        for run in runs:       
+            # call ._json_dict to omit large files
+            summary_list.append(run.summary._json_dict)
 
-        # remove special values that start with _.
-        config_list.append({k: v for k, v in run.config.items() if not k.startswith("_")})
+            # remove special values that start with _.
+            config_list.append({k: v for k, v in run.config.items() if not k.startswith("_")})
 
-        name_list.append(run.name)
+            name_list.append(run.name)
 
-    runs_df = pd.DataFrame(
-        {"summary": summary_list, "config": config_list, "name": name_list}
-    )
+        runs_df = pd.DataFrame(
+            {"summary": summary_list, "config": config_list, "name": name_list}
+        )
 
-    # runs_df.to_csv(f"{project}.csv")
-
-    return runs_df
+        return runs_df
+    except Exception as e:
+        print(f"An error occurred in get_metrics: {e}")
+        return pd.DataFrame()
 
 def format_metrics(data: pd.DataFrame) -> pd.DataFrame:
-    #DEBUG
-    # print(f'data in format metrics: {data}')
-    
-    # Parse the 'config' column
-    data['config'] = parse_dict_column(data['config'])
-    #DEBUG
-    # print(f'data[config] after parse: {data}')
+    try:
+        print(f'data passed to format metrics: {data}')
+        # Parse the 'config' column
+        data['config'] = parse_dict_column(data['config'])
+        print(f'data after parse dict column: {data}')
 
-    # Extract hyperparameters and rewards from the dictionaries
-    data['avg reward'] = data['summary'].apply(lambda x: x.get('avg reward') if isinstance(x, dict) else None)
-    #DEBUG
-    # print(f'data[avg reward] after apply: {data}')
-    data.to_csv(f"data.csv")
+        # Extract hyperparameters and rewards from the dictionaries
+        data['avg_reward'] = data['summary'].apply(lambda x: x.get('avg_reward') if isinstance(x, dict) else None)
+        print(f'data after getting avg reward: {data}')
+        data.to_csv(f"data.csv")
 
-    # Filter out rows that do not have a 'config_dict' or 'avg reward'
-    data_filtered = data.dropna(subset=['config', 'avg reward'])
-    #DEBUG
-    # print(f'data_filtered: {data_filtered}')
-    # Flatten the 'config_dict' and create a new DataFrame of hyperparameter values
-    data_hyperparams = pd.DataFrame(data_filtered['config'].apply(lambda x: helper.flatten_dict(x)).tolist())
-    # Join the flattened hyperparameters with the avg reward column
-    data_hyperparams = data_hyperparams.join(data_filtered['avg reward'])
-    #DEBUG
-    # print(f'data_hyperparams: {data_hyperparams}')
+        # Filter out rows that do not have a 'config_dict' or 'avg reward'
+        data_filtered = data.dropna(subset=['config', 'avg_reward'])
+        print(f'data filtered: {data_filtered}')
 
-    return data_hyperparams
+        # Flatten the 'config_dict' and create a new DataFrame of hyperparameter values
+        data_hyperparams = pd.DataFrame(data_filtered['config'].apply(lambda x: helper.flatten_dict(x)).tolist())
+        print(f'data hyperparams after flatten config dict: {data_hyperparams}')
+        # Join the flattened hyperparameters with the avg reward column
+        data_hyperparams = data_hyperparams.join(data_filtered['avg_reward'])
+        print(f'data hyperparams after joining hyperparams: {data_hyperparams}')
+
+        return data_hyperparams
+    except Exception as e:
+        print(f"An error occurred in format_metrics: {e}")
+        return pd.DataFrame()
 
 def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, avg_reward_threshold: int, bins: int, z_scores: bool = False) -> pd.DataFrame:
-    print('calculate co occurrence matrix fired')
-    # create an empty dict to store the bin ranges of each hyperparameter
-    bin_ranges = {}
-    # data_hyperparams = format_metrics(data)
-    # drop all columns that arent in hyperparameters list
-    data = data[hyperparameters + ['avg reward']]
-    # Filter the DataFrame based on the avg reward_threshold
-    data_heatmap = data[data['avg reward'] >= avg_reward_threshold]
-    # For continuous variables, bin them into the specified number of bins
-    for hp in data_heatmap.columns:
-        #DEBUG
-        # print(f'Binning loop {hp}')
-        # print(f'{hp} type: {data_heatmap[hp].dtype}')
-        if data_heatmap[hp].dtype == float and hp not in ['avg reward']:
-            #DEBUG
-            # print(f'Binning {hp}')
-            data_heatmap[hp], bin_edges  = pd.cut(data_heatmap[hp], bins, labels=range(bins), retbins=True)
-            #DEBUG
-            # print(f'Bin edges for {hp}: {bin_edges}')
-            bin_ranges[hp] = bin_edges
-            #DEBUG
-            # print(f'updated bin ranges dict: {bin_ranges}')
-    # One-hot encode categorical variables
-    data_one_hot = pd.get_dummies(data_heatmap.drop('avg reward', axis=1).astype('category'), dtype=np.int8)
-    # Calculate co-occurrence matrix
-    co_occurrence_matrix = np.dot(data_one_hot.T, data_one_hot)
+    try:
+        print('calculate co occurrence matrix fired')
+        # create an empty dict to store the bin ranges of each hyperparameter
+        bin_ranges = {}
+        # drop all columns that arent in hyperparameters list
+        data = data[hyperparameters + ['avg_reward']]
+        # Filter the DataFrame based on the avg reward_threshold
+        data_heatmap = data[data['avg_reward'] >= avg_reward_threshold]
+        # For continuous variables, bin them into the specified number of bins
+        for hp in data_heatmap.columns:
+            if data_heatmap[hp].dtype == float and hp not in ['avg_reward']:
+                data_heatmap[hp], bin_edges  = pd.cut(data_heatmap[hp], bins, labels=range(bins), retbins=True)
+                bin_ranges[hp] = bin_edges
 
-    # calculate z-scores if z_scores is true
-    if z_scores:
-        # Calculate the z-scores of the co-occurrence counts
-        co_occurrence_matrix = zscore(co_occurrence_matrix, axis=None)
-    # Create a DataFrame from the co-occurrence matrix for easier plotting
-    co_occurrence_df = pd.DataFrame(co_occurrence_matrix, 
-                                    index=data_one_hot.columns, 
-                                    columns=data_one_hot.columns)
-    co_occurrence_df.to_csv(f"co_occurrence_df.csv")
+        # One-hot encode categorical variables
+        data_one_hot = pd.get_dummies(data_heatmap.drop('avg_reward', axis=1).astype('category'), dtype=np.int8)
+        # Calculate co-occurrence matrix
+        co_occurrence_matrix = np.dot(data_one_hot.T, data_one_hot)
 
+        # calculate z-scores if z_scores is true
+        if z_scores:
+            # Calculate the z-scores of the co-occurrence counts
+            co_occurrence_matrix = zscore(co_occurrence_matrix, axis=None)
+        # Create a DataFrame from the co-occurrence matrix for easier plotting
+        co_occurrence_df = pd.DataFrame(co_occurrence_matrix, 
+                                        index=data_one_hot.columns, 
+                                        columns=data_one_hot.columns)
+        co_occurrence_df.to_csv(f"co_occurrence_df.csv")
 
-    return co_occurrence_df, bin_ranges
+        return co_occurrence_df, bin_ranges
+    except Exception as e:
+        print(f"An error occurred in calculate_co_occurrence_matrix: {e}")
+        return pd.DataFrame(), {}
 
 def plot_co_occurrence_heatmap(co_occurrence_df: pd.DataFrame) -> go.Figure:
+    try:
+        # Create a layout
+        layout = go.Layout(title='Co-occurrence Heatmap')
 
-    # Create a layout
-    layout = go.Layout(title='Co-occurrence Heatmap')
+        # Create the figure
+        fig = go.Figure(
+            data=
+                go.Heatmap(
+                    z=co_occurrence_df.values,  # Heatmap values
+                    x=co_occurrence_df.columns,  # X-axis categories
+                    y=co_occurrence_df.index, # Y-axis categories
+                ),
+                layout=layout,
+            )  
 
-    # Create the figure
-    fig = go.Figure(
-        data=
-            go.Heatmap(
-                z=co_occurrence_df.values,  # Heatmap values
-                x=co_occurrence_df.columns,  # X-axis categories
-                y=co_occurrence_df.index, # Y-axis categories
-            ),
-            layout=layout,
-        )  
-
-    # Render the plot
-    # pyo.iplot(fig)
-
-    # return the figure
-    return fig
+        return fig
+    except Exception as e:
+        print(f"An error occurred in plot_co_occurrence_heatmap: {e}")
+        return go.Figure()
 
 # Function to safely parse a Python dictionary string
 def parse_dict_column(column):

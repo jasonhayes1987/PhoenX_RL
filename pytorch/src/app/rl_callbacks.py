@@ -55,10 +55,10 @@ class Callback():
 class WandbCallback(Callback):
     """Wandb callback for Keras integration."""
 
-    def __init__(self, project_name: str, chkpt_freq: int = 100, _sweep:bool=False):
+    def __init__(self, project_name:str, run_name:str=None, chkpt_freq:int=100, _sweep:bool=False):
         super().__init__()
         self.project_name = project_name
-        # self.run = run
+        self.run_name = run_name
         self.save_dir = None
         # self.run_name = run_name
         self.model_type = None
@@ -70,7 +70,7 @@ class WandbCallback(Callback):
         if not self._sweep:
             run_number = wandb_support.get_next_run_number(self.project_name)
 
-            self.run = wandb.init(
+            run = wandb.init(
                 project=self.project_name,
                 name=f"train-{run_number}",
                 tags=["train", self.model_type],
@@ -79,7 +79,7 @@ class WandbCallback(Callback):
                 config=logs,
             )
             wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
-            self.run_name = self.run.name
+            self.run_name = run.name
 
     def on_train_end(self, logs=None):
         """Finishes W&B run for training."""
@@ -111,7 +111,7 @@ class WandbCallback(Callback):
         if not self._sweep:
             run_number = wandb_support.get_run_number_from_name(self.run_name)
 
-            self.run = wandb.init(
+            run = wandb.init(
                 project=self.project_name,
                 job_type="test",
                 tags=["test", self.model_type],
@@ -120,6 +120,7 @@ class WandbCallback(Callback):
                 config=logs,
             )
             wandb.config.update({"model_type": self.model_type})
+            self.run_name = run.name
 
     def on_test_end(self, logs=None):
         if not self._sweep:
@@ -188,8 +189,9 @@ class WandbCallback(Callback):
             'class_name': self.__class__.__name__,
             'config': {
                 'project_name': self.project_name,
-                # 'run_name': self.run_name,
-                'chkpt_freq': self.chkpt_freq
+                'run_name': self.run_name,
+                'chkpt_freq': self.chkpt_freq,
+                '_sweep': self._sweep
             }
         }
 

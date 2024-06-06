@@ -2860,6 +2860,7 @@ def register_callbacks(app, shared_data):
         if n_clicks > 0:
             z_score = 'zscore' in zscore_option
             # print('start matrix process callback called')
+            # print(f'hyperparameters passed to start matrix callback: {hyperparameters}')
             update_heatmap_thread = threading.Thread(target=update_heatmap_process, args=(shared_data, hyperparameters, bins, z_score, reward_threshold))
             update_heatmap_thread.start()
         
@@ -2890,11 +2891,14 @@ def register_callbacks(app, shared_data):
             dfs = []
             for sweep in sweeps:
                 metrics_data = wandb_support.get_metrics(project, sweep)
+                print(f'metrics data: {metrics_data}')
                 formatted_data = wandb_support.format_metrics(metrics_data)
+                print(f'formatted data: {formatted_data}')
                 dfs.append(formatted_data)
             data = pd.concat(dfs, ignore_index=True)
             data_json = data.to_json(orient='split')
             co_occurrence_data['formatted_data'] = data_json
+            print(f'data_json: {data_json}')
             # create a Div containing a success message to return
             success_message = html.Div([
                 dbc.Alert("Data Loaded.", color="success")

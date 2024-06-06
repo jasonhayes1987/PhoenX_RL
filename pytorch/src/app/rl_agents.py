@@ -1391,10 +1391,10 @@ class DDPG(Agent):
         self.actor_model.optimizer.step()
 
         # add metrics to step_logs
-        self._train_step_config['actor predictions'] = action_values.mean()
-        self._train_step_config['critic predictions'] = critic_values.mean()
-        self._train_step_config['target actor predictions'] = target_actions.mean()
-        self._train_step_config['target critic predictions'] = target_critic_values.mean()
+        self._train_step_config['actor_predictions'] = action_values.mean()
+        self._train_step_config['critic_predictions'] = critic_values.mean()
+        self._train_step_config['target_actor_predictions'] = target_actions.mean()
+        self._train_step_config['target_critic_predictions'] = target_critic_values.mean()
         
         return actor_loss.item(), critic_loss.item()
         
@@ -1481,16 +1481,16 @@ class DDPG(Agent):
                 if self.replay_buffer.counter > self.batch_size:
                     learn_time = time.time()
                     actor_loss, critic_loss = self.learn()
-                    self._train_step_config["actor loss"] = actor_loss
-                    self._train_step_config["critic loss"] = critic_loss
+                    self._train_step_config["actor_loss"] = actor_loss
+                    self._train_step_config["critic_loss"] = critic_loss
                     # perform soft update on target networks
                     self.soft_update(self.actor_model, self.target_actor_model)
                     self.soft_update(self.critic_model, self.target_critic_model)
 
                     learning_time_history.append(time.time() - learn_time)
 
-                self._train_step_config["step reward"] = reward
-                self._train_step_config["step time"] = step_time
+                self._train_step_config["step_reward"] = reward
+                self._train_step_config["step_time"] = step_time
                 
                 # log to wandb if using wandb callback
                 if self.callbacks:
@@ -1510,9 +1510,9 @@ class DDPG(Agent):
             avg_steps_per_episode = np.mean(steps_per_episode_history[-100:])  # Calculate average steps per episode
 
             self._train_episode_config['episode'] = i
-            self._train_episode_config["episode reward"] = episode_reward
-            self._train_episode_config["avg reward"] = avg_reward
-            self._train_episode_config["episode time"] = episode_time
+            self._train_episode_config["episode_reward"] = episode_reward
+            self._train_episode_config["avg_reward"] = avg_reward
+            self._train_episode_config["episode_time"] = episode_time
 
             # check if best reward
             if avg_reward > best_reward:
@@ -2005,10 +2005,10 @@ class HER(Agent):
         self.agent.target_critic_model.train()
 
         # Add train config setting to wandb config
-        self.agent._config['num epochs'] = num_epochs
-        self.agent._config['num cycles'] = num_cycles
-        self.agent._config['num episode'] =num_episodes
-        self.agent._config['num updates'] = num_updates
+        self.agent._config['num_epochs'] = num_epochs
+        self.agent._config['num_cycles'] = num_cycles
+        self.agent._config['num_episode'] =num_episodes
+        self.agent._config['num_updates'] = num_updates
         self.agent._config['tolerance'] = self.tolerance
 
         if self.agent.callbacks:
@@ -2149,7 +2149,7 @@ class HER(Agent):
                         distance_to_goal = np.linalg.norm(desired_goal - next_state_achieved_goal)
                         
                         # store distance in step config to send to wandb
-                        self.agent._train_step_config["goal distance"] = distance_to_goal
+                        self.agent._train_step_config["goal_distance"] = distance_to_goal
                         
                         # store trajectory in replay buffer (non normalized!)
                         self.replay_buffer.add(state, action, reward, next_state, done,\
@@ -2175,8 +2175,8 @@ class HER(Agent):
                         if term or trunc:
                             done = True
                         # log step metrics
-                        self.agent._train_step_config["step reward"] = reward
-                        self.agent._train_step_config["step time"] = step_time
+                        self.agent._train_step_config["step_reward"] = reward
+                        self.agent._train_step_config["step_time"] = step_time
                         
                         
                         # log to wandb if using wandb callback
@@ -2198,7 +2198,7 @@ class HER(Agent):
                     success_counter += success
                     success_perc = success_counter / episode_counter
                     # store success rate to train episode config
-                    self.agent._train_episode_config["success rate"] = success_perc
+                    self.agent._train_episode_config["success_rate"] = success_perc
 
                     # Update global normalizer stats (main process only)
                     # if MPI.COMM_WORLD.Get_rank() == 0:
@@ -2230,8 +2230,8 @@ class HER(Agent):
                                                                   state_normalizer=self.state_normalizer,
                                                                   goal_normalizer=self.goal_normalizer,
                                                                   )
-                        self.agent._train_episode_config["actor loss"] = actor_loss
-                        self.agent._train_episode_config["critic loss"] = critic_loss
+                        self.agent._train_episode_config["actor_loss"] = actor_loss
+                        self.agent._train_episode_config["critic_loss"] = critic_loss
                 
                         learning_time_history.append(time.time() - learn_time)
                     
@@ -2246,9 +2246,9 @@ class HER(Agent):
                     avg_steps_per_episode = np.mean(steps_per_episode_history[-100:])  # Calculate average steps per episode
 
                     self.agent._train_episode_config['episode'] = episode
-                    self.agent._train_episode_config["episode reward"] = episode_reward
-                    self.agent._train_episode_config["avg reward"] = avg_reward
-                    self.agent._train_episode_config["episode time"] = episode_time
+                    self.agent._train_episode_config["episode_reward"] = episode_reward
+                    self.agent._train_episode_config["avg_reward"] = avg_reward
+                    self.agent._train_episode_config["episode_time"] = episode_time
 
                     # # log to wandb if using wandb callback
                     # if agent.callbacks:
