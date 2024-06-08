@@ -1988,15 +1988,19 @@ class HER(Agent):
                 # change save dir of agent to be in save dir of HER
                 agent_name = self.agent.save_dir.split("/")[-2]
                 #DEBUG
-                print(f'agent name: {agent_name}')
+                print(f'agent name(train): {agent_name}')
                 self.agent.save_dir = self.save_dir + agent_name + "/"
-                print(f'new save dir: {self.agent.save_dir}')
+                print(f'new save dir(train): {self.agent.save_dir}')
         elif save_dir is not None and len(save_dir.split("/")) >= 2:
             if save_dir.split("/")[-2] == "her":
                 self.save_dir = save_dir
                 # change save dir of agent to be in save dir of HER
                 agent_name = self.agent.save_dir.split("/")[-2]
                 self.agent.save_dir = self.save_dir + agent_name + "/"
+
+        #DEBUG
+        print(f'agent config:{self.get_config()}')
+        # logger.debug(f"MPI STDERR: {stderr.decode()}")
         
         # set models to train mode
         self.agent.actor_model.train()
@@ -2011,25 +2015,39 @@ class HER(Agent):
         self.agent._config['num_updates'] = num_updates
         self.agent._config['tolerance'] = self.tolerance
 
+        # Check if MPI is active with more than one worker
+        mpi_active = MPI.COMM_WORLD.Get_size() > 1
+
         if self.agent.callbacks:
-            if MPI.COMM_WORLD.Get_rank() == 0:
-                # print(f'agent rank {rank} firing callback')
+            if mpi_active:
+                if MPI.COMM_WORLD.Get_rank() == 0:
+                    # print(f'agent rank {rank} firing callback')
+                    for callback in self.agent.callbacks:
+                        if isinstance(callback, rl_callbacks.WandbCallback):
+                            # print(f'agent {rank} config:')
+                            # print(agent._config)
+                            callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config, run_number=run_number)
+                            # print('on train begin callback fired')
+                        else:
+                            callback.on_train_begin(logs=self.agent._config)
+            else:
+            # MPI is not active or there is only one worker
                 for callback in self.agent.callbacks:
                     if isinstance(callback, rl_callbacks.WandbCallback):
-                        # print(f'agent {rank} config:')
-                        # print(agent._config)
                         callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config, run_number=run_number)
-                        # print('on train begin callback fired')
                     else:
                         callback.on_train_begin(logs=self.agent._config)
-
+        
+        if mpi_active:
         # instantiate new environment. Only rank 0 env will render episodes if render==True
-        if MPI.COMM_WORLD.Get_rank() == 0:
-            self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
-            # print(f'agent rank {rank} initiating environment with render {render}')
+            if MPI.COMM_WORLD.Get_rank() == 0:
+                self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
+                # print(f'agent rank {rank} initiating environment with render {render}')
+            else:
+                self.agent.env = self.agent._initialize_env(False, 0, context='train')
+                # print(f'agent rank {rank} initializing environment')
         else:
-            self.agent.env = self.agent._initialize_env(False, 0, context='train')
-            # print(f'agent rank {rank} initializing environment')
+            self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
         
         # initialize step counter (for logging)
         step_counter = 0
@@ -2063,9 +2081,14 @@ class HER(Agent):
                     # print('')
                     # print(f'agent rank {rank} starting episode {episode_counter}')
                     if self.agent.callbacks:
-                        if MPI.COMM_WORLD.Get_rank() == 0:
+                        if mpi_active:
+                            if MPI.COMM_WORLD.Get_rank() == 0:
+                                for callback in self.agent.callbacks:
+                                    callback.on_train_epoch_begin(epoch=step_counter, logs=None)
+                        else:
                             for callback in self.agent.callbacks:
                                 callback.on_train_epoch_begin(epoch=step_counter, logs=None)
+
                     episode_start_time = time.time()
                     
                     # reset noise
@@ -2184,13 +2207,15 @@ class HER(Agent):
                             # average step logs across all agents
                             # averaged_metrics = helper.sync_metrics(agent._train_step_config)
                             # only have the main process log callback values to avoid multiple callback calls
-                           if MPI.COMM_WORLD.Get_rank() == 0:
-                                # print(f'agent {rank} train step config:')
-                                # print(agent._train_step_config)
+                            if mpi_active:
+                                if MPI.COMM_WORLD.Get_rank() == 0:
+                                        # print(f'agent {rank} train step config:')
+                                        # print(agent._train_step_config)
+                                        for callback in self.agent.callbacks:
+                                            callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
+                            else:
                                 for callback in self.agent.callbacks:
                                     callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
-                        # if not done:
-                        #     step_counter += 1 # Added step counter increment at top of if not done loop
 
                     # calculate success rate
                     # goal_distance = np.linalg.norm(next_state_achieved_goal - desired_goal, axis=-1)
@@ -2255,34 +2280,48 @@ class HER(Agent):
                     #     # average episode logs across all agents
                     #     averaged_metrics = helper.sync_metrics(agent._train_episode_config)
                     
-                    # check if best reward
-                    if MPI.COMM_WORLD.Get_rank() == 0: # only use main process
-                        if avg_reward > best_reward:
-                            best_reward = avg_reward
-                            self.agent._train_episode_config["best"] = True
-                            # save model
-                            self.save()
+                    # check if best reward and save model if it is
+                    if avg_reward > best_reward:
+                        best = True
+                        best_reward = avg_reward
+                        # save model
+                        self.save()
+                    else:
+                        best = False
+                    
+                    if self.agent.callbacks:
+                        self.agent._train_episode_config["best"] = best
+                        if mpi_active:
+                            if MPI.COMM_WORLD.Get_rank() == 0: # only use main process
+                                for callback in self.agent.callbacks:
+                                    # print(f'agent {rank} train episode config')
+                                    # print(agent._train_episode_config)
+                                    callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
                         else:
-                            self.agent._train_episode_config["best"] = False
-
-                        if self.agent.callbacks:
                             for callback in self.agent.callbacks:
                                 # print(f'agent {rank} train episode config')
                                 # print(agent._train_episode_config)
                                 callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
-
 
             # perform soft update on target networks
             self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
             self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
 
             # print metrics to terminal log
-            if MPI.COMM_WORLD.Get_rank() == 0: # only use main process
+            if mpi_active:
+                if MPI.COMM_WORLD.Get_rank() == 0: # only use main process
+                    print(f"epoch {epoch} cycle {cycle_counter} episode {episode_counter}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
+            else:
                 print(f"epoch {epoch} cycle {cycle_counter} episode {episode_counter}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
 
-        # if callbacks, call on train end
-        if MPI.COMM_WORLD.Get_rank() == 0:
-            if self.agent.callbacks:
+        if self.agent.callbacks:
+            if mpi_active:
+                if MPI.COMM_WORLD.Get_rank() == 0:
+                    for callback in self.agent.callbacks:
+                        # print(f'agent {rank} train end train episode config')
+                        # print(agent._train_episode_config)
+                        callback.on_train_end(logs=self.agent._train_episode_config)
+            else:
                 for callback in self.agent.callbacks:
                     # print(f'agent {rank} train end train episode config')
                     # print(agent._train_episode_config)
