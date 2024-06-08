@@ -60,30 +60,26 @@ class WandbCallback(Callback):
         self.project_name = project_name
         self.run_name = run_name
         self.save_dir = None
-        # self.run_name = run_name
         self.model_type = None
         self.chkpt_freq = chkpt_freq
         self._sweep = _sweep
 
     def on_train_begin(self, models, logs=None, run_number=None):
-        
-        if not self._sweep:
-            run_number = wandb_support.get_next_run_number(self.project_name)
+        run_number = wandb_support.get_next_run_number(self.project_name)
 
-            run = wandb.init(
-                project=self.project_name,
-                name=f"train-{run_number}",
-                tags=["train", self.model_type],
-                group=f"group-{run_number}",
-                job_type="train",
-                config=logs,
-            )
-            wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
-            self.run_name = run.name
+        run = wandb.init(
+            project=self.project_name,
+            name=f"train-{run_number}",
+            tags=["train", self.model_type],
+            group=f"group-{run_number}",
+            job_type="train",
+            config=logs,
+        )
+        wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
+        self.run_name = run.name
 
     def on_train_end(self, logs=None):
         """Finishes W&B run for training."""
-
         if not self._sweep:
             wandb.finish()
 
@@ -92,11 +88,8 @@ class WandbCallback(Callback):
 
     def on_train_epoch_end(self, epoch, logs=None):
         """Finishes W&B run for epoch."""
-
         wandb.log(logs, step=epoch)
-        # if best model so far (avg/100 reward), save model artifact
-        if (logs["best"]) & (logs["episode"]%self.chkpt_freq == 0):
-            # save model artifact
+        if (logs["best"]) & (logs["episode"] % self.chkpt_freq == 0):
             wandb_support.save_model_artifact(self.save_dir, self.project_name, model_is_best=True)
 
     def on_train_step_begin(self, step, logs=None):
@@ -104,23 +97,21 @@ class WandbCallback(Callback):
 
     def on_train_step_end(self, step, logs=None):
         """Finishes W&B run for training batch."""
-
         wandb.log(logs, step=step)
 
     def on_test_begin(self, logs=None, run_number=None):
-        if not self._sweep:
-            run_number = wandb_support.get_run_number_from_name(self.run_name)
+        run_number = wandb_support.get_run_number_from_name(self.run_name)
 
-            run = wandb.init(
-                project=self.project_name,
-                job_type="test",
-                tags=["test", self.model_type],
-                name=f"test-{run_number}",
-                group=f"group-{run_number}",
-                config=logs,
-            )
-            wandb.config.update({"model_type": self.model_type})
-            self.run_name = run.name
+        run = wandb.init(
+            project=self.project_name,
+            job_type="test",
+            tags=["test", self.model_type],
+            name=f"test-{run_number}",
+            group=f"group-{run_number}",
+            config=logs,
+        )
+        wandb.config.update({"model_type": self.model_type})
+        self.run_name = run.name
 
     def on_test_end(self, logs=None):
         if not self._sweep:
@@ -138,51 +129,14 @@ class WandbCallback(Callback):
 
     def on_test_step_end(self, step, logs=None):
         """Finishes W&B run for testing batch."""
-
         wandb.log(logs, step=step)
 
     def _config(self, agent):
-        """configures callback internal state for wandb integration.
-
-        Args:
-            agent (rl_agents.Agent): The agent to configure.
-
-        Returns:
-            dict: The configuration dictionary.
-        """
-
-        # set agent type
+        """Configures callback internal state for wandb integration."""
         self.model_type = type(agent).__name__
-        # set save dir
         self.save_dir = agent.save_dir
-        
         return agent.get_config()
 
-    # def _get_model_config(self, model):
-    #     """configures callback internal state for wandb integration.
-
-    #     Args:
-    #         model (rl_agents.models): The model to configure.
-
-    #     Returns:
-    #         dict: The configuration dictionary.
-    #     """
-
-    #     config = {}
-
-    #     for e, layer in enumerate(model.hidden_layers):
-    #         config[
-    #             f"{model.__class__.__name__.split('_')[0].lower()}_units_layer_{e+1}"
-    #         ] = layer[0]
-    #     config[f"{model.__class__.__name__.split('_')[0].lower()}_activation"] = layer[
-    #         1
-    #     ]
-    #     config[
-    #         f"{model.__class__.__name__.split('_')[0].lower()}_optimizer"
-    #     ] = model.optimizer.__class__.__name__.lower()
-
-    #     return config
-    
     def get_config(self):
         """Returns callback config for serialization"""
         return {
@@ -196,31 +150,16 @@ class WandbCallback(Callback):
         }
 
     def save(self, folder: str = "wandb_config.json"):
-        """Save model.
-
-        Args:
-            folder (str): The folder to save the config to.
-        """
-        wandb_config = {
-            "project_name": self.project_name,
-            "run_name": self.run_name,
-        }
-
+        """Save model."""
+        wandb_config = self.get_config()
         with open(folder, "w", encoding="utf-8") as f:
             json.dump(wandb_config, f)
 
     @classmethod
     def load(cls, config):
-        """Load callback.
-
-        Args:
-            folder (str): The folder to load the config from.
-
-        Returns:
-            WandbCallback: The callback object.
-        """
-
+        """Load callback."""
         return cls(**config)
+
     
 class DashCallback(Callback):
     """Callback for Keras integration."""
