@@ -142,6 +142,7 @@ def load_config(path):
         return json.load(f)
     
 def setup_wandb(sweep_config):
+    print('setup wandb called')
     try:
         run_number = get_next_run_number(sweep_config["project"])
         # logger.debug(f"Run number: {run_number}")
@@ -154,6 +155,7 @@ def setup_wandb(sweep_config):
             tags=["train"],
             group=f"group-{run_number}",
         )
+        print('wandb init called in setup wandb')
     except Exception as e:
         logger.error(f"Failed to initialize Weights & Biases: {e}")
 
@@ -164,11 +166,13 @@ def train():
     train_config_path = "sweep/train_config.json"
     train_config = load_config(train_config_path)
     # logger.debug(f"Loaded train config: {train_config}")
+    print(f"Loaded train config: {train_config}")
 
     # load sweep config
     sweep_config_path = "sweep/sweep_config.json"
     sweep_config = load_config(sweep_config_path)
     # logger.debug(f"Loaded sweep config: {sweep_config}")
+    print(f"Loaded sweep config: {sweep_config}")
 
     setup_wandb(sweep_config)
 
@@ -176,13 +180,21 @@ def train():
     # logger.debug(f"Wandb config: {config}")
 
     load_weights = train_config.get('load_weights', False)
+    print(f'load weights:{load_weights}')
     num_episodes = train_config['num_episodes']
+    print(f'num_episodes:{num_episodes}')
     render = train_config.get('render', False)
+    print(f'render:{render}')
     render_freq = train_config.get('render_freq', 0)
+    print(f'render freq:{render_freq}')
     save_dir = train_config.get('save_dir', config[config.model_type][f'{config.model_type}_save_dir'])
+    print(f'save dir:{save_dir}')
     seed = train_config['seed']
+    print(f'seed:{seed}')
     run_number = train_config.get('run_number', None)
+    print(f'run number:{run_number}')
     use_mpi = train_config.get('use_mpi', False)
+    print(f'use mpi:{use_mpi}')
 
     random.seed(seed)
     np.random.seed(seed)
@@ -190,16 +202,26 @@ def train():
     T.cuda.manual_seed(seed)
 
     assert config.model_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER_DDPG'], f"Unsupported agent type: {config.model_type}"
+    #DEBUG
+    print(f'passed assert')
 
     callbacks = []
     if wandb.run:
+        print(f'if wandb run fired')
         # logger.debug("if wandb.run fired")
         callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
+        #DEBUG
+        for callback in callbacks:
+            print(callback.get_config())
 
     env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
     # logger.debug(f"Environment created: {env}")
+    #DEBUG
+    print(f'Environment created: {env}')
 
     if config.model_type == 'HER_DDPG':
+        #DEBUG
+        print(f'if model type = HER_DDPG called')
         actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(config)
         agent_class = get_agent_class_from_type(config.model_type)
         rl_agent = agent_class.build(
@@ -214,17 +236,41 @@ def train():
             config=config,
         )
         # logger.debug("Agent built")
+        #DEBUG
+        print(f'agent built:{rl_agent.get_config()}')
 
         if use_mpi:
-            agent_config_path = rl_agent.save_dir + '/config.json'
+            print('sweep use_mpi fired')
+            agent_config_path = rl_agent.save_dir + 'config.json'
             num_workers = train_config['num_workers']
-            mpi_command = f"mpirun -np {num_workers} python train_her_mpi.py --agent_config {agent_config_path} --train_config {train_config_path}"
-            # logger.debug(f"Running MPI command: {mpi_command}")
-            mpi_process = subprocess.Popen(mpi_command, env=os.environ.copy(), shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            mpi_command = [
+                "mpirun", 
+                "-np", str(num_workers), 
+                "python", "train_her_mpi.py", 
+                "--agent_config", agent_config_path, 
+                "--train_config", train_config_path
+            ]
+            
+            # logger.debug(f"Running MPI command: {' '.join(mpi_command)}")
+            print(f'agent config path: {agent_config_path}')
+            print(f'train config path: {train_config_path}')
+            
+            mpi_process = subprocess.Popen(mpi_command, env=os.environ.copy(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = mpi_process.communicate()
-            # logger.debug(f"MPI STDOUT: {stdout.decode()}")
-            # logger.debug(f"MPI STDERR: {stderr.decode()}")
+
+            print("Standard Output:")
+            print(stdout.decode())
+            
+            print("Standard Error:")
+            print(stderr.decode())
+
+            # Check if the subprocess was successful
+            if mpi_process.returncode == 0:
+                print("Subprocess completed successfully")
+            else:
+                print("Subprocess failed with return code", mpi_process.returncode)
         else:
+            print('sweep not using mpi fired')
             num_epochs = train_config['num_epochs']
             num_cycles = train_config['num_cycles']
             num_updates = train_config['num_updates']
