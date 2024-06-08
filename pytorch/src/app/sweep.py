@@ -149,7 +149,7 @@ def setup_wandb(sweep_config):
 
         wandb.init(
             project=sweep_config["project"],
-            settings=wandb.Settings(start_method='thread'),
+            settings=wandb.Settings(start_method='fork'),
             job_type="train",
             name=f"train-{run_number}",
             tags=["train"],
@@ -174,70 +174,17 @@ def train():
     # logger.debug(f"Loaded sweep config: {sweep_config}")
     print(f"Loaded sweep config: {sweep_config}")
 
-    setup_wandb(sweep_config)
-
-    config = wandb.config
-    # logger.debug(f"Wandb config: {config}")
-
-    load_weights = train_config.get('load_weights', False)
-    print(f'load weights:{load_weights}')
-    num_episodes = train_config['num_episodes']
-    print(f'num_episodes:{num_episodes}')
-    render = train_config.get('render', False)
-    print(f'render:{render}')
-    render_freq = train_config.get('render_freq', 0)
-    print(f'render freq:{render_freq}')
-    save_dir = train_config.get('save_dir', config[config.model_type][f'{config.model_type}_save_dir'])
-    print(f'save dir:{save_dir}')
-    seed = train_config['seed']
-    print(f'seed:{seed}')
-    run_number = train_config.get('run_number', None)
-    print(f'run number:{run_number}')
-    use_mpi = train_config.get('use_mpi', False)
-    print(f'use mpi:{use_mpi}')
-
-    random.seed(seed)
-    np.random.seed(seed)
-    T.manual_seed(seed)
-    T.cuda.manual_seed(seed)
+    
 
     assert config.model_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER_DDPG'], f"Unsupported agent type: {config.model_type}"
     #DEBUG
     print(f'passed assert')
 
-    callbacks = []
-    if wandb.run:
-        print(f'if wandb run fired')
-        # logger.debug("if wandb.run fired")
-        callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
-        #DEBUG
-        for callback in callbacks:
-            print(callback.get_config())
-
-    env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
-    # logger.debug(f"Environment created: {env}")
-    #DEBUG
-    print(f'Environment created: {env}')
+    
 
     if config.model_type == 'HER_DDPG':
         #DEBUG
         print(f'if model type = HER_DDPG called')
-        actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(config)
-        agent_class = get_agent_class_from_type(config.model_type)
-        rl_agent = agent_class.build(
-            env=env,
-            actor_cnn_layers=actor_cnn_layers,
-            critic_cnn_layers=critic_cnn_layers,
-            actor_layers=actor_layers,
-            critic_state_layers=critic_state_layers,
-            critic_merged_layers=critic_merged_layers,
-            kernels=kernels,
-            callbacks=callbacks,
-            config=config,
-        )
-        # logger.debug("Agent built")
-        #DEBUG
-        print(f'agent built:{rl_agent.get_config()}')
 
         if use_mpi:
             print('sweep use_mpi fired')
@@ -271,6 +218,63 @@ def train():
                 print("Subprocess failed with return code", mpi_process.returncode)
         else:
             print('sweep not using mpi fired')
+
+            config = wandb.config
+            # logger.debug(f"Wandb config: {config}")
+            print(f'sweep wandb config:{config}')
+
+            load_weights = train_config.get('load_weights', False)
+            print(f'load weights:{load_weights}')
+            num_episodes = train_config['num_episodes']
+            print(f'num_episodes:{num_episodes}')
+            render = train_config.get('render', False)
+            print(f'render:{render}')
+            render_freq = train_config.get('render_freq', 0)
+            print(f'render freq:{render_freq}')
+            save_dir = train_config.get('save_dir', config[config.model_type][f'{config.model_type}_save_dir'])
+            print(f'save dir:{save_dir}')
+            seed = train_config['seed']
+            print(f'seed:{seed}')
+            run_number = train_config.get('run_number', None)
+            print(f'run number:{run_number}')
+            
+
+            random.seed(seed)
+            np.random.seed(seed)
+            T.manual_seed(seed)
+            T.cuda.manual_seed(seed)
+
+            callbacks = []
+            if wandb.run:
+                print(f'if wandb run fired')
+                # logger.debug("if wandb.run fired")
+                callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
+                #DEBUG
+                for callback in callbacks:
+                    print(callback.get_config())
+
+            env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+            # logger.debug(f"Environment created: {env}")
+            #DEBUG
+            print(f'Environment created: {env}')
+
+            actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(config)
+            agent_class = get_agent_class_from_type(config.model_type)
+            rl_agent = agent_class.build(
+                env=env,
+                actor_cnn_layers=actor_cnn_layers,
+                critic_cnn_layers=critic_cnn_layers,
+                actor_layers=actor_layers,
+                critic_state_layers=critic_state_layers,
+                critic_merged_layers=critic_merged_layers,
+                kernels=kernels,
+                callbacks=callbacks,
+                config=config,
+            )
+            # logger.debug("Agent built")
+            #DEBUG
+            print(f'agent built:{rl_agent.get_config()}')
+
             num_epochs = train_config['num_epochs']
             num_cycles = train_config['num_cycles']
             num_updates = train_config['num_updates']
