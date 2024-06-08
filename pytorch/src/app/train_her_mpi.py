@@ -22,6 +22,7 @@ def load_config(path):
         return json.load(f)
 
 def train_agent(agent_config, train_config):
+    print('mpi train agent fired')
     try:
         agent_type = agent_config['agent_type']
         load_weights = train_config.get('load_weights', False)
@@ -35,9 +36,13 @@ def train_agent(agent_config, train_config):
         run_number = train_config.get('run_number', None)
 
         assert agent_type == 'HER', f"Unsupported agent type: {agent_type}"
+        print(f'mpi assert passed')
 
         if agent_type:
+            #DEBUG
+            print(f'if agent passed in mpi')
             agent = HER.load(agent_config, load_weights)
+            print(f'mpi agent built:{agent.get_config()}')
             agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq, save_dir, run_number)
 
     except KeyError as e:
@@ -53,9 +58,12 @@ def train_agent(agent_config, train_config):
         raise
 
 if __name__ == '__main__':
+    print('train_her_mpi fired')
     try:
         agent_config = load_config(agent_config_path)
+        print(f'mpi agent config loaded:{agent_config}')
         train_config = load_config(train_config_path)
+        print(f'mpi train config loaded:{train_config}')
 
         train_agent(agent_config, train_config)
 

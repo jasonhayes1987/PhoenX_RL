@@ -286,6 +286,10 @@ def hyperparameter_search(page):
             ),
             utils.generate_seed_component(page),
             html.Hr(),
+            dbc.Button("Download WandB Config", id="download-wandb-config-button", color="primary", className="mr-2"),
+            dcc.Download(id="download-wandb-config"),
+            dbc.Button("Download Sweep Config", id="download-sweep-config-button", color="primary", className="mr-2"),
+            dcc.Download(id="download-sweep-config"),
         ],
         md=6,
     )

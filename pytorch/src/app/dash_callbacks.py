@@ -2711,7 +2711,7 @@ def register_callbacks(app, shared_data):
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def     begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
         # extract any additional gym env params
         params = utils.extract_gym_params(env_params)
@@ -2743,14 +2743,14 @@ def register_callbacks(app, shared_data):
                 # Add MPI config if not None else None
                 train_config['use_mpi'] = use_mpi if use_mpi is not None else None
                 train_config['num_workers'] = num_workers if num_workers is not None else None
-                train_config['num_agents'] = num_workers if num_workers is not None else None
+                train_config['num_agents'] = num_agents if num_agents is not None else None
                 
                 # Update additional settings for HER agent
                 train_config['num_epochs'] = num_epochs if num_epochs is not None else None
                 train_config['num_cycles'] = num_cycles if num_cycles is not None else None
                 train_config['num_updates'] = num_agents if num_updates is not None else 1
             
-            #     # Save the updated configuration to a train config file
+                # Save the updated configuration to a train config file
                 os.makedirs('sweep', exist_ok=True)
                 train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
                 with open(train_config_path, 'w') as f:
@@ -2955,3 +2955,84 @@ def register_callbacks(app, shared_data):
         heatmap, bar_chart = utils.update_heatmap(data)
         
         return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
+    
+    @app.callback(
+    Output("download-wandb-config", "data"),
+    [Input("download-wandb-config-button", "n_clicks")],
+    [
+        State('search-type', 'value'),
+        State({'type': 'projects-dropdown', 'page': '/hyperparameter-search'}, 'value'),
+        State('sweep-name', 'value'),
+        State('goal-metric', 'value'),
+        State('goal-type', 'value'),
+        State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
+        State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
+        State({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
+    ],
+    prevent_initial_call=True,
+    )
+    def download_wandb_config(num_clicks, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, all_values, all_ids, all_indexed_values, all_indexed_ids):
+        # extract any additional gym env params
+        params = utils.extract_gym_params(env_params)
+
+        if num_clicks > 0:
+            wandb_config = utils.create_wandb_config(
+                method,
+                project,
+                sweep_name,
+                metric_name,
+                metric_goal,
+                env,
+                params,
+                agent_selection,
+                all_values,
+                all_ids,
+                all_indexed_values,
+                all_indexed_ids
+            )
+            config_json = json.dumps(wandb_config, indent=4)
+
+            return dict(content=config_json, filename="wandb_config.json")
+        
+    @app.callback(
+    Output("download-sweep-config", "data"),
+    [Input("download-sweep-config-button", "n_clicks")],
+    [
+        State('num-sweeps', 'value'),
+        State('num-episodes', 'value'),
+        State('num-epochs', 'value'),
+        State('num-cycles', 'value'),
+        State('num-updates', 'value'),
+        State({'type':'mpi', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'workers', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'num-sweep-agents', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'seed', 'page':'/hyperparameter-search'}, 'value'),
+    ],
+    prevent_initial_call=True,
+    )
+    def download_train_config(n_clicks, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, seed):
+        if n_clicks > 0:
+            # Create an empty dict for sweep_config.json
+            sweep_config = {}
+            # Add config options to run_config
+            sweep_config['num_sweeps'] = num_sweeps
+            sweep_config['num_episodes'] = num_episodes
+            sweep_config['seed'] = seed if seed is not None else None
+
+            # Add MPI config if not None else None
+            sweep_config['use_mpi'] = use_mpi if use_mpi is not None else None
+            sweep_config['num_workers'] = num_workers if num_workers is not None else None
+            sweep_config['num_agents'] = num_agents if num_agents is not None else None
+            
+            # Update additional settings for HER agent
+            sweep_config['num_epochs'] = num_epochs if num_epochs is not None else None
+            sweep_config['num_cycles'] = num_cycles if num_cycles is not None else None
+            sweep_config['num_updates'] = num_agents if num_updates is not None else 1
+
+            config_json = json.dumps(sweep_config, indent=4)
+
+            return dict(content=config_json, filename="sweep_config.json")
