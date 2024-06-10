@@ -8,6 +8,7 @@ import numpy as np
 import torch as T
 import wandb
 import gymnasium as gym
+from mpi4py import MPI
 
 from rl_agents import get_agent_class_from_type
 from wandb_support import get_next_run_number, build_layers
@@ -79,7 +80,9 @@ def run_sweep(sweep_config, train_config):
             # logger.debug("Agent built")
             #DEBUG
             print(f'agent built:{rl_agent.get_config()}')
-
+            if MPI.COMM_WORLD.Get_rank() == 0:
+                rl_agent.save()
+                print(f'agent saved')
             
             # logger.debug("Starting single-process training")
             rl_agent.train(num_epochs = train_config['num_epochs'],
