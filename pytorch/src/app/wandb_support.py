@@ -512,7 +512,7 @@ def _run_sweep(sweep_config, train_config):
                 env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
                 #DEBUG
                 print(f'env spec: {env.spec}')
-                save_dir = train_config.get('save_dir', sweep_config[wandb.config.model_type][f'{wandb.config.model_type}_save_dir'])
+                # save_dir = train_config.get('save_dir', sweep_config[wandb.config.model_type][f'{wandb.config.model_type}_save_dir'])
                 print('save dir set')
                 random.seed(train_config['seed'])
                 np.random.seed(train_config['seed'])
@@ -520,46 +520,48 @@ def _run_sweep(sweep_config, train_config):
                 T.cuda.manual_seed(train_config['seed'])
 
                 callbacks = []
-                if wandb.run:
-                    print(f'if wandb run fired')
-                    # logger.debug("if wandb.run fired")
-                    callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
-                    #DEBUG
-                    # for callback in callbacks:
-                    #     print(callback.get_config())
-                    actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
-                    agent_class = rl_agents.get_agent_class_from_type(wandb.config.model_type)
-                    rl_agent = agent_class.build(
-                        env=env,
-                        actor_cnn_layers=actor_cnn_layers,
-                        critic_cnn_layers=critic_cnn_layers,
-                        actor_layers=actor_layers,
-                        critic_state_layers=critic_state_layers,
-                        critic_merged_layers=critic_merged_layers,
-                        kernels=kernels,
-                        callbacks=callbacks,
-                        config=wandb.config,
-                    )
-                    # logger.debug("Agent built")
-                    #DEBUG
-                    print(f'agent built:{rl_agent.get_config()}')
+                # if wandb.run:
+                print(f'if wandb run fired')
+                # logger.debug("if wandb.run fired")
+                callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
+                #DEBUG
+                # for callback in callbacks:
+                #     print(callback.get_config())
+                actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
+                agent_class = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+                rl_agent = agent_class.build(
+                    env=env,
+                    actor_cnn_layers=actor_cnn_layers,
+                    critic_cnn_layers=critic_cnn_layers,
+                    actor_layers=actor_layers,
+                    critic_state_layers=critic_state_layers,
+                    critic_merged_layers=critic_merged_layers,
+                    kernels=kernels,
+                    callbacks=callbacks,
+                    config=wandb.config,
+                )
+                # logger.debug("Agent built")
+                #DEBUG
+                print(f'agent built:{rl_agent.get_config()}')
 
-                    
-                    # logger.debug("Starting single-process training")
-                    rl_agent.train(num_epochs = train_config['num_epochs'],
-                                   num_cycles = train_config['num_cycles'],
-                                   num_episodes = train_config['num_episodes'],
-                                   num_updates = train_config['num_updates'],
-                                   render = False,
-                                   render_freq = 0,
-                                   save_dir = save_dir,
-                                   run_number = run_number
-                                   )
+                rl_agent.save()
+                print(f'agent saved to {rl_agent.save_dir}')
+                
+                # logger.debug("Starting single-process training")
+                rl_agent.train(num_epochs = train_config['num_epochs'],
+                                num_cycles = train_config['num_cycles'],
+                                num_episodes = train_config['num_episodes'],
+                                num_updates = train_config['num_updates'],
+                                render = False,
+                                render_freq = 0,
+                                save_dir = save_dir,
+                                run_number = run_number
+                                )
 
                     #DEBUG
                     # print(f'HER AGENT config: {rl_agent.get_config()}')
         
-        # rl_agent.save()
+        
 
         
 
