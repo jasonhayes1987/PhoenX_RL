@@ -7,6 +7,7 @@ from queue import Empty
 import threading
 import time
 import json
+import logging
 import base64
 import dash
 from dash import html, dcc, dash_table
@@ -39,7 +40,10 @@ import models
 import cnn_models
 import rl_agents
 import wandb_support
-# import tasks
+
+# Initialize logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Create a queue to store the formatted data
 formatted_data_queue = Queue()
@@ -2713,60 +2717,79 @@ def register_callbacks(app, shared_data):
     )
     def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
-        # extract any additional gym env params
-        params = utils.extract_gym_params(env_params)
+        try:
+            if num_clicks > 0:
+                # extract any additional gym env params
+                params = utils.extract_gym_params(env_params)
+                sweep_config = utils.create_wandb_config(
+                    method,
+                    project,
+                    sweep_name,
+                    metric_name,
+                    metric_goal,
+                    env,
+                    params,
+                    agent_selection,
+                    all_values,
+                    all_ids,
+                    all_indexed_values,
+                    all_indexed_ids
+                )
 
-        if num_clicks > 0:
-            sweep_config = utils.create_wandb_config(
-                method,
-                project,
-                sweep_name,
-                metric_name,
-                metric_goal,
-                env,
-                params,
-                agent_selection,
-                all_values,
-                all_ids,
-                all_indexed_values,
-                all_indexed_ids
-            )
+                if sweep_config:  # Check if sweep_config is not empty
+                    # Create an empty dict for sweep_config.json
+                    train_config = {}
+                    # Add config options to run_config
+                    train_config['num_sweeps'] = num_sweeps
+                    train_config['num_episodes'] = num_episodes
+                    train_config['seed'] = seed if seed is not None else None
 
-            if sweep_config:  # Check if sweep_config is not empty
-                # Create an empty dict for sweep_config.json
-                train_config = {}
-                # Add config options to run_config
-                train_config['num_sweeps'] = num_sweeps
-                train_config['num_episodes'] = num_episodes
-                train_config['seed'] = seed if seed is not None else None
-
-                # Add MPI config if not None else None
-                train_config['use_mpi'] = use_mpi if use_mpi is not None else None
-                train_config['num_workers'] = num_workers if num_workers is not None else None
-                train_config['num_agents'] = num_agents if num_agents is not None else None
+                    # Add MPI config if not None else None
+                    train_config['use_mpi'] = use_mpi if use_mpi is not None else None
+                    train_config['num_workers'] = num_workers if num_workers is not None else None
+                    train_config['num_agents'] = num_agents if num_agents is not None else None
+                    
+                    # Update additional settings for HER agent
+                    train_config['num_epochs'] = num_epochs if num_epochs is not None else None
+                    train_config['num_cycles'] = num_cycles if num_cycles is not None else None
+                    train_config['num_updates'] = num_agents if num_updates is not None else 1
                 
-                # Update additional settings for HER agent
-                train_config['num_epochs'] = num_epochs if num_epochs is not None else None
-                train_config['num_cycles'] = num_cycles if num_cycles is not None else None
-                train_config['num_updates'] = num_agents if num_updates is not None else 1
-            
-                # Save the updated configuration to a train config file
-                os.makedirs('sweep', exist_ok=True)
-                train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
-                with open(train_config_path, 'w') as f:
-                    json.dump(train_config, f)
+                    # Save the updated configuration to a train config file
+                    os.makedirs('sweep', exist_ok=True)
+                    train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
+                    with open(train_config_path, 'w') as f:
+                        json.dump(train_config, f)
 
-                # Save and Set the sweep config path
-                sweep_config_path = os.path.join(os.getcwd(), 'sweep/sweep_config.json')
-                with open(sweep_config_path, 'w') as f:
-                    json.dump(sweep_config, f)
+                    # Save and Set the sweep config path
+                    sweep_config_path = os.path.join(os.getcwd(), 'sweep/sweep_config.json')
+                    with open(sweep_config_path, 'w') as f:
+                        json.dump(sweep_config, f)
+                    
+                    sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
 
-                command = ['python', 'sweep.py']
+                    # loop over num wandb agents
+                    for agent in range(num_agents):
+                        wandb.agent(
+                            sweep_id,
+                            function=lambda: wandb_support._run_sweep(sweep_config, train_config,),
+                            count=train_config['num_sweeps'],
+                            project=sweep_config["project"],
+                        )
 
-                # Set the environment variable
-                os.environ['WANDB_DISABLE_SERVICE'] = 'true'
+        except KeyError as e:
+            logger.error(f"KeyError in W&B stream handling: {e}")
+        except Exception as e:
+            logger.error(f"An error occurred: {e}")
+                
+                
+                
 
-                subprocess.Popen(command)
+                # command = ['python', 'sweep.py']
+
+                # # Set the environment variable
+                # os.environ['WANDB_DISABLE_SERVICE'] = 'true'
+
+                # subprocess.Popen(command)
             
 
         raise PreventUpdate

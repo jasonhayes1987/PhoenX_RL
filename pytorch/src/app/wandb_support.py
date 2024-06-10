@@ -10,8 +10,10 @@ import logging
 import time
 
 import numpy as np
+import random
 # import tensorflow as tf
 # from tensorflow.keras.callbacks import Callback
+import torch as T
 import gymnasium as gym
 import wandb
 import pandas as pd
@@ -21,7 +23,6 @@ import plotly.offline as pyo
 import plotly.tools as tls
 
 import rl_agents
-import rl_callbacks
 import helper
 
 
@@ -353,14 +354,23 @@ def _run_sweep(sweep_config, train_config):
     Returns:
         dict: The sweep configuration.
     """
-    max_retries = 3
-    retry_delay = 10  # seconds
+    # max_retries = 3
+    # retry_delay = 10  # seconds
     #DEBUG
     # print(f'_run_sweep fired...')
     # get next run number
-    for attempt in range(max_retries):
-        try:
+    # for attempt in range(max_retries):
+    try:
+        from rl_callbacks import WandbCallback
+        # assert config.model_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER_DDPG'], f"Unsupported agent type: {config.model_type}"
+        #DEBUG
+        # print(f'passed assert')
+        wandb.init()
+        
+        # check for agent type since constructors are different
+        if wandb.config.model_type == "Reinforce" or wandb.config.model_type == "Actor Critic":
             run_number = get_next_run_number(sweep_config["project"])
+            print(f'run number:{run_number}')
             # Add run number to train config
             train_config['run_number'] = run_number
             #DEBUG
@@ -379,80 +389,196 @@ def _run_sweep(sweep_config, train_config):
             env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
             #DEBUG
             # print(f'env spec: {env.spec}')
-
-            # check for agent type since constructors are different
-            if wandb.config.model_type == "Reinforce" or wandb.config.model_type == "Actor Critic":
-                policy_layers, value_layers = build_layers(wandb.config)
-                agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
-                rl_agent = agent.build(
-                    env=env,
-                    policy_layers=policy_layers,
-                    value_layers=value_layers,
-                    callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
-                    config=wandb.config,
-                    save_dir=wandb.config.save_dir,
-                )
-            elif wandb.config.model_type == "DDPG":
-                actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
-                agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
-                rl_agent = agent.build(
-                    env=env,
-                    actor_cnn_layers = actor_cnn_layers,
-                    critic_cnn_layers = critic_cnn_layers,
-                    actor_layers=actor_layers,
-                    critic_state_layers=critic_state_layers,
-                    critic_merged_layers=critic_merged_layers,
-                    kernels=kernels,
-                    callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
-                    config=wandb.config,
-                    save_dir=wandb.config.save_dir,
-                )
-
-            elif wandb.config.model_type == "HER_DDPG":
-                #DEBUG
-                # print(f'passed wandb config: {wandb.config}')
-                actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
-                #DEBUG
-                # print('build layers output')
-                # print(f'kernels: {kernels}')
-                agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
-                rl_agent = agent.build(
-                    env=env,
-                    actor_cnn_layers = actor_cnn_layers,
-                    critic_cnn_layers = critic_cnn_layers,
-                    actor_layers=actor_layers,
-                    critic_state_layers=critic_state_layers,
-                    critic_merged_layers=critic_merged_layers,
-                    kernels=kernels,
-                    callbacks=[rl_callbacks.WandbCallback(project_name=sweep_config["project"], _sweep=True)],
-                    config=wandb.config,
-                )
-
-                #DEBUG
-                # print(f'HER AGENT config: {rl_agent.get_config()}')
+            save_dir = train_config.get('save_dir', sweep_config[wandb.config.model_type][f'{wandb.config.model_type}_save_dir'])
             
-            rl_agent.save()
+            random.seed(train_config['seed'])
+            np.random.seed(train_config['seed'])
+            T.manual_seed(train_config['seed'])
+            T.cuda.manual_seed(train_config['seed'])
 
+            callbacks = []
+            if wandb.run:
+                print(f'if wandb run fired')
+                # logger.debug("if wandb.run fired")
+                callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
+            policy_layers, value_layers = build_layers(wandb.config)
+            agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+            rl_agent = agent.build(
+                env=env,
+                policy_layers=policy_layers,
+                value_layers=value_layers,
+                callbacks=[WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+                config=wandb.config,
+                save_dir=wandb.config.save_dir,
+            )
+        elif wandb.config.model_type == "DDPG":
+            run_number = get_next_run_number(sweep_config["project"])
+            print(f'run number:{run_number}')
+            # Add run number to train config
+            train_config['run_number'] = run_number
+            #DEBUG
+            # print(f'run number: {run_number}')
+            run = wandb.init(
+                project=sweep_config["project"],
+                settings=wandb.Settings(start_method='thread'),
+                job_type="train",
+                name=f"train-{run_number}",
+                tags=["train"],
+                group=f"group-{run_number}",
+            )
+            run.tags = run.tags + (wandb.config.model_type,)
+            #DEBUG
+            # print(f"creating env { {param: value['value'] for param, value in sweep_config['parameters']['env']['parameters'].items()} }")
+            env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+            #DEBUG
+            # print(f'env spec: {env.spec}')
+            save_dir = train_config.get('save_dir', sweep_config[wandb.config.model_type][f'{wandb.config.model_type}_save_dir'])
             
+            random.seed(train_config['seed'])
+            np.random.seed(train_config['seed'])
+            T.manual_seed(train_config['seed'])
+            T.cuda.manual_seed(train_config['seed'])
 
-            agent_config_path = rl_agent.save_dir + '/config.json'
-            train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
-            # # Import train config to add run number
-            # with open(train_config_path, 'r') as file:
-            #     train_config = json.load(file)
-            # train_config['run_number'] = run_number
-            # Save updated train config
-            with open(train_config_path, 'w') as file:
-                json.dump(train_config, file)
+            callbacks = []
+            if wandb.run:
+                print(f'if wandb run fired')
+                # logger.debug("if wandb.run fired")
+                callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
+            actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
+            agent = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+            rl_agent = agent.build(
+                env=env,
+                actor_cnn_layers = actor_cnn_layers,
+                critic_cnn_layers = critic_cnn_layers,
+                actor_layers=actor_layers,
+                critic_state_layers=critic_state_layers,
+                critic_merged_layers=critic_merged_layers,
+                kernels=kernels,
+                callbacks=[WandbCallback(project_name=sweep_config["project"], _sweep=True)],
+                config=wandb.config,
+                save_dir=wandb.config.save_dir,
+            )
 
-            run_command = f"python train.py --agent_config {agent_config_path} --train_config {train_config_path}"
-            subprocess.Popen(run_command, shell=True)
-            break # exit loop if success
-        except Exception as e:
-                logging.error(f"Error during sweep run attempt {attempt + 1}: {str(e)}")
-                time.sleep(retry_delay)
-    else:
-        logging.error("Failed to start sweep run after multiple attempts.")
+        elif wandb.config.model_type == "HER_DDPG":
+            #DEBUG
+            print('her_ddpg model creation fired')
+            if train_config['use_mpi'] == True:
+                print('sweep use_mpi fired')
+                # agent_config_path = save_dir + 'config.json'
+                # train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
+                # num_workers = train_config['num_workers']
+                mpi_command = [
+                    "mpirun", 
+                    "-np", str(train_config['num_workers']), 
+                    "python", "sweep_mpi.py"
+                ]
+                
+                mpi_process = subprocess.Popen(mpi_command, env=os.environ.copy(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = mpi_process.communicate()
+
+                print("Standard Output:")
+                print(stdout.decode())
+                
+                print("Standard Error:")
+                print(stderr.decode())
+
+                # Check if the subprocess was successful
+                if mpi_process.returncode == 0:
+                    print("Subprocess completed successfully")
+                else:
+                    print("Subprocess failed with return code", mpi_process.returncode)
+            else:
+                print('sweep not using mpi fired')
+
+                run_number = get_next_run_number(sweep_config["project"])
+                print(f'run number:{run_number}')
+                # Add run number to train config
+                train_config['run_number'] = run_number
+                #DEBUG
+                # print(f'run number: {run_number}')
+                run = wandb.init(
+                    project=sweep_config["project"],
+                    settings=wandb.Settings(start_method='thread'),
+                    job_type="train",
+                    name=f"train-{run_number}",
+                    tags=["train"],
+                    group=f"group-{run_number}",
+                )
+                print('wandb init called')
+                run.tags = run.tags + (wandb.config.model_type,)
+                print('wandb run tag complete')
+                #DEBUG
+                # print(f"creating env { {param: value['value'] for param, value in sweep_config['parameters']['env']['parameters'].items()} }")
+                env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+                #DEBUG
+                print(f'env spec: {env.spec}')
+                save_dir = train_config.get('save_dir', sweep_config[wandb.config.model_type][f'{wandb.config.model_type}_save_dir'])
+                print('save dir set')
+                random.seed(train_config['seed'])
+                np.random.seed(train_config['seed'])
+                T.manual_seed(train_config['seed'])
+                T.cuda.manual_seed(train_config['seed'])
+
+                callbacks = []
+                if wandb.run:
+                    print(f'if wandb run fired')
+                    # logger.debug("if wandb.run fired")
+                    callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
+                    #DEBUG
+                    # for callback in callbacks:
+                    #     print(callback.get_config())
+                    actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
+                    agent_class = rl_agents.get_agent_class_from_type(wandb.config.model_type)
+                    rl_agent = agent_class.build(
+                        env=env,
+                        actor_cnn_layers=actor_cnn_layers,
+                        critic_cnn_layers=critic_cnn_layers,
+                        actor_layers=actor_layers,
+                        critic_state_layers=critic_state_layers,
+                        critic_merged_layers=critic_merged_layers,
+                        kernels=kernels,
+                        callbacks=callbacks,
+                        config=wandb.config,
+                    )
+                    # logger.debug("Agent built")
+                    #DEBUG
+                    print(f'agent built:{rl_agent.get_config()}')
+
+                    
+                    # logger.debug("Starting single-process training")
+                    rl_agent.train(num_epochs = train_config['num_epochs'],
+                                   num_cycles = train_config['num_cycles'],
+                                   num_episodes = train_config['num_episodes'],
+                                   num_updates = train_config['num_updates'],
+                                   render = False,
+                                   render_freq = 0,
+                                   save_dir = save_dir,
+                                   run_number = run_number
+                                   )
+
+                    #DEBUG
+                    # print(f'HER AGENT config: {rl_agent.get_config()}')
+        
+        # rl_agent.save()
+
+        
+
+        # agent_config_path = rl_agent.save_dir + '/config.json'
+        
+        # # Import train config to add run number
+        # with open(train_config_path, 'r') as file:
+        #     train_config = json.load(file)
+        # train_config['run_number'] = run_number
+        # Save updated train config
+        # with open(train_config_path, 'w') as file:
+        #     json.dump(train_config, file)
+
+        # run_command = f"python train.py --agent_config {agent_config_path} --train_config {train_config_path}"
+        # subprocess.Popen(run_command, shell=True)
+
+    except Exception as e:
+            logging.error(f"Error during sweep run attempt: {str(e)}")
+            # time.sleep(retry_delay)
 
 
 def get_run_id_from_name(project_name, run_name):
