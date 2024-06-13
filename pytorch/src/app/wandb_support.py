@@ -431,7 +431,7 @@ def _run_sweep(sweep_config, train_config):
             )
 
         elif wandb.config.model_type == "HER_DDPG":
-            print('her_ddpg model creation fired')
+            print('her model creation fired')
             if train_config['use_mpi']:
                 print('sweep use_mpi fired')
                 mpi_command = [
@@ -455,6 +455,7 @@ def _run_sweep(sweep_config, train_config):
                     print("Subprocess failed with return code", mpi_process.returncode)
             else:
                 print('sweep not using mpi fired')
+                print(f'wandb config:{wandb.config}')
                 run_number = get_next_run_number(sweep_config["project"])
                 print(f'run number:{run_number}')
                 train_config['run_number'] = run_number
@@ -471,8 +472,8 @@ def _run_sweep(sweep_config, train_config):
                 print('wandb run tag complete')
                 env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
                 print(f'env spec: {env.spec}')
-                save_dir = sweep_config.get(sweep_config[wandb.config.model_type][f'{wandb.config.model_type}_save_dir'], "HER")
-                print('save dir set')
+                save_dir = train_config.get('save_dir', wandb.config[wandb.config.model_type][f'{wandb.config.model_type}_save_dir'])
+                print(f'save dir set:{save_dir}')
                 random.seed(train_config['seed'])
                 np.random.seed(train_config['seed'])
                 T.manual_seed(train_config['seed'])
@@ -480,7 +481,7 @@ def _run_sweep(sweep_config, train_config):
 
                 callbacks = []
                 print(f'if wandb run fired')
-                callbacks.append(WandbCallback(project_name=sweep_config["project"], _sweep=True))
+                callbacks.append(WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
                 actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = build_layers(wandb.config)
                 agent_class = rl_agents.get_agent_class_from_type(wandb.config.model_type)
                 rl_agent = agent_class.build(

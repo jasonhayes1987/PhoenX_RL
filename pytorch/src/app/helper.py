@@ -117,8 +117,8 @@ class ReplayBuffer(Buffer):
             self._obs_space_shape = self.env.observation_space.shape
 
         #DEBUG
-        print(f'self._obs_space_shape: {self._obs_space_shape}')
-        print(f'buffer size = {self.buffer_size}')
+        # print(f'self._obs_space_shape: {self._obs_space_shape}')
+        # print(f'buffer size = {self.buffer_size}')
 
         self.states = np.zeros((buffer_size, *self._obs_space_shape), dtype=np.float32)
         self.actions = np.zeros((buffer_size, *env.action_space.shape), dtype=np.float32)

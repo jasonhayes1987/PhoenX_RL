@@ -87,6 +87,14 @@ def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_t
         print(f"Error in update_heatmap_process: {str(e)}")
         # time.sleep(5)
 
+def run_agent(sweep_id, sweep_config, train_config):
+    wandb.agent(
+        sweep_id,
+        function=lambda: wandb_support._run_sweep(sweep_config, train_config),
+        count=train_config['num_sweeps'],
+        project=sweep_config["project"],
+    )
+
 
 def register_callbacks(app, shared_data):
     @app.callback(
@@ -2752,7 +2760,7 @@ def register_callbacks(app, shared_data):
                     # Update additional settings for HER agent
                     train_config['num_epochs'] = num_epochs if num_epochs is not None else None
                     train_config['num_cycles'] = num_cycles if num_cycles is not None else None
-                    train_config['num_updates'] = num_agents if num_updates is not None else 1
+                    train_config['num_updates'] = num_updates if num_updates is not None else 1
                 
                     # Save the updated configuration to a train config file
                     os.makedirs('sweep', exist_ok=True)
@@ -2767,14 +2775,20 @@ def register_callbacks(app, shared_data):
                     
                     sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
 
-                    # loop over num wandb agents
+                    # Set the environment variable
+                    os.environ['WANDB_DISABLE_SERVICE'] = 'true'
+
+                    # Parallel execution of wandb agents
+                    processes = []
                     for agent in range(num_agents):
-                        wandb.agent(
-                            sweep_id,
-                            function=lambda: wandb_support._run_sweep(sweep_config, train_config,),
-                            count=train_config['num_sweeps'],
-                            project=sweep_config["project"],
-                        )
+                        p = multiprocessing.Process(target=run_agent, args=(sweep_id, sweep_config, train_config))
+                        p.start()
+                        processes.append(p)
+                        time.sleep(5)
+
+                    for p in processes:
+                        p.join()
+
 
         except KeyError as e:
             logger.error(f"KeyError in W&B stream handling: {e}")
@@ -2786,9 +2800,7 @@ def register_callbacks(app, shared_data):
 
                 # command = ['python', 'sweep.py']
 
-                # # Set the environment variable
-                # os.environ['WANDB_DISABLE_SERVICE'] = 'true'
-
+                
                 # subprocess.Popen(command)
             
 
@@ -3054,7 +3066,7 @@ def register_callbacks(app, shared_data):
             # Update additional settings for HER agent
             sweep_config['num_epochs'] = num_epochs if num_epochs is not None else None
             sweep_config['num_cycles'] = num_cycles if num_cycles is not None else None
-            sweep_config['num_updates'] = num_agents if num_updates is not None else 1
+            sweep_config['num_updates'] = num_updates if num_updates is not None else 1
 
             config_json = json.dumps(sweep_config, indent=4)
 
