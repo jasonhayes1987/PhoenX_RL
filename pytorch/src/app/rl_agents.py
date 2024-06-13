@@ -1844,6 +1844,8 @@ class HER(Agent):
             logger.debug(f"rank {MPI.COMM_WORLD.rank} run number: {run_number}")
             # config = wandb.config
             logger.debug(f"rank {MPI.COMM_WORLD.rank} config set: {config}")
+            model_type = list(config.keys())[0]
+            logger.debug(f"rank {MPI.COMM_WORLD.rank} model type: {model_type}")
             # Only primary process (rank 0) calls wandb.init() to build agent and log data
             if MPI.COMM_WORLD.rank == 0:
                 logger.debug("if rank 0 fired")
@@ -1851,58 +1853,58 @@ class HER(Agent):
                     actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
                     logger.debug("layers built")
                     # Actor
-                    actor_learning_rate=config[config.model_type][f"{config.model_type}_actor_learning_rate"]
+                    actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
                     logger.debug("actor learning rate set")
-                    actor_optimizer = config[config.model_type][f"{config.model_type}_actor_optimizer"]
+                    actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
                     logger.debug("actor optimizer set")
                     # get optimizer params
                     actor_optimizer_params = {}
                     if actor_optimizer == "Adam":
                         actor_optimizer_params['weight_decay'] = \
-                            config[config.model_type][f"{config.model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                            config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
                     
                     elif actor_optimizer == "Adagrad":
                         actor_optimizer_params['weight_decay'] = \
-                            config[config.model_type][f"{config.model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                            config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
                         actor_optimizer_params['lr_decay'] = \
-                            config[config.model_type][f"{config.model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_lr_decay']
+                            config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_lr_decay']
                     
                     elif actor_optimizer == "RMSprop" or actor_optimizer == "SGD":
                         actor_optimizer_params['weight_decay'] = \
-                            config[config.model_type][f"{config.model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                            config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
                         actor_optimizer_params['momentum'] = \
-                            config[config.model_type][f"{config.model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
+                            config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
 
                     logger.debug("actor optimizer params set")
-                    actor_normalize_layers = config[config.model_type][f"{config.model_type}_actor_normalize_layers"]
+                    actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
                     logger.debug("actor normalize layers set")
                     # Critic
-                    critic_learning_rate=config[config.model_type][f"{config.model_type}_critic_learning_rate"]
+                    critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
                     logger.debug("critic learning rate set")
-                    critic_optimizer = config[config.model_type][f"{config.model_type}_critic_optimizer"]
+                    critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
                     logger.debug("critic optimizer set")
                     critic_optimizer_params = {}
                     if critic_optimizer == "Adam":
                         critic_optimizer_params['weight_decay'] = \
-                            config[config.model_type][f"{config.model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                            config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
                     
                     elif critic_optimizer == "Adagrad":
                         critic_optimizer_params['weight_decay'] = \
-                            config[config.model_type][f"{config.model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                            config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
                         critic_optimizer_params['lr_decay'] = \
-                            config[config.model_type][f"{config.model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
+                            config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
                     
                     elif critic_optimizer == "RMSprop" or critic_optimizer == "SGD":
                         critic_optimizer_params['weight_decay'] = \
-                            config[config.model_type][f"{config.model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                            config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
                         critic_optimizer_params['momentum'] = \
-                            config[config.model_type][f"{config.model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
+                            config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
                     logger.debug("critic optimizer params set")
 
-                    critic_normalize_layers = config[config.model_type][f"{config.model_type}_critic_normalize_layers"]
+                    critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
                     logger.debug("critic normalize layers set")
                     # Set device
-                    device = config[config.model_type][f"{config.model_type}_device"]
+                    device = config[model_type][f"{model_type}_device"]
                     logger.debug("device set")
                     # Check if CNN layers and if so, build CNN model
                     if actor_cnn_layers:
@@ -1926,7 +1928,7 @@ class HER(Agent):
                     goal_shape = desired_goal_func(env).shape
                     logger.debug(f"goal shape set: {goal_shape}")
                     # Get actor clamp value
-                    clamp_output = config[config.model_type][f"{config.model_type}_actor_clamp_output"]
+                    clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
                     logger.debug(f"clamp output set: {clamp_output}")
                     actor_model = models.ActorModel(env = env,
                                                     cnn_model = actor_cnn_model,
@@ -1955,34 +1957,34 @@ class HER(Agent):
                     )
                     logger.debug(f"critic model built: {critic_model.get_config()}")
                     # get goal metrics
-                    strategy = config[config.model_type][f"{config.model_type}_goal_strategy"]
+                    strategy = config[model_type][f"{model_type}_goal_strategy"]
                     logger.debug(f"strategy set: {strategy}")
-                    tolerance = config[config.model_type][f"{config.model_type}_goal_tolerance"]
+                    tolerance = config[model_type][f"{model_type}_goal_tolerance"]
                     logger.debug(f"tolerance set: {tolerance}")
-                    num_goals = config[config.model_type][f"{config.model_type}_num_goals"]
+                    num_goals = config[model_type][f"{model_type}_num_goals"]
                     logger.debug(f"num goals set: {num_goals}")
                     # get normalizer clip value
-                    normalizer_clip = config[config.model_type][f"{config.model_type}_normalizer_clip"]
+                    normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
                     logger.debug(f"normalizer clip set: {normalizer_clip}")
                     # get action epsilon
-                    action_epsilon = config[config.model_type][f"{config.model_type}_epsilon_greedy"]
+                    action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
                     logger.debug(f"action epsilon set: {action_epsilon}")
                     # Replay buffer size
-                    replay_buffer_size = config[config.model_type][f"{config.model_type}_replay_buffer_size"]
+                    replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
                     logger.debug(f"replay buffer size set: {replay_buffer_size}")
                     # Save dir
-                    save_dir = config[config.model_type][f"{config.model_type}_save_dir"]
+                    save_dir = config[model_type][f"{model_type}_save_dir"]
                     logger.debug(f"save dir set: {save_dir}")
                     ddpg_agent= DDPG(
                         env = env,
                         actor_model = actor_model,
                         critic_model = critic_model,
-                        discount = config[config.model_type][f"{config.model_type}_discount"],
-                        tau = config[config.model_type][f"{config.model_type}_tau"],
+                        discount = config[model_type][f"{model_type}_discount"],
+                        tau = config[model_type][f"{model_type}_tau"],
                         action_epsilon = action_epsilon,
                         replay_buffer = None,
-                        batch_size = config[config.model_type][f"{config.model_type}_batch_size"],
-                        noise = helper.Noise.create_instance(config[config.model_type][f"{config.model_type}_noise"], shape=env.action_space.shape, **config[config.model_type][f"{config.model_type}_noise_{config[config.model_type][f'{config.model_type}_noise']}"], device=device),
+                        batch_size = config[model_type][f"{model_type}_batch_size"],
+                        noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
                         callbacks = callbacks,
                     )
                     logger.debug(f"ddpg agent built: {ddpg_agent.get_config()}")
