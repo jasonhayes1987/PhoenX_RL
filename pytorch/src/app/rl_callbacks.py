@@ -64,24 +64,27 @@ class WandbCallback(Callback):
         self.chkpt_freq = chkpt_freq
         self._sweep = _sweep
 
-    def on_train_begin(self, models, logs=None, run_number=None):
-        run_number = wandb_support.get_next_run_number(self.project_name)
+    def on_train_begin(self, models, logs=None):
 
-        run = wandb.init(
-            project=self.project_name,
-            name=f"train-{run_number}",
-            tags=["train", self.model_type],
-            group=f"group-{run_number}",
-            job_type="train",
-            config=logs,
-        )
+        if not self._sweep:
+            run_number = wandb_support.get_next_run_number(self.project_name)
+
+            run = wandb.init(
+                project=self.project_name,
+                name=f"train-{run_number}",
+                tags=["train", self.model_type],
+                group=f"group-{run_number}",
+                job_type="train",
+                config=logs,
+            )
+            self.run_name = run.name
+
         wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
-        self.run_name = run.name
 
     def on_train_end(self, logs=None):
         """Finishes W&B run for training."""
-        if not self._sweep:
-            wandb.finish()
+        # if not self._sweep:
+        wandb.finish()
 
     def on_train_epoch_begin(self, epoch, logs=None):
         """Initializes W&B run for epoch."""
