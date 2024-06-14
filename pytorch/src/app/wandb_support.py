@@ -80,7 +80,7 @@ def build_layers(sweep_config):
     Returns:
         tuple: The policy layers and value layers.
     """
-    model_type = list(config.keys())[0]
+    model_type = list(sweep_config.keys())[0]
     if model_type == "Reinforce" or model_type == "ActorCritic":
         # get policy layers
         policy_layers = []
