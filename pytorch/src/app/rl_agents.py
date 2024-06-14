@@ -1851,12 +1851,12 @@ class HER(Agent):
                 logger.debug("if rank 0 fired")
                 try:
                     actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
-                    logger.debug("layers built")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; layers built")
                     # Actor
                     actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
-                    logger.debug("actor learning rate set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor learning rate set")
                     actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
-                    logger.debug("actor optimizer set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor optimizer set")
                     # get optimizer params
                     actor_optimizer_params = {}
                     if actor_optimizer == "Adam":
@@ -1875,14 +1875,14 @@ class HER(Agent):
                         actor_optimizer_params['momentum'] = \
                             config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
 
-                    logger.debug("actor optimizer params set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor optimizer params set")
                     actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
-                    logger.debug("actor normalize layers set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor normalize layers set")
                     # Critic
                     critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
-                    logger.debug("critic learning rate set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic learning rate set")
                     critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
-                    logger.debug("critic optimizer set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic optimizer set")
                     critic_optimizer_params = {}
                     if critic_optimizer == "Adam":
                         critic_optimizer_params['weight_decay'] = \
@@ -1899,37 +1899,37 @@ class HER(Agent):
                             config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
                         critic_optimizer_params['momentum'] = \
                             config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
-                    logger.debug("critic optimizer params set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic optimizer params set")
 
                     critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
-                    logger.debug("critic normalize layers set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic normalize layers set")
                     # Set device
                     device = config[model_type][f"{model_type}_device"]
-                    logger.debug("device set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; device set")
                     # Check if CNN layers and if so, build CNN model
                     if actor_cnn_layers:
                         actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
                     else:
                         actor_cnn_model = None
-                    logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor cnn layers set: {actor_cnn_layers}")
 
                     if critic_cnn_layers:
                         critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
                     else:
                         critic_cnn_model = None
-                    logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic cnn layers set: {critic_cnn_layers}")
                     # get desired, achieved, reward func for env
-                    logger.debug(f"second call env.spec: {env.spec.id}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; second call env.spec: {env.spec.id}")
                     desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
-                    logger.debug("goal function set")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; goal function set")
                     # Reset env state to initiate state to detect correct goal shape
                     _,_ = env.reset()
-                    logger.debug("env reset")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; env reset")
                     goal_shape = desired_goal_func(env).shape
-                    logger.debug(f"goal shape set: {goal_shape}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; goal shape set: {goal_shape}")
                     # Get actor clamp value
                     clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
-                    logger.debug(f"clamp output set: {clamp_output}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; clamp output set: {clamp_output}")
                     actor_model = models.ActorModel(env = env,
                                                     cnn_model = actor_cnn_model,
                                                     dense_layers = actor_layers,
@@ -1942,7 +1942,7 @@ class HER(Agent):
                                                     clamp_output=clamp_output,
                                                     device=device,
                     )
-                    logger.debug(f"actor model built: {actor_model.get_config()}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor model built: {actor_model.get_config()}")
                     critic_model = models.CriticModel(env = env,
                                                     cnn_model = critic_cnn_model,
                                                     state_layers = critic_state_layers,
@@ -1958,23 +1958,23 @@ class HER(Agent):
                     logger.debug(f"critic model built: {critic_model.get_config()}")
                     # get goal metrics
                     strategy = config[model_type][f"{model_type}_goal_strategy"]
-                    logger.debug(f"strategy set: {strategy}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; strategy set: {strategy}")
                     tolerance = config[model_type][f"{model_type}_goal_tolerance"]
-                    logger.debug(f"tolerance set: {tolerance}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; tolerance set: {tolerance}")
                     num_goals = config[model_type][f"{model_type}_num_goals"]
-                    logger.debug(f"num goals set: {num_goals}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; num goals set: {num_goals}")
                     # get normalizer clip value
                     normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
-                    logger.debug(f"normalizer clip set: {normalizer_clip}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; normalizer clip set: {normalizer_clip}")
                     # get action epsilon
                     action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
-                    logger.debug(f"action epsilon set: {action_epsilon}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; action epsilon set: {action_epsilon}")
                     # Replay buffer size
                     replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
-                    logger.debug(f"replay buffer size set: {replay_buffer_size}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; replay buffer size set: {replay_buffer_size}")
                     # Save dir
                     save_dir = config[model_type][f"{model_type}_save_dir"]
-                    logger.debug(f"save dir set: {save_dir}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; save dir set: {save_dir}")
                     ddpg_agent= DDPG(
                         env = env,
                         actor_model = actor_model,
@@ -1987,29 +1987,34 @@ class HER(Agent):
                         noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
                         callbacks = callbacks,
                     )
-                    logger.debug(f"ddpg agent built: {ddpg_agent.get_config()}")
+                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; ddpg agent built: {ddpg_agent.get_config()}")
 
-                    her = cls(
-                        agent = ddpg_agent,
-                        strategy = strategy,
-                        tolerance = tolerance,
-                        num_goals = num_goals,
-                        desired_goal = desired_goal_func,
-                        achieved_goal = achieved_goal_func,
-                        reward_fn = reward_func,
-                        normalizer_clip = normalizer_clip,
-                        replay_buffer_size = replay_buffer_size,
-                        device = device,
-                        save_dir = save_dir,
-                    )
-                    logger.debug(f"her agent built: {her.get_config()}")
+                    try:
+                        logger.debug(f"rank {MPI.COMM_WORLD.rank}; attempting building HER agent")
+                        logger.debug(f"rank {MPI.COMM_WORLD.rank}; cls: {cls}")
+                        her = cls(
+                            agent = ddpg_agent,
+                            strategy = strategy,
+                            tolerance = tolerance,
+                            num_goals = num_goals,
+                            desired_goal = desired_goal_func,
+                            achieved_goal = achieved_goal_func,
+                            reward_fn = reward_func,
+                            normalizer_clip = normalizer_clip,
+                            replay_buffer_size = replay_buffer_size,
+                            device = device,
+                            save_dir = save_dir,
+                        )
+                        logger.debug(f"rank {MPI.COMM_WORLD.rank}; her agent built: {her.get_config()}")
+                    except Exception as e:
+                        logger.error(f"rank {MPI.COMM_WORLD.rank}; Error in sweep_train building her: {e}")
 
                     # save agent config to be loaded by other processes
                     agent_config = her.get_config()
                     agent_config_path = f'sweep/agent_config_{run_number}.json'
                     with open(agent_config_path, 'w') as file:
                         json.dump(agent_config, file)
-                    logger.debug('agent config saved')
+                    logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent config saved')
 
                 except Exception as e:
                     logger.error(f"Error in rank 0 process: {e}")
