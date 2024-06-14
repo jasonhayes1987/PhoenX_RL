@@ -3112,6 +3112,8 @@ def init_sweep(sweep_config, train_config):
                     # dir=run_dir
                 )
                 logger.debug("wandb.init() fired")
+                wandb_config = dict(wandb.config)
+                model_type = list(wandb_config.keys())[0]
                 
                 # Wait for configuration to be populated
                 max_retries = 10
@@ -3125,12 +3127,11 @@ def init_sweep(sweep_config, train_config):
 
                 if "model_type" in wandb.config:
                     logger.debug(f'wandb.config: {wandb.config}')
-                    run.tags = run.tags + (wandb.config.model_type,)
+                    run.tags = run.tags + (model_type,)
                 else:
                     logger.error("wandb.config did not populate with model_type within the expected time.")
                 
-                logger.debug(f'wandb.config: {wandb.config}')
-                run.tags = run.tags + (wandb.config.model_type,)
+                run.tags = run.tags + (model_type,)
                 logger.debug("run.tag set")
                 env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
                 logger.debug(f"env built: {env.spec}")
@@ -3160,24 +3161,30 @@ def init_sweep(sweep_config, train_config):
             env = MPI.COMM_WORLD.bcast(env, root=0)
             callbacks = MPI.COMM_WORLD.bcast(callbacks, root=0)
             run_number = MPI.COMM_WORLD.bcast(run_number, root=0)
-            wandb_config = MPI.COMM_WORLD.bcast(dict(wandb.config), root=0)
+            wandb_config = MPI.COMM_WORLD.bcast(wandb_config, root=0)
+            model_type = list(wandb_config.keys())[0]
             logger.debug(f"rank {MPI.COMM_WORLD.rank} broadcasts complete")
         except Exception as e:
             logger.error(f"rank {MPI.COMM_WORLD.rank} Error in rl_agents.init_sweep broadcasting: {e}")
 
         if MPI.COMM_WORLD.rank == 0:
             try:
-                agent = get_agent_class_from_type(wandb.config.model_type)
+                agent = get_agent_class_from_type(model_type)
                 logger.debug("rank 0: agent class found. Calling sweep_train")
-                agent.sweep_train(dict(wandb.config), train_config, env, callbacks, run_number)
+                agent.sweep_train(wandb_config, train_config, env, callbacks, run_number)
             except Exception as e:
                 logger.error(f"Error in rl_agents.init_sweep sweep_train rank 0 initiation: {e}")
 
         elif MPI.COMM_WORLD.rank > 0:
             logger.debug("MPI rank > 0 fired")
             try:
-                agent = get_agent_class_from_type(wandb_config["model_type"])
+                agent = get_agent_class_from_type(model_type)
                 logger.debug(f"rank {MPI.COMM_WORLD.rank} agent class found. Calling sweep_train")
+                logger.debug(f'wandb_config:{wandb_config}')
+                logger.debug(f'train_config:{train_config}')
+                logger.debug(f'env:{env}')
+                logger.debug(f'callbacks:{callbacks}')
+                logger.debug(f'run_number:{run_number}')
                 agent.sweep_train(wandb_config, train_config, env, callbacks, run_number)
             except Exception as e:
                 logger.error(f"Error in rl_agents.init_sweep sweep_train rank > 0 initiation: {e}")
