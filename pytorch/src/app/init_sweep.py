@@ -57,5 +57,6 @@ if __name__ == "__main__":
             train_config = load_config(train_config_path)
             logger.debug("train config loaded")
             main(sweep_config, train_config)
+            MPI.Finalize()
         except Exception as e:
               logger.error(f"error in init_sweep.py __main__ process: {e}")
