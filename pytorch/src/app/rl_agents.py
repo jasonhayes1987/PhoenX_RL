@@ -2021,21 +2021,23 @@ class HER(Agent):
 
             else:
                 agent_config_path = None
+                logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent config path set to None: {agent_config_path}')
 
-            # Use MPI Barrier to sync processes
-            try:
-                logger.debug(f"rank {MPI.COMM_WORLD.rank} barrier called")
-                MPI.COMM_WORLD.Barrier()
-                logger.debug(f"rank {MPI.COMM_WORLD.rank} mpi barrier passed")
-            except Exception as e:
-                logger.error(f"rank {MPI.COMM_WORLD.rank} Error in MPI Barrier process: {e}")
+            # # Use MPI Barrier to sync processes
+            # try:
+            #     logger.debug(f"rank {MPI.COMM_WORLD.rank} barrier called")
+            #     MPI.COMM_WORLD.Barrier()
+            #     logger.debug(f"rank {MPI.COMM_WORLD.rank} mpi barrier passed")
+            # except Exception as e:
+            #     logger.error(f"rank {MPI.COMM_WORLD.rank} Error in MPI Barrier process: {e}")
             
             # Broadcast the agent_config_path from rank 0 to all other ranks
             try:
+                logger.debug(f'rank {MPI.COMM_WORLD.rank}; reached agent_config_path bcast')
                 agent_config_path = MPI.COMM_WORLD.bcast(agent_config_path, root=0)
                 logger.debug(f"rank {MPI.COMM_WORLD.rank} agent config path broadcasted: {agent_config_path}")
             except Exception as e:
-                logger.error(f"Error broadcasting agent_config_path: {e}")
+                logger.error(f"rank {MPI.COMM_WORLD.rank} Error broadcasting agent_config_path: {e}")
 
             # Start training
             try:
@@ -3087,7 +3089,7 @@ def init_sweep(sweep_config, train_config):
     try:
         # Set the environment variable
         os.environ['WANDB_DISABLE_SERVICE'] = 'true'
-        logger.debug("WANDB_DISABLE_SERVICE set to true")
+        logger.debug(f"rank {MPI.COMM_WORLD.rank} WANDB_DISABLE_SERVICE set to true")
 
         # Set seeds
         random.seed(train_config['seed'])
@@ -3109,7 +3111,7 @@ def init_sweep(sweep_config, train_config):
                 
                 run = wandb.init(
                     project=sweep_config["project"],
-                    # settings=wandb.Settings(start_method='thread'),
+                    settings=wandb.Settings(start_method='thread'),
                     job_type="train",
                     name=f"train-{run_number}",
                     tags=["train"],
@@ -3153,12 +3155,12 @@ def init_sweep(sweep_config, train_config):
             wandb_config = None
         
         # Use MPI Barrier to sync processes
-        try:
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} calling MPI Barrier")
-            MPI.COMM_WORLD.Barrier()
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} MPI Barrier passed")
-        except Exception as e:
-            logger.error(f"Error in rl_agents.init_sweep MPI Barrier process: {e}")
+        # try:
+        #     logger.debug(f"rank {MPI.COMM_WORLD.rank} calling MPI Barrier")
+        #     MPI.COMM_WORLD.Barrier()
+        #     logger.debug(f"rank {MPI.COMM_WORLD.rank} MPI Barrier passed")
+        # except Exception as e:
+        #     logger.error(f"Error in rl_agents.init_sweep MPI Barrier process: {e}")
 
         # Broadcast wandb config, env, and callbacks for rank 0 process
         try:
