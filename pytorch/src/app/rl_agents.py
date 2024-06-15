@@ -1838,25 +1838,28 @@ class HER(Agent):
         """Builds and trains agents from sweep configs. Works with MPI"""
 
         try:
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} train config: {train_config}")
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} env spec id: {env.spec.id}")
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} callbacks: {callbacks}")
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} run number: {run_number}")
+            rank = MPI.COMM_WORLD.rank
+            agent_config_path = f'sweep/agent_config_{run_number}.json'
+            logger.debug(f"rank {rank} agent config path: {agent_config_path}")
+            logger.debug(f"rank {rank} train config: {train_config}")
+            logger.debug(f"rank {rank} env spec id: {env.spec.id}")
+            logger.debug(f"rank {rank} callbacks: {callbacks}")
+            logger.debug(f"rank {rank} run number: {run_number}")
             # config = wandb.config
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} config set: {config}")
+            logger.debug(f"rank {rank} config set: {config}")
             model_type = list(config.keys())[0]
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} model type: {model_type}")
+            logger.debug(f"rank {rank} model type: {model_type}")
             # Only primary process (rank 0) calls wandb.init() to build agent and log data
-            if MPI.COMM_WORLD.rank == 0:
+            if rank == 0:
                 logger.debug("if rank 0 fired")
                 try:
                     actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; layers built")
+                    logger.debug(f"rank {rank}; layers built")
                     # Actor
                     actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor learning rate set")
+                    logger.debug(f"rank {rank}; actor learning rate set")
                     actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor optimizer set")
+                    logger.debug(f"rank {rank}; actor optimizer set")
                     # get optimizer params
                     actor_optimizer_params = {}
                     if actor_optimizer == "Adam":
@@ -1875,14 +1878,14 @@ class HER(Agent):
                         actor_optimizer_params['momentum'] = \
                             config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
 
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor optimizer params set")
+                    logger.debug(f"rank {rank}; actor optimizer params set")
                     actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor normalize layers set")
+                    logger.debug(f"rank {rank}; actor normalize layers set")
                     # Critic
                     critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic learning rate set")
+                    logger.debug(f"rank {rank}; critic learning rate set")
                     critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic optimizer set")
+                    logger.debug(f"rank {rank}; critic optimizer set")
                     critic_optimizer_params = {}
                     if critic_optimizer == "Adam":
                         critic_optimizer_params['weight_decay'] = \
@@ -1899,37 +1902,37 @@ class HER(Agent):
                             config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
                         critic_optimizer_params['momentum'] = \
                             config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic optimizer params set")
+                    logger.debug(f"rank {rank}; critic optimizer params set")
 
                     critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic normalize layers set")
+                    logger.debug(f"rank {rank}; critic normalize layers set")
                     # Set device
                     device = config[model_type][f"{model_type}_device"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; device set")
+                    logger.debug(f"rank {rank}; device set")
                     # Check if CNN layers and if so, build CNN model
                     if actor_cnn_layers:
                         actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
                     else:
                         actor_cnn_model = None
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor cnn layers set: {actor_cnn_layers}")
+                    logger.debug(f"rank {rank}; actor cnn layers set: {actor_cnn_layers}")
 
                     if critic_cnn_layers:
                         critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
                     else:
                         critic_cnn_model = None
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; critic cnn layers set: {critic_cnn_layers}")
+                    logger.debug(f"rank {rank}; critic cnn layers set: {critic_cnn_layers}")
                     # get desired, achieved, reward func for env
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; second call env.spec: {env.spec.id}")
+                    logger.debug(f"rank {rank}; second call env.spec: {env.spec.id}")
                     desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; goal function set")
+                    logger.debug(f"rank {rank}; goal function set")
                     # Reset env state to initiate state to detect correct goal shape
                     _,_ = env.reset()
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; env reset")
+                    logger.debug(f"rank {rank}; env reset")
                     goal_shape = desired_goal_func(env).shape
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; goal shape set: {goal_shape}")
+                    logger.debug(f"rank {rank}; goal shape set: {goal_shape}")
                     # Get actor clamp value
                     clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; clamp output set: {clamp_output}")
+                    logger.debug(f"rank {rank}; clamp output set: {clamp_output}")
                     actor_model = models.ActorModel(env = env,
                                                     cnn_model = actor_cnn_model,
                                                     dense_layers = actor_layers,
@@ -1942,7 +1945,7 @@ class HER(Agent):
                                                     clamp_output=clamp_output,
                                                     device=device,
                     )
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; actor model built: {actor_model.get_config()}")
+                    logger.debug(f"rank {rank}; actor model built: {actor_model.get_config()}")
                     critic_model = models.CriticModel(env = env,
                                                     cnn_model = critic_cnn_model,
                                                     state_layers = critic_state_layers,
@@ -1958,23 +1961,23 @@ class HER(Agent):
                     logger.debug(f"critic model built: {critic_model.get_config()}")
                     # get goal metrics
                     strategy = config[model_type][f"{model_type}_goal_strategy"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; strategy set: {strategy}")
+                    logger.debug(f"rank {rank}; strategy set: {strategy}")
                     tolerance = config[model_type][f"{model_type}_goal_tolerance"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; tolerance set: {tolerance}")
+                    logger.debug(f"rank {rank}; tolerance set: {tolerance}")
                     num_goals = config[model_type][f"{model_type}_num_goals"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; num goals set: {num_goals}")
+                    logger.debug(f"rank {rank}; num goals set: {num_goals}")
                     # get normalizer clip value
                     normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; normalizer clip set: {normalizer_clip}")
+                    logger.debug(f"rank {rank}; normalizer clip set: {normalizer_clip}")
                     # get action epsilon
                     action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; action epsilon set: {action_epsilon}")
+                    logger.debug(f"rank {rank}; action epsilon set: {action_epsilon}")
                     # Replay buffer size
                     replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; replay buffer size set: {replay_buffer_size}")
+                    logger.debug(f"rank {rank}; replay buffer size set: {replay_buffer_size}")
                     # Save dir
                     save_dir = config[model_type][f"{model_type}_save_dir"]
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; save dir set: {save_dir}")
+                    logger.debug(f"rank {rank}; save dir set: {save_dir}")
                     ddpg_agent= DDPG(
                         env = env,
                         actor_model = actor_model,
@@ -1987,11 +1990,11 @@ class HER(Agent):
                         noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
                         callbacks = callbacks,
                     )
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank}; ddpg agent built: {ddpg_agent.get_config()}")
+                    logger.debug(f"rank {rank}; ddpg agent built: {ddpg_agent.get_config()}")
 
                     try:
-                        logger.debug(f"rank {MPI.COMM_WORLD.rank}; attempting building HER agent")
-                        logger.debug(f"rank {MPI.COMM_WORLD.rank}; cls: {cls}")
+                        logger.debug(f"rank {rank}; attempting building HER agent")
+                        logger.debug(f"rank {rank}; cls: {cls}")
                         her = cls(
                             agent = ddpg_agent,
                             strategy = strategy,
@@ -2005,43 +2008,45 @@ class HER(Agent):
                             device = device,
                             save_dir = save_dir,
                         )
-                        logger.debug(f"rank {MPI.COMM_WORLD.rank}; her agent built: {her.get_config()}")
+                        logger.debug(f"rank {rank}; her agent built: {her.get_config()}")
                     except Exception as e:
-                        logger.error(f"rank {MPI.COMM_WORLD.rank}; Error in sweep_train building her: {e}")
+                        logger.error(f"rank {rank}; Error in sweep_train building her: {e}")
 
                     # save agent config to be loaded by other processes
                     agent_config = her.get_config()
-                    agent_config_path = f'sweep/agent_config_{run_number}.json'
                     with open(agent_config_path, 'w') as file:
                         json.dump(agent_config, file)
-                    logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent config saved')
+                    logger.debug(f'rank {rank}; agent config saved')
 
                 except Exception as e:
                     logger.error(f"Error in rank 0 process: {e}")
 
             else:
-                agent_config_path = None
-                logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent config path set to None: {agent_config_path}')
+            #     # agent_config_path = None
+            #     # logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent config path set to None: {agent_config_path}')
+            #     run_number = None
+            #     logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent run number set to None: {run_number}')
+                her = None
 
-            # # Use MPI Barrier to sync processes
-            # try:
-            #     logger.debug(f"rank {MPI.COMM_WORLD.rank} barrier called")
-            #     MPI.COMM_WORLD.Barrier()
-            #     logger.debug(f"rank {MPI.COMM_WORLD.rank} mpi barrier passed")
-            # except Exception as e:
-            #     logger.error(f"rank {MPI.COMM_WORLD.rank} Error in MPI Barrier process: {e}")
+            # Use MPI Barrier to sync processes
+            try:
+                logger.debug(f"rank {rank} barrier called")
+                MPI.COMM_WORLD.Barrier()
+                logger.debug(f"rank {rank} mpi barrier passed")
+            except Exception as e:
+                logger.error(f"rank {rank} Error in MPI Barrier process: {e}")
             
             # Broadcast the agent_config_path from rank 0 to all other ranks
-            try:
-                logger.debug(f'rank {MPI.COMM_WORLD.rank}; reached agent_config_path bcast')
-                agent_config_path = MPI.COMM_WORLD.bcast(agent_config_path, root=0)
-                logger.debug(f"rank {MPI.COMM_WORLD.rank} agent config path broadcasted: {agent_config_path}")
-            except Exception as e:
-                logger.error(f"rank {MPI.COMM_WORLD.rank} Error broadcasting agent_config_path: {e}")
+            # try:
+            #     logger.debug(f'rank {MPI.COMM_WORLD.rank}; reached agent_config_path bcast')
+            #     run_number = MPI.COMM_WORLD.bcast(run_number, root=0)
+            #     logger.debug(f"rank {MPI.COMM_WORLD.rank} agent config path broadcasted: {agent_config_path}")
+            # except Exception as e:
+            #     logger.error(f"rank {MPI.COMM_WORLD.rank} Error broadcasting agent_config_path: {e}")
 
             # Start training
             try:
-                if MPI.COMM_WORLD.rank == 0:
+                if rank == 0:
                     logger.debug("mpi rank 0 fired for her.train")
                     try:
                         her.train(
@@ -2056,17 +2061,21 @@ class HER(Agent):
                         logger.error(f"Error in rank = 0 train process: {e}")
             
             # Check if MPI is being used
-                elif MPI.COMM_WORLD.rank > 0:
-                    logger.debug(f"rank {MPI.COMM_WORLD.rank} fired for load and train")
+                elif rank > 0:
+                    logger.debug(f"rank {rank} fired for load and train")
                     try:
+                        logger.debug(f"rank {rank} agent config path:{agent_config_path}")
                         # load agent config saved by primary process
                         with open(agent_config_path, 'r', encoding="utf-8") as f:
                             agent_config = json.load(f)
-                        logger.debug(f"rank {MPI.COMM_WORLD.rank} agent config loaded")
+                        logger.debug(f"rank {rank} agent config loaded: {agent_config}")
 
                         # Load agent
-                        her = HER.load(agent_config)
-                        logger.debug(f"rank {MPI.COMM_WORLD.rank}  her loaded: {her.get_config()}")
+                        try:
+                            her = cls.load(agent_config, load_weights=False)
+                            logger.debug(f"rank {rank}  her loaded: {her.get_config()}")
+                        except Exception as e:
+                            logger.error(f"rank {rank} failed loading her agent: {e}")
 
                         # Train agent
                         her.train(
@@ -3008,6 +3017,7 @@ class HER(Agent):
     @classmethod
     def load(cls, config, load_weights=True):
         """Loads the model."""
+        logger.debug(f'')
         # # load reinforce agent config
         # with open(
         #     Path(folder).joinpath(Path("obj_config.json")), "r", encoding="utf-8"
