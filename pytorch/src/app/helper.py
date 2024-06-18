@@ -11,6 +11,11 @@ from mpi4py import MPI
 
 import gymnasium as gym
 import numpy as np
+import logging
+
+# Initialize logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # random helper functions
 def flatten_dict(d, parent_key='', sep='_'):
@@ -870,14 +875,29 @@ class MPIHelper:
 
 def sync_networks(network):
     comm = MPI.COMM_WORLD
-    params = np.concatenate([getattr(p, 'data').cpu().numpy().flatten()
-                             for p in network.parameters()])
-    comm.Bcast(params)
-    idx = 0
-    for p in network.parameters():
-        getattr(p, 'data').copy_(T.tensor(
-            params[idx:idx + p.data.numel()]).view_as(p.data))
-        idx += p.data.numel()
+
+    try:
+        params = np.concatenate([getattr(p, 'data').cpu().numpy().flatten()
+                                for p in network.parameters()])
+        logger.debug(f"rank {comm.rank} network params set")
+    except Exception as e:
+        logger.error(f"rank {comm.rank} error setting network params")
+    
+    try:
+        comm.Bcast(params)
+        logger.debug(f"rank {comm.rank} network params broadcasted")
+    except Exception as e:
+        logger.error(f"rank {comm.rank} error broadcasting network params")
+
+    try:
+        idx = 0
+        for p in network.parameters():
+            getattr(p, 'data').copy_(T.tensor(
+                params[idx:idx + p.data.numel()]).view_as(p.data))
+            idx += p.data.numel()
+        logger.debug(f"rank {comm.rank} network params copied")
+    except Exception as e:
+        logger.error(f"rank {comm.rank} error copying network params: {e}")
 
 def sync_grads_sum(network):
     comm = MPI.COMM_WORLD
