@@ -11,11 +11,8 @@ from mpi4py import MPI
 
 import gymnasium as gym
 import numpy as np
-import logging
-
-# Initialize logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+# import logging
+from logging_config import logger
 
 # random helper functions
 def flatten_dict(d, parent_key='', sep='_'):
@@ -881,13 +878,13 @@ def sync_networks(network):
                                 for p in network.parameters()])
         logger.debug(f"rank {comm.rank} network params set")
     except Exception as e:
-        logger.error(f"rank {comm.rank} error setting network params")
+        logger.error(f"rank {comm.rank} error setting network params: {e}", exc_info=True)
     
     try:
         comm.Bcast(params)
         logger.debug(f"rank {comm.rank} network params broadcasted")
     except Exception as e:
-        logger.error(f"rank {comm.rank} error broadcasting network params")
+        logger.error(f"rank {comm.rank} error broadcasting network params: {e}", exc_info=True)
 
     try:
         idx = 0
@@ -897,10 +894,9 @@ def sync_networks(network):
             idx += p.data.numel()
         logger.debug(f"rank {comm.rank} network params copied")
     except Exception as e:
-        logger.error(f"rank {comm.rank} error copying network params: {e}")
+        logger.error(f"rank {comm.rank} error copying network params: {e}", exc_info=True)
 
-def sync_grads_sum(network):
-    comm = MPI.COMM_WORLD
+def sync_grads_sum(network, comm):
     grads = np.concatenate([getattr(p, 'grad').cpu().numpy().flatten()
                            for p in network.parameters()])
     global_grads = np.zeros_like(grads)
@@ -911,8 +907,7 @@ def sync_grads_sum(network):
             global_grads[idx:idx + p.data.numel()]).view_as(p.data))
         idx += p.data.numel()
 
-def sync_grads_avg(network):
-    comm = MPI.COMM_WORLD
+def sync_grads_avg(network, comm):
     workers = MPI.COMM_WORLD.Get_size()
     grads = np.concatenate([getattr(p, 'grad').cpu().numpy().flatten()
                            for p in network.parameters()])
@@ -925,7 +920,7 @@ def sync_grads_avg(network):
             global_grads[idx:idx + p.data.numel()]).view_as(p.data))
         idx += p.data.numel()
 
-def sync_metrics(config):
+def sync_metrics(config, comm):
     # Create a dictionary to store the summed metrics
     summed_metrics = {}
 
@@ -937,13 +932,13 @@ def sync_metrics(config):
             buffer[0] = value
 
             # Perform Allreduce to sum the metric values
-            MPI.COMM_WORLD.Allreduce(MPI.IN_PLACE, buffer, op=MPI.SUM)
+            comm.Allreduce(MPI.IN_PLACE, buffer, op=MPI.SUM)
 
             # Store the summed metric in the dictionary
             summed_metrics[key] = buffer[0]
 
     # Average the summed metrics
-    num_workers = MPI.COMM_WORLD.Get_size()
+    num_workers = comm.Get_size()
     averaged_metrics = {key: value / num_workers for key, value in summed_metrics.items()}
 
     return averaged_metrics
