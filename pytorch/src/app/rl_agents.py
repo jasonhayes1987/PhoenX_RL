@@ -12,7 +12,8 @@ from typing import Union
 # import inspect
 # import threading
 from mpi4py import MPI
-import logging
+# import logging
+from logging_config import logger
 
 import rl_callbacks
 import models
@@ -33,12 +34,6 @@ import torch.distributed as dist
 import gymnasium as gym
 import numpy as np
 import random
-
-
-# Initialize logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-
 
 
 # Agent class
@@ -854,9 +849,18 @@ class DDPG(Agent):
         normalizer_eps:float=0.01,
         callbacks: List = [],
         save_dir: str = "models",
+        comm=None
     ):
         try:
             self.rank = MPI.COMM_WORLD.rank
+            self.color = 0
+            if comm is not None:
+                self.comm = comm
+                self.rank = comm.Get_rank()
+                if hasattr(self.comm, 'Get_color'):
+                    self.color = self.comm.Get_color()
+            else:
+                self.comm = MPI.COMM_WORLD
             self.env = env
             self.actor_model = actor_model
             self.critic_model = critic_model
@@ -875,7 +879,7 @@ class DDPG(Agent):
             self.normalizer_eps = normalizer_eps
             logger.debug(f"rank {self.rank} DDPG init attributes set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in DDPG init: {e}")
+            logger.error(f"rank {self.rank} Error in DDPG init: {e}", exc_info=True)
         
         # set internal attributes
         try:
@@ -897,7 +901,7 @@ class DDPG(Agent):
             self._use_her = False
             logger.debug(f"rank {self.rank} HER init: internal attributes set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in HER init internal attributes: {e}")
+            logger.error(f"rank {self.rank} Error in HER init internal attributes: {e}", exc_info=True)
 
         # Set callbacks
         try:
@@ -913,7 +917,7 @@ class DDPG(Agent):
                 self._wandb = False
             logger.debug(f"rank {self.rank} HER init: callbacks set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in HER init set callbacks: {e}")
+            logger.error(f"rank {self.rank} Error in HER init set callbacks: {e}", exc_info=True)
         self._train_config = {}
         self._train_episode_config = {}
         self._train_step_config = {}
@@ -1121,7 +1125,7 @@ class DDPG(Agent):
 
             return gym.make(self.env.spec)
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in DDPG._initialize_env: {e}")
+            logger.error(f"rank {self.rank} Error in DDPG._initialize_env: {e}", exc_info=True)
             raise
 
     
@@ -1279,15 +1283,7 @@ class DDPG(Agent):
               state_normalizer:Union[Normalizer, SharedNormalizer]=None,
               goal_normalizer:Union[Normalizer, SharedNormalizer]=None,
               ):
-        
-        # print('replay buffer config:')
-        # print(replay_buffer.get_config())
-        # print('state normalizer:')
-        # print(state_normalizer.get_config())
-        # print('goal normalizer')
-        # print(goal_normalizer.get_config())
 
-        
         # sample a batch of experiences from the replay buffer
         if self._use_her: # if using HER
             states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = replay_buffer.sample(self.batch_size)
@@ -1304,18 +1300,6 @@ class DDPG(Agent):
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
-        
-        # print samples from buffer
-        # print(f'agent {dist.get_rank()}')
-        # print(f'states: {states}')
-        # print(f'actions: {actions}')
-        # print(f'rewards: {rewards}')
-        # print(f'next_states: {next_states}')
-        # print(f'dones: {dones}')
-        # if self._use_her:
-        #     print(f'achieved_goals: {achieved_goals}')
-        #     print(f'next_achieved_goals: {next_achieved_goals}')
-        #     print(f'desired_goals: {desired_goals}')
         
         # Convert to tensors
         states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
@@ -1374,11 +1358,7 @@ class DDPG(Agent):
             #         # print(param.grad)
 
             ## MPI CPU ##
-            helper.sync_grads_sum(self.critic_model)
-            # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad after all reduce:')
-            # for param in self.critic_model.parameters():
-            #     if param.grad is not None:
-            #         print(param.grad)
+            helper.sync_grads_sum(self.critic_model, self.comm)
         self.critic_model.optimizer.step()
         
         
@@ -1411,12 +1391,7 @@ class DDPG(Agent):
             #         # print(param.grad)
 
             ## MPI CPU ##
-            helper.sync_grads_sum(self.actor_model)
-            # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad after all reduce:')
-            # for param in self.actor_model.parameters():
-            #     if param.grad is not None:
-            #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
-            #         print(param.grad)
+            helper.sync_grads_sum(self.actor_model, self.comm)
         self.actor_model.optimizer.step()
 
         # add metrics to step_logs
@@ -1740,12 +1715,31 @@ class DDPG(Agent):
 
 class HER(Agent):
 
-    def __init__(self, agent:Agent, strategy:str='final', tolerance:float=0.0, num_goals:int=4, desired_goal:callable=None,
-                 achieved_goal:callable=None, reward_fn:callable=None, normalizer_clip:float=5.0,
-                 normalizer_eps:float=0.01, replay_buffer_size:int=1_000_000, device:str='cuda', save_dir: str = "models"):
+    def __init__(self,
+                 agent:Agent,
+                 strategy:str='final',
+                 tolerance:float=0.0,
+                 num_goals:int=4,
+                 desired_goal:callable=None,
+                 achieved_goal:callable=None,
+                 reward_fn:callable=None,
+                 normalizer_clip:float=5.0,
+                 normalizer_eps:float=0.01,
+                 replay_buffer_size:int=1_000_000,
+                 device:str='cuda',
+                 save_dir: str = "models",
+                 comm=None):
         super().__init__()
         try:
             self.rank = MPI.COMM_WORLD.rank
+            self.color = 0
+            if comm is not None:
+                self.comm = comm
+                self.rank = comm.Get_rank()
+                if hasattr(self.comm, 'Get_color'):
+                    self.color = self.comm.Get_color()
+            else:
+                self.comm = MPI.COMM_WORLD
             self.agent = agent
             self.strategy = strategy
             self.tolerance = tolerance
@@ -1762,9 +1756,9 @@ class HER(Agent):
                 # change save dir of agent to be in save dir of HER
                 agent_name = self.agent.save_dir.split("/")[-2]
                 #DEBUG
-                print(f'agent name: {agent_name}')
+                # print(f'agent name: {agent_name}')
                 self.agent.save_dir = self.save_dir + agent_name + "/"
-                print(f'new save dir: {self.agent.save_dir}')
+                # print(f'new save dir: {self.agent.save_dir}')
             elif save_dir is not None and "her" in save_dir:
                 self.save_dir = save_dir
                 # change save dir of agent to be in save dir of HER
@@ -1778,9 +1772,9 @@ class HER(Agent):
 
             # Instantiate self.num_workers as placeholder (set in train)
             self.num_workers = None
-            logger.debug(f'rank {self.rank} attributes set')
+            # logger.debug(f'rank {self.rank} attributes set')
         except Exception as e:
-            logger.error(f"rank {self.rank} attribute set failed: {e}")
+            logger.error(f"rank {self.rank} attribute set failed: {e}", exc_info=True)
 
         ## SET INTERNAL ATTRIBUTES ##
         try:
@@ -1803,9 +1797,9 @@ class HER(Agent):
             # attr to tolerance
             if self.agent.env.get_wrapper_attr("distance_threshold"):
                 self.agent.env.__setattr__("distance_threshold", self.tolerance)
-            logger.debug(f"rank {self.rank} internal attributes set")
+            # logger.debug(f"rank {self.rank} internal attributes set")
         except Exception as e:
-            logger.error(f"rank {self.rank} failed to set internal attributes: {e}")
+            logger.error(f"rank {self.rank} failed to set internal attributes: {e}", exc_info=True)
 
         ## T.DIST for CUDA ##
         # Capture the actor and critic state_dicts to pass to worker agents models
@@ -1846,18 +1840,18 @@ class HER(Agent):
             helper.sync_networks(self.agent.critic_model)
             helper.sync_networks(self.agent.target_actor_model)
             helper.sync_networks(self.agent.target_critic_model)
-            logger.debug(f"rank {self.rank} networks synced")
+            # logger.debug(f"rank {self.rank} networks synced")
         except Exception as e:
-            logger.error(f"rank {self.rank} failed to sync networks: {e}")
+            logger.error(f"rank {self.rank} failed to sync networks: {e}", exc_info=True)
 
         # Instantiate replay buffer
         try:
             self.replay_buffer = ReplayBuffer(env=self.agent.env,
                                             buffer_size=self.replay_buffer_size,
                                             goal_shape=self._goal_shape)
-            logger.debug(f"rank {self.rank} replay buffer instantiated")
+            # logger.debug(f"rank {self.rank} replay buffer instantiated")
         except Exception as e:
-            logger.error(f"rank {self.rank} error instantiating replay buffer: {e}")
+            logger.error(f"rank {self.rank} error instantiating replay buffer: {e}", exc_info=True)
 
         # Instantiate state and goal normalizers
         try:
@@ -1868,9 +1862,9 @@ class HER(Agent):
             self.goal_normalizer = Normalizer(size=self._goal_shape,
                                             eps=self.normalizer_eps,
                                             clip_range=self.normalizer_clip)
-            logger.debug(f"rank {self.rank} normalizers instantiated")
+            # logger.debug(f"rank {self.rank} normalizers instantiated")
         except Exception as e:
-            logger.error(f"rank {self.rank} error instantiating normalizers: {e}")
+            logger.error(f"rank {self.rank} error instantiating normalizers: {e}", exc_info=True)
 
 
         
@@ -1879,300 +1873,234 @@ class HER(Agent):
         cls,
         config, # wandb.config,
         train_config,
-        env,
+        env_spec,
         callbacks,
-        run_number
+        run_number,
+        comm=None
     ):
         """Builds and trains agents from sweep configs. Works with MPI"""
+        rank = MPI.COMM_WORLD.rank
+        color = 0
+    
+        if comm is not None:
+            rank = comm.Get_rank()
+            if hasattr(comm, 'Get_color'):
+                color = comm.Get_color()
 
+        logger.debug(f"init_sweep fired: global rank {MPI.COMM_WORLD.rank}, group rank {rank}, group {color}")
         try:
-            rank = MPI.COMM_WORLD.rank
-            agent_config_path = f'sweep/agent_config_{run_number}.json'
-            logger.debug(f"rank {rank} agent config path: {agent_config_path}")
-            logger.debug(f"rank {rank} train config: {train_config}")
-            logger.debug(f"rank {rank} env spec id: {env.spec.id}")
-            logger.debug(f"rank {rank} callbacks: {callbacks}")
-            logger.debug(f"rank {rank} run number: {run_number}")
+            # rank = MPI.COMM_WORLD.rank
+            # Instantiate her variable 
+            her = None
+            # Instantiate env from env_spec
+            env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
+            # agent_config_path = f'sweep/agent_config_{run_number}.json'
+            # logger.debug(f"rank {rank} agent config path: {agent_config_path}")
+            logger.debug(f"Group {color}; Rank {rank} train config: {train_config}")
+            logger.debug(f"Group {color}; Rank {rank} env spec id: {env.spec.id}")
+            logger.debug(f"Group {color}; Rank {rank} callbacks: {callbacks}")
+            logger.debug(f"Group {color}; Rank {rank} run number: {run_number}")
             # config = wandb.config
-            logger.debug(f"rank {rank} config set: {config}")
+            logger.debug(f"Group {color}; Rank {rank} config set: {config}")
             model_type = list(config.keys())[0]
-            logger.debug(f"rank {rank} model type: {model_type}")
+            logger.debug(f"Group {color}; Rank {rank} model type: {model_type}")
             # Only primary process (rank 0) calls wandb.init() to build agent and log data
-            # if rank == 0:
-                # logger.debug("if rank 0 fired")
-            try:
-                actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
-                logger.debug(f"rank {rank}; layers built")
-                # Actor
-                actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
-                logger.debug(f"rank {rank}; actor learning rate set")
-                actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
-                logger.debug(f"rank {rank}; actor optimizer set")
-                # get optimizer params
-                actor_optimizer_params = {}
-                if actor_optimizer == "Adam":
-                    actor_optimizer_params['weight_decay'] = \
-                        config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
-                
-                elif actor_optimizer == "Adagrad":
-                    actor_optimizer_params['weight_decay'] = \
-                        config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
-                    actor_optimizer_params['lr_decay'] = \
-                        config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_lr_decay']
-                
-                elif actor_optimizer == "RMSprop" or actor_optimizer == "SGD":
-                    actor_optimizer_params['weight_decay'] = \
-                        config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
-                    actor_optimizer_params['momentum'] = \
-                        config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
 
-                logger.debug(f"rank {rank}; actor optimizer params set")
-                actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
-                logger.debug(f"rank {rank}; actor normalize layers set")
-                # Critic
-                critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
-                logger.debug(f"rank {rank}; critic learning rate set")
-                critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
-                logger.debug(f"rank {rank}; critic optimizer set")
-                critic_optimizer_params = {}
-                if critic_optimizer == "Adam":
-                    critic_optimizer_params['weight_decay'] = \
-                        config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
-                
-                elif critic_optimizer == "Adagrad":
-                    critic_optimizer_params['weight_decay'] = \
-                        config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
-                    critic_optimizer_params['lr_decay'] = \
-                        config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
-                
-                elif critic_optimizer == "RMSprop" or critic_optimizer == "SGD":
-                    critic_optimizer_params['weight_decay'] = \
-                        config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
-                    critic_optimizer_params['momentum'] = \
-                        config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
-                logger.debug(f"rank {rank}; critic optimizer params set")
+            actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
+            logger.debug(f"Group {color}; Rank {rank} layers built")
+            # Actor
+            actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
+            logger.debug(f"Group {color}; Rank {rank} actor learning rate set")
+            actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
+            logger.debug(f"Group {color}; Rank {rank} actor optimizer set")
+            # get optimizer params
+            actor_optimizer_params = {}
+            if actor_optimizer == "Adam":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+            
+            elif actor_optimizer == "Adagrad":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                actor_optimizer_params['lr_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_lr_decay']
+            
+            elif actor_optimizer == "RMSprop" or actor_optimizer == "SGD":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                actor_optimizer_params['momentum'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
 
-                critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
-                logger.debug(f"rank {rank}; critic normalize layers set")
-                # Set device
-                device = config[model_type][f"{model_type}_device"]
-                logger.debug(f"rank {rank}; device set")
-                # Check if CNN layers and if so, build CNN model
-                if actor_cnn_layers:
-                    actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
-                else:
-                    actor_cnn_model = None
-                logger.debug(f"rank {rank}; actor cnn layers set: {actor_cnn_layers}")
+            logger.debug(f"Group {color}; Rank {rank} actor optimizer params set")
+            actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
+            logger.debug(f"Group {color}; Rank {rank} actor normalize layers set")
+            # Critic
+            critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
+            logger.debug(f"Group {color}; Rank {rank} critic learning rate set")
+            critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
+            logger.debug(f"Group {color}; Rank {rank} critic optimizer set")
+            critic_optimizer_params = {}
+            if critic_optimizer == "Adam":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+            
+            elif critic_optimizer == "Adagrad":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['lr_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
+            
+            elif critic_optimizer == "RMSprop" or critic_optimizer == "SGD":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['momentum'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
+            logger.debug(f"Group {color}; Rank {rank} critic optimizer params set")
 
-                if critic_cnn_layers:
-                    critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
-                else:
-                    critic_cnn_model = None
-                logger.debug(f"rank {rank}; critic cnn layers set: {critic_cnn_layers}")
-                # get desired, achieved, reward func for env
-                logger.debug(f"rank {rank}; second call env.spec: {env.spec.id}")
-                desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
-                logger.debug(f"rank {rank}; goal function set")
-                # Reset env state to initiate state to detect correct goal shape
-                _,_ = env.reset()
-                logger.debug(f"rank {rank}; env reset")
-                goal_shape = desired_goal_func(env).shape
-                logger.debug(f"rank {rank}; goal shape set: {goal_shape}")
-                # Get actor clamp value
-                clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
-                logger.debug(f"rank {rank}; clamp output set: {clamp_output}")
-                actor_model = models.ActorModel(env = env,
-                                                cnn_model = actor_cnn_model,
-                                                dense_layers = actor_layers,
-                                                output_layer_kernel=kernels[f'actor_output_kernel'],
-                                                goal_shape=goal_shape,
-                                                optimizer = actor_optimizer,
-                                                optimizer_params = actor_optimizer_params,
-                                                learning_rate = actor_learning_rate,
-                                                normalize_layers = actor_normalize_layers,
-                                                clamp_output=clamp_output,
-                                                device=device,
-                )
-                logger.debug(f"rank {rank}; actor model built: {actor_model.get_config()}")
-                critic_model = models.CriticModel(env = env,
-                                                cnn_model = critic_cnn_model,
-                                                state_layers = critic_state_layers,
-                                                merged_layers = critic_merged_layers,
-                                                output_layer_kernel=kernels[f'critic_output_kernel'],
-                                                goal_shape=goal_shape,
-                                                optimizer = critic_optimizer,
-                                                optimizer_params = critic_optimizer_params,
-                                                learning_rate = critic_learning_rate,
-                                                normalize_layers = critic_normalize_layers,
-                                                device=device,
-                )
-                logger.debug(f"critic model built: {critic_model.get_config()}")
-                # get goal metrics
-                strategy = config[model_type][f"{model_type}_goal_strategy"]
-                logger.debug(f"rank {rank}; strategy set: {strategy}")
-                tolerance = config[model_type][f"{model_type}_goal_tolerance"]
-                logger.debug(f"rank {rank}; tolerance set: {tolerance}")
-                num_goals = config[model_type][f"{model_type}_num_goals"]
-                logger.debug(f"rank {rank}; num goals set: {num_goals}")
-                # get normalizer clip value
-                normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
-                logger.debug(f"rank {rank}; normalizer clip set: {normalizer_clip}")
-                # get action epsilon
-                action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
-                logger.debug(f"rank {rank}; action epsilon set: {action_epsilon}")
-                # Replay buffer size
-                replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
-                logger.debug(f"rank {rank}; replay buffer size set: {replay_buffer_size}")
-                # Save dir
-                save_dir = config[model_type][f"{model_type}_save_dir"]
-                logger.debug(f"rank {rank}; save dir set: {save_dir}")
-                ddpg_agent= DDPG(
-                    env = env,
-                    actor_model = actor_model,
-                    critic_model = critic_model,
-                    discount = config[model_type][f"{model_type}_discount"],
-                    tau = config[model_type][f"{model_type}_tau"],
-                    action_epsilon = action_epsilon,
-                    replay_buffer = None,
-                    batch_size = config[model_type][f"{model_type}_batch_size"],
-                    noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
-                    callbacks = callbacks,
-                )
-                logger.debug(f"rank {rank}; ddpg agent built: {ddpg_agent.get_config()}")
+            critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
+            logger.debug(f"Group {color}; Rank {rank} critic normalize layers set")
+            # Set device
+            device = config[model_type][f"{model_type}_device"]
+            logger.debug(f"Group {color}; Rank {rank} device set")
+            # Check if CNN layers and if so, build CNN model
+            if actor_cnn_layers:
+                actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
+            else:
+                actor_cnn_model = None
+            logger.debug(f"Group {color}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
 
-                try:
-                    logger.debug(f"rank {rank} build barrier called")
-                    MPI.COMM_WORLD.Barrier()
-                    logger.debug(f"rank {rank} build barrier passed")
-                except Exception as e:
-                    logger.error(f"rank {rank} Error in build barrier process: {e}")
+            if critic_cnn_layers:
+                critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
+            else:
+                critic_cnn_model = None
+            logger.debug(f"Group {color}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
+            # get desired, achieved, reward func for env
+            logger.debug(f"Group {color}; Rank {rank} second call env.spec: {env.spec.id}")
+            desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
+            logger.debug(f"Group {color}; Rank {rank} goal function set")
+            # Reset env state to initiate state to detect correct goal shape
+            _,_ = env.reset()
+            logger.debug(f"Group {color}; Rank {rank} env reset")
+            goal_shape = desired_goal_func(env).shape
+            logger.debug(f"Group {color}; Rank {rank} goal shape set: {goal_shape}")
+            # Get actor clamp value
+            clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
+            logger.debug(f"Group {color}; Rank {rank} clamp output set: {clamp_output}")
+            actor_model = models.ActorModel(env = env,
+                                            cnn_model = actor_cnn_model,
+                                            dense_layers = actor_layers,
+                                            output_layer_kernel=kernels[f'actor_output_kernel'],
+                                            goal_shape=goal_shape,
+                                            optimizer = actor_optimizer,
+                                            optimizer_params = actor_optimizer_params,
+                                            learning_rate = actor_learning_rate,
+                                            normalize_layers = actor_normalize_layers,
+                                            clamp_output=clamp_output,
+                                            device=device,
+            )
+            logger.debug(f"Group {color}; Rank {rank} actor model built: {actor_model.get_config()}")
+            critic_model = models.CriticModel(env = env,
+                                            cnn_model = critic_cnn_model,
+                                            state_layers = critic_state_layers,
+                                            merged_layers = critic_merged_layers,
+                                            output_layer_kernel=kernels[f'critic_output_kernel'],
+                                            goal_shape=goal_shape,
+                                            optimizer = critic_optimizer,
+                                            optimizer_params = critic_optimizer_params,
+                                            learning_rate = critic_learning_rate,
+                                            normalize_layers = critic_normalize_layers,
+                                            device=device,
+            )
+            logger.debug(f"Group {color}; Rank {rank} critic model built: {critic_model.get_config()}")
+            # get goal metrics
+            strategy = config[model_type][f"{model_type}_goal_strategy"]
+            logger.debug(f"Group {color}; Rank {rank} strategy set: {strategy}")
+            tolerance = config[model_type][f"{model_type}_goal_tolerance"]
+            logger.debug(f"Group {color}; Rank {rank} tolerance set: {tolerance}")
+            num_goals = config[model_type][f"{model_type}_num_goals"]
+            logger.debug(f"Group {color}; Rank {rank} num goals set: {num_goals}")
+            # get normalizer clip value
+            normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
+            logger.debug(f"Group {color}; Rank {rank} normalizer clip set: {normalizer_clip}")
+            # get action epsilon
+            action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
+            logger.debug(f"Group {color}; Rank {rank} action epsilon set: {action_epsilon}")
+            # Replay buffer size
+            replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
+            logger.debug(f"Group {color}; Rank {rank} replay buffer size set: {replay_buffer_size}")
+            # Save dir
+            save_dir = config[model_type][f"{model_type}_save_dir"]
+            logger.debug(f"Group {color}; Rank {rank} save dir set: {save_dir}")
+            ddpg_agent= DDPG(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = config[model_type][f"{model_type}_discount"],
+                tau = config[model_type][f"{model_type}_tau"],
+                action_epsilon = action_epsilon,
+                replay_buffer = None,
+                batch_size = config[model_type][f"{model_type}_batch_size"],
+                noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
+                callbacks = callbacks,
+                comm = comm
+            )
+            logger.debug(f"Group {color}; Rank {rank} ddpg agent built: {ddpg_agent.get_config()}")
 
-                try:
-                    logger.debug(f"rank {rank}; attempting building HER agent")
-                    logger.debug(f"rank {rank}; cls: {cls}")
-                    her = cls(
-                        agent = ddpg_agent,
-                        strategy = strategy,
-                        tolerance = tolerance,
-                        num_goals = num_goals,
-                        desired_goal = desired_goal_func,
-                        achieved_goal = achieved_goal_func,
-                        reward_fn = reward_func,
-                        normalizer_clip = normalizer_clip,
-                        replay_buffer_size = replay_buffer_size,
-                        device = device,
-                        save_dir = save_dir,
+            logger.debug(f"Group {color}; Rank {rank} build barrier called")
+            comm.Barrier()
+            logger.debug(f"Group {color}; Rank {rank} build barrier passed")
+
+            logger.debug(f"Group {color}; Rank {rank} attempting building HER agent")
+            logger.debug(f"Group {color}; Rank {rank} cls: {cls}")
+            her = cls(
+                agent = ddpg_agent,
+                strategy = strategy,
+                tolerance = tolerance,
+                num_goals = num_goals,
+                desired_goal = desired_goal_func,
+                achieved_goal = achieved_goal_func,
+                reward_fn = reward_func,
+                normalizer_clip = normalizer_clip,
+                replay_buffer_size = replay_buffer_size,
+                device = device,
+                save_dir = save_dir,
+                comm = comm
+            )
+            logger.debug(f"Group {color}; Rank {rank} her agent built: {her.get_config()}")
+
+            logger.debug(f"Group {color}; Rank {rank} train barrier called")
+            comm.Barrier()
+            logger.debug(f"Group {color}; Rank {rank} train barrier passed")
+
+            her.train(
+                    num_epochs=train_config['num_epochs'],
+                    num_cycles=train_config['num_cycles'],
+                    num_episodes=train_config['num_episodes'],
+                    num_updates=train_config['num_updates'],
+                    render=False,
+                    render_freq=0,
                     )
-                    logger.debug(f"rank {rank}; her agent built: {her.get_config()}")
-                except Exception as e:
-                    logger.error(f"rank {rank}; Error in sweep_train building her: {e}")
-
-                # save agent config to be loaded by other processes
-                agent_config = her.get_config()
-                with open(agent_config_path, 'w') as file:
-                    json.dump(agent_config, file)
-                logger.debug(f'rank {rank}; agent config saved')
-
-            except Exception as e:
-                logger.error(f"Error in rank 0 process: {e}")
-
-            # else:
-            #     # agent_config_path = None
-            #     # logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent config path set to None: {agent_config_path}')
-            #     run_number = None
-            #     logger.debug(f'rank {MPI.COMM_WORLD.rank}; agent run number set to None: {run_number}')
-                # her = None
-            
-            # Broadcast the agent_config_path from rank 0 to all other ranks
-            # try:
-            #     logger.debug(f'rank {MPI.COMM_WORLD.rank}; reached agent_config_path bcast')
-            #     her = MPI.COMM_WORLD.bcast(her, root=0)
-            #     logger.debug(f"rank {MPI.COMM_WORLD.rank} her agent broadcasted")
-            # except Exception as e:
-            #     logger.error(f"rank {MPI.COMM_WORLD.rank} Error broadcasting her agent: {e}")
-
-            # Start training
-            # try:
-                # if rank == 0:
-                #     logger.debug("mpi rank 0 fired for her.train")
-                #     try:
-                #         her.train(
-                #             num_epochs=train_config['num_epochs'],
-                #             num_cycles=train_config['num_cycles'],
-                #             num_episodes=train_config['num_episodes'],
-                #             num_updates=train_config['num_updates'],
-                #             render=False,
-                #             render_freq=0,
-                #         )
-                #     except Exception as e:
-                #         logger.error(f"Error in rank = 0 train process: {e}")
-            
-            # Check if MPI is being used
-            #     if rank > 0:
-            #         logger.debug(f"rank {rank} load fired")
-            #         logger.debug(f"rank {rank} agent config path:{agent_config_path}")
-            #         # load agent config saved by primary process
-            #         with open(agent_config_path, 'r', encoding="utf-8") as f:
-            #             agent_config = json.load(f)
-            #         logger.debug(f"rank {rank} agent config loaded: {agent_config}")
-
-            #         # Load agent
-            #         try:
-            #             her = cls.load(agent_config, load_weights=False)
-            #             logger.debug(f"rank {rank}  her loaded: {her.get_config()}")
-            #         except Exception as e:
-            #             logger.error(f"rank {rank} failed loading her agent: {e}")
-
-            # except Exception as e:
-            #     logger.error(f"Error in rank > 0 load process: {e}")
-
-            try:
-                logger.debug(f"rank {rank} train barrier called")
-                MPI.COMM_WORLD.Barrier()
-                logger.debug(f"rank {rank} train barrier passed")
-            except Exception as e:
-                logger.error(f"rank {rank} Error in train Barrier process: {e}")
-
-            try:
-                her.train(
-                        num_epochs=train_config['num_epochs'],
-                        num_cycles=train_config['num_cycles'],
-                        num_episodes=train_config['num_episodes'],
-                        num_updates=train_config['num_updates'],
-                        render=False,
-                        render_freq=0,
-                        )
-
-            except Exception as e:
-                logger.error(f"rank {rank} Error in train process: {e}")
 
         except Exception as e:
-            logger.error(f"An error occurred: {e}")
+            logger.error(f"An error occurred: {e}", exc_info=True)
 
     def train(self, num_epochs:int, num_cycles:int, num_episodes:int, num_updates:int,
               render:bool, render_freq:int, save_dir=None):
         try:
-            logger.debug(f"rank {self.rank} train fired")
+            logger.debug(f"Group {self.color}; Rank {self.rank} train fired")
 
             if save_dir is not None and len(save_dir.split("/")) >= 2:
                 if save_dir.split("/")[-2] != "her":
                     self.save_dir = save_dir + "/her/"
                     # change save dir of agent to be in save dir of HER
                     agent_name = self.agent.save_dir.split("/")[-2]
-                    #DEBUG
-                    print(f'agent name(train): {agent_name}')
                     self.agent.save_dir = self.save_dir + agent_name + "/"
-                    print(f'new save dir(train): {self.agent.save_dir}')
             elif save_dir is not None and len(save_dir.split("/")) >= 2:
                 if save_dir.split("/")[-2] == "her":
                     self.save_dir = save_dir
                     # change save dir of agent to be in save dir of HER
                     agent_name = self.agent.save_dir.split("/")[-2]
                     self.agent.save_dir = self.save_dir + agent_name + "/"
-
-            #DEBUG
-            # logger.debug(f'rank {self.rank} agent config:{self.get_config()}')
-            # logger.debug(f"MPI STDERR: {stderr.decode()}")
             
             # set models to train mode
             self.agent.actor_model.train()
@@ -2186,22 +2114,19 @@ class HER(Agent):
             self.agent._config['num_episode'] =num_episodes
             self.agent._config['num_updates'] = num_updates
             self.agent._config['tolerance'] = self.tolerance
-            logger.debug(f"rank {self.rank} HER.train: train config added to wandb config")
+            logger.debug(f"Group {self.color}; Rank {self.rank} HER.train: train config added to wandb config")
 
             # Check if MPI is active with more than one worker
             mpi_active = MPI.COMM_WORLD.Get_size() > 1
-            logger.debug(f"rank {self.rank} HER.train mpi active set: {mpi_active}")
+            logger.debug(f"Group {self.color}; Rank {self.rank} HER.train mpi active set: {mpi_active}")
 
             if self.agent.callbacks:
                 if mpi_active:
                     if self.rank == 0:
                         for callback in self.agent.callbacks:
                             if isinstance(callback, rl_callbacks.WandbCallback):
-                                # print(f'agent {rank} config:')
-                                # print(agent._config)
                                 callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config)
-                                # print(f'agent rank {MPI.COMM_WORLD.Get_rank()} firing on train begin callback')
-                                logger.debug(f'rank {self.rank} HER.train on train begin callback complete')
+                                logger.debug(f'Group {self.color}; Rank {self.rank} HER.train on train begin callback complete')
                             else:
                                 callback.on_train_begin(logs=self.agent._config)
                 else:
@@ -2216,14 +2141,14 @@ class HER(Agent):
                 # instantiate new environment. Only rank 0 env will render episodes if render==True
                     if self.rank == 0:
                         self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
-                        logger.debug(f'rank {self.rank} initiating environment with render {render}')
+                        logger.debug(f'Group {self.color}; Rank {self.rank} initiating environment with render {render}')
                     else:
                         self.agent.env = self.agent._initialize_env(False, 0, context='train')
-                        logger.debug(f'rank {self.rank} initializing environment')
+                        logger.debug(f'Group {self.color}; Rank {self.rank} initializing environment')
                 else:
                     self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
             except Exception as e:
-                logger.error(f"rank {self.rank} Error in HER.train agent._initialize_env process")
+                logger.error(f"Group {self.color}; Rank {self.rank} Error in HER.train agent._initialize_env process: {e}", exc_info=True)
             
             # initialize step counter (for logging)
             step_counter = 0
@@ -2241,27 +2166,19 @@ class HER(Agent):
             learning_time_history = []
             steps_per_episode_history = []  # List to store steps per episode
             for epoch in range(num_epochs):
-                logger.debug(f'rank {self.rank} HER.train starting epoch {epoch+1}')
+                logger.debug(f'Group {self.color}; Rank {self.rank} HER.train starting epoch {epoch+1}')
                 for cycle in range(num_cycles):
                     cycle_counter += 1
                     # print(f'agent rank {rank} starting cycle {cycle_counter}')
                     for episode in range(num_episodes):
-                        logger.debug(f'episode: {episode}')
+                        logger.debug(f'Group {self.color}; Rank {self.rank} episode: {episode}')
                         episode_counter += 1
-                        # print(f'agent {rank} begin episode {episode_counter}')
-                        # print('state normalizer config')
-                        # print(self.state_normalizer.get_config())
-                        # print('')
-                        # print('goal normalizer config')
-                        # print(self.goal_normalizer.get_config())
-                        # print('')
-                        # print(f'agent rank {rank} starting episode {episode_counter}')
                         if self.agent.callbacks:
                             if mpi_active:
                                 if self.rank == 0:
                                     for callback in self.agent.callbacks:
                                         callback.on_train_epoch_begin(epoch=step_counter, logs=None)
-                                        logger.debug(f'rank {self.rank} HER.train on train epoch begin callback completed')
+                                        logger.debug(f'Group {self.color}; Rank {self.rank} HER.train on train epoch begin callback completed')
                             else:
                                 for callback in self.agent.callbacks:
                                     callback.on_train_epoch_begin(epoch=step_counter, logs=None)
@@ -2271,10 +2188,7 @@ class HER(Agent):
                         # reset noise
                         if type(self.agent.noise) == helper.OUNoise:
                             self.agent.noise.reset()
-                        
 
-
-                        # RUN_EPISODE()
                         # reset environment
                         state, _ = self.agent.env.reset()
                         # print(f'state: {state}' )
@@ -2291,14 +2205,11 @@ class HER(Agent):
                         
                         # set achieved goal
                         state_achieved_goal = self.achieved_goal_func(self.agent.env)
-                        # print(f'achieved goal: {state_achieved_goal}')
-                        
+
                         # add initial state and goals to local normalizer stats
-                        # print(f'agent rank {rank} updating normalizer local stats...')
                         self.state_normalizer.update_local_stats(state)
                         self.goal_normalizer.update_local_stats(desired_goal)
                         self.goal_normalizer.update_local_stats(state_achieved_goal)
-                        # print(f'agent rank {rank} updated normalizer local stats')
                         
                         # set done flag
                         done = False
@@ -2323,7 +2234,6 @@ class HER(Agent):
                             
                             # take action
                             next_state, reward, term, trunc, _ = self.agent.env.step(action)
-                            # print(f'next state: {next_state}')
                             
                             # extract observation from next state if next_state is dict (robotics)
                             if isinstance(next_state, dict):
@@ -2335,17 +2245,12 @@ class HER(Agent):
                             
                             # get next state achieved goal
                             next_state_achieved_goal = self.achieved_goal_func(self.agent.env)
-                            # print(f'next state achieved goal: {next_state_achieved_goal}')
                             
                             # add next state and next state achieved goal to normalizers
-                            # print(f'agent rank {rank} updating normalizer local stats...')
                             self.state_normalizer.update_local_stats(next_state)
                             self.goal_normalizer.update_local_stats(next_state_achieved_goal)
                             
                             # calculate distance from achieved goal to desired goal
-                            # distance_to_goal = np.linalg.norm(
-                            #     self.desired_goal_func(agent.env) - self.achieved_goal_func(agent.env)
-                            # )
                             distance_to_goal = np.linalg.norm(desired_goal - next_state_achieved_goal)
                             
                             # store distance in step config to send to wandb
@@ -2354,8 +2259,7 @@ class HER(Agent):
                             # store trajectory in replay buffer (non normalized!)
                             self.replay_buffer.add(state, action, reward, next_state, done,\
                                                             state_achieved_goal, next_state_achieved_goal, desired_goal)
-                            # print(f'agent rank {rank} successfully stored trajectory in replay buffer')
-
+                            
                             # append step state, action, next state, and goals to respective lists
                             states.append(state)
                             actions.append(action)
@@ -2381,27 +2285,17 @@ class HER(Agent):
                             
                             # log to wandb if using wandb callback
                             if self.agent.callbacks:
-                                # average step logs across all agents
-                                # averaged_metrics = helper.sync_metrics(agent._train_step_config)
                                 # only have the main process log callback values to avoid multiple callback calls
                                 if mpi_active:
                                     if self.rank == 0:
-                                        # print(f'agent {rank} train step config:')
-                                        # print(agent._train_step_config)
                                         for callback in self.agent.callbacks:
                                             callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
-                                            logger.debug(f'rank {self.rank} HER.train on train step end callback completed')
+                                            logger.debug(f'Group {self.color}; Rank {self.rank} HER.train on train step end callback completed')
                                 else:
                                     for callback in self.agent.callbacks:
                                         callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
-                                
-                                # Synchronize all processes
-                                # logger.debug(f"rank {self.rank} HER.train train step end barrier called")
-                                # MPI.COMM_WORLD.Barrier()
-                                # logger.debug(f"rank {self.rank} HER.train train step end barrier passed")
 
                         # calculate success rate
-                        # goal_distance = np.linalg.norm(next_state_achieved_goal - desired_goal, axis=-1)
                         success = (distance_to_goal <= self.tolerance).astype(np.float32)
                         success_counter += success
                         success_perc = success_counter / episode_counter
@@ -2409,26 +2303,14 @@ class HER(Agent):
                         self.agent._train_episode_config["success_rate"] = success_perc
 
                         # Update global normalizer stats (main process only)
-                        # if MPI.COMM_WORLD.Get_rank() == 0:
-                            # print(f'agent {rank} updating global stats...')
                         self.state_normalizer.update_global_stats()
                         self.goal_normalizer.update_global_stats()
-
-                        # print(f'end episode {episode_counter}')
-                        # print('state normalizer config')
-                        # print(self.state_normalizer.get_config())
-                        # print('')
-                        # print('goal normalizer config')
-                        # print(self.goal_normalizer.get_config())
-                        # print('')
                         
                         # package episode states, actions, next states, and goals into trajectory tuple
                         trajectory = (states, actions, next_states, dones, state_achieved_goals, next_state_achieved_goals, desired_goals)
 
                         # store hindsight experience replay trajectory using current episode trajectory and goal strategy
-                        # print(f'agent rank {rank} storing hindsight trajectory...')
                         self.store_hindsight_trajectory(trajectory)
-                        # print(f'agent rank {rank} successfully stored hindsight trajectory')
                             
                         # check if enough samples in replay buffer and if so, learn from experiences
                         if self.replay_buffer.counter > self.agent.batch_size:
@@ -2457,11 +2339,6 @@ class HER(Agent):
                         self.agent._train_episode_config["episode_reward"] = episode_reward
                         self.agent._train_episode_config["avg_reward"] = avg_reward
                         self.agent._train_episode_config["episode_time"] = episode_time
-
-                        # # log to wandb if using wandb callback
-                        # if agent.callbacks:
-                        #     # average episode logs across all agents
-                        #     averaged_metrics = helper.sync_metrics(agent._train_episode_config)
                         
                         # check if best reward and save model if it is
                         if avg_reward > best_reward:
@@ -2477,46 +2354,36 @@ class HER(Agent):
                             if mpi_active:
                                 if self.rank == 0:
                                     for callback in self.agent.callbacks:
-                                        # print(f'agent {rank} train episode config')
-                                        # print(agent._train_episode_config)
                                         callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
-                                        logger.debug(f'rank {self.rank} HER.train on train epoch callback completed')
+                                        logger.debug(f'Group {self.color}; Rank {self.rank} HER.train on train epoch callback completed')
                             else:
                                 for callback in self.agent.callbacks:
-                                    # print(f'agent {rank} train episode config')
-                                    # print(agent._train_episode_config)
                                     callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
 
                 # perform soft update on target networks
                 try:
                     self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
                     self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
-                    logger.debug(f"rank {self.rank} HER.train target network soft update complete")
+                    logger.debug(f"Group {self.color}; Rank {self.rank} HER.train target network soft update complete")
                 except Exception as e:
-                    logger.error(f"rank {self.rank} Error in HER.train target network soft update process: {e}")
+                    logger.error(f"Group {self.color}; Rank {self.rank} Error in HER.train target network soft update process: {e}", exc_info=True)
 
-                # print metrics to terminal log
-                if mpi_active:
-                    if self.rank == 0: # only use main process
-                        logger.info(f"epoch {epoch} cycle {cycle_counter} episode {episode_counter}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
-                else:
-                    print(f"epoch {epoch} cycle {cycle_counter} episode {episode_counter}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
+                if self.rank == 0: # only use main process
+                    logger.info(f"Group {self.color}; epoch {epoch} cycle {cycle_counter} episode {episode_counter}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
 
             if self.agent.callbacks:
                 if mpi_active:
                     if self.rank == 0:
                         for callback in self.agent.callbacks:
                             callback.on_train_end(logs=self.agent._train_episode_config)
-                            logger.debug(f'rank {self.rank} HER.train on train end callback complete')
+                            logger.debug(f'Group {self.color}; Rank {self.rank} HER.train on train end callback complete')
                 else:
                     for callback in self.agent.callbacks:
-                        # print(f'agent {rank} train end train episode config')
-                        # print(agent._train_episode_config)
                         callback.on_train_end(logs=self.agent._train_episode_config)
             # close the environment
             self.agent.env.close()
         except Exception as e:
-            logger.error(f"rank {self.rank} Error during train process: {e}")
+            logger.error(f"Group {self.color}; Rank {self.rank} Error during train process: {e}", exc_info=True)
     
     
     # def train_worker(self, rank, agent:Agent, actor_params, critic_params, epochs:int, 
@@ -3099,7 +2966,7 @@ class HER(Agent):
             config["reward_fn"] = getattr(gym_helper, config["reward_fn"])
             logger.debug(f"rank {MPI.COMM_WORLD.rank} HER.load successfully loaded gym goal functions")
         except Exception as e:
-            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load gym goal functions: {e}")
+            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load gym goal functions: {e}", exc_info=True)
 
         # load agent
         try:
@@ -3107,7 +2974,7 @@ class HER(Agent):
             logger.debug(f"rank {MPI.COMM_WORLD.rank} HER.load successfully loaded Agent")
             logger.debug(f'rank {MPI.COMM_WORLD.rank} agent config:{agent.get_config()}')
         except Exception as e:
-            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load Agent")
+            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load Agent: {e}", exc_info=True)
 
         # instantiate HER model
         try:
@@ -3117,7 +2984,7 @@ class HER(Agent):
                     config["device"], config["save_dir"])
             logger.debug(f"rank {MPI.COMM_WORLD.rank} HER.load successfully loaded HER")
         except Exception as e:
-            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load HER: {e}")
+            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load HER: {e}", exc_info=True)
 
         # load agent normalizers
         try:
@@ -3125,7 +2992,7 @@ class HER(Agent):
             agent.goal_normalizer = helper.Normalizer.load_state(config['save_dir'] + "goal_normalizer.npz")
             logger.debug(f"rank {MPI.COMM_WORLD.rank} HER.load successfully loaded normalizers")
         except Exception as e:
-            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load normalizers")
+            logger.error(f"rank {MPI.COMM_WORLD.rank} HER.load failed to load normalizers: {e}", exc_info=True)
         
         return her
     
@@ -3178,116 +3045,96 @@ def get_agent_class_from_type(agent_type: str):
 
     raise ValueError(f"Unknown agent type: {agent_type}")
 
-def init_sweep(sweep_config, train_config):
-    logger.debug(f"init_sweep fired: rank {MPI.COMM_WORLD.rank}")
+def init_sweep(sweep_config, train_config, comm=None):
+    rank = MPI.COMM_WORLD.rank
+    color = 0
+    
+    if comm is not None:
+        rank = comm.Get_rank()
+        if hasattr(comm, 'Get_color'):
+            color = comm.Get_color()
+
+    logger.debug(f"init_sweep fired: global rank {MPI.COMM_WORLD.rank}, group rank {rank}, group {color}")
+    
     try:
         # Set the environment variable
         os.environ['WANDB_DISABLE_SERVICE'] = 'true'
-        logger.debug(f"rank {MPI.COMM_WORLD.rank} WANDB_DISABLE_SERVICE set to true")
+        logger.debug(f"Group {color}; Rank {rank} WANDB_DISABLE_SERVICE set to true")
 
         # Set seeds
         random.seed(train_config['seed'])
         np.random.seed(train_config['seed'])
         T.manual_seed(train_config['seed'])
         T.cuda.manual_seed(train_config['seed'])
-        logger.debug(f'rank {MPI.COMM_WORLD.rank} random seeds set')
+        logger.debug(f'Group {color}; Rank {rank} random seeds set')
 
         # Only primary process (rank 0) calls wandb.init() to build agent and log data
-        if MPI.COMM_WORLD.rank == 0:
-            logger.debug('MPI rank 0 process fired')
-            try:
-                run_number = wandb_support.get_next_run_number(sweep_config["project"])
-                logger.debug(f"run number set: {run_number}")
-                # unique_run_id = str(uuid.uuid4())
-                # run_time = time.strftime('%Y%m%d_%H%M%S')
-                # run_dir = f"/workspaces/RL_Agents/pytorch/src/app/wandb/run-{run_time}-{unique_run_id}"
-                # os.makedirs(run_dir, exist_ok=True)
-                
-                run = wandb.init(
-                    project=sweep_config["project"],
-                    settings=wandb.Settings(start_method='thread'),
-                    job_type="train",
-                    name=f"train-{run_number}",
-                    tags=["train"],
-                    group=f"group-{run_number}",
-                    # dir=run_dir
-                )
-                logger.debug("wandb.init() fired")
-                wandb_config = dict(wandb.config)
-                model_type = list(wandb_config.keys())[0]
-                
-                # Wait for configuration to be populated
-                max_retries = 10
-                retry_interval = 1  # in seconds
+        if rank == 0:
+            # logger.debug('MPI rank 0 process fired')
+            # try:
+            run_number = wandb_support.get_next_run_number(sweep_config["project"])
+            logger.debug(f"Group {color}; Rank {rank} run number set: {run_number}")
+            
+            run = wandb.init(
+                project=sweep_config["project"],
+                settings=wandb.Settings(start_method='thread'),
+                job_type="train",
+                name=f"train-{run_number}",
+                tags=["train"],
+                group=f"group-{run_number}",
+                # dir=run_dir
+            )
+            logger.debug("wandb.init() fired")
+            wandb_config = dict(wandb.config)
+            model_type = list(wandb_config.keys())[0]
+            
+            # Wait for configuration to be populated
+            max_retries = 10
+            retry_interval = 1  # in seconds
 
-                for _ in range(max_retries):
-                    if "model_type" in wandb.config:
-                        break
-                    logger.debug("Waiting for wandb.config to be populated...")
-                    time.sleep(retry_interval)
-
+            for _ in range(max_retries):
                 if "model_type" in wandb.config:
-                    logger.debug(f'wandb.config: {wandb.config}')
-                    run.tags = run.tags + (model_type,)
-                else:
-                    logger.error("wandb.config did not populate with model_type within the expected time.")
-                
+                    break
+                logger.debug(f"Group {color}; Rank {rank} Waiting for wandb.config to be populated...")
+                time.sleep(retry_interval)
+
+            if "model_type" in wandb.config:
+                logger.debug(f'Group {color}; Rank {rank} wandb.config: {wandb.config}')
                 run.tags = run.tags + (model_type,)
-                logger.debug("run.tag set")
-                env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
-                logger.debug(f"env built: {env.spec}")
-                callbacks = []
-                callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
-                logger.debug("callbacks created")
-            except Exception as e:
-                logger.error(f"Error in rl_agents.init_sweep rank 0 process: {e}")
+            else:
+                logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
+            
+            run.tags = run.tags + (model_type,)
+            logger.debug(f"Group {color}; Rank {rank} run.tag set")
+            env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+            # save env spec to string
+            env_spec = env.spec.to_json()
+            logger.debug(f"Group {color}; Rank {rank} env built: {env.spec}")
+            callbacks = []
+            callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
+            logger.debug(f"Group {color}; Rank {rank} callbacks created")
 
         else:
-            env = None
+            env_spec = None
             callbacks = None
             run_number = None
             wandb_config = None
         
         # Use MPI Barrier to sync processes
-        # try:
-        #     logger.debug(f"rank {MPI.COMM_WORLD.rank} calling MPI Barrier")
-        #     MPI.COMM_WORLD.Barrier()
-        #     logger.debug(f"rank {MPI.COMM_WORLD.rank} MPI Barrier passed")
-        # except Exception as e:
-        #     logger.error(f"Error in rl_agents.init_sweep MPI Barrier process: {e}")
+        logger.debug(f"Group {color}; Rank {rank} init_sweep calling MPI Barrier")
+        comm.Barrier()
+        logger.debug(f"Group {color}; Rank {rank} init_sweep MPI Barrier passed")
 
-        # Broadcast wandb config, env, and callbacks for rank 0 process
-        try:
-            # wandb_config = MPI.COMM_WORLD.bcast(dict(wandb.config), root=0)
-            env = MPI.COMM_WORLD.bcast(env, root=0)
-            callbacks = MPI.COMM_WORLD.bcast(callbacks, root=0)
-            run_number = MPI.COMM_WORLD.bcast(run_number, root=0)
-            wandb_config = MPI.COMM_WORLD.bcast(wandb_config, root=0)
-            model_type = list(wandb_config.keys())[0]
-            logger.debug(f"rank {MPI.COMM_WORLD.rank} broadcasts complete")
-        except Exception as e:
-            logger.error(f"rank {MPI.COMM_WORLD.rank} Error in rl_agents.init_sweep broadcasting: {e}")
+        env_spec = comm.bcast(env_spec, root=0)
+        callbacks = comm.bcast(callbacks, root=0)
+        run_number = comm.bcast(run_number, root=0)
+        wandb_config = comm.bcast(wandb_config, root=0)
+        model_type = list(wandb_config.keys())[0]
+        logger.debug(f"Group {color}; Rank {rank} broadcasts complete")
 
-        if MPI.COMM_WORLD.rank == 0:
-            try:
-                agent = get_agent_class_from_type(model_type)
-                logger.debug("rank 0: agent class found. Calling sweep_train")
-                agent.sweep_train(wandb_config, train_config, env, callbacks, run_number)
-            except Exception as e:
-                logger.error(f"Error in rl_agents.init_sweep sweep_train rank 0 initiation: {e}")
+        agent = get_agent_class_from_type(model_type)
+        logger.debug(f"Group {color}; Rank {rank} agent class found. Calling sweep_train")
+        agent.sweep_train(wandb_config, train_config, env_spec, callbacks, run_number, comm)
 
-        elif MPI.COMM_WORLD.rank > 0:
-            logger.debug("MPI rank > 0 fired")
-            try:
-                agent = get_agent_class_from_type(model_type)
-                logger.debug(f"rank {MPI.COMM_WORLD.rank} agent class found. Calling sweep_train")
-                logger.debug(f'wandb_config:{wandb_config}')
-                logger.debug(f'train_config:{train_config}')
-                logger.debug(f'env:{env}')
-                logger.debug(f'callbacks:{callbacks}')
-                logger.debug(f'run_number:{run_number}')
-                agent.sweep_train(wandb_config, train_config, env, callbacks, run_number)
-            except Exception as e:
-                logger.error(f"Error in rl_agents.init_sweep sweep_train rank > 0 initiation: {e}")
     except Exception as e:
-        logger.error(f"Error in rl_agent.init_sweep: {e}")
+        logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
