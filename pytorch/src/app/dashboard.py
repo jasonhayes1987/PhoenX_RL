@@ -55,4 +55,4 @@ if __name__ == "__main__":
 
     # Pass the shared data to the register_callbacks function
     dash_callbacks.register_callbacks(app, shared_data)
-    app.run(debug=False, dev_tools_ui=False, dev_tools_props_check=False)
+    app.run(debug=True, dev_tools_ui=True, dev_tools_props_check=True)
