@@ -4,6 +4,7 @@ from logging_config import logger
 import json
 import wandb
 from mpi4py import MPI
+import mpi_helper
 
 from rl_agents import init_sweep
 
@@ -28,13 +29,24 @@ def main(sweep_config, train_config):
     num_agents = train_config['num_agents']
     assert size % num_agents == 0, "Number of workers must be divisible by number of agents."
 
-    group_size = size // num_agents
-    color = rank // group_size
+    # group_size = size // num_agents
+    group_size = mpi_helper.set_group_size(MPI.COMM_WORLD, num_agents)
+    # group = rank // group_size
+    group = mpi_helper.set_group(MPI.COMM_WORLD, group_size)
+    
+    if num_agents > 1:
+        comm = MPI.COMM_WORLD.Split(color=group, key=rank)
+        comm.Set_name(f"Group_{group}")
+        new_rank = comm.Get_rank()
 
-    new_comm = MPI.COMM_WORLD.Split(color=color, key=rank)
-    new_rank = new_comm.Get_rank()
-
-    logger.debug(f"Global rank {rank} assigned to group {color} with new rank {new_rank}")
+        logger.debug(f"Global rank {rank} assigned to {comm.Get_name()} with new rank {new_rank}")
+    
+    else:
+        comm = MPI.COMM_WORLD
+        new_rank = rank
+        comm.Set_name(f"Group_{group}")
+        
+        logger.debug(f"Global rank {rank} assigned to {comm.Get_name()}")
 
     if rank == 0:
         try:
@@ -52,11 +64,9 @@ def main(sweep_config, train_config):
 
     if new_rank == 0:
         try:
-            sweep_id = wandb.sweep(sweep_config, project=sweep_config["project"])
-            logger.debug(f"Sweep ID: {sweep_id} for group {color}")
             wandb.agent(
                 sweep_id,
-                function=lambda: init_sweep(sweep_config, train_config, new_comm),
+                function=lambda: init_sweep(sweep_config, train_config, comm),
                 count=train_config['num_sweeps'],
                 project=sweep_config["project"],
             )
@@ -65,7 +75,7 @@ def main(sweep_config, train_config):
     else:
         try:
             for _ in range(train_config['num_sweeps']):
-                init_sweep(sweep_config, train_config, new_comm)
+                init_sweep(sweep_config, train_config, comm)
         except Exception as e:
             logger.error(f"error in init_sweep.py main process: {e}", exc_info=True)
 

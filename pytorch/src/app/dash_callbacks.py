@@ -2768,26 +2768,20 @@ def register_callbacks(app, shared_data):
                     with open(train_config_path, 'w') as f:
                         json.dump(train_config, f)
 
-                    # Save and Set the sweep config path
+                    # Save the sweep config and set the sweep config path
                     sweep_config_path = os.path.join(os.getcwd(), 'sweep/sweep_config.json')
                     with open(sweep_config_path, 'w') as f:
                         json.dump(sweep_config, f)
+
+                    # Construct and run the MPI command
+                    command = [
+                        'mpiexec', '-np', str(num_workers), 'python', 'init_sweep.py',
+                        '--sweep_config', sweep_config_path,
+                        '--train_config', train_config_path
+                    ]
+
+                    subprocess.Popen(command)
                     
-                    sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
-
-                    # Set the environment variable
-                    os.environ['WANDB_DISABLE_SERVICE'] = 'true'
-
-                    # Parallel execution of wandb agents
-                    processes = []
-                    for agent in range(num_agents):
-                        p = multiprocessing.Process(target=run_agent, args=(sweep_id, sweep_config, train_config))
-                        p.start()
-                        processes.append(p)
-                        time.sleep(5)
-
-                    for p in processes:
-                        p.join()
 
 
         except KeyError as e:

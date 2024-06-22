@@ -870,8 +870,7 @@ class MPIHelper:
     def gather(self, data, root=0):
         return self.comm.gather(data, root)
 
-def sync_networks(network):
-    comm = MPI.COMM_WORLD
+def sync_networks(network, comm):
 
     try:
         params = np.concatenate([getattr(p, 'data').cpu().numpy().flatten()
