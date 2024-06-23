@@ -2355,13 +2355,13 @@ class HER(Agent):
                                 for callback in self.agent.callbacks:
                                     callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
 
-                # perform soft update on target networks
-                try:
-                    self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
-                    self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
-                    logger.debug(f"{self.group}; Rank {self.rank} HER.train target network soft update complete")
-                except Exception as e:
-                    logger.error(f"{self.group}; Rank {self.rank} Error in HER.train target network soft update process: {e}", exc_info=True)
+                    # perform soft update on target networks
+                    try:
+                        self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
+                        self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
+                        logger.debug(f"{self.group}; Rank {self.rank} HER.train target network soft update complete")
+                    except Exception as e:
+                        logger.error(f"{self.group}; Rank {self.rank} Error in HER.train target network soft update process: {e}", exc_info=True)
 
                 if self.rank == 0: # only use main process
                     logger.info(f"{self.group}; epoch {epoch} cycle {cycle_counter} episode {episode_counter}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
