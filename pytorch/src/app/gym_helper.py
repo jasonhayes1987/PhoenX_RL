@@ -3,6 +3,11 @@ import numpy as np
 
 ## HER FUNCTIONALITY ##
 
+def get_goal_envs():
+    """Returns a list of envs that use goal states"""
+
+    envs = []
+
 # FUNCTION DICTIONARY
 def get_her_goal_functions(env:gym.Env):
     """Returns a list of goal functions for the HER algorithm."""
