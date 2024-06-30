@@ -7,7 +7,8 @@ from queue import Empty
 import threading
 import time
 import json
-import logging
+# import logging
+from logging_config import logger
 import base64
 import dash
 from dash import html, dcc, dash_table
@@ -41,9 +42,6 @@ import cnn_models
 import rl_agents
 import wandb_support
 
-# Initialize logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
 
 # Create a queue to store the formatted data
 formatted_data_queue = Queue()
@@ -53,13 +51,14 @@ def fetch_data_process(project, sweep_name, shared_data):
         try:
             # print("Fetching data from wandb...")
             metrics_data = wandb_support.get_metrics(project, sweep_name)
+            logger.debug(f'fetch_data_process metrics data:{metrics_data}')
             formatted_data = wandb_support.format_metrics(metrics_data)
+            logger.debug(f'fetch_data_process formatted data:{formatted_data}')
             shared_data['formatted_data'] = formatted_data
-            # print(f'fetch data process formatted data: {formatted_data}')
-            # print("Data fetched and formatted successfully.")
+            logger.debug(f"fetch_data_process shared_data[formatted_data]:{shared_data['formatted_data']}")
             time.sleep(10)  # Wait before fetching data again
         except Exception as e:
-            print(f"Error in fetch_data_process: {str(e)}")
+            logger.error(f"Error in fetch_data_process: {str(e)}", exc_info=True)
             time.sleep(5)
 
 
@@ -68,20 +67,18 @@ def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_t
     try:
         if 'formatted_data' in shared_data:
             #DEBUG
-            print("Calculating co-occurrence matrix...")
             formatted_data = shared_data['formatted_data']
+            logger.debug(f'update_heatmap_process: formatted_data:{formatted_data}')
             # Convert the JSON string back to a pandas DataFrame
             # formatted_data = pd.read_json(data, orient='split')
-            #DEBUG
             # print(f'formatted data passed to wandb_support: {formatted_data}')
             matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
-            #DEBUG
-            # print(f'bin ranges returned from wandb_support: {bin_ranges}')
+            logger.debug(f'update_heatmap_process: matrix_data:{matrix_data}')
+            logger.debug(f'update_heatmap_process: bin_ranges:{bin_ranges}')
             shared_data['matrix_data'] = matrix_data.to_dict(orient='split')
+            logger.debug(f"update_heatmap_process: shared_data[matrix_data]:{shared_data['matrix_data']}")
             shared_data['bin_ranges'] = bin_ranges
-            #DEBUG
-            # print(f'data in shared data: {shared_data}')
-            # print("Co-occurrence matrix calculated successfully.")
+            logger.debug(f"update_heatmap_process: shared_data[bin_ranges]:{shared_data['bin_ranges']}")
         # time.sleep(5)  # Wait for 5 seconds before updating the heatmap again
     except Exception as e:
         print(f"Error in update_heatmap_process: {str(e)}")
@@ -2916,25 +2913,28 @@ def register_callbacks(app, shared_data):
         prevent_initial_call=True,
     )
     def get_sweep_data(n_clicks, project, sweeps, co_occurrence_data):
-        if n_clicks > 0:
-            dfs = []
-            for sweep in sweeps:
-                metrics_data = wandb_support.get_metrics(project, sweep)
-                print(f'metrics data: {metrics_data}')
-                formatted_data = wandb_support.format_metrics(metrics_data)
-                print(f'formatted data: {formatted_data}')
-                dfs.append(formatted_data)
-            data = pd.concat(dfs, ignore_index=True)
-            data_json = data.to_json(orient='split')
-            co_occurrence_data['formatted_data'] = data_json
-            print(f'data_json: {data_json}')
-            # create a Div containing a success message to return
-            success_message = html.Div([
-                dbc.Alert("Data Loaded.", color="success")
-            ])
-            return co_occurrence_data, success_message
+        try:
+            if n_clicks > 0:
+                dfs = []
+                for sweep in sweeps:
+                    metrics_data = wandb_support.get_metrics(project, sweep)
+                    logger.debug(f'get_sweep_data: metrics data: {metrics_data}')
+                    formatted_data = wandb_support.format_metrics(metrics_data)
+                    logger.debug(f'get_sweep_data: formatted data: {formatted_data}')
+                    dfs.append(formatted_data)
+                data = pd.concat(dfs, ignore_index=True)
+                data_json = data.to_json(orient='split')
+                co_occurrence_data['formatted_data'] = data_json
+                logger.debug(f'get_sweep_data: co_occurrence_data[formatted_data]: {co_occurrence_data["formatted_data"]}')
+                # create a Div containing a success message to return
+                success_message = html.Div([
+                    dbc.Alert("Data Loaded.", color="success")
+                ])
+                return co_occurrence_data, success_message
 
-        return None
+            return None
+        except Exception as e:
+            logger.error(f"Error in get_sweep_data: {e}", exc_info=True)
     
     @app.callback(
         Output({'type':'hyperparameter-selector', 'page':'/co-occurrence-analysis'}, 'options'),
@@ -2970,21 +2970,24 @@ def register_callbacks(app, shared_data):
         prevent_initial_call=True,
     )
     def update_co_occurrence_graphs(data, hyperparameters, bins, zscore_option, reward_threshold):
-        print(f'formatted data: {data["formatted_data"]}')
-        f_data = data['formatted_data']
-        print(f'formatted data: {f_data}')
-        # Convert the JSON string back to a pandas DataFrame
-        formatted_data = pd.read_json(f_data, orient='split')
-        z_score = 'zscore' in zscore_option
-        matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
-        data['matrix_data'] = matrix_data.to_dict(orient='split')
-        print(f'matrix data: {data["matrix_data"]}')
-        data['bin_ranges'] = bin_ranges
-        print(f'bin_ranges: {data["bin_ranges"]}')
-        heatmap, bar_chart = utils.update_heatmap(data)
-        
-        return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
-    
+        try:
+            logger.debug(f'update_co_occurrence_graphs: data: {data}')
+            # f_data = data['formatted_data']
+            # Convert the JSON string back to a pandas DataFrame
+            formatted_data = pd.read_json(data['formatted_data'], orient='split')
+            logger.debug(f"update_co_occurrence_graphs: formatted_data dataframe: {formatted_data}")
+            z_score = 'zscore' in zscore_option
+            matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
+            data['matrix_data'] = matrix_data.to_dict(orient='split')
+            logger.debug(f'update_co_occurrence_graphs: matrix data: {data["matrix_data"]}')
+            data['bin_ranges'] = bin_ranges
+            logger.debug(f'update_co_occurrence_graphs: bin_ranges: {data["bin_ranges"]}')
+            heatmap, bar_chart = utils.update_heatmap(data)
+            
+            return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
+        except Exception as e:
+            logger.error(f"Error in update_co_occurrence_graphs: {e}", exc_info=True)
+
     @app.callback(
     Output("download-wandb-config", "data"),
     [Input("download-wandb-config-button", "n_clicks")],

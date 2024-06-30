@@ -6,7 +6,8 @@ from pathlib import Path
 import os
 import ast
 import subprocess
-import logging
+# import logging
+from logging_config import logger
 import time
 
 import numpy as np
@@ -813,65 +814,80 @@ def get_metrics(project: str, sweep_name: str = None):
 
 def format_metrics(data: pd.DataFrame) -> pd.DataFrame:
     try:
-        print(f'data passed to format metrics: {data}')
+        logger.debug(f'format_metrics: data passed to format metrics: {data}')
         # Parse the 'config' column
         data['config'] = parse_dict_column(data['config'])
-        print(f'data after parse dict column: {data}')
+        logger.debug(f'format_metrics: data after parse dict column: {data}')
 
         # Extract hyperparameters and rewards from the dictionaries
         data['avg_reward'] = data['summary'].apply(lambda x: x.get('avg_reward') if isinstance(x, dict) else None)
-        print(f'data after getting avg reward: {data}')
+        logger.debug(f'format_metrics: data after getting avg reward: {data}')
         data.to_csv(f"data.csv")
 
         # Filter out rows that do not have a 'config_dict' or 'avg reward'
         data_filtered = data.dropna(subset=['config', 'avg_reward'])
-        print(f'data filtered: {data_filtered}')
+        logger.debug(f'format_metrics: data filtered: {data_filtered}')
 
-        # Flatten the 'config_dict' and create a new DataFrame of hyperparameter values
-        data_hyperparams = pd.DataFrame(data_filtered['config'].apply(lambda x: helper.flatten_dict(x)).tolist())
-        print(f'data hyperparams after flatten config dict: {data_hyperparams}')
+        # Flatten the 'config_dict'
+        hyperparams = data_filtered['config'].apply(lambda x: helper.flatten_dict(x))
+        logger.debug(f'format_metrics: hyperparams after helper.flatten_dict: {hyperparams}')
+        # parse hyperparameter names to remove dupe parts in name due to wandb config structure
+        hyperparams = modify_keys(hyperparams)
+        logger.debug(f'format_metrics: hyperparams after modify_keys: {hyperparams}')
+        # and create a new DataFrame of hyperparameter values
+        data_hyperparams = pd.DataFrame(hyperparams)
+        logger.debug(f'format_metrics: data hyperparams columns after flatten config dict: {data_hyperparams.columns}')
         # Join the flattened hyperparameters with the avg reward column
         data_hyperparams = data_hyperparams.join(data_filtered['avg_reward'])
-        print(f'data hyperparams after joining hyperparams: {data_hyperparams}')
+        logger.debug(f'format_metrics: data hyperparams after joining with data_filtered[avg_reward]: {data_hyperparams}')
 
         return data_hyperparams
     except Exception as e:
-        print(f"An error occurred in format_metrics: {e}")
+        logger.error(f"An error occurred in format_metrics: {e}", exc_info=True)
         return pd.DataFrame()
 
 def calculate_co_occurrence_matrix(data: pd.DataFrame, hyperparameters: list, avg_reward_threshold: int, bins: int, z_scores: bool = False) -> pd.DataFrame:
     try:
-        print('calculate co occurrence matrix fired')
+        logger.debug(f"calculate_co_occurence_matrix: passed param data: {data}")
+        logger.debug(f"calculate_co_occurence_matrix: passed param hyperparameters: {hyperparameters}")
         # create an empty dict to store the bin ranges of each hyperparameter
         bin_ranges = {}
         # drop all columns that arent in hyperparameters list
         data = data[hyperparameters + ['avg_reward']]
+        logger.debug(f'calculate_co_occurence_matrix: data:{data}')
         # Filter the DataFrame based on the avg reward_threshold
         data_heatmap = data[data['avg_reward'] >= avg_reward_threshold]
+        logger.debug(f'calculate_co_occurence_matrix: data_heatmap created')
         # For continuous variables, bin them into the specified number of bins
         for hp in data_heatmap.columns:
             if data_heatmap[hp].dtype == float and hp not in ['avg_reward']:
                 data_heatmap[hp], bin_edges  = pd.cut(data_heatmap[hp], bins, labels=range(bins), retbins=True)
                 bin_ranges[hp] = bin_edges
+        logger.debug(f'calculate_co_occurence_matrix: bin ranges created')
 
         # One-hot encode categorical variables
         data_one_hot = pd.get_dummies(data_heatmap.drop('avg_reward', axis=1).astype('category'), dtype=np.int8)
+        logger.debug(f'calculate_co_occurence_matrix: categorical data one-hot encoded')
         # Calculate co-occurrence matrix
         co_occurrence_matrix = np.dot(data_one_hot.T, data_one_hot)
+        logger.debug(f'calculate_co_occurence_matrix: co-occurrence matrix calculated')
 
         # calculate z-scores if z_scores is true
         if z_scores:
             # Calculate the z-scores of the co-occurrence counts
             co_occurrence_matrix = zscore(co_occurrence_matrix, axis=None)
+            logger.debug(f'calculate_co_occurence_matrix: zscore co-occurrence matrix calculated')
         # Create a DataFrame from the co-occurrence matrix for easier plotting
         co_occurrence_df = pd.DataFrame(co_occurrence_matrix, 
                                         index=data_one_hot.columns, 
                                         columns=data_one_hot.columns)
+        logger.debug(f'calculate_co_occurence_matrix: co-occurrence dataframe created')
         co_occurrence_df.to_csv(f"co_occurrence_df.csv")
+        logger.debug(f'calculate_co_occurence_matrix: co-occurrance dataframe saved to csv')
 
         return co_occurrence_df, bin_ranges
     except Exception as e:
-        print(f"An error occurred in calculate_co_occurrence_matrix: {e}")
+        logger.error(f"An error occurred in calculate_co_occurrence_matrix: {e}", exc_info=True)
         return pd.DataFrame(), {}
 
 def plot_co_occurrence_heatmap(co_occurrence_df: pd.DataFrame) -> go.Figure:
@@ -947,4 +963,14 @@ def parse_parameter_name(parameter_string):
                                             
     else:
         return parameter_string
+    
+def modify_keys(dicts):
+    modified_dicts = []
+    for d in dicts:
+        new_dict = {}
+        for key, value in d.items():
+            new_key = parse_parameter_name(key)
+            new_dict[new_key] = value
+        modified_dicts.append(new_dict)
+    return modified_dicts
 
