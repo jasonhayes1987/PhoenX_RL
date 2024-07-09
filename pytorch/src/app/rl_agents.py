@@ -34,6 +34,7 @@ import torch.distributed as dist
 import gymnasium as gym
 import numpy as np
 import random
+import torch.profiler
 
 
 # Agent class
@@ -848,18 +849,21 @@ class DDPG(Agent):
         normalizer_clip:float=None,
         normalizer_eps:float=0.01,
         callbacks: List = [],
+        use_mpi = False,
         save_dir: str = "models",
         comm = None,
         device = 'cuda'
     ):
         try:
-            if comm is not None:
-                self.comm = comm
-                self.rank = comm.Get_rank()
-            else:
-                self.comm = MPI.COMM_WORLD
-                self.rank = MPI.COMM_WORLD.Get_rank()
-            self.group = self.comm.Get_name()
+            self.use_mpi = use_mpi
+            if self.use_mpi:
+                if comm is not None:
+                    self.comm = comm
+                    self.rank = comm.Get_rank()
+                else:
+                    self.comm = MPI.COMM_WORLD
+                    self.rank = MPI.COMM_WORLD.Get_rank()
+                self.group = self.comm.Get_name()
             self.env = env
             self.actor_model = actor_model
             self.critic_model = critic_model
@@ -877,9 +881,12 @@ class DDPG(Agent):
             self.normalizer_clip = normalizer_clip
             self.normalizer_eps = normalizer_eps
             self.device = device
-            logger.debug(f"rank {self.rank} DDPG init attributes set")
+            # logger.debug(f"rank {self.rank} DDPG init attributes set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in DDPG init: {e}", exc_info=True)
+            if self.use_mpi:
+                logger.error(f"rank {self.rank} Error in DDPG init: {e}", exc_info=True)
+            else:
+                logger.error(f"Error in DDPG init: {e}", exc_info=True)
         
         # set internal attributes
         try:
@@ -899,9 +906,12 @@ class DDPG(Agent):
 
             # instantiate internal attribute use_her to be switched by HER class if using DDPG
             self._use_her = False
-            logger.debug(f"rank {self.rank} DDPG init: internal attributes set")
+            # logger.debug(f"rank {self.rank} DDPG init: internal attributes set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in DDPG init internal attributes: {e}", exc_info=True)
+            if self.use_mpi:
+                logger.error(f"rank {self.rank} Error in DDPG init internal attributes: {e}", exc_info=True)
+            else:
+                logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
 
         # Set callbacks
         try:
@@ -915,9 +925,12 @@ class DDPG(Agent):
             else:
                 self.callback_list = None
                 self._wandb = False
-            logger.debug(f"rank {self.rank} DDPG init: callbacks set")
+            # logger.debug(f"rank {self.rank} DDPG init: callbacks set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in DDPG init set callbacks: {e}", exc_info=True)
+            if self.use_mpi:
+                logger.error(f"rank {self.rank} Error in DDPG init set callbacks: {e}", exc_info=True)
+            else:
+                logger.error(f"Error in DDPG init set callbacks: {e}", exc_info=True)
         self._train_config = {}
         self._train_episode_config = {}
         self._train_step_config = {}
@@ -1103,11 +1116,11 @@ class DDPG(Agent):
 
     def _initialize_env(self, render=False, render_freq=10, context=None):
         """Initializes a new environment."""
-        logger.debug(f"rank {self.rank} DDPG._initialize_env called")
+        # logger.debug(f"rank {self.rank} DDPG._initialize_env called")
         try:
             if render:
                 env = gym.make(self.env.spec, render_mode="rgb_array")
-                logger.debug(f"rank {self.rank} DDPG._initialize_env: env built with rendering")
+                # logger.debug(f"rank {self.rank} DDPG._initialize_env: env built with rendering")
                 if context == "train":
                     os.makedirs(self.save_dir + "/renders/training", exist_ok=True)
                     return gym.wrappers.RecordVideo(
@@ -1342,7 +1355,7 @@ class DDPG(Agent):
         # update critic
         self.critic_model.optimizer.zero_grad()
         critic_loss.backward()
-        if self._use_her:
+        # if self._use_her:
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached critic optimization')
             # Synchronize gradients
             ## T.DIST CUDA ##
@@ -1358,11 +1371,11 @@ class DDPG(Agent):
             #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
             #         # print(param.grad)
 
-            ## MPI CPU ##
+        ## MPI CPU ##
+        if self.use_mpi:
             helper.sync_grads_sum(self.critic_model, self.comm)
         self.critic_model.optimizer.step()
-        
-        
+
         # update actor
         pre_act_values, action_values = self.actor_model(states, desired_goals)
         # print(f'Agent {dist.get_rank()}: action_values: {action_values}')
@@ -1374,7 +1387,7 @@ class DDPG(Agent):
 
         self.actor_model.optimizer.zero_grad()
         actor_loss.backward()
-        if self._use_her:
+        # if self._use_her:
             # Synchronize Gradients
             ## T.DIST CUDA ##
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached actor optimization')
@@ -1391,7 +1404,8 @@ class DDPG(Agent):
             #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
             #         # print(param.grad)
 
-            ## MPI CPU ##
+        ## MPI CPU ##
+        if self.use_mpi:
             helper.sync_grads_sum(self.actor_model, self.comm)
         self.actor_model.optimizer.step()
 
@@ -1427,20 +1441,47 @@ class DDPG(Agent):
             print(f'new save dir: {self.save_dir}')
         
         if self.callbacks:
-            for callback in self.callbacks:
-                if isinstance(callback, rl_callbacks.WandbCallback):
-                    callback.on_train_begin((self.critic_model, self.actor_model,), logs=self._config, run_number=run_number)
-
+            if self.use_mpi:
+                if self.rank == 0:
+                    for callback in self.callbacks:
+                        if isinstance(callback, rl_callbacks.WandbCallback):
+                            callback.on_train_begin((self.critic_model, self.actor_model,), logs=self._config)
+                            # logger.debug(f'{self.group}; Rank {self.rank} DDPG.train on train begin callback complete')
+                        else:
+                            callback.on_train_begin(logs=self._config)
+            else:
+                for callback in self.callbacks:
+                    if isinstance(callback, rl_callbacks.WandbCallback):
+                        callback.on_train_begin((self.critic_model, self.actor_model,), logs=self._config)
+                        # logger.debug(f'DDPG.train on train begin callback complete')
+                    else:
+                        callback.on_train_begin(logs=self._config)
+        
+        if self.use_mpi:
+            try:
+                # instantiate new environment. Only rank 0 env will render episodes if render==True
+                if self.rank == 0:
+                    self.env = self._initialize_env(render, render_freq, context='train')
+                    # logger.debug(f'{self.group}; Rank {self.rank} initiating environment with render {render}')
                 else:
-                    callback.on_train_begin(logs=self._config)
-
-        # instantiate new environment
-        self.env = self._initialize_env(render, render_freq, context='train')
+                    self.env = self._initialize_env(False, 0, context='train')
+                    # logger.debug(f'{self.group}; Rank {self.rank} initializing environment')
+            except Exception as e:
+                logger.error(f"{self.group}; Rank {self.rank} Error in DDPG.train agent._initialize_env process: {e}", exc_info=True)
+        
+        else:
+            try:
+                # instantiate new environment. Only rank 0 env will render episodes if render==True
+                self.env = self._initialize_env(render, render_freq, context='train')
+                # logger.debug(f'initiating environment with render {render}')
+            except Exception as e:
+                logger.error(f"Error in DDPG.train agent._initialize_env process: {e}", exc_info=True)
         
         # initialize step counter (for logging)
         self._step = 1
         # set best reward
-        best_reward = self.env.reward_range[0]
+        # best_reward = self.env.reward_range[0]
+        best_reward = -np.inf
         # instantiate list to store reward history
         reward_history = []
         # instantiate lists to store time history
@@ -1451,8 +1492,15 @@ class DDPG(Agent):
         for i in range(num_episodes):
             episode_start_time = time.time()
             if self.callbacks:
-                for callback in self.callbacks:
-                    callback.on_train_epoch_begin(epoch=self._step, logs=None)
+                if self.use_mpi:
+                    if self.rank == 0:
+                        for callback in self.callbacks:
+                            callback.on_train_epoch_begin(epoch=self._step, logs=None)
+                            # logger.debug(f'{self.group}; Rank {self.rank} DDPG.train on train epoch begin callback completed')
+                else:
+                    for callback in self.callbacks:
+                        callback.on_train_epoch_begin(epoch=self._step, logs=None)
+                        # logger.debug(f'DDPG.train on train epoch begin callback completed')
             # reset noise
             if type(self.noise) == helper.OUNoise:
                 self.noise.reset()
@@ -1463,9 +1511,9 @@ class DDPG(Agent):
             episode_steps = 0  # Initialize steps counter for the episode
             while not done:
                 # run callbacks on train batch begin
-                if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_train_step_begin(step=self._step, logs=None)
+                # if self.callbacks:
+                #     for callback in self.callbacks:
+                #         callback.on_train_step_begin(step=self._step, logs=None)
                 step_start_time = time.time()
                 action = self.get_action(state)
                 next_state, reward, term, trunc, _ = self.env.step(action)
@@ -1499,8 +1547,16 @@ class DDPG(Agent):
                 
                 # log to wandb if using wandb callback
                 if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_train_step_end(step=self._step, logs=self._train_step_config)
+                    if self.use_mpi:
+                        # only have the main process log callback values to avoid multiple callback calls
+                        if self.rank == 0:
+                            for callback in self.callbacks:
+                                callback.on_train_step_end(step=self._step, logs=self._train_step_config)
+                                # logger.debug(f'{self.group}; Rank {self.rank} DDPG.train on train step end callback completed')
+                    else:
+                        for callback in self.callbacks:
+                            callback.on_train_step_end(step=self._step, logs=self._train_step_config)
+                            # logger.debug(f'DDPG.train on train step end callback completed')
                 if not done:
                     self._step += 1
             
@@ -1529,14 +1585,28 @@ class DDPG(Agent):
                 self._train_episode_config["best"] = False
 
             if self.callbacks:
-                for callback in self.callbacks:
-                    callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+                if self.use_mpi:
+                    if self.rank == 0:
+                        for callback in self.callbacks:
+                            callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+                            # logger.debug(f'{self.group}; Rank {self.rank} DDPG.train on train epoch callback completed')
+                else:
+                    for callback in self.callbacks:
+                        callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+                        # logger.debug(f'DDPG.train on train epoch callback completed')
 
             print(f"episode {i+1}, score {episode_reward}, avg_score {avg_reward}, episode_time {episode_time:.2f}s, avg_episode_time {avg_episode_time:.2f}s, avg_step_time {avg_step_time:.6f}s, avg_learn_time {avg_learn_time:.6f}s, avg_steps_per_episode {avg_steps_per_episode:.2f}")
 
         if self.callbacks:
-            for callback in self.callbacks:
-                callback.on_train_end(logs=self._train_episode_config)
+            if self.use_mpi:
+                if self.rank == 0:
+                    for callback in self.callbacks:
+                        callback.on_train_end(logs=self._train_episode_config)
+                        # logger.debug(f'{self.group}; Rank {self.rank} DDPG.train on train end callback complete')
+            else:
+                for callback in self.callbacks:
+                    callback.on_train_end(logs=self._train_episode_config)
+                    # logger.debug(f'DDPG.train on train end callback complete')
         # close the environment
         self.env.close()
 
@@ -1735,43 +1805,64 @@ class TD3(Agent):
         # normalize_kwargs: dict = {},
         normalizer_clip:float=None,
         normalizer_eps:float=0.01,
+        warmup:int=1000,
         callbacks: List = [],
         save_dir: str = "models",
-        comm=None
+        use_mpi = False,
+        comm=None,
+        device='cuda',
+        profiler_active_steps: int = 10,
+        profiler_warmup_steps: int = 10,
+        profiler_repeat: int = 10
     ):
         try:
-            if comm is not None:
-                self.comm = comm
-                self.rank = comm.Get_rank()
-            else:
-                self.comm = MPI.COMM_WORLD
-                self.rank = MPI.COMM_WORLD.Get_rank()
-            self.group = self.comm.Get_name()
+            self.use_mpi = use_mpi
+            if self.use_mpi:
+                if comm is not None:
+                    self.comm = comm
+                    self.rank = comm.Get_rank()
+                else:
+                    self.comm = MPI.COMM_WORLD
+                    self.rank = MPI.COMM_WORLD.Get_rank()
+                self.group = self.comm.Get_name()
             self.env = env
             self.actor_model = actor_model
             self.critic_model_a = critic_model
             # clone critic model to create second critic
-            self.critic_model_b = self.clone_model(critic_model)
+            self.critic_model_b = self.clone_model(critic_model, weights=False)
             # set target actor and critic models
-            self.target_actor_model = self.clone_model(actor_model)
-            self.target_critic_model_a = self.clone_model(critic_model)
-            self.target_critic_model_b = self.clone_model(critic_model)
+            self.target_actor_model = self.clone_model(self.actor_model)
+            self.target_critic_model_a = self.clone_model(self.critic_model_a)
+            self.target_critic_model_b = self.clone_model(self.critic_model_b)
             self.discount = discount
             self.tau = tau
             self.action_epsilon = action_epsilon
             self.replay_buffer = replay_buffer
             self.batch_size = batch_size
             self.noise = noise
-            self.target_action_noise = helper.NormalNoise(0, target_action_stddev)
+            self.target_action_stddev = target_action_stddev
+            self.target_action_noise = helper.NormalNoise(shape=env.action_space.shape, mean=0.0,
+                                                          stddev=target_action_stddev, device=device)
             self.target_action_clip = target_action_clip
             self.actor_update_delay = actor_update_delay
             self.normalize_inputs = normalize_inputs
             # self.normalize_kwargs = normalize_kwargs
             self.normalizer_clip = normalizer_clip
             self.normalizer_eps = normalizer_eps
-            logger.debug(f"rank {self.rank} TD3 init attributes set")
+            self.warmup = warmup
+            self.device = device
+            self.profiler_active_steps = profiler_active_steps
+            self.profiler_warmup_steps = profiler_warmup_steps
+            self.profiler_repeat = profiler_repeat
+            # if self.use_mpi:
+            #     logger.debug(f"rank {self.rank} TD3 init attributes set")
+            # else:
+            #     logger.debug(f"TD3 init attributes set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in TD3 init: {e}", exc_info=True)
+            if self.use_mpi:
+                logger.error(f"rank {self.rank} Error in TD3 init: {e}", exc_info=True)
+            else:
+                logger.error(f"Error in TD3 init: {e}", exc_info=True)
         
         # set internal attributes
         try:
@@ -1791,9 +1882,15 @@ class TD3(Agent):
 
             # instantiate internal attribute use_her to be switched by HER class if using DDPG
             self._use_her = False
-            logger.debug(f"rank {self.rank} TD3 init: internal attributes set")
+            # if self.use_mpi:
+            #     logger.debug(f"rank {self.rank} TD3 init: internal attributes set")
+            # else:
+            #     logger.debug(f"TD3 init: internal attributes set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in TD3 init internal attributes: {e}", exc_info=True)
+            if self.use_mpi:
+                logger.error(f"rank {self.rank} Error in TD3 init internal attributes: {e}", exc_info=True)
+            else:
+                logger.error(f"Error in TD3 init internal attributes: {e}", exc_info=True)
 
         # Set callbacks
         try:
@@ -1807,9 +1904,15 @@ class TD3(Agent):
             else:
                 self.callback_list = None
                 self._wandb = False
-            logger.debug(f"rank {self.rank} TD3 init: callbacks set")
+            # if self.use_mpi:
+            #     logger.debug(f"rank {self.rank} TD3 init: callbacks set")
+            # else:
+            #     logger.debug(f"TD3 init: callbacks set")
         except Exception as e:
-            logger.error(f"rank {self.rank} Error in TD3 init set callbacks: {e}", exc_info=True)
+            if self.use_mpi:
+                logger.error(f"rank {self.rank} Error in TD3 init set callbacks: {e}", exc_info=True)
+            else:
+                logger.error(f"Error in TD3 init set callbacks: {e}", exc_info=True)
         self._train_config = {}
         self._train_episode_config = {}
         self._train_step_config = {}
@@ -1825,7 +1928,7 @@ class TD3(Agent):
         replay_buffer = self.replay_buffer.clone()
         noise = self.noise.clone()
 
-        return DDPG(
+        return TD3(
             env,
             actor,
             critic,
@@ -1842,9 +1945,9 @@ class TD3(Agent):
         )
         
     
-    def clone_model(self, model):
+    def clone_model(self, model, weights=True):
         """Clones a model."""
-        return model.get_clone()
+        return model.get_clone(weights)
     
     @classmethod
     def build(
@@ -1993,32 +2096,60 @@ class TD3(Agent):
 
     def _initialize_env(self, render=False, render_freq=10, context=None):
         """Initializes a new environment."""
-        logger.debug(f"rank {self.rank} TD3._initialize_env called")
-        try:
-            if render:
-                env = gym.make(self.env.spec, render_mode="rgb_array")
-                logger.debug(f"rank {self.rank} TD3._initialize_env: env built with rendering")
-                if context == "train":
-                    os.makedirs(self.save_dir + "/renders/training", exist_ok=True)
-                    return gym.wrappers.RecordVideo(
-                        env,
-                        self.save_dir + "/renders/training",
-                        episode_trigger=lambda episode_id: (episode_id+1) % render_freq == 0,
-                    )
-                elif context == "test":
-                    os.makedirs(self.save_dir + "/renders/testing", exist_ok=True)
-                    return gym.wrappers.RecordVideo(
-                        env,
-                        self.save_dir + "/renders/testing",
-                        episode_trigger=lambda episode_id: (episode_id+1) % render_freq == 0,
-                    )
-                else:
-                    logger.warning(f"rank {self.rank} Unknown context: {context}, environment will not be recorded")
+        if self.use_mpi:
+            # logger.debug(f"rank {self.rank} TD3._initialize_env called")
+            try:
+                if render:
+                    env = gym.make(self.env.spec, render_mode="rgb_array")
+                    # logger.debug(f"rank {self.rank} TD3._initialize_env: env built with rendering")
+                    if context == "train":
+                        os.makedirs(self.save_dir + "/renders/training", exist_ok=True)
+                        return gym.wrappers.RecordVideo(
+                            env,
+                            self.save_dir + "/renders/training",
+                            episode_trigger=lambda episode_id: (episode_id+1) % render_freq == 0,
+                        )
+                    elif context == "test":
+                        os.makedirs(self.save_dir + "/renders/testing", exist_ok=True)
+                        return gym.wrappers.RecordVideo(
+                            env,
+                            self.save_dir + "/renders/testing",
+                            episode_trigger=lambda episode_id: (episode_id+1) % render_freq == 0,
+                        )
+                    else:
+                        logger.warning(f"rank {self.rank} Unknown context: {context}, environment will not be recorded")
 
-            return gym.make(self.env.spec)
-        except Exception as e:
-            logger.error(f"rank {self.rank} Error in TD3._initialize_env: {e}", exc_info=True)
-            raise
+                return gym.make(self.env.spec)
+            except Exception as e:
+                logger.error(f"rank {self.rank} Error in TD3._initialize_env: {e}", exc_info=True)
+                raise
+        else:
+            # logger.debug(f"TD3._initialize_env called")
+            try:
+                if render:
+                    env = gym.make(self.env.spec, render_mode="rgb_array")
+                    # logger.debug(f"TD3._initialize_env: env built with rendering")
+                    if context == "train":
+                        os.makedirs(self.save_dir + "/renders/training", exist_ok=True)
+                        return gym.wrappers.RecordVideo(
+                            env,
+                            self.save_dir + "/renders/training",
+                            episode_trigger=lambda episode_id: (episode_id+1) % render_freq == 0,
+                        )
+                    elif context == "test":
+                        os.makedirs(self.save_dir + "/renders/testing", exist_ok=True)
+                        return gym.wrappers.RecordVideo(
+                            env,
+                            self.save_dir + "/renders/testing",
+                            episode_trigger=lambda episode_id: (episode_id+1) % render_freq == 0,
+                        )
+                    else:
+                        logger.warning(f"Unknown context: {context}, environment will not be recorded")
+
+                return gym.make(self.env.spec)
+            except Exception as e:
+                logger.error(f"Error in TD3._initialize_env: {e}", exc_info=True)
+                raise
 
     
     def get_action(self, state, goal=None, grad=True, test=False,
@@ -2083,11 +2214,11 @@ class TD3(Agent):
                 if grad:
                     # print('with grad fired')
                     # normalize state if self.normalize_inputs
-                    if self.normalize_inputs:
+                    if self.normalize_inputs or self._use_her:
                         state = self.state_normalizer.normalize(state)
                     # (HER) use passed state normalizer if using HER
-                    elif self._use_her:
-                        state = state_normalizer.normalize(state)
+                    # elif self._use_her:
+                    #     state = state_normalizer.normalize(state)
                     
                     # make sure state is a tensor and on correct device
                     state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
@@ -2103,17 +2234,24 @@ class TD3(Agent):
                     if self.actor_model.cnn_model:
                         state = state.permute(2, 0, 1).unsqueeze(0)
 
-                    _, pi = self.actor_model(state, goal)
-                    # print(f'pi: {pi}')
+                    # Create noise
                     noise = self.noise()
                     # print(f'noise: {noise}')
 
-                    # Convert the action space bounds to a tensor on the same device
-                    action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-                    action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
-                    # print(f'actor model device:{self.actor_model.device}')
-                    action = (pi + noise).clip(action_space_low, action_space_high)
-                    # print(f'action + noise: {action}')
+                    # Check if in warmup
+                    if self._step <= self.warmup:
+                        action = noise
+
+                    else:
+                        _, pi = self.actor_model(state, goal)
+                        # print(f'pi: {pi}')
+
+                        # Convert the action space bounds to a tensor on the same device
+                        action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+                        action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
+                        # print(f'actor model device:{self.actor_model.device}')
+                        action = (pi + noise).clip(action_space_low, action_space_high)
+                        # print(f'action + noise: {action}')
 
                     noise_np = noise.cpu().detach().numpy().flatten()
                     action_np = action.cpu().detach().numpy().flatten()
@@ -2141,14 +2279,21 @@ class TD3(Agent):
                         if self.actor_model.cnn_model:
                             state = state.permute(2, 0, 1).unsqueeze(0)
 
-                        _, pi = self.actor_model(state, goal)
+                        # Create noise
                         noise = self.noise()
 
-                        # Convert the action space bounds to a tensor on the same device
-                        action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-                        action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
+                        # Check if in warmup
+                        if self._step <= self.warmup:
+                            action = noise
 
-                        action = (pi + noise).clip(action_space_low, action_space_high)
+                        else:
+                            _, pi = self.actor_model(state, goal)
+
+                            # Convert the action space bounds to a tensor on the same device
+                            action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+                            action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
+
+                            action = (pi + noise).clip(action_space_low, action_space_high)
 
                         noise_np = noise.cpu().detach().numpy().flatten()
                         action_np = action.cpu().detach().numpy().flatten()
@@ -2175,13 +2320,15 @@ class TD3(Agent):
               state_normalizer:Union[Normalizer, SharedNormalizer]=None,
               goal_normalizer:Union[Normalizer, SharedNormalizer]=None,
               ):
-
+        # time batch sampling
+        # timer = time.time()
         # sample a batch of experiences from the replay buffer
         if self._use_her: # if using HER
             states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = replay_buffer.sample(self.batch_size)
         else:
             states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
-        
+        # print time taking to batch sample
+        # print(f'time to sample batch: {time.time() - timer}')
         # normalize states if self.normalize_inputs
         if self.normalize_inputs:
             states = self.state_normalizer.normalize(states)
@@ -2193,18 +2340,27 @@ class TD3(Agent):
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
         
+        # time conversion to tensors
+        # timer = time.time()
         # Convert to tensors
         states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
         actions = T.tensor(actions, dtype=T.float32, device=self.actor_model.device)
         rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
         next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
         dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
+        # logger.debug(f"states: {states}")
+        # logger.debug(f"actions: {actions}")
+        # logger.debug(f"rewards: {rewards}")
+        # logger.debug(f"next states: {next_states}")
+        # logger.debug(f"dones: {dones}")
         # if using HER, convert desired goals to tensors
         if self._use_her:
             desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
         else:
             # set desired goals to None
             desired_goals = None
+        # print time to convert to tensors
+        # print(f'time to convert to tensors: {time.time() - timer}')
 
         # permute states and next states if using cnn
         if self.actor_model.cnn_model:
@@ -2215,34 +2371,83 @@ class TD3(Agent):
         rewards = rewards.unsqueeze(1)
         dones = dones.unsqueeze(1)
 
-        # get target values 
+        # with T.no_grad():
+        # get target values
+        # timer = time.time()
         _, target_actions = self.target_actor_model(next_states, desired_goals)
+        # print(f'time to get target actions: {time.time() - timer}')
+        # logger.debug(f"target actions: {target_actions}")
         # Add gaussian noise to target actions
-        target_actions = target_actions + self.target_action_noise()
+        # timer = time.time()
+        noise = self.target_action_noise()
+        # print(f'time to get noise: {time.time() - timer}')
+        # logger.debug(f"target action noise: {noise}")
+        # timer = time.time()
+        target_actions = target_actions + T.clamp(noise, min=-self.target_action_clip, max=self.target_action_clip)
+        # print(f'time add noise: {time.time() - timer}')
+        # logger.debug(f"target actions after added noise: {target_actions}")
         # Clamp targets between target action clip values
-        target_actions = T.clamp(target_actions, min=-self.target_action_clip, max=self.target_action_clip)
+        # timer = time.time()
+        target_actions = T.clamp(target_actions, min=T.tensor(self.env.action_space.low[0], dtype=T.float, device=self.device), max=T.tensor(self.env.action_space.high[0], dtype=T.float, device=self.device))
+        # print(f'time to clamp target actions: {time.time() - timer}')
+        # logger.debug(f"target actions after clamped: {target_actions}")
         # print(f'Agent {dist.get_rank()}: target_actions: {target_actions}')
+        # timer = time.time()
         target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
+        # print(f'time to get critic a values: {time.time() - timer}')
+        # logger.debug(f"target critic a values: {target_critic_values_a}")
         # print(f'Agent {dist.get_rank()}: target_critic_values_a: {target_critic_values_a}')
+        # timer = time.time()
         target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
+        # print(f'time to get critic b values: {time.time() - timer}')
+        # logger.debug(f"target critic b values: {target_critic_values_b}")
+        # Take minimum target critic value and set it as critic value
+        # timer = time.time()
+        target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
+        # print(f'time to get min of critic values: {time.time() - timer}')
+        # logger.debug(f"minimum target critic values: {target_critic_values}")
         # print(f'Agent {dist.get_rank()}: target_critic_values_b: {target_critic_values_b}')
-        targets = rewards + self.discount * T.minimum(target_critic_values_a, target_critic_values_b)# * (1 - dones)
+        # timer = time.time()
+        targets = rewards + self.discount * target_critic_values * (1 - dones)
+        # print(f'time to calc targets: {time.time() - timer}')
+        # logger.debug(f"target: {targets}")
 
         if self._use_her:
             targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
 
+        self.critic_model_a.optimizer.zero_grad()
+        self.critic_model_b.optimizer.zero_grad()
+
         # get current critic values and calculate critic losses
+        # timer = time.time()
         predictions_a = self.critic_model_a(states, actions, desired_goals)
-        critic_loss_a = F.mse_loss(predictions_a, targets)
+        # print(f'time for predictions a: {time.time() - timer}')
+        # logger.debug(f"predictions a: {predictions_a}")
+        # timer = time.time()
         predictions_b = self.critic_model_b(states, actions, desired_goals)
-        critic_loss_b = F.mse_loss(predictions_b, targets)
+        # print(f'time for predictions b: {time.time() - timer}')
+        # logger.debug(f"predictions b: {predictions_b}")
+        # timer = time.time()
+        critic_loss_a = F.mse_loss(targets, predictions_a)
+        # print(f'time for critic loss a: {time.time() - timer}')
+        # logger.debug(f"critic loss a: {critic_loss_a}")
+        # timer = time.time()
+        critic_loss_b = F.mse_loss(targets, predictions_b)
+        # print(f'time for critic loss b: {time.time() - timer}')
+        # logger.debug(f"critic loss b: {critic_loss_b}")
+        
+        # add losses to get total critic loss
+        critic_loss = critic_loss_a + critic_loss_b
+        # logger.debug(f"combined loss: {critic_loss}")
         
         # update critics
-        self.critic_model_a.optimizer.zero_grad()
-        critic_loss_a.backward()
-        self.critic_model_b.optimizer.zero_grad()
-        critic_loss_b.backward()
-        if self._use_her:
+        # critic_loss_a.backward(retain_graph=True)
+        # critic_loss_b.backward()
+        # timer = time.time()
+        critic_loss.backward()
+        # print(f'time for critics backwards pass: {time.time() - timer}')
+
+        # if self._use_her:
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached critic optimization')
             # Synchronize gradients
             ## T.DIST CUDA ##
@@ -2258,55 +2463,78 @@ class TD3(Agent):
             #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
             #         # print(param.grad)
 
-            ## MPI CPU ##
+        ## MPI CPU ##
+        if self.use_mpi:
             helper.sync_grads_sum(self.critic_model_a, self.comm)
             helper.sync_grads_sum(self.critic_model_b, self.comm)
         
+        # timer = time.time()
         self.critic_model_a.optimizer.step()
         self.critic_model_b.optimizer.step()
-        
-        # Calculate actor loss
-        
-        pre_act_values, action_values = self.actor_model(states, desired_goals)
-        # print(f'Agent {dist.get_rank()}: action_values: {action_values}')
-        critic_values = self.critic_model(states, action_values, desired_goals)
-        # print(f'Agent {dist.get_rank()}: critic_values: {critic_values}')
-        actor_loss = -critic_values.mean()
-        if self._use_her:
-            actor_loss += pre_act_values.pow(2).mean()
+        # print(f'time to optimize critics: {time.time() - timer}')
 
         self.actor_model.optimizer.zero_grad()
-        actor_loss.backward()
+        # timer = time.time()
+        pre_act_values, action_values = self.actor_model(states, desired_goals)
+        # print(f'time for action values: {time.time() - timer}')
+        # logger.debug(f"action values: {action_values}")
+        # print(f'Agent {dist.get_rank()}: action_values: {action_values}')
+        # timer = time.time()
+        critic_values = self.critic_model_a(states, action_values, desired_goals)
+        # print(f'time for critic values: {time.time() - timer}')
+        # logger.debug(f"critic values: {critic_values}")
+        # Calculate actor loss
+        # timer = time.time()
+        actor_loss = -T.mean(critic_values)
+        # print(f'time for actor loss: {time.time() - timer}')
+        # logger.debug(f"actor loss: {actor_loss}")
         if self._use_her:
-            # Synchronize Gradients
-            ## T.DIST CUDA ##
-            # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached actor optimization')
-            # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
-            # for param in self.actor_model.parameters():
-            #     if param.grad is not None:
-                    # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
-                    # print(param.grad)
-            #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-            #         # print(f'agent {dist.get_rank()} param grad after reduce:')
-            #         # print(param.grad)
-            #         # print(f'agent {dist.get_rank()} world size {dist.get_world_size()}')
-            #         param.grad.data /= dist.get_world_size()
-            #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
-            #         # print(param.grad)
-
-            # Update actor if actor update delay mod self._step = 0
-            if self.actor_update_delay % self._step == 0:
-                 ## MPI CPU ##
+            actor_loss += pre_act_values.pow(2).mean()
+        
+        # Update actor if actor update delay mod self._step = 0
+        if self._step % self.actor_update_delay == 0:
+            # logger.debug(f"updating actor: step {self._step}")
+            # timer = time.time()
+            actor_loss.backward()
+            # print(f'time for actor loss: {time.time() - timer}')
+            # if self._use_her:
+                # Synchronize Gradients
+                ## T.DIST CUDA ##
+                # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached actor optimization')
+                # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
+                # for param in self.actor_model.parameters():
+                #     if param.grad is not None:
+                        # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
+                        # print(param.grad)
+                #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                #         # print(f'agent {dist.get_rank()} param grad after reduce:')
+                #         # print(param.grad)
+                #         # print(f'agent {dist.get_rank()} world size {dist.get_world_size()}')
+                #         param.grad.data /= dist.get_world_size()
+                #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
+                #         # print(param.grad)
+            ## MPI CPU ##
+            if self.use_mpi:
                 helper.sync_grads_sum(self.actor_model, self.comm)
-                self.actor_model.optimizer.step()
+            
+            # timer = time.time()
+            self.actor_model.optimizer.step()
+            # print(f'time to optimize actor: {time.time() - timer}')
+
+            # perform soft update on target networks
+            # timer = time.time()
+            self.soft_update(self.actor_model, self.target_actor_model)
+            self.soft_update(self.critic_model_a, self.target_critic_model_a)
+            self.soft_update(self.critic_model_b, self.target_critic_model_b)
+            # print(f'time to perform soft update: {time.time() - timer}')
 
         # add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
         self._train_step_config['critic_predictions'] = critic_values.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
-        self._train_step_config['target_critic_predictions'] = target_critic_values.mean()
+        self._train_step_config['target_critic_predictions'] = target_critic_values_a.mean()
         
-        return actor_loss.item(), critic_loss.item()
+        return actor_loss.item(), critic_loss_a.item()
         
     
     def soft_update(self, current, target):
@@ -2321,7 +2549,8 @@ class TD3(Agent):
 
         # set models to train mode
         self.actor_model.train()
-        self.critic_model.train()
+        self.critic_model_a.train()
+        self.critic_model_b.train()
 
         # Update save_dir if passed
         if save_dir is not None and save_dir.split("/")[-2] != "ddpg":
@@ -2332,20 +2561,50 @@ class TD3(Agent):
             print(f'new save dir: {self.save_dir}')
         
         if self.callbacks:
-            for callback in self.callbacks:
-                if isinstance(callback, rl_callbacks.WandbCallback):
-                    callback.on_train_begin((self.critic_model, self.actor_model,), logs=self._config, run_number=run_number)
+            if self.use_mpi:
+                if self.rank == 0:
+                    for callback in self.callbacks:
+                        if isinstance(callback, rl_callbacks.WandbCallback):
+                            callback.on_train_begin((self.critic_model_a, self.critic_model_b, self.actor_model,), logs=self._config)
+                            # logger.debug(f'{self.group}; Rank {self.rank} TD3.train on train begin callback complete')
+                        else:
+                            callback.on_train_begin(logs=self._config)
+            else:
+                for callback in self.callbacks:
+                    if isinstance(callback, rl_callbacks.WandbCallback):
+                        callback.on_train_begin((self.critic_model_a, self.critic_model_b, self.actor_model,), logs=self._config)
+                        # logger.debug(f'TD3.train on train begin callback complete')
+                    else:
+                        callback.on_train_begin(logs=self._config)
 
-                else:
-                    callback.on_train_begin(logs=self._config)
-
-        # instantiate new environment
-        self.env = self._initialize_env(render, render_freq, context='train')
         
+        if self.use_mpi:
+            try:
+                # instantiate new environment. Only rank 0 env will render episodes if render==True
+                if self.rank == 0:
+                    self.env = self._initialize_env(render, render_freq, context='train')
+                    # logger.debug(f'{self.group}; Rank {self.rank} initiating environment with render {render}')
+                else:
+                    self.env = self._initialize_env(False, 0, context='train')
+                    # logger.debug(f'{self.group}; Rank {self.rank} initializing environment')
+            except Exception as e:
+                logger.error(f"{self.group}; Rank {self.rank} Error in TD3.train agent._initialize_env process: {e}", exc_info=True)
+        
+        else:
+            try:
+                # instantiate new environment. Only rank 0 env will render episodes if render==True
+                self.env = self._initialize_env(render, render_freq, context='train')
+                # logger.debug(f'initiating environment with render {render}')
+            except Exception as e:
+                logger.error(f"Error in TD3.train agent._initialize_env process: {e}", exc_info=True)
+
         # initialize step counter (for logging)
         self._step = 1
         # set best reward
-        best_reward = self.env.reward_range[0]
+        try:
+            best_reward = self.env.reward_range[0]
+        except:
+            best_reward = -np.inf
         # instantiate list to store reward history
         reward_history = []
         # instantiate lists to store time history
@@ -2353,11 +2612,42 @@ class TD3(Agent):
         step_time_history = []
         learning_time_history = []
         steps_per_episode_history = []  # List to store steps per episode
+
+        # Calculate total_steps and wait_steps
+        # max_episode_steps = self.env.spec.max_episode_steps
+        # total_steps = num_episodes * max_episode_steps
+        # profiling_steps = (self.profiler_active_steps + self.profiler_warmup_steps) * self.profiler_repeat
+        # wait_steps = (total_steps - profiling_steps) // self.profiler_repeat
+
+        # Profile setup
+        # with torch.profiler.profile(
+        #     activities=[
+        #         torch.profiler.ProfilerActivity.CPU,
+        #         torch.profiler.ProfilerActivity.CUDA,
+        #     ],
+        #     schedule=torch.profiler.schedule(
+        #         wait=wait_steps,
+        #         warmup=self.profiler_warmup_steps,
+        #         active=self.profiler_active_steps,
+        #         repeat=self.profiler_repeat
+        #     ),
+        #     on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/td3'),
+        #     record_shapes=True,
+        #     profile_memory=True,
+        #     with_stack=True
+        # ) as prof:
         for i in range(num_episodes):
             episode_start_time = time.time()
             if self.callbacks:
-                for callback in self.callbacks:
-                    callback.on_train_epoch_begin(epoch=self._step, logs=None)
+                if self.use_mpi:
+                    if self.rank == 0:
+                        for callback in self.callbacks:
+                            callback.on_train_epoch_begin(epoch=self._step, logs=None)
+                            # logger.debug(f'{self.group}; Rank {self.rank} TD3.train on train epoch begin callback completed')
+                else:
+                    for callback in self.callbacks:
+                        callback.on_train_epoch_begin(epoch=self._step, logs=None)
+                        # logger.debug(f'TD3.train on train epoch begin callback completed')
             # reset noise
             if type(self.noise) == helper.OUNoise:
                 self.noise.reset()
@@ -2368,17 +2658,16 @@ class TD3(Agent):
             episode_steps = 0  # Initialize steps counter for the episode
             while not done:
                 # run callbacks on train batch begin
-                if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_train_step_begin(step=self._step, logs=None)
+                # if self.callbacks:
+                #     for callback in self.callbacks:
+                #         callback.on_train_step_begin(step=self._step, logs=None)
                 step_start_time = time.time()
                 action = self.get_action(state)
                 next_state, reward, term, trunc, _ = self.env.step(action)
                 # extract observation from next state if next_state is dict (robotics)
                 if isinstance(next_state, dict):
                     next_state = next_state['observation']
-                step_time = time.time() - step_start_time
-                step_time_history.append(step_time)
+
                 # store trajectory in replay buffer
                 self.replay_buffer.add(state, action, reward, next_state, done)
                 if term or trunc:
@@ -2393,19 +2682,30 @@ class TD3(Agent):
                     actor_loss, critic_loss = self.learn()
                     self._train_step_config["actor_loss"] = actor_loss
                     self._train_step_config["critic_loss"] = critic_loss
-                    # perform soft update on target networks
-                    self.soft_update(self.actor_model, self.target_actor_model)
-                    self.soft_update(self.critic_model, self.target_critic_model)
 
                     learning_time_history.append(time.time() - learn_time)
+                
+                step_time = time.time() - step_start_time
+                step_time_history.append(step_time)
 
                 self._train_step_config["step_reward"] = reward
                 self._train_step_config["step_time"] = step_time
                 
                 # log to wandb if using wandb callback
                 if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_train_step_end(step=self._step, logs=self._train_step_config)
+                    if self.use_mpi:
+                        # only have the main process log callback values to avoid multiple callback calls
+                        if self.rank == 0:
+                            for callback in self.callbacks:
+                                callback.on_train_step_end(step=self._step, logs=self._train_step_config)
+                                # logger.debug(f'{self.group}; Rank {self.rank} TD3.train on train step end callback completed')
+                    else:
+                        for callback in self.callbacks:
+                            callback.on_train_step_end(step=self._step, logs=self._train_step_config)
+                            # logger.debug(f'TD3.train on train step end callback completed')
+                
+                # prof.step()
+
                 if not done:
                     self._step += 1
             
@@ -2434,14 +2734,28 @@ class TD3(Agent):
                 self._train_episode_config["best"] = False
 
             if self.callbacks:
-                for callback in self.callbacks:
-                    callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+                if self.use_mpi:
+                    if self.rank == 0:
+                        for callback in self.callbacks:
+                            callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+                            # logger.debug(f'{self.group}; Rank {self.rank} TD3.train on train epoch callback completed')
+                else:
+                    for callback in self.callbacks:
+                        callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+                        # logger.debug(f'TD3.train on train epoch callback completed')
 
             print(f"episode {i+1}, score {episode_reward}, avg_score {avg_reward}, episode_time {episode_time:.2f}s, avg_episode_time {avg_episode_time:.2f}s, avg_step_time {avg_step_time:.6f}s, avg_learn_time {avg_learn_time:.6f}s, avg_steps_per_episode {avg_steps_per_episode:.2f}")
 
         if self.callbacks:
-            for callback in self.callbacks:
-                callback.on_train_end(logs=self._train_episode_config)
+            if self.use_mpi:
+                if self.rank == 0:
+                    for callback in self.callbacks:
+                        callback.on_train_end(logs=self._train_episode_config)
+                        # logger.debug(f'{self.group}; Rank {self.rank} TD3.train on train end callback complete')
+            else:
+                for callback in self.callbacks:
+                    callback.on_train_end(logs=self._train_episode_config)
+                    # logger.debug(f'TD3.train on train end callback complete')
         # close the environment
         self.env.close()
 
@@ -2521,13 +2835,16 @@ class TD3(Agent):
                 "agent_type": self.__class__.__name__,
                 "env": self.env.spec.to_json(),
                 "actor_model": self.actor_model.get_config(),
-                "critic_model": self.critic_model.get_config(),
+                "critic_model": self.critic_model_a.get_config(),
                 "discount": self.discount,
                 "tau": self.tau,
                 "action_epsilon": self.action_epsilon,
                 "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
                 "batch_size": self.batch_size,
                 "noise": self.noise.get_config(),
+                "target_action_stddev": self.target_action_stddev,
+                # "target_action_clip": self.target_action_clip,
+                "actor_update_delay": self.actor_update_delay,
                 'normalize_inputs': self.normalize_inputs,
                 # 'normalize_kwargs': self.normalize_kwargs,
                 'normalizer_clip': self.normalizer_clip,
@@ -2555,7 +2872,8 @@ class TD3(Agent):
 
         # saves policy and value model
         self.actor_model.save(self.save_dir)
-        self.critic_model.save(self.save_dir)
+        self.critic_model_a.save(self.save_dir)
+        self.critic_model_b.save(self.save_dir)
 
         if self.normalize_inputs:
             self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
@@ -2624,7 +2942,7 @@ class HER(Agent):
     def __init__(self,
                  agent:Agent,
                  strategy:str='final',
-                 tolerance:float=0.0,
+                 tolerance:float=0.5,
                  num_goals:int=4,
                  desired_goal:callable=None,
                  achieved_goal:callable=None,
@@ -3040,44 +3358,44 @@ class HER(Agent):
             logger.debug(f"{self.group}; Rank {self.rank} HER.train: train config added to wandb config")
 
             # Check if MPI is active with more than one worker
-            mpi_active = MPI.COMM_WORLD.Get_size() > 1
-            logger.debug(f"{self.group}; Rank {self.rank} HER.train mpi active set: {mpi_active}")
+            # mpi_active = MPI.COMM_WORLD.Get_size() > 1
+            # logger.debug(f"{self.group}; Rank {self.rank} HER.train mpi active set: {mpi_active}")
 
             if self.agent.callbacks:
-                if mpi_active:
-                    if self.rank == 0:
-                        for callback in self.agent.callbacks:
-                            if isinstance(callback, rl_callbacks.WandbCallback):
-                                callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config)
-                                logger.debug(f'{self.group}; Rank {self.rank} HER.train on train begin callback complete')
-                            else:
-                                callback.on_train_begin(logs=self.agent._config)
-                else:
-                # MPI is not active or there is only one worker
+                # if mpi_active:
+                if self.rank == 0:
                     for callback in self.agent.callbacks:
                         if isinstance(callback, rl_callbacks.WandbCallback):
                             callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config)
+                            logger.debug(f'{self.group}; Rank {self.rank} HER.train on train begin callback complete')
                         else:
                             callback.on_train_begin(logs=self.agent._config)
+                # else:
+                # # MPI is not active or there is only one worker
+                #     for callback in self.agent.callbacks:
+                #         if isinstance(callback, rl_callbacks.WandbCallback):
+                #             callback.on_train_begin((self.agent.critic_model, self.agent.actor_model,), logs=self.agent._config)
+                #         else:
+                #             callback.on_train_begin(logs=self.agent._config)
             try:
-                if mpi_active:
+                # if mpi_active:
                 # instantiate new environment. Only rank 0 env will render episodes if render==True
-                    if self.rank == 0:
-                        self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
-                        logger.debug(f'{self.group}; Rank {self.rank} initiating environment with render {render}')
-                    else:
-                        self.agent.env = self.agent._initialize_env(False, 0, context='train')
-                        logger.debug(f'{self.group}; Rank {self.rank} initializing environment')
-                else:
+                if self.rank == 0:
                     self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
+                    logger.debug(f'{self.group}; Rank {self.rank} initiating environment with render {render}')
+                else:
+                    self.agent.env = self.agent._initialize_env(False, 0, context='train')
+                    logger.debug(f'{self.group}; Rank {self.rank} initializing environment')
+                # else:
+                #     self.agent.env = self.agent._initialize_env(render, render_freq, context='train')
             except Exception as e:
                 logger.error(f"{self.group}; Rank {self.rank} Error in HER.train agent._initialize_env process: {e}", exc_info=True)
             
             # initialize step counter (for logging)
-            step_counter = 0
-            episode_counter = 0
-            cycle_counter = 0
-            success_counter = 0.0
+            self._step = 0
+            self._episode = 0
+            self._cycle = 0
+            self._successes = 0.0
             # set best reward
             # best_reward = self.agent.env.reward_range[0] # substitute with -np.inf
             best_reward = -np.inf
@@ -3091,20 +3409,20 @@ class HER(Agent):
             for epoch in range(num_epochs):
                 logger.debug(f'{self.group}; Rank {self.rank} HER.train starting epoch {epoch+1}')
                 for cycle in range(num_cycles):
-                    cycle_counter += 1
+                    self._cycle += 1
                     # print(f'agent rank {rank} starting cycle {cycle_counter}')
                     for episode in range(num_episodes):
                         logger.debug(f'{self.group}; Rank {self.rank} episode: {episode}')
-                        episode_counter += 1
+                        self._episode += 1
                         if self.agent.callbacks:
-                            if mpi_active:
-                                if self.rank == 0:
-                                    for callback in self.agent.callbacks:
-                                        callback.on_train_epoch_begin(epoch=step_counter, logs=None)
-                                        logger.debug(f'{self.group}; Rank {self.rank} HER.train on train epoch begin callback completed')
-                            else:
+                            # if mpi_active:
+                            if self.rank == 0:
                                 for callback in self.agent.callbacks:
-                                    callback.on_train_epoch_begin(epoch=step_counter, logs=None)
+                                    callback.on_train_epoch_begin(epoch=self._step, logs=None)
+                                    logger.debug(f'{self.group}; Rank {self.rank} HER.train on train epoch begin callback completed')
+                            # else:
+                            #     for callback in self.agent.callbacks:
+                            #         callback.on_train_epoch_begin(epoch=step_counter, logs=None)
 
                         episode_start_time = time.time()
                         
@@ -3145,7 +3463,7 @@ class HER(Agent):
 
                         while not done:
                             # increase step counter
-                            step_counter += 1
+                            self._step += 1
                             
                             # start step timer
                             step_start_time = time.time()
@@ -3209,19 +3527,19 @@ class HER(Agent):
                             # log to wandb if using wandb callback
                             if self.agent.callbacks:
                                 # only have the main process log callback values to avoid multiple callback calls
-                                if mpi_active:
-                                    if self.rank == 0:
-                                        for callback in self.agent.callbacks:
-                                            callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
-                                            logger.debug(f'{self.group}; Rank {self.rank} HER.train on train step end callback completed')
-                                else:
+                                # if mpi_active:
+                                if self.rank == 0:
                                     for callback in self.agent.callbacks:
-                                        callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
+                                        callback.on_train_step_end(step=self._step, logs=self.agent._train_step_config)
+                                        logger.debug(f'{self.group}; Rank {self.rank} HER.train on train step end callback completed')
+                                # else:
+                                #     for callback in self.agent.callbacks:
+                                #         callback.on_train_step_end(step=step_counter, logs=self.agent._train_step_config)
 
                         # calculate success rate
                         success = (distance_to_goal <= self.tolerance).astype(np.float32)
-                        success_counter += success
-                        success_perc = success_counter / episode_counter
+                        self._successes += success
+                        success_perc = self._successes / self._episode
                         # store success rate to train episode config
                         self.agent._train_episode_config["success_rate"] = success_perc
 
@@ -3274,14 +3592,14 @@ class HER(Agent):
                         
                         if self.agent.callbacks:
                             self.agent._train_episode_config["best"] = best
-                            if mpi_active:
-                                if self.rank == 0:
-                                    for callback in self.agent.callbacks:
-                                        callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
-                                        logger.debug(f'{self.group}; Rank {self.rank} HER.train on train epoch callback completed')
-                            else:
+                            # if mpi_active:
+                            if self.rank == 0:
                                 for callback in self.agent.callbacks:
-                                    callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
+                                    callback.on_train_epoch_end(epoch=self._step, logs=self.agent._train_episode_config)
+                                    logger.debug(f'{self.group}; Rank {self.rank} HER.train on train epoch callback completed')
+                            # else:
+                            #     for callback in self.agent.callbacks:
+                            #         callback.on_train_epoch_end(epoch=step_counter, logs=self.agent._train_episode_config)
 
                     # perform soft update on target networks
                     try:
@@ -3292,17 +3610,17 @@ class HER(Agent):
                         logger.error(f"{self.group}; Rank {self.rank} Error in HER.train target network soft update process: {e}", exc_info=True)
 
                 if self.rank == 0: # only use main process
-                    logger.info(f"{self.group}; epoch {epoch} cycle {cycle_counter} episode {episode_counter}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
+                    logger.info(f"{self.group}; epoch {epoch} cycle {self._cycle} episode {self._episode}, success percentage {success_perc}, reward {episode_reward}, avg reward {avg_reward}, avg episode time {avg_episode_time:.2f}s")
 
             if self.agent.callbacks:
-                if mpi_active:
-                    if self.rank == 0:
-                        for callback in self.agent.callbacks:
-                            callback.on_train_end(logs=self.agent._train_episode_config)
-                            logger.debug(f'{self.group}; Rank {self.rank} HER.train on train end callback complete')
-                else:
+                # if mpi_active:
+                if self.rank == 0:
                     for callback in self.agent.callbacks:
                         callback.on_train_end(logs=self.agent._train_episode_config)
+                        logger.debug(f'{self.group}; Rank {self.rank} HER.train on train end callback complete')
+                # else:
+                #     for callback in self.agent.callbacks:
+                #         callback.on_train_end(logs=self.agent._train_episode_config)
             # close the environment
             self.agent.env.close()
         except Exception as e:
