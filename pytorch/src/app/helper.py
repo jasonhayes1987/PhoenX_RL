@@ -898,8 +898,10 @@ def sync_networks(network, comm):
 def sync_grads_sum(network, comm):
     grads = np.concatenate([getattr(p, 'grad').cpu().numpy().flatten()
                            for p in network.parameters()])
+    logger.debug(f"rank {comm.Get_rank()} grads: {grads}")
     global_grads = np.zeros_like(grads)
     comm.Allreduce(grads, global_grads, op=MPI.SUM)
+    logger.debug(f"rank {comm.Get_rank()} sum: {global_grads}")
     idx = 0
     for p in network.parameters():
         getattr(p, 'grad').copy_(T.tensor(
