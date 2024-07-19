@@ -306,6 +306,7 @@ def hyperparameter_search(page):
                     {'label': 'Reinforce', 'value': 'Reinforce'},
                     {'label': 'Actor Critic', 'value': 'ActorCritic'},
                     {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
+                    {'label': 'TD3', 'value': 'TD3'},
                     {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
                     {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
                    

@@ -592,9 +592,9 @@ class Normalizer:
         self.lock = threading.Lock()
 
     def normalize(self, v):
-        clip_range = self.clip_range
+        # clip_range = self.clip_range
         return np.clip((v - self.running_mean) / self.running_std,
-                       -clip_range, clip_range).astype(np.float32)
+                       -self.clip_range, self.clip_range).astype(np.float32)
     
     def update_local_stats(self, new_data):
         # print('SharedNormalizer update_local_stats fired...')

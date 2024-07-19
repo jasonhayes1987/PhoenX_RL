@@ -23,59 +23,73 @@ def load_config(path):
 
 def main(sweep_config, train_config):
     logger.debug("init_sweep main fired")
-    size = MPI.COMM_WORLD.Get_size()
-    rank = MPI.COMM_WORLD.Get_rank()
 
-    num_agents = train_config['num_agents']
-    assert size % num_agents == 0, "Number of workers must be divisible by number of agents."
+    if train_config["use_mpi"]:
+        size = MPI.COMM_WORLD.Get_size()
+        rank = MPI.COMM_WORLD.Get_rank()
 
-    # group_size = size // num_agents
-    group_size = mpi_helper.set_group_size(MPI.COMM_WORLD, num_agents)
-    # group = rank // group_size
-    group = mpi_helper.set_group(MPI.COMM_WORLD, group_size)
-    
-    if num_agents > 1:
-        comm = MPI.COMM_WORLD.Split(color=group, key=rank)
-        comm.Set_name(f"Group_{group}")
-        new_rank = comm.Get_rank()
+        num_agents = train_config['num_agents']
+        assert size % num_agents == 0, "Number of workers must be divisible by number of agents."
 
-        logger.debug(f"Global rank {rank} assigned to {comm.Get_name()} with new rank {new_rank}")
-    
-    else:
-        comm = MPI.COMM_WORLD
-        new_rank = rank
-        comm.Set_name(f"Group_{group}")
+        # group_size = size // num_agents
+        group_size = mpi_helper.set_group_size(MPI.COMM_WORLD, num_agents)
+        # group = rank // group_size
+        group = mpi_helper.set_group(MPI.COMM_WORLD, group_size)
+
+        if num_agents > 1:
+            comm = MPI.COMM_WORLD.Split(color=group, key=rank)
+            comm.Set_name(f"Group_{group}")
+            new_rank = comm.Get_rank()
+
+            logger.debug(f"Global rank {rank} assigned to {comm.Get_name()} with new rank {new_rank}")
         
-        logger.debug(f"Global rank {rank} assigned to {comm.Get_name()}")
+        else:
+            comm = MPI.COMM_WORLD
+            new_rank = rank
+            comm.Set_name(f"Group_{group}")
+            
+            logger.debug(f"Global rank {rank} assigned to {comm.Get_name()}")
 
-    if rank == 0:
+        if rank == 0:
+            try:
+                sweep_id = wandb.sweep(sweep_config, project=sweep_config["project"])
+                logger.debug(f"Sweep ID: {sweep_id}")
+            except Exception as e:
+                logger.error(f"error creating sweep ID: {e}", exc_info=True)
+                sweep_id = None
+        else:
+            sweep_id = None
+
+        # Broadcast the sweep ID from rank 0 of COMM_WORLD to all other ranks
+        sweep_id = MPI.COMM_WORLD.bcast(sweep_id, root=0)
+        logger.debug(f"Rank {rank} received Sweep ID: {sweep_id}")
+
+        if new_rank == 0:
+            try:
+                wandb.agent(
+                    sweep_id,
+                    function=lambda: init_sweep(sweep_config, train_config, comm),
+                    count=train_config['num_sweeps'],
+                    project=sweep_config["project"],
+                )
+            except Exception as e:
+                logger.error(f"error in init_sweep.py main process: {e}", exc_info=True)
+        else:
+            try:
+                for _ in range(train_config['num_sweeps']):
+                    init_sweep(sweep_config, train_config, comm)
+            except Exception as e:
+                logger.error(f"error in init_sweep.py main process: {e}", exc_info=True)
+    else:
         try:
             sweep_id = wandb.sweep(sweep_config, project=sweep_config["project"])
             logger.debug(f"Sweep ID: {sweep_id}")
-        except Exception as e:
-            logger.error(f"error creating sweep ID: {e}", exc_info=True)
-            sweep_id = None
-    else:
-        sweep_id = None
-
-    # Broadcast the sweep ID from rank 0 of COMM_WORLD to all other ranks
-    sweep_id = MPI.COMM_WORLD.bcast(sweep_id, root=0)
-    logger.debug(f"Rank {rank} received Sweep ID: {sweep_id}")
-
-    if new_rank == 0:
-        try:
             wandb.agent(
                 sweep_id,
-                function=lambda: init_sweep(sweep_config, train_config, comm),
+                function=lambda: init_sweep(sweep_config, train_config),
                 count=train_config['num_sweeps'],
                 project=sweep_config["project"],
             )
-        except Exception as e:
-            logger.error(f"error in init_sweep.py main process: {e}", exc_info=True)
-    else:
-        try:
-            for _ in range(train_config['num_sweeps']):
-                init_sweep(sweep_config, train_config, comm)
         except Exception as e:
             logger.error(f"error in init_sweep.py main process: {e}", exc_info=True)
 

@@ -15,6 +15,7 @@ import gymnasium as gym
 import numpy as np
 import cnn_models
 import torch_utils
+from logging_config import logger
 
 
 class Model(nn.Module):
@@ -596,8 +597,7 @@ class ValueModel(Model):
 class ActorModel(Model):
     
     def __init__(self, env, cnn_model=None, dense_layers=None, output_layer_kernel:dict=None, goal_shape:tuple=None, optimizer: str = 'Adam',
-                 optimizer_params:dict={}, learning_rate=0.0001, normalize_layers:bool=False,
-                 clamp_output:float=None, device=None):
+                 optimizer_params:dict={}, learning_rate=0.0001, normalize_layers:bool=False, device=None):
         super().__init__()
         self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         self.env = env
@@ -609,7 +609,6 @@ class ActorModel(Model):
         self.optimizer_params = optimizer_params
         self.learning_rate = learning_rate
         self.normalize_layers = normalize_layers
-        self.clamp_output = clamp_output
 
         # set internal attributes
         # get observation space
@@ -712,11 +711,11 @@ class ActorModel(Model):
         for layer in self.output_activation.values():
             pi = layer(mu)
         
-        if self.clamp_output is not None:
-            # print('clamp output fired...')
-            pi = T.clamp(pi, -self.clamp_output, self.clamp_output) * T.tensor(self.env.action_space.high, dtype=T.float32, device=self.device)
-            # print(f'pi: {pi}')
-            return mu, pi
+        # if self.clamp_output is not None:
+        #     # print('clamp output fired...')
+        #     pi = T.clamp(pi, -self.clamp_output, self.clamp_output) * T.tensor(self.env.action_space.high, dtype=T.float32, device=self.device)
+        #     # print(f'pi: {pi}')
+        #     return mu, pi
         
         # print('unclamped output fired')
         pi = pi * T.tensor(self.env.action_space.high, dtype=T.float32, device=self.device)
@@ -735,7 +734,7 @@ class ActorModel(Model):
             'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
             'normalize_layers': self.normalize_layers,
-            'clamp_output': self.clamp_output,
+            # 'clamp_output': self.clamp_output,
         }
 
         return config
@@ -753,7 +752,7 @@ class ActorModel(Model):
             optimizer_params=self.optimizer_params,
             learning_rate=self.learning_rate,
             normalize_layers=self.normalize_layers,
-            clamp_output=self.clamp_output,
+            # clamp_output=self.clamp_output,
             device=self.device
         )
         
@@ -799,7 +798,7 @@ class ActorModel(Model):
             optimizer_params = config.get("optimizer_params")
             learning_rate = config.get("learning_rate")
             normalize = config.get("normalize", False)
-            clamp_output = config.get("clamp_output", None)
+            # clamp_output = config.get("clamp_output", None)
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
@@ -928,6 +927,7 @@ class CriticModel(Model):
             state = layer(state)
 
         merged = T.cat([state, action], dim=-1)
+        logger.debug(f"merged layer input: {merged}")
         for layer in self.merged_layers.values():
             merged = layer(merged)
 

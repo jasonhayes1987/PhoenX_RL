@@ -106,7 +106,7 @@ def build_layers(sweep_config):
 
         return policy_layers, value_layers
     
-    elif model_type == "DDPG" or model_type == "HER_DDPG":
+    elif model_type in ["DDPG", "HER_DDPG", "TD3"]:
         
         # Get actor CNN layers if present
         actor_cnn_layers = []
