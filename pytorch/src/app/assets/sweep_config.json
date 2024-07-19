@@ -1,11 +1,11 @@
 {
-    "num_sweeps": 5,
-    "num_episodes": 10,
+    "num_sweeps": 200,
+    "num_episodes": 500,
     "seed": 42,
     "use_mpi": false,
     "num_workers": null,
-    "num_agents": null,
-    "num_epochs": 1,
-    "num_cycles": 1,
-    "num_updates": null
+    "num_agents": 1,
+    "num_epochs": null,
+    "num_cycles": null,
+    "num_updates": 1
 }

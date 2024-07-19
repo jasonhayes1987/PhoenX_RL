@@ -848,6 +848,7 @@ class DDPG(Agent):
         # normalize_kwargs: dict = {},
         normalizer_clip:float=None,
         normalizer_eps:float=0.01,
+        warmup:int=1000,
         callbacks: List = [],
         use_mpi = False,
         save_dir: str = "models",
@@ -880,6 +881,7 @@ class DDPG(Agent):
             # self.normalize_kwargs = normalize_kwargs
             self.normalizer_clip = normalizer_clip
             self.normalizer_eps = normalizer_eps
+            self.warmup = warmup
             self.device = device
             # logger.debug(f"rank {self.rank} DDPG init attributes set")
         except Exception as e:
@@ -1048,7 +1050,7 @@ class DDPG(Agent):
         goal_shape = desired_goal_func(env).shape
 
         # Get actor clamp value
-        clamp_output = config[config.model_type][f"{config.model_type}_actor_clamp_output"]
+        # clamp_output = config[config.model_type][f"{config.model_type}_actor_clamp_output"]
         
         actor_model = models.ActorModel(env = env,
                                         cnn_model = actor_cnn_model,
@@ -1059,7 +1061,7 @@ class DDPG(Agent):
                                         optimizer_params = actor_optimizer_params,
                                         learning_rate = actor_learning_rate,
                                         normalize_layers = actor_normalize_layers,
-                                        clamp_output=clamp_output,
+                                        # clamp_output=clamp_output,
                                         device=device,
         )
         critic_model = models.CriticModel(env = env,
@@ -1226,17 +1228,23 @@ class DDPG(Agent):
                     if self.actor_model.cnn_model:
                         state = state.permute(2, 0, 1).unsqueeze(0)
 
-                    _, pi = self.actor_model(state, goal)
-                    # print(f'pi: {pi}')
                     noise = self.noise()
                     # print(f'noise: {noise}')
 
-                    # Convert the action space bounds to a tensor on the same device
-                    action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-                    action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
-                    # print(f'actor model device:{self.actor_model.device}')
-                    action = (pi + noise).clip(action_space_low, action_space_high)
-                    # print(f'action + noise: {action}')
+                    # Check if in warmup
+                    if self._step <= self.warmup:
+                        action = noise
+
+                    else:
+                        _, pi = self.actor_model(state, goal)
+                        # print(f'pi: {pi}')
+
+                        # Convert the action space bounds to a tensor on the same device
+                        action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+                        action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
+                        # print(f'actor model device:{self.actor_model.device}')
+                        action = (pi + noise).clip(action_space_low, action_space_high)
+                        # print(f'action + noise: {action}')
 
                     noise_np = noise.cpu().detach().numpy().flatten()
                     action_np = action.cpu().detach().numpy().flatten()
@@ -1264,14 +1272,20 @@ class DDPG(Agent):
                         if self.actor_model.cnn_model:
                             state = state.permute(2, 0, 1).unsqueeze(0)
 
-                        _, pi = self.actor_model(state, goal)
                         noise = self.noise()
 
-                        # Convert the action space bounds to a tensor on the same device
-                        action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-                        action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
+                        # Check if in warmup
+                        if self._step <= self.warmup:
+                            action = noise
 
-                        action = (pi + noise).clip(action_space_low, action_space_high)
+                        else:
+                            _, pi = self.actor_model(state, goal)
+
+                            # Convert the action space bounds to a tensor on the same device
+                            action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+                            action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
+
+                            action = (pi + noise).clip(action_space_low, action_space_high)
 
                         noise_np = noise.cpu().detach().numpy().flatten()
                         action_np = action.cpu().detach().numpy().flatten()
@@ -1423,6 +1437,255 @@ class DDPG(Agent):
             for current_params, target_params in zip(current.parameters(), target.parameters()):
                 target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
 
+    @classmethod
+    def sweep_train(
+        cls,
+        config, # wandb.config,
+        train_config,
+        env_spec,
+        callbacks,
+        run_number,
+        comm=None,
+    ):
+        """Builds and trains agents from sweep configs. Works with MPI"""
+        rank = MPI.COMM_WORLD.rank
+
+        if comm is not None:
+            logger.debug(f"Rank {rank} comm detected")
+            rank = comm.Get_rank()
+            logger.debug(f"Global rank {MPI.COMM_WORLD.Get_rank()} in {comm.Get_name()} set to comm rank {rank}")
+            logger.debug(f"init_sweep fired: global rank {MPI.COMM_WORLD.rank}, group rank {rank}, {comm.Get_name()}")
+        else:
+            logger.debug(f"init_sweep fired")
+        try:
+            # rank = MPI.COMM_WORLD.rank
+            # Instantiate env from env_spec
+            env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
+            # agent_config_path = f'sweep/agent_config_{run_number}.json'
+            # logger.debug(f"rank {rank} agent config path: {agent_config_path}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train config: {train_config}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} env spec id: {env.spec.id}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks: {callbacks}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} run number: {run_number}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} config set: {config}")
+            else:
+                logger.debug(f"train config: {train_config}")
+                logger.debug(f"env spec id: {env.spec.id}")
+                logger.debug(f"callbacks: {callbacks}")
+                logger.debug(f"run number: {run_number}")
+                logger.debug(f"config set: {config}")
+            model_type = list(config.keys())[0]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} model type: {model_type}")
+            else:
+                logger.debug(f"model type: {model_type}")
+
+            actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} layers built")
+            else:
+                logger.debug(f"layers built")
+            # Actor
+            actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor learning rate set")
+            else:
+                logger.debug(f"actor learning rate set")
+            actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer set")
+            else:
+                logger.debug(f"actor optimizer set")
+            # get optimizer params
+            actor_optimizer_params = {}
+            if actor_optimizer == "Adam":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+            
+            elif actor_optimizer == "Adagrad":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                actor_optimizer_params['lr_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_lr_decay']
+            
+            elif actor_optimizer == "RMSprop" or actor_optimizer == "SGD":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                actor_optimizer_params['momentum'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
+
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer params set")
+            else:
+                logger.debug(f"actor optimizer params set")
+            actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor normalize layers set")
+            else:
+                logger.debug(f"actor normalize layers set")
+            # Critic
+            critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic learning rate set")
+            else:
+                logger.debug(f"critic learning rate set")
+            critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer set")
+            else:
+                logger.debug(f"critic optimizer set")
+            critic_optimizer_params = {}
+            if critic_optimizer == "Adam":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+            
+            elif critic_optimizer == "Adagrad":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['lr_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
+            
+            elif critic_optimizer == "RMSprop" or critic_optimizer == "SGD":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['momentum'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer params set")
+            else:
+                logger.debug(f"critic optimizer params set")
+
+            critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic normalize layers set")
+            else:
+                logger.debug(f"critic normalize layers set")
+            # Set device
+            device = config[model_type][f"{model_type}_device"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} device set")
+            else:
+                logger.debug(f"device set")
+            # Check if CNN layers and if so, build CNN model
+            if actor_cnn_layers:
+                actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
+            else:
+                actor_cnn_model = None
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
+            else:
+                logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
+
+            if critic_cnn_layers:
+                critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
+            else:
+                critic_cnn_model = None
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
+            else:
+                logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
+            # Get actor clamp value
+            # clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
+            # if comm is not None:
+            #     logger.debug(f"{comm.Get_name()}; Rank {rank} clamp output set: {clamp_output}")
+            # else:
+            #     logger.debug(f"clamp output set: {clamp_output}")
+            actor_model = models.ActorModel(env = env,
+                                            cnn_model = actor_cnn_model,
+                                            dense_layers = actor_layers,
+                                            output_layer_kernel=kernels[f'actor_output_kernel'],
+                                            optimizer = actor_optimizer,
+                                            optimizer_params = actor_optimizer_params,
+                                            learning_rate = actor_learning_rate,
+                                            normalize_layers = actor_normalize_layers,
+                                            # clamp_output=clamp_output,
+                                            device=device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor model built: {actor_model.get_config()}")
+            else:
+                logger.debug(f"actor model built: {actor_model.get_config()}")
+            critic_model = models.CriticModel(env = env,
+                                            cnn_model = critic_cnn_model,
+                                            state_layers = critic_state_layers,
+                                            merged_layers = critic_merged_layers,
+                                            output_layer_kernel=kernels[f'critic_output_kernel'],
+                                            optimizer = critic_optimizer,
+                                            optimizer_params = critic_optimizer_params,
+                                            learning_rate = critic_learning_rate,
+                                            normalize_layers = critic_normalize_layers,
+                                            device=device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic model built: {critic_model.get_config()}")
+            else:
+                logger.debug(f"critic model built: {critic_model.get_config()}")
+            # get normalizer clip value
+            normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} normalizer clip set: {normalizer_clip}")
+            else:
+                logger.debug(f"normalizer clip set: {normalizer_clip}")
+            # get action epsilon
+            action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} action epsilon set: {action_epsilon}")
+            else:
+                logger.debug(f"action epsilon set: {action_epsilon}")
+            # Replay buffer size
+            replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} replay buffer size set: {replay_buffer_size}")
+            else:
+                logger.debug(f"replay buffer size set: {replay_buffer_size}")
+            # Save dir
+            save_dir = config[model_type][f"{model_type}_save_dir"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} save dir set: {save_dir}")
+            else:
+                logger.debug(f"save dir set: {save_dir}")
+
+            # create replay buffer
+            replay_buffer = ReplayBuffer(env, replay_buffer_size, device=device)
+            # create DDPG agent
+            ddpg_agent= cls(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = config[model_type][f"{model_type}_discount"],
+                tau = config[model_type][f"{model_type}_tau"],
+                action_epsilon = action_epsilon,
+                replay_buffer = replay_buffer,
+                batch_size = config[model_type][f"{model_type}_batch_size"],
+                noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
+                warmup = config[model_type][f"{model_type}_warmup"],
+                callbacks = callbacks,
+                comm = comm,
+                device = device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} ddpg agent built: {ddpg_agent.get_config()}")
+            else:
+                logger.debug(f"ddpg agent built: {ddpg_agent.get_config()}")
+
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier called")
+            else:
+                logger.debug(f"train barrier called")
+
+            if comm is not None:
+                comm.Barrier()
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier passed")
+
+            ddpg_agent.train(
+                    num_episodes=train_config['num_episodes'],
+                    render=False,
+                    render_freq=0,
+                    )
+
+        except Exception as e:
+            logger.error(f"An error occurred: {e}", exc_info=True)
 
     def train(
         self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None, run_number=None):
@@ -1697,6 +1960,7 @@ class DDPG(Agent):
                 # 'normalize_kwargs': self.normalize_kwargs,
                 'normalizer_clip': self.normalizer_clip,
                 'normalizer_eps': self.normalizer_eps,
+                'warmup': self.warmup,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir
             }
@@ -1810,10 +2074,7 @@ class TD3(Agent):
         save_dir: str = "models",
         use_mpi = False,
         comm=None,
-        device='cuda',
-        profiler_active_steps: int = 10,
-        profiler_warmup_steps: int = 10,
-        profiler_repeat: int = 10
+        device='cuda'
     ):
         try:
             self.use_mpi = use_mpi
@@ -1851,9 +2112,6 @@ class TD3(Agent):
             self.normalizer_eps = normalizer_eps
             self.warmup = warmup
             self.device = device
-            self.profiler_active_steps = profiler_active_steps
-            self.profiler_warmup_steps = profiler_warmup_steps
-            self.profiler_repeat = profiler_repeat
             # if self.use_mpi:
             #     logger.debug(f"rank {self.rank} TD3 init attributes set")
             # else:
@@ -1924,7 +2182,7 @@ class TD3(Agent):
     def clone(self):
         env = gym.make(self.env.spec)
         actor = self.clone_model(self.actor_model)
-        critic = self.clone_model(self.critic_model)
+        critic = self.clone_model(self.critic_model_a)
         replay_buffer = self.replay_buffer.clone()
         noise = self.noise.clone()
 
@@ -2028,7 +2286,7 @@ class TD3(Agent):
         goal_shape = desired_goal_func(env).shape
 
         # Get actor clamp value
-        clamp_output = config[config.model_type][f"{config.model_type}_actor_clamp_output"]
+        # clamp_output = config[config.model_type][f"{config.model_type}_actor_clamp_output"]
         
         actor_model = models.ActorModel(env = env,
                                         cnn_model = actor_cnn_model,
@@ -2039,7 +2297,7 @@ class TD3(Agent):
                                         optimizer_params = actor_optimizer_params,
                                         learning_rate = actor_learning_rate,
                                         normalize_layers = actor_normalize_layers,
-                                        clamp_output=clamp_output,
+                                        # clamp_output=clamp_output,
                                         device=device,
         )
         critic_model = models.CriticModel(env = env,
@@ -2348,11 +2606,11 @@ class TD3(Agent):
         rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
         next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
         dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
-        # logger.debug(f"states: {states}")
-        # logger.debug(f"actions: {actions}")
-        # logger.debug(f"rewards: {rewards}")
-        # logger.debug(f"next states: {next_states}")
-        # logger.debug(f"dones: {dones}")
+        logger.debug(f"states: {states}")
+        logger.debug(f"actions: {actions}")
+        logger.debug(f"rewards: {rewards}")
+        logger.debug(f"next states: {next_states}")
+        logger.debug(f"dones: {dones}")
         # if using HER, convert desired goals to tensors
         if self._use_her:
             desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
@@ -2376,41 +2634,41 @@ class TD3(Agent):
         # timer = time.time()
         _, target_actions = self.target_actor_model(next_states, desired_goals)
         # print(f'time to get target actions: {time.time() - timer}')
-        # logger.debug(f"target actions: {target_actions}")
+        logger.debug(f"target actions: {target_actions}")
         # Add gaussian noise to target actions
         # timer = time.time()
         noise = self.target_action_noise()
         # print(f'time to get noise: {time.time() - timer}')
-        # logger.debug(f"target action noise: {noise}")
+        logger.debug(f"target action noise: {noise}")
         # timer = time.time()
         target_actions = target_actions + T.clamp(noise, min=-self.target_action_clip, max=self.target_action_clip)
         # print(f'time add noise: {time.time() - timer}')
-        # logger.debug(f"target actions after added noise: {target_actions}")
+        logger.debug(f"target actions after added noise: {target_actions}")
         # Clamp targets between target action clip values
         # timer = time.time()
         target_actions = T.clamp(target_actions, min=T.tensor(self.env.action_space.low[0], dtype=T.float, device=self.device), max=T.tensor(self.env.action_space.high[0], dtype=T.float, device=self.device))
         # print(f'time to clamp target actions: {time.time() - timer}')
-        # logger.debug(f"target actions after clamped: {target_actions}")
+        logger.debug(f"target actions after clamped: {target_actions}")
         # print(f'Agent {dist.get_rank()}: target_actions: {target_actions}')
         # timer = time.time()
         target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
         # print(f'time to get critic a values: {time.time() - timer}')
-        # logger.debug(f"target critic a values: {target_critic_values_a}")
+        logger.debug(f"target critic a values: {target_critic_values_a}")
         # print(f'Agent {dist.get_rank()}: target_critic_values_a: {target_critic_values_a}')
         # timer = time.time()
         target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
         # print(f'time to get critic b values: {time.time() - timer}')
-        # logger.debug(f"target critic b values: {target_critic_values_b}")
+        logger.debug(f"target critic b values: {target_critic_values_b}")
         # Take minimum target critic value and set it as critic value
         # timer = time.time()
         target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
         # print(f'time to get min of critic values: {time.time() - timer}')
-        # logger.debug(f"minimum target critic values: {target_critic_values}")
+        logger.debug(f"minimum target critic values: {target_critic_values}")
         # print(f'Agent {dist.get_rank()}: target_critic_values_b: {target_critic_values_b}')
         # timer = time.time()
         targets = rewards + self.discount * target_critic_values * (1 - dones)
         # print(f'time to calc targets: {time.time() - timer}')
-        # logger.debug(f"target: {targets}")
+        logger.debug(f"target: {targets}")
 
         if self._use_her:
             targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
@@ -2422,23 +2680,23 @@ class TD3(Agent):
         # timer = time.time()
         predictions_a = self.critic_model_a(states, actions, desired_goals)
         # print(f'time for predictions a: {time.time() - timer}')
-        # logger.debug(f"predictions a: {predictions_a}")
+        logger.debug(f"predictions a: {predictions_a}")
         # timer = time.time()
         predictions_b = self.critic_model_b(states, actions, desired_goals)
         # print(f'time for predictions b: {time.time() - timer}')
-        # logger.debug(f"predictions b: {predictions_b}")
+        logger.debug(f"predictions b: {predictions_b}")
         # timer = time.time()
         critic_loss_a = F.mse_loss(targets, predictions_a)
         # print(f'time for critic loss a: {time.time() - timer}')
-        # logger.debug(f"critic loss a: {critic_loss_a}")
+        logger.debug(f"critic loss a: {critic_loss_a}")
         # timer = time.time()
         critic_loss_b = F.mse_loss(targets, predictions_b)
         # print(f'time for critic loss b: {time.time() - timer}')
-        # logger.debug(f"critic loss b: {critic_loss_b}")
+        logger.debug(f"critic loss b: {critic_loss_b}")
         
         # add losses to get total critic loss
         critic_loss = critic_loss_a + critic_loss_b
-        # logger.debug(f"combined loss: {critic_loss}")
+        logger.debug(f"combined loss: {critic_loss}")
         
         # update critics
         # critic_loss_a.backward(retain_graph=True)
@@ -2446,6 +2704,18 @@ class TD3(Agent):
         # timer = time.time()
         critic_loss.backward()
         # print(f'time for critics backwards pass: {time.time() - timer}')
+
+        # Print gradients
+        for name, param in self.critic_model_a.named_parameters():
+            if param.grad is not None:
+                logger.debug(f"Gradient for {name}: {param.grad}")
+            else:
+                logger.degub(f"No gradient calculated for {name}")
+        for name, param in self.critic_model_b.named_parameters():
+            if param.grad is not None:
+                logger.debug(f"Gradient for {name}: {param.grad}")
+            else:
+                logger.debug(f"No gradient calculated for {name}")
 
         # if self._use_her:
             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached critic optimization')
@@ -2496,6 +2766,13 @@ class TD3(Agent):
             # logger.debug(f"updating actor: step {self._step}")
             # timer = time.time()
             actor_loss.backward()
+
+            # print gradients
+            for name, param in self.actor_model.named_parameters():
+                if param.grad is not None:
+                    logger.debug(f"Gradient for {name}: {param.grad}")
+                else:
+                    logger.debug(f"No gradient calculated for {name}")
             # print(f'time for actor loss: {time.time() - timer}')
             # if self._use_her:
                 # Synchronize Gradients
@@ -2542,6 +2819,259 @@ class TD3(Agent):
             for current_params, target_params in zip(current.parameters(), target.parameters()):
                 target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
 
+    @classmethod
+    def sweep_train(
+        cls,
+        config, # wandb.config,
+        train_config,
+        env_spec,
+        callbacks,
+        run_number,
+        comm=None,
+    ):
+        """Builds and trains agents from sweep configs. Works with MPI"""
+        rank = MPI.COMM_WORLD.rank
+
+        if comm is not None:
+            logger.debug(f"Rank {rank} comm detected")
+            rank = comm.Get_rank()
+            logger.debug(f"Global rank {MPI.COMM_WORLD.Get_rank()} in {comm.Get_name()} set to comm rank {rank}")
+            logger.debug(f"init_sweep fired: global rank {MPI.COMM_WORLD.rank}, group rank {rank}, {comm.Get_name()}")
+        else:
+            logger.debug(f"init_sweep fired: global rank")
+        try:
+            # rank = MPI.COMM_WORLD.rank
+            # Instantiate env from env_spec
+            env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
+            # agent_config_path = f'sweep/agent_config_{run_number}.json'
+            # logger.debug(f"rank {rank} agent config path: {agent_config_path}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train config: {train_config}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} env spec id: {env.spec.id}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks: {callbacks}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} run number: {run_number}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} config set: {config}")
+            else:
+                logger.debug(f"train config: {train_config}")
+                logger.debug(f"env spec id: {env.spec.id}")
+                logger.debug(f"callbacks: {callbacks}")
+                logger.debug(f"run number: {run_number}")
+                logger.debug(f"config set: {config}")
+            model_type = list(config.keys())[0]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} model type: {model_type}")
+            else:
+                logger.debug(f"model type: {model_type}")
+            # Only primary process (rank 0) calls wandb.init() to build agent and log data
+
+            actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} layers built")
+            else:
+                logger.debug(f"layers built")
+            # Actor
+            actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor learning rate set")
+            else:
+                logger.debug(f"actor learning rate set")
+            actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer set")
+            else:
+                logger.debug(f"actor optimizer set")
+            # get optimizer params
+            actor_optimizer_params = {}
+            if actor_optimizer == "Adam":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+            
+            elif actor_optimizer == "Adagrad":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                actor_optimizer_params['lr_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_lr_decay']
+            
+            elif actor_optimizer == "RMSprop" or actor_optimizer == "SGD":
+                actor_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_weight_decay']
+                actor_optimizer_params['momentum'] = \
+                    config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer params set")
+            else:
+                logger.debug(f"actor optimizer params set")
+            actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor normalize layers set")
+            else:
+                logger.debug(f"actor normalize layers set")
+            # Critic
+            critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic learning rate set")
+            else:
+                logger.debug(f"critic learning rate set")
+            critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer set")
+            else:
+                logger.debug(f"critic optimizer set")
+            critic_optimizer_params = {}
+            if critic_optimizer == "Adam":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+            
+            elif critic_optimizer == "Adagrad":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['lr_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
+            
+            elif critic_optimizer == "RMSprop" or critic_optimizer == "SGD":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['momentum'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer params set")
+            else:
+                logger.debug(f"critic optimizer params set")
+
+            critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic normalize layers set")
+            else:
+                logger.debug(f"critic normalize layers set")
+            # Set device
+            device = config[model_type][f"{model_type}_device"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} device set")
+            else:
+                logger.debug(f"device set")
+            # Check if CNN layers and if so, build CNN model
+            if actor_cnn_layers:
+                actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
+            else:
+                actor_cnn_model = None
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
+            else:
+                logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
+
+            if critic_cnn_layers:
+                critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
+            else:
+                critic_cnn_model = None
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
+            else:
+                logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
+            # # Get actor clamp value
+            # clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
+            # if comm is not None:
+            #     logger.debug(f"{comm.Get_name()}; Rank {rank} clamp output set: {clamp_output}")
+            # else:
+            #     logger.debug(f"clamp output set: {clamp_output}")
+            actor_model = models.ActorModel(env = env,
+                                            cnn_model = actor_cnn_model,
+                                            dense_layers = actor_layers,
+                                            output_layer_kernel=kernels[f'actor_output_kernel'],
+                                            optimizer = actor_optimizer,
+                                            optimizer_params = actor_optimizer_params,
+                                            learning_rate = actor_learning_rate,
+                                            normalize_layers = actor_normalize_layers,
+                                            # clamp_output=clamp_output,
+                                            device=device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor model built: {actor_model.get_config()}")
+            else:
+                logger.debug(f"actor model built: {actor_model.get_config()}")
+            critic_model = models.CriticModel(env = env,
+                                            cnn_model = critic_cnn_model,
+                                            state_layers = critic_state_layers,
+                                            merged_layers = critic_merged_layers,
+                                            output_layer_kernel=kernels[f'critic_output_kernel'],
+                                            optimizer = critic_optimizer,
+                                            optimizer_params = critic_optimizer_params,
+                                            learning_rate = critic_learning_rate,
+                                            normalize_layers = critic_normalize_layers,
+                                            device=device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic model built: {critic_model.get_config()}")
+            else:
+                logger.debug(f"critic model built: {critic_model.get_config()}")
+            # get normalizer clip value
+            normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} normalizer clip set: {normalizer_clip}")
+            else:
+                logger.debug(f"normalizer clip set: {normalizer_clip}")
+            # get action epsilon
+            action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} action epsilon set: {action_epsilon}")
+            else:
+                logger.debug(f"action epsilon set: {action_epsilon}")
+            # Replay buffer size
+            replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} replay buffer size set: {replay_buffer_size}")
+            else:
+                logger.debug(f"replay buffer size set: {replay_buffer_size}")
+            # Save dir
+            save_dir = config[model_type][f"{model_type}_save_dir"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} save dir set: {save_dir}")
+            else:
+                logger.debug(f"save dir set: {save_dir}")
+
+            # create replay buffer
+            replay_buffer = ReplayBuffer(env, replay_buffer_size, device=device)
+
+            # create TD3 agent
+            td3_agent= cls(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = config[model_type][f"{model_type}_discount"],
+                tau = config[model_type][f"{model_type}_tau"],
+                action_epsilon = action_epsilon,
+                replay_buffer = replay_buffer,
+                batch_size = config[model_type][f"{model_type}_batch_size"],
+                noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
+                target_action_stddev = config[model_type][f"{model_type}_target_action_stddev"],
+                target_action_clip = config[model_type][f"{model_type}_target_action_clip"],
+                actor_update_delay = config[model_type][f"{model_type}_actor_update_delay"],
+                warmup = config[model_type][f"{model_type}_warmup"],
+                callbacks = callbacks,
+                comm = comm,
+                device = device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} TD3 agent built: {td3_agent.get_config()}")
+            else:
+                logger.debug(f"TD3 agent built: {td3_agent.get_config()}")
+            
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier called")
+            else:
+                logger.debug(f"train barrier called")
+
+            if comm is not None:
+                comm.Barrier()
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier passed")
+
+            td3_agent.train(
+                    num_episodes=train_config['num_episodes'],
+                    render=False,
+                    render_freq=0,
+                    )
+
+        except Exception as e:
+            logger.error(f"An error occurred: {e}", exc_info=True)
 
     def train(
         self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None, run_number=None):
@@ -2553,10 +3083,10 @@ class TD3(Agent):
         self.critic_model_b.train()
 
         # Update save_dir if passed
-        if save_dir is not None and save_dir.split("/")[-2] != "ddpg":
-            self.save_dir = save_dir + "/ddpg/"
+        if save_dir is not None and save_dir.split("/")[-2] != "td3":
+            self.save_dir = save_dir + "/td3/"
             print(f'new save dir: {self.save_dir}')
-        elif save_dir is not None and save_dir.split("/")[-2] == "ddpg":
+        elif save_dir is not None and save_dir.split("/")[-2] == "td3":
             self.save_dir = save_dir
             print(f'new save dir: {self.save_dir}')
         
@@ -2765,7 +3295,8 @@ class TD3(Agent):
 
         # set model in eval mode
         self.actor_model.eval()
-        self.critic_model.eval()
+        self.critic_model_a.eval()
+        self.critic_model_b.eval()
 
         # Update save_dir if passed
         if save_dir is not None and save_dir.split("/")[-2] != "ddpg":
@@ -2843,12 +3374,13 @@ class TD3(Agent):
                 "batch_size": self.batch_size,
                 "noise": self.noise.get_config(),
                 "target_action_stddev": self.target_action_stddev,
-                # "target_action_clip": self.target_action_clip,
+                "target_action_clip": self.target_action_clip,
                 "actor_update_delay": self.actor_update_delay,
                 'normalize_inputs': self.normalize_inputs,
                 # 'normalize_kwargs': self.normalize_kwargs,
                 'normalizer_clip': self.normalizer_clip,
                 'normalizer_eps': self.normalizer_eps,
+                'warmup': self.warmup,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir
             }
@@ -3108,7 +3640,9 @@ class HER(Agent):
             rank = comm.Get_rank()
             logger.debug(f"Global rank {MPI.COMM_WORLD.Get_rank()} in {comm.Get_name()} set to comm rank {rank}")
 
-        logger.debug(f"init_sweep fired: global rank {MPI.COMM_WORLD.rank}, group rank {rank}, {comm.Get_name()}")
+            logger.debug(f"init_sweep fired: global rank {MPI.COMM_WORLD.rank}, group rank {rank}, {comm.Get_name()}")
+        else:
+            logger.debug(f"init_sweep fired: global rank")
         try:
             # rank = MPI.COMM_WORLD.rank
             # Instantiate her variable 
@@ -3117,23 +3651,40 @@ class HER(Agent):
             env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
             # agent_config_path = f'sweep/agent_config_{run_number}.json'
             # logger.debug(f"rank {rank} agent config path: {agent_config_path}")
-            logger.debug(f"{comm.Get_name()}; Rank {rank} train config: {train_config}")
-            logger.debug(f"{comm.Get_name()}; Rank {rank} env spec id: {env.spec.id}")
-            logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks: {callbacks}")
-            logger.debug(f"{comm.Get_name()}; Rank {rank} run number: {run_number}")
-            # config = wandb.config
-            logger.debug(f"{comm.Get_name()}; Rank {rank} config set: {config}")
             model_type = list(config.keys())[0]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} model type: {model_type}")
-            # Only primary process (rank 0) calls wandb.init() to build agent and log data
+            # config = wandb.config
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train config: {train_config}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} env spec id: {env.spec.id}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks: {callbacks}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} run number: {run_number}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} config set: {config}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} model type: {model_type}")
+                # Only primary process (rank 0) calls wandb.init() to build agent and log data
+            else:
+                logger.debug(f"train config: {train_config}")
+                logger.debug(f"env spec id: {env.spec.id}")
+                logger.debug(f"callbacks: {callbacks}")
+                logger.debug(f"run number: {run_number}")
+                logger.debug(f"config set: {config}")
+                logger.debug(f"model type: {model_type}")
 
             actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
-            logger.debug(f"{comm.Get_name()}; Rank {rank} layers built")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} layers built")
+            else:
+                logger.debug(f"layers built")
             # Actor
             actor_learning_rate=config[model_type][f"{model_type}_actor_learning_rate"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} actor learning rate set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor learning rate set")
+            else:
+                logger.debug(f"actor learning rate set")
             actor_optimizer = config[model_type][f"{model_type}_actor_optimizer"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer set")
+            else:
+                logger.debug(f"actor optimizer set")
             # get optimizer params
             actor_optimizer_params = {}
             if actor_optimizer == "Adam":
@@ -3152,14 +3703,26 @@ class HER(Agent):
                 actor_optimizer_params['momentum'] = \
                     config[model_type][f"{model_type}_actor_optimizer_{actor_optimizer}_options"][f'{actor_optimizer}_momentum']
 
-            logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer params set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor optimizer params set")
+            else:
+                logger.debug(f"actor optimizer params set")
             actor_normalize_layers = config[model_type][f"{model_type}_actor_normalize_layers"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} actor normalize layers set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor normalize layers set")
+            else:
+                logger.debug(f"actor normalize layers set")
             # Critic
             critic_learning_rate=config[model_type][f"{model_type}_critic_learning_rate"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} critic learning rate set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic learning rate set")
+            else:
+                logger.debug(f"critic learning rate set")
             critic_optimizer = config[model_type][f"{model_type}_critic_optimizer"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer set")
+            else:
+                logger.debug(f"critic optimizer set")
             critic_optimizer_params = {}
             if critic_optimizer == "Adam":
                 critic_optimizer_params['weight_decay'] = \
@@ -3176,37 +3739,64 @@ class HER(Agent):
                     config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
                 critic_optimizer_params['momentum'] = \
                     config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
-            logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer params set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer params set")
+            else:
+                logger.debug(f"critic optimizer params set")
 
             critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} critic normalize layers set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic normalize layers set")
+            else:
+                logger.debug(f"critic normalize layers set")
             # Set device
             device = config[model_type][f"{model_type}_device"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} device set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} device set")
+            else:
+                logger.debug(f"device set")
             # Check if CNN layers and if so, build CNN model
             if actor_cnn_layers:
                 actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
             else:
                 actor_cnn_model = None
-            logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
+            else:
+                logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
 
             if critic_cnn_layers:
                 critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
             else:
                 critic_cnn_model = None
-            logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
+            else:
+                logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
             # get desired, achieved, reward func for env
-            logger.debug(f"{comm.Get_name()}; Rank {rank} second call env.spec: {env.spec.id}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} second call env.spec: {env.spec.id}")
+            else:
+                logger.debug(f"second call env.spec: {env.spec.id}")
             desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
-            logger.debug(f"{comm.Get_name()}; Rank {rank} goal function set")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} goal function set")
+            else:
+                logger.debug(f"goal function set")
             # Reset env state to initiate state to detect correct goal shape
             _,_ = env.reset()
-            logger.debug(f"{comm.Get_name()}; Rank {rank} env reset")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} env reset")
+            else:
+                logger.debug(f"env reset")
             goal_shape = desired_goal_func(env).shape
-            logger.debug(f"{comm.Get_name()}; Rank {rank} goal shape set: {goal_shape}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} goal shape set: {goal_shape}")
+            else:
+                logger.debug(f"goal shape set: {goal_shape}")
             # Get actor clamp value
-            clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} clamp output set: {clamp_output}")
+            # clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
+            # logger.debug(f"{comm.Get_name()}; Rank {rank} clamp output set: {clamp_output}")
             actor_model = models.ActorModel(env = env,
                                             cnn_model = actor_cnn_model,
                                             dense_layers = actor_layers,
@@ -3216,10 +3806,13 @@ class HER(Agent):
                                             optimizer_params = actor_optimizer_params,
                                             learning_rate = actor_learning_rate,
                                             normalize_layers = actor_normalize_layers,
-                                            clamp_output=clamp_output,
+                                            # clamp_output=clamp_output,
                                             device=device,
             )
-            logger.debug(f"{comm.Get_name()}; Rank {rank} actor model built: {actor_model.get_config()}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor model built: {actor_model.get_config()}")
+            else:
+                logger.debug(f"actor model built: {actor_model.get_config()}")
             critic_model = models.CriticModel(env = env,
                                             cnn_model = critic_cnn_model,
                                             state_layers = critic_state_layers,
@@ -3232,26 +3825,47 @@ class HER(Agent):
                                             normalize_layers = critic_normalize_layers,
                                             device=device,
             )
-            logger.debug(f"{comm.Get_name()}; Rank {rank} critic model built: {critic_model.get_config()}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic model built: {critic_model.get_config()}")
+            else:
+                logger.debug(f"critic model built: {critic_model.get_config()}")
             # get goal metrics
             strategy = config[model_type][f"{model_type}_goal_strategy"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} strategy set: {strategy}")
+            
             tolerance = config[model_type][f"{model_type}_goal_tolerance"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} tolerance set: {tolerance}")
+            
             num_goals = config[model_type][f"{model_type}_num_goals"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} num goals set: {num_goals}")
+            
             # get normalizer clip value
             normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} normalizer clip set: {normalizer_clip}")
+            
             # get action epsilon
             action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} action epsilon set: {action_epsilon}")
+            
             # Replay buffer size
             replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} replay buffer size set: {replay_buffer_size}")
+            
             # Save dir
             save_dir = config[model_type][f"{model_type}_save_dir"]
-            logger.debug(f"{comm.Get_name()}; Rank {rank} save dir set: {save_dir}")
+            
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} strategy set: {strategy}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} tolerance set: {tolerance}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} num goals set: {num_goals}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} normalizer clip set: {normalizer_clip}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} action epsilon set: {action_epsilon}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} replay buffer size set: {replay_buffer_size}")
+                logger.debug(f"{comm.Get_name()}; Rank {rank} save dir set: {save_dir}")
+            else:
+                logger.debug(f"strategy set: {strategy}")
+                logger.debug(f"tolerance set: {tolerance}")
+                logger.debug(f"num goals set: {num_goals}")
+                logger.debug(f"normalizer clip set: {normalizer_clip}")
+                logger.debug(f"action epsilon set: {action_epsilon}")
+                logger.debug(f"replay buffer size set: {replay_buffer_size}")
+                logger.debug(f"save dir set: {save_dir}")
+            
+            
             if model_type == "HER_DDPG":
                 ddpg_agent= DDPG(
                     env = env,
@@ -3266,7 +3880,10 @@ class HER(Agent):
                     callbacks = callbacks,
                     comm = comm
                 )
-                logger.debug(f"{comm.Get_name()}; Rank {rank} ddpg agent built: {ddpg_agent.get_config()}")
+                if comm is not None:
+                    logger.debug(f"{comm.Get_name()}; Rank {rank} ddpg agent built: {ddpg_agent.get_config()}")
+                else:
+                    logger.debug(f"ddpg agent built: {ddpg_agent.get_config()}")
 
             elif model_type == "HER_TD3":
                 ddpg_agent= TD3(
@@ -3279,20 +3896,22 @@ class HER(Agent):
                     replay_buffer = None,
                     batch_size = config[model_type][f"{model_type}_batch_size"],
                     noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
-                    target_action_noise= config[model_type][f"{model_type}_target_action_noise"],
+                    target_action_stddev= config[model_type][f"{model_type}_target_action_stddev"],
                     target_action_clip= config[model_type][f"{model_type}_target_action_clip"],
                     actor_update_delay= config[model_type][f"{model_type}_actor_update_delay"],
                     callbacks = callbacks,
                     comm = comm
                 )
-                logger.debug(f"{comm.Get_name()}; Rank {rank} ddpg agent built: {ddpg_agent.get_config()}")
+                if comm is not None:
+                    logger.debug(f"{comm.Get_name()}; Rank {rank} ddpg agent built: {ddpg_agent.get_config()}")
+                else:
+                    logger.debug(f"ddpg agent built: {ddpg_agent.get_config()}")
 
-            logger.debug(f"{comm.Get_name()}; Rank {rank} build barrier called")
-            comm.Barrier()
-            logger.debug(f"{comm.Get_name()}; Rank {rank} build barrier passed")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} build barrier called")
+                comm.Barrier()
+                logger.debug(f"{comm.Get_name()}; Rank {rank} build barrier passed")
 
-            logger.debug(f"{comm.Get_name()}; Rank {rank} attempting building HER agent")
-            logger.debug(f"{comm.Get_name()}; Rank {rank} cls: {cls}")
             her = cls(
                 agent = ddpg_agent,
                 strategy = strategy,
@@ -3307,11 +3926,15 @@ class HER(Agent):
                 save_dir = save_dir,
                 comm = comm
             )
-            logger.debug(f"{comm.Get_name()}; Rank {rank} her agent built: {her.get_config()}")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} her agent built: {her.get_config()}")
+            else:
+                logger.debug(f"her agent built: {her.get_config()}")
 
-            logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier called")
-            comm.Barrier()
-            logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier passed")
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier called")
+                comm.Barrier()
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier passed")
 
             her.train(
                     num_epochs=train_config['num_epochs'],
@@ -4276,6 +4899,7 @@ def get_agent_class_from_type(agent_type: str):
              "DDPG": "DDPG",
              "HER_DDPG": "HER",
              "HER": "HER",
+             "TD3": "TD3",
             }
 
     # Use globals() to get a reference to the class
@@ -4297,21 +4921,89 @@ def init_sweep(sweep_config, train_config, comm=None):
     try:
         # Set the environment variable
         os.environ['WANDB_DISABLE_SERVICE'] = 'true'
-        logger.debug(f"{comm.Get_name()}; Rank {rank} WANDB_DISABLE_SERVICE set to true")
+        # logger.debug(f"{comm.Get_name()}; Rank {rank} WANDB_DISABLE_SERVICE set to true")
 
         # Set seeds
         random.seed(train_config['seed'])
         np.random.seed(train_config['seed'])
         T.manual_seed(train_config['seed'])
         T.cuda.manual_seed(train_config['seed'])
-        logger.debug(f'{comm.Get_name()}; Rank {rank} random seeds set')
+        # logger.debug(f'{comm.Get_name()}; Rank {rank} random seeds set')
 
         # Only primary process (rank 0) calls wandb.init() to build agent and log data
-        if rank == 0:
-            # logger.debug('MPI rank 0 process fired')
-            # try:
+        if comm is not None:
+            if rank == 0:
+                # logger.debug('MPI rank 0 process fired')
+                # try:
+                run_number = wandb_support.get_next_run_number(sweep_config["project"])
+                logger.debug(f"{comm.Get_name()}; Rank {rank} run number set: {run_number}")
+                
+                run = wandb.init(
+                    project=sweep_config["project"],
+                    settings=wandb.Settings(start_method='thread'),
+                    job_type="train",
+                    name=f"train-{run_number}",
+                    tags=["train"],
+                    group=f"group-{run_number}",
+                    # dir=run_dir
+                )
+                logger.debug("wandb.init() fired")
+                wandb_config = dict(wandb.config)
+                model_type = list(wandb_config.keys())[0]
+                
+                # Wait for configuration to be populated
+                max_retries = 10
+                retry_interval = 1  # in seconds
+
+                for _ in range(max_retries):
+                    if "model_type" in wandb.config:
+                        break
+                    logger.debug(f"{comm.Get_name()}; Rank {rank} Waiting for wandb.config to be populated...")
+                    time.sleep(retry_interval)
+
+                if "model_type" in wandb.config:
+                    logger.debug(f'{comm.Get_name()}; Rank {rank} wandb.config: {wandb.config}')
+                    run.tags = run.tags + (model_type,)
+                else:
+                    logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
+                
+                run.tags = run.tags + (model_type,)
+                logger.debug(f"{comm.Get_name()}; Rank {rank} run.tag set")
+                env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+                # save env spec to string
+                env_spec = env.spec.to_json()
+                logger.debug(f"{comm.Get_name()}; Rank {rank} env built: {env.spec}")
+                callbacks = []
+                callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
+                logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks created")
+
+            else:
+                env_spec = None
+                callbacks = None
+                run_number = None
+                wandb_config = None
+            
+            # Use MPI Barrier to sync processes
+            logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep calling MPI Barrier")
+            comm.Barrier()
+            logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep MPI Barrier passed")
+
+            env_spec = comm.bcast(env_spec, root=0)
+            callbacks = comm.bcast(callbacks, root=0)
+            run_number = comm.bcast(run_number, root=0)
+            wandb_config = comm.bcast(wandb_config, root=0)
+            model_type = list(wandb_config.keys())[0]
+            logger.debug(f"{comm.Get_name()}; Rank {rank} broadcasts complete")
+
+            agent = get_agent_class_from_type(model_type)
+            logger.debug(f"{comm.Get_name()}; Rank {rank} agent class found. Calling sweep_train")
+            agent.sweep_train(wandb_config, train_config, env_spec, callbacks, run_number, comm)
+        
+        else:
+            print('else fired')
             run_number = wandb_support.get_next_run_number(sweep_config["project"])
-            logger.debug(f"{comm.Get_name()}; Rank {rank} run number set: {run_number}")
+            logger.debug(f"run number set: {run_number}")
+            print(f'run number:{run_number}')
             
             run = wandb.init(
                 project=sweep_config["project"],
@@ -4324,6 +5016,7 @@ def init_sweep(sweep_config, train_config, comm=None):
             )
             logger.debug("wandb.init() fired")
             wandb_config = dict(wandb.config)
+            print(f'wandb config: {wandb_config}')
             model_type = list(wandb_config.keys())[0]
             
             # Wait for configuration to be populated
@@ -4333,46 +5026,27 @@ def init_sweep(sweep_config, train_config, comm=None):
             for _ in range(max_retries):
                 if "model_type" in wandb.config:
                     break
-                logger.debug(f"{comm.Get_name()}; Rank {rank} Waiting for wandb.config to be populated...")
+                logger.debug(f"Waiting for wandb.config to be populated...")
                 time.sleep(retry_interval)
 
             if "model_type" in wandb.config:
-                logger.debug(f'{comm.Get_name()}; Rank {rank} wandb.config: {wandb.config}')
+                logger.debug(f'wandb.config: {wandb.config}')
                 run.tags = run.tags + (model_type,)
             else:
                 logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
             
             run.tags = run.tags + (model_type,)
-            logger.debug(f"{comm.Get_name()}; Rank {rank} run.tag set")
+            logger.debug(f"run.tag set")
             env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
             # save env spec to string
             env_spec = env.spec.to_json()
-            logger.debug(f"{comm.Get_name()}; Rank {rank} env built: {env.spec}")
+            logger.debug(f"env built: {env.spec}")
             callbacks = []
             callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
-            logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks created")
-
-        else:
-            env_spec = None
-            callbacks = None
-            run_number = None
-            wandb_config = None
-        
-        # Use MPI Barrier to sync processes
-        logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep calling MPI Barrier")
-        comm.Barrier()
-        logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep MPI Barrier passed")
-
-        env_spec = comm.bcast(env_spec, root=0)
-        callbacks = comm.bcast(callbacks, root=0)
-        run_number = comm.bcast(run_number, root=0)
-        wandb_config = comm.bcast(wandb_config, root=0)
-        model_type = list(wandb_config.keys())[0]
-        logger.debug(f"{comm.Get_name()}; Rank {rank} broadcasts complete")
-
-        agent = get_agent_class_from_type(model_type)
-        logger.debug(f"{comm.Get_name()}; Rank {rank} agent class found. Calling sweep_train")
-        agent.sweep_train(wandb_config, train_config, env_spec, callbacks, run_number, comm)
+            logger.debug(f"callbacks created")
+            agent = get_agent_class_from_type(model_type)
+            logger.debug(f"agent class found. Calling sweep_train")
+            agent.sweep_train(wandb_config, train_config, env_spec, callbacks, run_number)
 
     except Exception as e:
         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
