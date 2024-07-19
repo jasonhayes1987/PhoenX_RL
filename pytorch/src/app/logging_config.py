@@ -9,15 +9,15 @@ if os.path.exists(log_file):
 
 # Create a custom logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Set the lowest level to capture all types of log messages
+logger.setLevel(logging.ERROR)  # Set the lowest level to capture all types of log messages
 
 # Create handlers
 console_handler = logging.StreamHandler()
 file_handler = logging.FileHandler(log_file)
 
 # Set levels for handlers
-console_handler.setLevel(logging.INFO)
-file_handler.setLevel(logging.DEBUG)
+console_handler.setLevel(logging.ERROR)
+file_handler.setLevel(logging.ERROR)
 
 # Create formatters and add them to the handlers
 console_format = logging.Formatter('%(name)s - %(levelname)s - %(message)s')

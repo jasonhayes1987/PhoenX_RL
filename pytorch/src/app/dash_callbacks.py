@@ -2043,7 +2043,7 @@ def register_callbacks(app, shared_data):
     )
     def update_mpi_options(agent_data):
 
-        if agent_data['agent_type'] in ['DDPG', 'HER']:
+        if agent_data['agent_type'] in ['DDPG', 'TD3', 'HER']:
             mpi_options_style = {'display': 'block'}
         
         else:
@@ -2060,7 +2060,7 @@ def register_callbacks(app, shared_data):
 
         print(f'agent types: {agent_types}')
 
-        if any(agent in ['DDPG', 'HER_DDPG'] for agent in agent_types):
+        if any(agent in ['DDPG', 'TD3', 'HER_DDPG'] for agent in agent_types):
         # if agent_types:
             print(f'hyperparam options true')
             mpi_options = {'display': 'block'}
@@ -2370,6 +2370,9 @@ def register_callbacks(app, shared_data):
             
             elif agent_type == 'DDPG':
                 tabs.append(utils.create_ddpg_hyperparam_input(agent_type))
+
+            elif agent_type == 'TD3':
+                tabs.append(utils.create_td3_hyperparam_input(agent_type))
 
             elif agent_type == 'HER_DDPG':
                 tabs.append(utils.create_her_ddpg_hyperparam_input(agent_type))
