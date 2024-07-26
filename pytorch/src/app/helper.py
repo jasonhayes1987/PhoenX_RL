@@ -104,8 +104,103 @@ class Buffer():
 
 
 
-class ReplayBuffer(Buffer):
-    def __init__(self, env:gym.Env, buffer_size:int=100000, goal_shape:tuple=None, device='cpu'):
+# class ReplayBuffer(Buffer):
+#     def __init__(self, env:gym.Env, buffer_size:int=100000, goal_shape:tuple=None, device='cpu'):
+#         self.env = env
+#         self.buffer_size = buffer_size
+#         self.goal_shape = goal_shape
+#         self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
+        
+#         # set internal attributes
+#         # get observation space
+#         if isinstance(self.env.observation_space, gym.spaces.dict.Dict):
+#             self._obs_space_shape = self.env.observation_space['observation'].shape
+#         else:
+#             self._obs_space_shape = self.env.observation_space.shape
+
+#         #DEBUG
+#         # print(f'self._obs_space_shape: {self._obs_space_shape}')
+#         # print(f'buffer size = {self.buffer_size}')
+
+#         self.states = np.zeros((buffer_size, *self._obs_space_shape), dtype=np.float32)
+#         self.actions = np.zeros((buffer_size, *env.action_space.shape), dtype=np.float32)
+#         self.rewards = np.zeros((buffer_size,), dtype=np.float32)
+#         self.next_states = np.zeros((buffer_size, *self._obs_space_shape), dtype=np.float32)
+#         self.dones = np.zeros((buffer_size,), dtype=np.int8)
+        
+#         if self.goal_shape is not None:
+#             self.desired_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
+#             self.state_achieved_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
+#             self.next_state_achieved_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
+        
+#         self.counter = 0
+#         self.gen = np.random.default_rng()
+        
+#     def add(self, state:np.ndarray, action:np.ndarray, reward:float, next_state:np.ndarray, done:bool,
+#             state_achieved_goal:np.ndarray=None, next_state_achieved_goal:np.ndarray=None, desired_goal:np.ndarray=None):
+#         """Add a transition to the replay buffer."""
+#         index = self.counter % self.buffer_size
+#         self.states[index] = state
+#         self.actions[index] = action
+#         self.rewards[index] = reward
+#         self.next_states[index] = next_state
+#         self.dones[index] = done
+        
+#         if self.goal_shape is not None:
+#             if desired_goal is None or state_achieved_goal is None or next_state_achieved_goal is None:
+#                 raise ValueError("Desired goal, state achieved goal, and next state achieved goal must be provided when use_goals is True.")
+#             self.state_achieved_goals[index] = state_achieved_goal
+#             self.next_state_achieved_goals[index] = next_state_achieved_goal
+#             self.desired_goals[index] = desired_goal
+        
+#         self.counter = self.counter + 1
+        
+#     def sample(self, batch_size:int):
+#         size = min(self.counter, self.buffer_size)
+#         indices = self.gen.integers(0, size, (batch_size,))
+        
+#         if self.goal_shape is not None:
+#             return (
+#                 self.states[indices],
+#                 self.actions[indices],
+#                 self.rewards[indices],
+#                 self.next_states[indices],
+#                 self.dones[indices],
+#                 self.state_achieved_goals[indices],
+#                 self.next_state_achieved_goals[indices],
+#                 self.desired_goals[indices],
+#             )
+#         else:
+#             return (
+#                 self.states[indices],
+#                 self.actions[indices],
+#                 self.rewards[indices],
+#                 self.next_states[indices],
+#                 self.dones[indices]
+#             )
+    
+#     def get_config(self):
+#         return {
+#             'class_name': self.__class__.__name__,
+#             'config': {
+#                 "env": self.env.spec.id,
+#                 "buffer_size": self.buffer_size,
+#                 "goal_shape": self.goal_shape
+#             }
+#         }
+    
+#     def clone(self):
+#         env = gym.make(self.env.spec)
+#         return ReplayBuffer(
+#             env,
+#             self.buffer_size,
+#             self.goal_shape,
+#             self.device
+#         )
+
+# New ReplayBuffer class using Tensors instead of Numpy arrays
+class ReplayBuffer:
+    def __init__(self, env: gym.Env, buffer_size: int = 100000, goal_shape: tuple = None, device='cpu'):
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
@@ -118,44 +213,40 @@ class ReplayBuffer(Buffer):
         else:
             self._obs_space_shape = self.env.observation_space.shape
 
-        #DEBUG
-        # print(f'self._obs_space_shape: {self._obs_space_shape}')
-        # print(f'buffer size = {self.buffer_size}')
-
-        self.states = np.zeros((buffer_size, *self._obs_space_shape), dtype=np.float32)
-        self.actions = np.zeros((buffer_size, *env.action_space.shape), dtype=np.float32)
-        self.rewards = np.zeros((buffer_size,), dtype=np.float32)
-        self.next_states = np.zeros((buffer_size, *self._obs_space_shape), dtype=np.float32)
-        self.dones = np.zeros((buffer_size,), dtype=np.int8)
+        self.states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
+        self.actions = T.zeros((buffer_size, *env.action_space.shape), dtype=T.float32, device=self.device)
+        self.rewards = T.zeros((buffer_size,), dtype=T.float32, device=self.device)
+        self.next_states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
+        self.dones = T.zeros((buffer_size,), dtype=T.int8, device=self.device)
         
         if self.goal_shape is not None:
-            self.desired_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
-            self.state_achieved_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
-            self.next_state_achieved_goals = np.zeros((buffer_size, *self.goal_shape), dtype=np.float32)
+            self.desired_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
+            self.state_achieved_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
         
         self.counter = 0
         self.gen = np.random.default_rng()
         
-    def add(self, state:np.ndarray, action:np.ndarray, reward:float, next_state:np.ndarray, done:bool,
-            state_achieved_goal:np.ndarray=None, next_state_achieved_goal:np.ndarray=None, desired_goal:np.ndarray=None):
+    def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool,
+            state_achieved_goal: np.ndarray = None, next_state_achieved_goal: np.ndarray = None, desired_goal: np.ndarray = None):
         """Add a transition to the replay buffer."""
         index = self.counter % self.buffer_size
-        self.states[index] = state
-        self.actions[index] = action
-        self.rewards[index] = reward
-        self.next_states[index] = next_state
-        self.dones[index] = done
+        self.states[index] = T.tensor(state, device=self.device)
+        self.actions[index] = T.tensor(action, device=self.device)
+        self.rewards[index] = T.tensor(reward, device=self.device)
+        self.next_states[index] = T.tensor(next_state, device=self.device)
+        self.dones[index] = T.tensor(done, device=self.device)
         
         if self.goal_shape is not None:
             if desired_goal is None or state_achieved_goal is None or next_state_achieved_goal is None:
                 raise ValueError("Desired goal, state achieved goal, and next state achieved goal must be provided when use_goals is True.")
-            self.state_achieved_goals[index] = state_achieved_goal
-            self.next_state_achieved_goals[index] = next_state_achieved_goal
-            self.desired_goals[index] = desired_goal
+            self.state_achieved_goals[index] = T.tensor(state_achieved_goal, device=self.device)
+            self.next_state_achieved_goals[index] = T.tensor(next_state_achieved_goal, device=self.device)
+            self.desired_goals[index] = T.tensor(desired_goal, device=self.device)
         
         self.counter = self.counter + 1
         
-    def sample(self, batch_size:int):
+    def sample(self, batch_size: int):
         size = min(self.counter, self.buffer_size)
         indices = self.gen.integers(0, size, (batch_size,))
         
@@ -185,7 +276,8 @@ class ReplayBuffer(Buffer):
             'config': {
                 "env": self.env.spec.id,
                 "buffer_size": self.buffer_size,
-                "goal_shape": self.goal_shape
+                "goal_shape": self.goal_shape,
+                "device": self.device,
             }
         }
     
@@ -461,6 +553,7 @@ class UniformNoise(Noise):
                 'shape': self.shape,
                 'minval': self.minval.item(),
                 'maxval': self.maxval.item(),
+                'device': self.device,
             }
         }
     
@@ -512,6 +605,7 @@ class NormalNoise:
                 'shape': self.shape,
                 'mean': self.mean.item(),
                 'stddev': self.stddev.item(),
+                'device': self.device,
             }
         }
     
@@ -559,6 +653,7 @@ class OUNoise(Noise):
                 "theta": self.theta.item(),
                 "sigma": self.sigma.item(),
                 "dt": self.dt.item(),
+                'device': self.device,
             }
         }
         
@@ -572,59 +667,47 @@ class OUNoise(Noise):
             self.device
         )
     
-
 class Normalizer:
-    def __init__(self, size, eps=1e-2, clip_range=5.0):
+    def __init__(self, size, eps=1e-2, clip_range=5.0, device='cpu'):
         self.size = size
         self.eps = eps
         self.clip_range = clip_range
+        self.device = device
 
-        self.local_sum = np.zeros(self.size, dtype=np.float32)
-        self.local_sum_sq = np.zeros(self.size, dtype=np.float32)
-        self.local_cnt = np.zeros(1, dtype=np.int32)
+        self.local_sum = T.zeros(self.size, dtype=T.float32, device=self.device)
+        self.local_sum_sq = T.zeros(self.size, dtype=T.float32, device=self.device)
+        self.local_cnt = T.zeros(1, dtype=T.int32, device=self.device)
 
-        self.running_mean = np.zeros(self.size, dtype=np.float32)
-        self.running_std = np.ones(self.size, dtype=np.float32)
-        self.running_sum = np.zeros(self.size, dtype=np.float32)
-        self.running_sum_sq = np.zeros(self.size, dtype=np.float32)
-        self.running_cnt = np.zeros(1, dtype=np.int32)
+        self.running_mean = T.zeros(self.size, dtype=T.float32, device=self.device)
+        self.running_std = T.ones(self.size, dtype=T.float32, device=self.device)
+        self.running_sum = T.zeros(self.size, dtype=T.float32, device=self.device)
+        self.running_sum_sq = T.zeros(self.size, dtype=T.float32, device=self.device)
+        self.running_cnt = T.zeros(1, dtype=T.int32, device=self.device)
 
         self.lock = threading.Lock()
 
     def normalize(self, v):
-        # clip_range = self.clip_range
-        return np.clip((v - self.running_mean) / self.running_std,
-                       -self.clip_range, self.clip_range).astype(np.float32)
+        return T.clamp((v - self.running_mean) / self.running_std,
+                       -self.clip_range, self.clip_range).float()
     
     def update_local_stats(self, new_data):
-        # print('SharedNormalizer update_local_stats fired...')
         try:
             with self.lock:
-                # print('SharedNormalizer update_local_stats lock acquired...')
-                # print(f'data: {new_data}')
-                # print('previous local stats')
-                # print(f'local sum: {self.local_sum}')
-                # print(f'local sum sq: {self.local_sum_sq}')
-                # print(f'local_cnt: {self.local_cnt}')
-                self.local_sum += new_data#.sum(axis=1)
-                self.local_sum_sq += (np.square(new_data))#.sum(axis=1)
-                self.local_cnt += 1 #new_data.shape[0]
-                # print('new local values')
-                # print(f'local sum: {self.local_sum}')
-                # print(f'local sum sq: {self.local_sum_sq}')
-                # print(f'local_cnt: {self.local_cnt}')
+                self.local_sum += new_data.sum(dim=0)
+                self.local_sum_sq += (new_data**2).sum(dim=0)
+                self.local_cnt += new_data.size(0)
         except Exception as e:
             print(f"Error during update: {e}")
     
     def update_global_stats(self):
         with self.lock:
-            local_cnt = self.local_cnt.copy()
-            local_sum = self.local_sum.copy()
-            local_sum_sq = self.local_sum_sq.copy()
+            local_cnt = self.local_cnt.clone()
+            local_sum = self.local_sum.clone()
+            local_sum_sq = self.local_sum_sq.clone()
 
-            self.local_cnt[...] = 0
-            self.local_sum[...] = 0
-            self.local_sum_sq[...] = 0
+            self.local_cnt.zero_()
+            self.local_sum.zero_()
+            self.local_sum_sq.zero_()
 
         sync_sum, sync_sum_sq, sync_cnt = self.sync_thread_stats(
                 local_sum, local_sum_sq, local_cnt)
@@ -635,8 +718,8 @@ class Normalizer:
 
         self.running_mean = self.running_sum / self.running_cnt
         tmp = self.running_sum_sq / self.running_cnt -\
-            np.square(self.running_sum / self.running_cnt)
-        self.running_std = np.sqrt(np.maximum(np.square(self.eps), tmp))
+            (self.running_sum / self.running_cnt)**2
+        self.running_std = T.sqrt(T.maximum(self.eps**2, tmp))
 
     def sync_thread_stats(self, local_sum, local_sum_sq, local_cnt):
         local_sum[...] = self.mpi_average(local_sum)
@@ -645,10 +728,10 @@ class Normalizer:
         return local_sum, local_sum_sq, local_cnt
 
     def mpi_average(self, x):
-        buf = np.zeros_like(x)
-        MPI.COMM_WORLD.Allreduce(x, buf, op=MPI.SUM)
-        buf = buf.astype(np.float64) / MPI.COMM_WORLD.Get_size()
-        return buf.astype(x.dtype)
+        buf = T.zeros_like(x)
+        MPI.COMM_WORLD.Allreduce(x.cpu().numpy(), buf.cpu().numpy(), op=MPI.SUM)
+        buf = buf.float() / MPI.COMM_WORLD.Get_size()
+        return buf.to(self.device)
 
     def get_config(self):
         return {
@@ -658,45 +741,43 @@ class Normalizer:
                 'clip_range':self.clip_range,
             },
             "state":{
-                'local_sum':self.local_sum,
-                'local_sum_sq':self.local_sum_sq,
-                'local_cnt':self.local_cnt,
-                'running_mean':self.running_mean,
-                'running_std':self.running_std,
-                'running_sum':self.running_sum,
-                'running_sum_sq':self.running_sum_sq,
-                'running_cnt':self.running_cnt,
+                'local_sum':self.local_sum.cpu().numpy(),
+                'local_sum_sq':self.local_sum_sq.cpu().numpy(),
+                'local_cnt':self.local_cnt.cpu().numpy(),
+                'running_mean':self.running_mean.cpu().numpy(),
+                'running_std':self.running_std.cpu().numpy(),
+                'running_sum':self.running_sum.cpu().numpy(),
+                'running_sum_sq':self.running_sum_sq.cpu().numpy(),
+                'running_cnt':self.running_cnt.cpu().numpy(),
             },
         }
 
-
     def save_state(self, file_path):
-        np.savez(
-            file_path,
-            local_sum=self.local_sum,
-            local_sum_sq=self.local_sum_sq,
-            local_cnt=self.local_cnt,
-            running_mean=self.running_mean,
-            running_std=self.running_std,
-            running_sum=self.running_sum,
-            running_sum_sq=self.running_sum_sq,
-            running_cnt=self.running_cnt,
-        )
-
+        T.save({
+            'local_sum': self.local_sum,
+            'local_sum_sq': self.local_sum_sq,
+            'local_cnt': self.local_cnt,
+            'running_mean': self.running_mean,
+            'running_std': self.running_std,
+            'running_sum': self.running_sum,
+            'running_sum_sq': self.running_sum_sq,
+            'running_cnt': self.running_cnt,
+        }, file_path)
 
     @classmethod
-    def load_state(cls, file_path):
-        with np.load(file_path) as data:
-            normalizer = cls(size=data['running_mean'].shape)
-            normalizer.local_sum = data['local_sum']
-            normalizer.local_sum_sq = data['local_sum_sq']
-            normalizer.local_cnt = data['local_cnt']
-            normalizer.running_mean = data['running_mean']
-            normalizer.running_std = data['running_std']
-            normalizer.running_sum = data['running_sum']
-            normalizer.running_sum_sq = data['running_sum_sq']
-            normalizer.running_cnt = data['running_cnt']
+    def load_state(cls, file_path, device='cpu'):
+        state = T.load(file_path)
+        normalizer = cls(size=state['running_mean'].shape, device=device)
+        normalizer.local_sum = state['local_sum']
+        normalizer.local_sum_sq = state['local_sum_sq']
+        normalizer.local_cnt = state['local_cnt']
+        normalizer.running_mean = state['running_mean']
+        normalizer.running_std = state['running_std']
+        normalizer.running_sum = state['running_sum']
+        normalizer.running_sum_sq = state['running_sum_sq']
+        normalizer.running_cnt = state['running_cnt']
         return normalizer
+
     
 class SharedNormalizer:
     def __init__(self, manager, size, eps=1e-2, clip_range=5.0):

@@ -15,7 +15,6 @@ from dash import html, dcc, dash_table
 from dash.dependencies import Input, Output, State, MATCH, ALL
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
-from flask import request
 import numpy as np
 import io
 import ast
@@ -998,6 +997,15 @@ def register_callbacks(app, shared_data):
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("Pendulum-v1")
 
+            # Get device
+            device = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
             # Set actor params
             # Set actor learning rate
             actor_learning_rate=10**utils.get_specific_value(
@@ -1026,7 +1034,7 @@ def register_callbacks(app, shared_data):
             actor_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor',
+                value_model='actor-hidden',
                 agent_type=agent_type_dropdown_value
             )
 
@@ -1041,6 +1049,8 @@ def register_callbacks(app, shared_data):
 
             if actor_conv_layers:
                 actor_cnn = cnn_models.CNN(actor_conv_layers, env)
+            else:
+                actor_cnn = None
 
 
             actor_dense_layers = models.build_layers(
@@ -1063,13 +1073,12 @@ def register_callbacks(app, shared_data):
                 actor_hidden_kernel,
             )
 
-            actor_output_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='actor-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
+            actor_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-output',
+                agent_type=agent_type_dropdown_value
+            )
 
             actor_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1078,25 +1087,6 @@ def register_callbacks(app, shared_data):
                 model_type='actor',
                 agent_type=agent_type_dropdown_value,
             )
-
-            actor_clamp_output = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='clamp-output',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            if actor_clamp_output:
-                clamp_value = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='clamp-value',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
-            else:
-                clamp_value = None
 
             # Create actor model
             actor_model = models.ActorModel(
@@ -1108,7 +1098,7 @@ def register_callbacks(app, shared_data):
                 optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
                 normalize_layers=actor_normalize_layers,
-                clamp_output=clamp_value,
+                device=device,
             )
             
             #DEBUG
@@ -1146,7 +1136,7 @@ def register_callbacks(app, shared_data):
             critic_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='critic',
+                value_model='critic-hidden',
                 agent_type=agent_type_dropdown_value
             )
             
@@ -1181,6 +1171,8 @@ def register_callbacks(app, shared_data):
 
             if critic_conv_layers:
                 critic_cnn = cnn_models.CNN(critic_conv_layers, env)
+            else:
+                critic_cnn = None
 
             critic_merged_layers = models.build_layers(
                 utils.format_layers(
@@ -1202,13 +1194,12 @@ def register_callbacks(app, shared_data):
                 critic_hidden_kernel,
             )
 
-            critic_output_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='critic-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
+            critic_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-output',
+                agent_type=agent_type_dropdown_value
+            )
            
             critic_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1228,6 +1219,7 @@ def register_callbacks(app, shared_data):
                 optimizer=critic_optimizer,
                 optimizer_params=critic_opt_params,
                 normalize_layers=critic_normalize_layers,
+                device=device,
             )
 
             #DEBUG
@@ -1296,6 +1288,14 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
+            warmup = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'warmup',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
             save_dir = utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
@@ -1311,13 +1311,371 @@ def register_callbacks(app, shared_data):
                 discount = discount,
                 tau = tau,
                 action_epsilon = epsilon,
-                replay_buffer = helper.ReplayBuffer(env, 100000),
+                replay_buffer = helper.ReplayBuffer(env, 100000, device=device),
                 batch_size = batch_size,
                 noise = noise,
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
+                warmup = warmup,
                 callbacks = utils.get_callbacks(callbacks, project),
                 save_dir = os.path.join(os.getcwd(), save_dir),
+                device=device,
+            )
+
+        elif agent_type_dropdown_value == "TD3":
+            # set defualt gym environment in order to build policy and value models and save
+            # env = gym.make("Pendulum-v1")
+
+            # Get device
+            device = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            # Set actor params
+            # Set actor learning rate
+            actor_learning_rate=10**utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='learning-rate',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                )
+
+            actor_optimizer = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='optimizer',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            actor_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='actor',
+                all_values=all_values,
+                all_ids=all_ids
+            )
+
+            actor_hidden_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+
+            actor_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'actor',
+                agent_type_dropdown_value
+            )
+
+            if actor_conv_layers:
+                actor_cnn = cnn_models.CNN(actor_conv_layers, env)
+            else:
+                actor_cnn = None
+
+
+            actor_dense_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='actor',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                actor_hidden_kernel,
+            )
+
+            actor_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-output',
+                agent_type=agent_type_dropdown_value
+            )
+
+            actor_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            # Create actor model
+            actor_model = models.ActorModel(
+                env=env,
+                cnn_model=actor_cnn,
+                dense_layers=actor_dense_layers,
+                output_layer_kernel=actor_output_kernel,
+                optimizer=actor_optimizer,
+                optimizer_params=actor_opt_params,
+                learning_rate=actor_learning_rate,
+                normalize_layers=actor_normalize_layers,
+                device=device,
+            )
+            
+            #DEBUG
+            # print(f'actor cnn model: {actor_cnn}')
+            # print(f'actor dense layers: {actor_dense_layers}')
+            # print(f'actor optimizer: {actor_optimizer}')
+            # print(f'actor learning rate: {actor_learning_rate}')
+            # print(f'actor model: {actor_model}')
+            
+            # Set critic params
+
+            critic_learning_rate=10**utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='learning-rate',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            critic_optimizer = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='optimizer',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            critic_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='critic',
+                all_values=all_values,
+                all_ids=all_ids
+            )
+
+            critic_hidden_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+            
+            critic_state_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='critic-state',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                critic_hidden_kernel,
+            )
+           
+            critic_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'critic',
+                agent_type_dropdown_value
+            )
+
+            if critic_conv_layers:
+                critic_cnn = cnn_models.CNN(critic_conv_layers, env)
+            else:
+                critic_cnn = None
+
+            critic_merged_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='critic-merged',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                critic_hidden_kernel,
+            )
+
+            critic_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-output',
+                agent_type=agent_type_dropdown_value
+            )
+           
+            critic_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='critic',
+                agent_type=agent_type_dropdown_value,
+            )
+           
+            critic_model = models.CriticModel(
+                env=env,
+                cnn_model=critic_cnn,
+                state_layers=critic_state_layers,
+                merged_layers=critic_merged_layers,
+                output_layer_kernel=critic_output_kernel,
+                learning_rate=critic_learning_rate,
+                optimizer=critic_optimizer,
+                optimizer_params=critic_opt_params,
+                normalize_layers=critic_normalize_layers,
+                device=device,
+            )
+
+            #DEBUG
+            # print(f'critic cnn model: {critic_cnn}')
+            # print(f'critic state layers: {critic_state_layers}')
+            # print(f'critic merged layers: {critic_merged_layers}')
+            # print(f'critic optimizer: {critic_optimizer}')
+            # print(f'critic learning rate: {critic_learning_rate}')
+            # print(f'critic model: {critic_model}')
+
+
+            # Set DDPG params
+
+            discount = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'discount',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            tau=utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'tau',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            epsilon = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'epsilon-greedy',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            batch_size = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'batch-size',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            noise=utils.create_noise_object(
+                    env = env,
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            target_noise_stddev = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'target-noise-stddev',
+                model_type = 'actor',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            target_noise_clip = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'target-noise-clip',
+                model_type = 'actor',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            actor_update_delay = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'actor-update-delay',
+                model_type = 'actor',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            normalize_inputs = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'normalize-input',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            clip_value = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'clip-value',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            warmup = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'warmup',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            save_dir = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='save-dir',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+            
+            agent = rl_agents.TD3(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = discount,
+                tau = tau,
+                action_epsilon = epsilon,
+                replay_buffer = helper.ReplayBuffer(env, 100000, device=device),
+                batch_size = batch_size,
+                noise = noise,
+                target_noise_stddev = target_noise_stddev,
+                target_noise_clip = target_noise_clip,
+                actor_update_delay = actor_update_delay,
+                normalize_inputs = normalize_inputs,
+                normalizer_clip = clip_value,
+                warmup = warmup,
+                callbacks = utils.get_callbacks(callbacks, project),
+                save_dir = os.path.join(os.getcwd(), save_dir),
+                device=device,
             )
 
         elif agent_type_dropdown_value == "HER_DDPG":
@@ -1425,25 +1783,6 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
-            actor_clamp_output = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='clamp-output',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            if actor_clamp_output:
-                clamp_value = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='clamp-value',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
-            else:
-                clamp_value = None
-
             #DEBUG
             print(f'actor dense layers: {actor_dense_layers}')
             print(f'actor output kernel: {actor_output_kernel}, type: {type(actor_output_kernel)}')
@@ -1458,7 +1797,6 @@ def register_callbacks(app, shared_data):
                 optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
                 normalize_layers=actor_normalize_layers,
-                clamp_output=clamp_value,
                 device=device,
             )
             
@@ -1657,13 +1995,14 @@ def register_callbacks(app, shared_data):
                 discount = discount,
                 tau = tau,
                 action_epsilon = epsilon,
-                replay_buffer = helper.ReplayBuffer(env, 100000, goal_shape),
+                replay_buffer = helper.ReplayBuffer(env, 100000, goal_shape, device=device),
                 batch_size = batch_size,
                 noise = noise,
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
                 callbacks = utils.get_callbacks(callbacks, project),
                 # save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
+                device = device
             )
 
             # set HER specific hyperparams
@@ -1868,7 +2207,7 @@ def register_callbacks(app, shared_data):
                 train_config['save_dir'] = save_dir
 
                 # Add MPI settings to config if DDPG or HER
-                if agent_data['agent_type'] == 'HER' or agent_data['agent_type'] == 'DDPG':
+                if agent_data['agent_type'] in ['DDPG','TD3','HER']:
                     train_config['use_mpi'] = use_mpi
                     train_config['num_workers'] = workers
                 
@@ -1880,11 +2219,13 @@ def register_callbacks(app, shared_data):
             
                 # Save the updated configuration to a train config file
                 train_config_path = agent_data['save_dir'] + '/train_config.json'
+                print(f'agent train config path:{train_config_path}')
                 with open(train_config_path, 'w') as f:
                     json.dump(train_config, f)
 
                 # Set the config path of the agent
                 agent_config_path = agent_data['save_dir'] + '/config.json'
+                print(f'agent config path:{agent_config_path}')
 
                 script_path = 'train.py'
                 run_command = f"python {script_path} --agent_config {agent_config_path} --train_config {train_config_path}"

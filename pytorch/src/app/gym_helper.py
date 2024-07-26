@@ -1,14 +1,13 @@
 import gymnasium as gym
 import numpy as np
 
-## HER FUNCTIONALITY ##
+## HER/PER FUNCTIONALITY ##
 
 def get_goal_envs():
     """Returns a list of envs that use goal states"""
 
     envs = []
 
-# FUNCTION DICTIONARY
 def get_her_goal_functions(env:gym.Env):
     """Returns a list of goal functions for the HER algorithm."""
 
@@ -59,7 +58,7 @@ def get_her_goal_functions(env:gym.Env):
 
     return funcs[spec_id].values()
 
-# CAR RACING 
+ 
 def car_racing_desired_goal(env):
     """Returns the desired goal for the CarRacing environment."""
     return np.array([len(env.get_wrapper_attr('track'))])
@@ -87,8 +86,6 @@ def car_racing_reward(env, action, state_achieved_goal, next_state_achieved_goal
     else:
         return -1,0
 
-
-# REACHER
 def reacher_desired_goal(env):
     """Returns the desired goal for the Reacher Mujoco environment."""
     return np.array([0.0, 0.0, 0.0])
@@ -110,8 +107,7 @@ def reacher_reward(env, action, state_achieved_goal, next_state_achieved_goal, d
         return 0,1
     else:
         return -1,0
-    
-# PUSHER
+
 # def pusher_desired_goal(env):
 #     return env.get_wrapper_attr("get_body_com")("goal")
 
@@ -130,7 +126,6 @@ def reacher_reward(env, action, state_achieved_goal, next_state_achieved_goal, d
 #     else:
 #         return -1,0
 
-# FETCH REACH REWARD (ROBOTICS)
 def fetch_reach_desired_goal(env):
     return env.get_wrapper_attr("_get_obs")()['desired_goal']
 
@@ -147,8 +142,6 @@ def fetch_reach_reward(env, action=None, state_achieved_goal=None, next_state_ac
     else:
         return reward, 0
     
-
-# FETCH PICK AND PLACE REWARD (ROBOTICS)
 def fetch_pick_place_desired_goal(env):
     return env.get_wrapper_attr("_get_obs")()['desired_goal']
 
@@ -164,8 +157,7 @@ def fetch_pick_place_reward(env, action=None, state_achieved_goal=None, next_sta
         return reward, 1
     else:
         return reward, 0
-    
-# FETCH PUSH REWARD (ROBOTICS)
+
 def fetch_push_desired_goal(env):
     return env.get_wrapper_attr("_get_obs")()['desired_goal']
 
@@ -182,8 +174,7 @@ def fetch_push_reward(env, action=None, state_achieved_goal=None, next_state_ach
         return reward, 1
     else:
         return reward, 0
-    
-# FETCH SLIDE REWARD (ROBOTICS)
+
 def fetch_slide_desired_goal(env):
     return env.get_wrapper_attr("_get_obs")()['desired_goal']
 

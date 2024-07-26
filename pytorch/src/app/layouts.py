@@ -29,6 +29,7 @@ def build_agent(page):
                     {'label': 'Actor Critic', 'value': 'ActorCritic'},
                     {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
                     {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
+                    {'label': 'TD3', 'value': 'TD3'},
                     {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
                 ],
                 placeholder="Select Agent Type",
