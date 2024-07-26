@@ -1,6 +1,4 @@
 import json
-import flask
-from flask import request
 import multiprocessing
 import dash
 from dash import dcc, html, Input, Output, callback
