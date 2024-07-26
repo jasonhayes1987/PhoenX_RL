@@ -77,7 +77,13 @@ def create_noise_object(env, all_values, all_ids, agent_type):
                 model_type='none',
                 agent_type=agent_type,
             ),
-
+            device=get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type,
+            )
         )
 
     elif noise_type == "Uniform":
@@ -98,7 +104,13 @@ def create_noise_object(env, all_values, all_ids, agent_type):
                 model_type='none',
                 agent_type=agent_type,
             ),
-
+            device=get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type,
+            )
         )
 
     elif noise_type == "Ornstein-Uhlenbeck":
@@ -133,7 +145,13 @@ def create_noise_object(env, all_values, all_ids, agent_type):
                 model_type='none',
                 agent_type=agent_type,
             ),
-
+            device=get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type,
+            )
         )
 
 def format_layers(all_values, all_ids, layer_units_values, layer_units_ids, value_type, value_model, agent_type):
@@ -1399,8 +1417,9 @@ def format_kernel_initializer_config(all_values, all_ids, value_model, agent_typ
     # create empty dictionary to store initializer config params
     config = {}
     # Iterate over initializer_type params list and get values
-    for param in initializer_configs[initializer_type]:
-        config[param] = get_specific_value(all_values, all_ids, param, value_model, agent_type)
+    if initializer_type not in ['zeros', 'ones', 'default']:
+        for param in initializer_configs[initializer_type]:
+            config[param] = get_specific_value(all_values, all_ids, param, value_model, agent_type)
     
     # format 
     initializer_config = {initializer_type: config}
@@ -1425,6 +1444,23 @@ def create_discount_factor_input(agent_type):
             )
         ]
     )
+
+def create_warmup_input(agent_type):
+    return html.Div([
+        html.Label('Warmup Period (Steps)'),
+        dcc.Input(
+            id={
+                'type': 'warmup',
+                'model': 'none',
+                'agent': agent_type
+            },
+            type='number',
+            min=0,
+            max=1000,
+            value=0,
+            step=500,
+        )
+    ])
 
 def create_tau_input(agent_type):
     return html.Div(
@@ -1482,6 +1518,63 @@ def create_noise_function_input(agent_type):
                     'model':'none',
                     'agent':agent_type,
                 }
+            ),
+        ]
+    )
+
+def create_target_noise_stddev_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Target Noise Standard Deviation', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'target-noise-stddev',
+                    'model':'actor',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.1,
+                max=0.9,
+                step=0.1,
+                value=0.2,
+            ),
+        ]
+    )
+
+def create_target_noise_clip_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Target Noise Clip', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'target-noise-clip',
+                    'model':'actor',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.1,
+                max=0.9,
+                step=0.1,
+                value=0.5,
+            ),
+        ]
+    )
+
+def create_actor_delay_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Actor Update Delay (steps)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'actor-update-delay',
+                    'model':'actor',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=10,
+                step=1,
+                value=2,
             ),
         ]
     )
@@ -2061,6 +2154,7 @@ def create_ddpg_parameter_inputs(agent_type):
             create_batch_size_input(agent_type),
             create_noise_function_input(agent_type),
             create_input_normalizer_input(agent_type),
+            create_warmup_input(agent_type),
             # Actor Model Configuration
             create_actor_model_input(agent_type),
             # Critic Model Configuration
@@ -2082,9 +2176,13 @@ def create_td3_parameter_inputs(agent_type):
             create_epsilon_greedy_input(agent_type),
             create_batch_size_input(agent_type),
             create_noise_function_input(agent_type),
+            create_target_noise_stddev_input(agent_type),
+            create_target_noise_clip_input(agent_type),
             create_input_normalizer_input(agent_type),
+            create_warmup_input(agent_type),
             # Actor Model Configuration
             create_actor_model_input(agent_type),
+            create_actor_delay_input(agent_type),
             # Critic Model Configuration
             html.H3("Critic Model Configuration"),
             create_critic_model_input(agent_type),
@@ -2129,6 +2227,9 @@ def create_agent_parameter_inputs(agent_type):
 
     elif agent_type == 'DDPG':
         return create_ddpg_parameter_inputs(agent_type)
+    
+    elif agent_type == 'TD3':
+        return create_td3_parameter_inputs(agent_type)
     
     elif agent_type == 'HER_DDPG':
         return create_her_ddpg_parameter_inputs(agent_type)

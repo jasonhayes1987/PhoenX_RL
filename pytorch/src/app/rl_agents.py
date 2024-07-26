@@ -14,6 +14,8 @@ from typing import Union
 from mpi4py import MPI
 # import logging
 from logging_config import logger
+import copy
+from encoder import CustomJSONEncoder, serialize_env_spec
 
 import rl_callbacks
 import models
@@ -32,6 +34,7 @@ from torch.distributions import Categorical
 from torch.multiprocessing import spawn, Manager
 import torch.distributed as dist
 import gymnasium as gym
+import gymnasium_robotics as gym_robo
 import numpy as np
 import random
 import torch.profiler
@@ -898,7 +901,7 @@ class DDPG(Agent):
                 self._obs_space_shape = env.observation_space.shape
 
             if self.normalize_inputs:
-                self.state_normalizer = helper.Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip)
+                self.state_normalizer = helper.Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip, self.device)
             
             # self.save_dir = save_dir + "/ddpg/"
             if save_dir is not None and "/ddpg/" not in save_dir:
@@ -1159,6 +1162,9 @@ class DDPG(Agent):
         # print('goal normalizer')
         # print(goal_normalizer.get_config())
 
+        # make sure state is a tensor and on correct device
+        state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
+
         # check if get action is for testing
         if test:
             # print(f'action test fired')
@@ -1173,9 +1179,6 @@ class DDPG(Agent):
                     print('used passed state normalizer')
                     state = state_normalizer.normalize(state)
 
-                # make sure state is a tensor and on correct device
-                state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
-                
                 # (HER) normalize goal if self._use_her using passed normalizer
                 if self._use_her:
                     goal = goal_normalizer.normalize(goal)
@@ -1214,9 +1217,6 @@ class DDPG(Agent):
                     elif self._use_her:
                         state = state_normalizer.normalize(state)
                     
-                    # make sure state is a tensor and on correct device
-                    state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
-                    
                     # (HER) normalize goal if self._use_her using passed normalizer
                     if self._use_her:
                         goal = goal_normalizer.normalize(goal)
@@ -1233,7 +1233,7 @@ class DDPG(Agent):
 
                     # Check if in warmup
                     if self._step <= self.warmup:
-                        action = noise
+                        action = T.tensor(self.env.action_space.sample(), dtype=T.float32, device=self.actor_model.device)
 
                     else:
                         _, pi = self.actor_model(state, goal)
@@ -1260,8 +1260,6 @@ class DDPG(Agent):
                         elif self._use_her:
                             state = state_normalizer.normalize(state)
 
-                        # make sure state is a tensor and on correct device
-                        state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
                         # normalize goal if self._use_her
                         if self._use_her:
                             goal = goal_normalizer.normalize(goal)
@@ -1276,7 +1274,7 @@ class DDPG(Agent):
 
                         # Check if in warmup
                         if self._step <= self.warmup:
-                            action = noise
+                            action = T.tensor(self.env.action_space.sample(), dtype=T.float32, device=self.actor_model.device)
 
                         else:
                             _, pi = self.actor_model(state, goal)
@@ -1331,16 +1329,18 @@ class DDPG(Agent):
             desired_goals = goal_normalizer.normalize(desired_goals)
         
         # Convert to tensors
-        states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
-        actions = T.tensor(actions, dtype=T.float32, device=self.actor_model.device)
-        rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
-        next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
-        dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
+        # states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
+        # actions = T.tensor(actions, dtype=T.float32, device=self.actor_model.device)
+        # rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
+        # next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
+        # dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
         # if using HER, convert desired goals to tensors
-        if self._use_her:
-            desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
-        else:
-            # set desired goals to None
+        # if self._use_her:
+        #     desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
+        # else:
+        #     # set desired goals to None
+        #     desired_goals = None
+        if not self._use_her:
             desired_goals = None
 
         # permute states and next states if using cnn
@@ -1357,7 +1357,7 @@ class DDPG(Agent):
         # print(f'Agent {dist.get_rank()}: target_actions: {target_actions}')
         target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
         # print(f'Agent {dist.get_rank()}: target_critic_values: {target_critic_values}')
-        targets = rewards + self.discount * target_critic_values# * (1 - dones)
+        targets = rewards + (1 - dones) * self.discount * target_critic_values
 
         if self._use_her:
             targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
@@ -1947,7 +1947,7 @@ class DDPG(Agent):
     def get_config(self):
         return {
                 "agent_type": self.__class__.__name__,
-                "env": self.env.spec.to_json(),
+                "env": serialize_env_spec(self.env.spec),
                 "actor_model": self.actor_model.get_config(),
                 "critic_model": self.critic_model.get_config(),
                 "discount": self.discount,
@@ -1962,7 +1962,8 @@ class DDPG(Agent):
                 'normalizer_eps': self.normalizer_eps,
                 'warmup': self.warmup,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
-                "save_dir": self.save_dir
+                "save_dir": self.save_dir,
+                "device": self.device,
             }
 
 
@@ -2005,13 +2006,17 @@ class DDPG(Agent):
         # ) as f:
         #     config = json.load(f)
 
+        # create EnvSpec from config
+        env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
+
         # load policy model
         actor_model = models.ActorModel.load(config['save_dir'], load_weights)
         # load value model
         critic_model = models.CriticModel.load(config['save_dir'], load_weights)
         # load replay buffer if not None
         if config['replay_buffer'] is not None:
-            config['replay_buffer']['config']['env'] = gym.make(config['env'])
+            config['replay_buffer']['config']['env'] = gym.make(env_spec)
             replay_buffer = helper.ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
@@ -2026,7 +2031,7 @@ class DDPG(Agent):
 
         # return DDPG agent
         agent = cls(
-            gym.make(gym.envs.registration.EnvSpec.from_json(config["env"])),
+            gym.make(env_spec),
             actor_model = actor_model,
             critic_model = critic_model,
             discount=config["discount"],
@@ -2036,10 +2041,11 @@ class DDPG(Agent):
             batch_size=config["batch_size"],
             noise=noise,
             normalize_inputs = normalize_inputs,
-            # normalize_kwargs = normalize_kwargs,
             normalizer_clip = normalizer_clip,
+            warmup = config['warmup'],
             callbacks=callbacks,
             save_dir=config["save_dir"],
+            device=config["device"],
         )
 
         if agent.normalize_inputs:
@@ -2060,10 +2066,10 @@ class TD3(Agent):
         tau=0.005,
         action_epsilon: float = 0.0,
         replay_buffer: helper.ReplayBuffer = None,
-        batch_size: int = 64,
+        batch_size: int = 256,
         noise = None,
-        target_action_stddev: float = 0.2,
-        target_action_clip: float = 0.5,
+        target_noise_stddev: float = 0.2,
+        target_noise_clip: float = 0.5,
         actor_update_delay: int = 2,
         normalize_inputs: bool = False,
         # normalize_kwargs: dict = {},
@@ -2101,10 +2107,10 @@ class TD3(Agent):
             self.replay_buffer = replay_buffer
             self.batch_size = batch_size
             self.noise = noise
-            self.target_action_stddev = target_action_stddev
-            self.target_action_noise = helper.NormalNoise(shape=env.action_space.shape, mean=0.0,
-                                                          stddev=target_action_stddev, device=device)
-            self.target_action_clip = target_action_clip
+            self.target_noise_stddev = target_noise_stddev
+            # self.target_action_noise = helper.NormalNoise(shape=env.action_space.shape, mean=0.0,
+            #                                               stddev=target_action_stddev, device=device)
+            self.target_noise_clip = target_noise_clip
             self.actor_update_delay = actor_update_delay
             self.normalize_inputs = normalize_inputs
             # self.normalize_kwargs = normalize_kwargs
@@ -2130,7 +2136,7 @@ class TD3(Agent):
                 self._obs_space_shape = env.observation_space.shape
 
             if self.normalize_inputs:
-                self.state_normalizer = helper.Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip)
+                self.state_normalizer = helper.Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip, self.device)
             
             # self.save_dir = save_dir + "/ddpg/"
             if save_dir is not None and "/td3/" not in save_dir:
@@ -2472,7 +2478,7 @@ class TD3(Agent):
                 if grad:
                     # print('with grad fired')
                     # normalize state if self.normalize_inputs
-                    if self.normalize_inputs or self._use_her:
+                    if self.normalize_inputs==True or self._use_her==True:
                         state = self.state_normalizer.normalize(state)
                     # (HER) use passed state normalizer if using HER
                     # elif self._use_her:
@@ -2482,7 +2488,7 @@ class TD3(Agent):
                     state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
                     
                     # (HER) normalize goal if self._use_her using passed normalizer
-                    if self._use_her:
+                    if self._use_her==True:
                         goal = goal_normalizer.normalize(goal)
                         # print(f'normalized goal: {goal}')
                         # make sure goal is a tensor and on correct device
@@ -2498,7 +2504,7 @@ class TD3(Agent):
 
                     # Check if in warmup
                     if self._step <= self.warmup:
-                        action = noise
+                        action = T.tensor(self.env.action_space.sample(), dtype=T.float32, device=self.actor_model.device)
 
                     else:
                         _, pi = self.actor_model(state, goal)
@@ -2519,16 +2525,16 @@ class TD3(Agent):
                     with T.no_grad():
                         # print('without grad fired')
                         # normalize state if self.normalize_inputs
-                        if self.normalize_inputs:
+                        if self.normalize_inputs==True:
                             state = self.state_normalizer.normalize(state)
                         # (HER) use passed state normalizer if using HER
-                        elif self._use_her:
+                        elif self._use_her==True:
                             state = state_normalizer.normalize(state)
 
                         # make sure state is a tensor and on correct device
                         state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
                         # normalize goal if self._use_her
-                        if self._use_her:
+                        if self._use_her==True:
                             goal = goal_normalizer.normalize(goal)
                             # make sure goal is a tensor and on correct device
                             goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
@@ -2537,12 +2543,12 @@ class TD3(Agent):
                         if self.actor_model.cnn_model:
                             state = state.permute(2, 0, 1).unsqueeze(0)
 
-                        # Create noise
+                         # Create noise
                         noise = self.noise()
 
                         # Check if in warmup
                         if self._step <= self.warmup:
-                            action = noise
+                            action = T.tensor(self.env.action_space.sample(), dtype=T.float32, device=self.actor_model.device)
 
                         else:
                             _, pi = self.actor_model(state, goal)
@@ -2574,244 +2580,366 @@ class TD3(Agent):
         return action_np
 
 
-    def learn(self, replay_buffer:Buffer=None,
-              state_normalizer:Union[Normalizer, SharedNormalizer]=None,
-              goal_normalizer:Union[Normalizer, SharedNormalizer]=None,
-              ):
-        # time batch sampling
-        # timer = time.time()
-        # sample a batch of experiences from the replay buffer
-        if self._use_her: # if using HER
+    # def learn(self, replay_buffer:Buffer=None,
+    #           state_normalizer:Union[Normalizer, SharedNormalizer]=None,
+    #           goal_normalizer:Union[Normalizer, SharedNormalizer]=None,
+    #           ):
+    #     # time batch sampling
+    #     # timer = time.time()
+    #     # sample a batch of experiences from the replay buffer
+    #     if self._use_her: # if using HER
+    #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = replay_buffer.sample(self.batch_size)
+    #     else:
+    #         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+    #     # print time taking to batch sample
+    #     # print(f'time to sample batch: {time.time() - timer}')
+    #     # normalize states if self.normalize_inputs
+    #     if self.normalize_inputs:
+    #         states = self.state_normalizer.normalize(states)
+    #         next_states = self.state_normalizer.normalize(next_states)
+
+    #     # (HER) Use passed normalizers to normalize states and goals
+    #     if self._use_her:
+    #         states = state_normalizer.normalize(states)
+    #         next_states = state_normalizer.normalize(next_states)
+    #         desired_goals = goal_normalizer.normalize(desired_goals)
+        
+    #     # time conversion to tensors
+    #     # timer = time.time()
+    #     # Convert to tensors
+    #     # states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
+    #     # actions = T.tensor(actions, dtype=T.float32, device=self.actor_model.device)
+    #     # rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
+    #     # next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
+    #     # dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
+    #     # logger.debug(f"states: {states}")
+    #     # logger.debug(f"actions: {actions}")
+    #     # logger.debug(f"rewards: {rewards}")
+    #     # logger.debug(f"next states: {next_states}")
+    #     # logger.debug(f"dones: {dones}")
+    #     # if using HER, convert desired goals to tensors
+    #     # if self._use_her:
+    #     #     desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
+    #     # else:
+    #     #     # set desired goals to None
+    #     #     desired_goals = None
+    #     if not self._use_her:
+    #         desired_goals = None
+    #     # print time to convert to tensors
+    #     # print(f'time to convert to tensors: {time.time() - timer}')
+
+    #     # permute states and next states if using cnn
+    #     if self.actor_model.cnn_model:
+    #         states = states.permute(0, 3, 1, 2)
+    #         next_states = next_states.permute(0, 3, 1, 2)
+
+    #     # convert rewards and dones to 2d tensors
+    #     rewards = rewards.unsqueeze(1)
+    #     dones = dones.unsqueeze(1)
+
+    #     # with T.no_grad():
+    #     # get target values
+    #     # timer = time.time()
+    #     _, target_actions = self.target_actor_model(next_states, desired_goals)
+    #     # print(f'time to get target actions: {time.time() - timer}')
+    #     logger.debug(f"target actions: {target_actions}")
+    #     # Add gaussian noise to target actions
+    #     # timer = time.time()
+    #     noise = self.target_action_noise()
+    #     # print(f'time to get noise: {time.time() - timer}')
+    #     logger.debug(f"target action noise: {noise}")
+    #     # timer = time.time()
+    #     target_actions = target_actions + T.clamp(noise, min=-self.target_action_clip, max=self.target_action_clip)
+    #     # print(f'time add noise: {time.time() - timer}')
+    #     logger.debug(f"target actions after added noise: {target_actions}")
+    #     # Clamp targets between target action clip values
+    #     # timer = time.time()
+    #     target_actions = T.clamp(target_actions, min=T.tensor(self.env.action_space.low[0], dtype=T.float, device=self.device), max=T.tensor(self.env.action_space.high[0], dtype=T.float, device=self.device))
+    #     # print(f'time to clamp target actions: {time.time() - timer}')
+    #     logger.debug(f"target actions after clamped: {target_actions}")
+    #     # print(f'Agent {dist.get_rank()}: target_actions: {target_actions}')
+    #     # timer = time.time()
+    #     target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
+    #     # print(f'time to get critic a values: {time.time() - timer}')
+    #     logger.debug(f"target critic a values: {target_critic_values_a}")
+    #     # print(f'Agent {dist.get_rank()}: target_critic_values_a: {target_critic_values_a}')
+    #     # timer = time.time()
+    #     target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
+    #     # print(f'time to get critic b values: {time.time() - timer}')
+    #     logger.debug(f"target critic b values: {target_critic_values_b}")
+    #     # Take minimum target critic value and set it as critic value
+    #     # timer = time.time()
+    #     target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
+    #     # print(f'time to get min of critic values: {time.time() - timer}')
+    #     logger.debug(f"minimum target critic values: {target_critic_values}")
+    #     # print(f'Agent {dist.get_rank()}: target_critic_values_b: {target_critic_values_b}')
+    #     # timer = time.time()
+    #     targets = rewards + self.discount * target_critic_values * (1 - dones)
+    #     # print(f'time to calc targets: {time.time() - timer}')
+    #     logger.debug(f"target: {targets}")
+
+    #     if self._use_her:
+    #         targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
+
+    #     self.critic_model_a.optimizer.zero_grad()
+    #     self.critic_model_b.optimizer.zero_grad()
+
+    #     # get current critic values and calculate critic losses
+    #     # timer = time.time()
+    #     predictions_a = self.critic_model_a(states, actions, desired_goals)
+    #     # print(f'time for predictions a: {time.time() - timer}')
+    #     logger.debug(f"predictions a: {predictions_a}")
+    #     # timer = time.time()
+    #     predictions_b = self.critic_model_b(states, actions, desired_goals)
+    #     # print(f'time for predictions b: {time.time() - timer}')
+    #     logger.debug(f"predictions b: {predictions_b}")
+    #     # timer = time.time()
+    #     critic_loss_a = F.mse_loss(targets, predictions_a)
+    #     # print(f'time for critic loss a: {time.time() - timer}')
+    #     logger.debug(f"critic loss a: {critic_loss_a}")
+    #     # timer = time.time()
+    #     critic_loss_b = F.mse_loss(targets, predictions_b)
+    #     # print(f'time for critic loss b: {time.time() - timer}')
+    #     logger.debug(f"critic loss b: {critic_loss_b}")
+        
+    #     # add losses to get total critic loss
+    #     critic_loss = critic_loss_a + critic_loss_b
+    #     logger.debug(f"combined loss: {critic_loss}")
+        
+    #     # update critics
+    #     # critic_loss_a.backward(retain_graph=True)
+    #     # critic_loss_b.backward()
+    #     # timer = time.time()
+    #     critic_loss.backward()
+    #     # print(f'time for critics backwards pass: {time.time() - timer}')
+
+    #     # Print gradients
+    #     for name, param in self.critic_model_a.named_parameters():
+    #         if param.grad is not None:
+    #             logger.debug(f"Gradient for {name}: {param.grad}")
+    #         else:
+    #             logger.degub(f"No gradient calculated for {name}")
+    #     for name, param in self.critic_model_b.named_parameters():
+    #         if param.grad is not None:
+    #             logger.debug(f"Gradient for {name}: {param.grad}")
+    #         else:
+    #             logger.debug(f"No gradient calculated for {name}")
+
+    #     # if self._use_her:
+    #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached critic optimization')
+    #         # Synchronize gradients
+    #         ## T.DIST CUDA ##
+    #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
+    #         # for param in self.critic_model.parameters():
+    #         #     if param.grad is not None:
+    #         #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
+    #         #         print(param.grad)
+    #         #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+    #                 # print(f'agent {dist.get_rank()} param grad after all reduce:')
+    #                 # print(param.grad)
+    #         #         # param.grad.data /= dist.get_world_size()
+    #         #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
+    #         #         # print(param.grad)
+
+    #     ## MPI CPU ##
+    #     if self.use_mpi:
+    #         helper.sync_grads_sum(self.critic_model_a, self.comm)
+    #         helper.sync_grads_sum(self.critic_model_b, self.comm)
+        
+    #     # timer = time.time()
+    #     self.critic_model_a.optimizer.step()
+    #     self.critic_model_b.optimizer.step()
+    #     # print(f'time to optimize critics: {time.time() - timer}')
+
+    #     self.actor_model.optimizer.zero_grad()
+    #     # timer = time.time()
+    #     pre_act_values, action_values = self.actor_model(states, desired_goals)
+    #     # print(f'time for action values: {time.time() - timer}')
+    #     # logger.debug(f"action values: {action_values}")
+    #     # print(f'Agent {dist.get_rank()}: action_values: {action_values}')
+    #     # timer = time.time()
+    #     critic_values = self.critic_model_a(states, action_values, desired_goals)
+    #     # print(f'time for critic values: {time.time() - timer}')
+    #     # logger.debug(f"critic values: {critic_values}")
+    #     # Calculate actor loss
+    #     # timer = time.time()
+    #     actor_loss = -T.mean(critic_values)
+    #     # print(f'time for actor loss: {time.time() - timer}')
+    #     # logger.debug(f"actor loss: {actor_loss}")
+    #     if self._use_her:
+    #         actor_loss += pre_act_values.pow(2).mean()
+        
+    #     # Update actor if actor update delay mod self._step = 0
+    #     if self._step % self.actor_update_delay == 0:
+    #         # logger.debug(f"updating actor: step {self._step}")
+    #         # timer = time.time()
+    #         actor_loss.backward()
+
+    #         # print gradients
+    #         for name, param in self.actor_model.named_parameters():
+    #             if param.grad is not None:
+    #                 logger.debug(f"Gradient for {name}: {param.grad}")
+    #             else:
+    #                 logger.debug(f"No gradient calculated for {name}")
+    #         # print(f'time for actor loss: {time.time() - timer}')
+    #         # if self._use_her:
+    #             # Synchronize Gradients
+    #             ## T.DIST CUDA ##
+    #             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached actor optimization')
+    #             # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
+    #             # for param in self.actor_model.parameters():
+    #             #     if param.grad is not None:
+    #                     # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
+    #                     # print(param.grad)
+    #             #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+    #             #         # print(f'agent {dist.get_rank()} param grad after reduce:')
+    #             #         # print(param.grad)
+    #             #         # print(f'agent {dist.get_rank()} world size {dist.get_world_size()}')
+    #             #         param.grad.data /= dist.get_world_size()
+    #             #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
+    #             #         # print(param.grad)
+    #         ## MPI CPU ##
+    #         if self.use_mpi:
+    #             helper.sync_grads_sum(self.actor_model, self.comm)
+            
+    #         # timer = time.time()
+    #         self.actor_model.optimizer.step()
+    #         # print(f'time to optimize actor: {time.time() - timer}')
+
+    #         # perform soft update on target networks
+    #         # timer = time.time()
+    #         self.soft_update(self.actor_model, self.target_actor_model)
+    #         self.soft_update(self.critic_model_a, self.target_critic_model_a)
+    #         self.soft_update(self.critic_model_b, self.target_critic_model_b)
+    #         # print(f'time to perform soft update: {time.time() - timer}')
+
+    #     # add metrics to step_logs
+    #     self._train_step_config['actor_predictions'] = action_values.mean()
+    #     self._train_step_config['critic_predictions'] = critic_values.mean()
+    #     self._train_step_config['target_actor_predictions'] = target_actions.mean()
+    #     self._train_step_config['target_critic_predictions'] = target_critic_values_a.mean()
+        
+    #     return actor_loss.item(), critic_loss_a.item()
+
+    def learn(self, replay_buffer: Buffer = None,
+          state_normalizer: Union[Normalizer, SharedNormalizer] = None,
+          goal_normalizer: Union[Normalizer, SharedNormalizer] = None):
+        # Timer for the entire function
+        total_start_time = time.time()
+        
+        # Sample a batch of experiences from the replay buffer
+        sample_start_time = time.time()
+        if self._use_her:  # if using HER
             states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = replay_buffer.sample(self.batch_size)
         else:
             states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
-        # print time taking to batch sample
-        # print(f'time to sample batch: {time.time() - timer}')
-        # normalize states if self.normalize_inputs
-        if self.normalize_inputs:
+        # print(f'Time to sample batch: {time.time() - sample_start_time} seconds')
+        
+        # Normalize states if self.normalize_inputs
+        normalize_start_time = time.time()
+        if self.normalize_inputs==True:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
-
-        # (HER) Use passed normalizers to normalize states and goals
-        if self._use_her:
+        if self._use_her==True:
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
-        
-        # time conversion to tensors
-        # timer = time.time()
-        # Convert to tensors
-        states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
-        actions = T.tensor(actions, dtype=T.float32, device=self.actor_model.device)
-        rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
-        next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
-        dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
-        logger.debug(f"states: {states}")
-        logger.debug(f"actions: {actions}")
-        logger.debug(f"rewards: {rewards}")
-        logger.debug(f"next states: {next_states}")
-        logger.debug(f"dones: {dones}")
-        # if using HER, convert desired goals to tensors
-        if self._use_her:
-            desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
         else:
-            # set desired goals to None
             desired_goals = None
-        # print time to convert to tensors
-        # print(f'time to convert to tensors: {time.time() - timer}')
+        # print(f'Time to normalize inputs: {time.time() - normalize_start_time} seconds')
 
-        # permute states and next states if using cnn
+        # Permute states and next states if using CNN
+        permute_start_time = time.time()
         if self.actor_model.cnn_model:
             states = states.permute(0, 3, 1, 2)
             next_states = next_states.permute(0, 3, 1, 2)
+        # print(f'Time to permute states: {time.time() - permute_start_time} seconds')
 
-        # convert rewards and dones to 2d tensors
+        # Convert rewards and dones to 2D tensors
+        conversion_start_time = time.time()
         rewards = rewards.unsqueeze(1)
         dones = dones.unsqueeze(1)
+        # print(f'Time to convert rewards and dones: {time.time() - conversion_start_time} seconds')
 
-        # with T.no_grad():
-        # get target values
-        # timer = time.time()
-        _, target_actions = self.target_actor_model(next_states, desired_goals)
-        # print(f'time to get target actions: {time.time() - timer}')
-        logger.debug(f"target actions: {target_actions}")
-        # Add gaussian noise to target actions
-        # timer = time.time()
-        noise = self.target_action_noise()
-        # print(f'time to get noise: {time.time() - timer}')
-        logger.debug(f"target action noise: {noise}")
-        # timer = time.time()
-        target_actions = target_actions + T.clamp(noise, min=-self.target_action_clip, max=self.target_action_clip)
-        # print(f'time add noise: {time.time() - timer}')
-        logger.debug(f"target actions after added noise: {target_actions}")
-        # Clamp targets between target action clip values
-        # timer = time.time()
-        target_actions = T.clamp(target_actions, min=T.tensor(self.env.action_space.low[0], dtype=T.float, device=self.device), max=T.tensor(self.env.action_space.high[0], dtype=T.float, device=self.device))
-        # print(f'time to clamp target actions: {time.time() - timer}')
-        logger.debug(f"target actions after clamped: {target_actions}")
-        # print(f'Agent {dist.get_rank()}: target_actions: {target_actions}')
-        # timer = time.time()
-        target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
-        # print(f'time to get critic a values: {time.time() - timer}')
-        logger.debug(f"target critic a values: {target_critic_values_a}")
-        # print(f'Agent {dist.get_rank()}: target_critic_values_a: {target_critic_values_a}')
-        # timer = time.time()
-        target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
-        # print(f'time to get critic b values: {time.time() - timer}')
-        logger.debug(f"target critic b values: {target_critic_values_b}")
-        # Take minimum target critic value and set it as critic value
-        # timer = time.time()
-        target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
-        # print(f'time to get min of critic values: {time.time() - timer}')
-        logger.debug(f"minimum target critic values: {target_critic_values}")
-        # print(f'Agent {dist.get_rank()}: target_critic_values_b: {target_critic_values_b}')
-        # timer = time.time()
-        targets = rewards + self.discount * target_critic_values * (1 - dones)
-        # print(f'time to calc targets: {time.time() - timer}')
-        logger.debug(f"target: {targets}")
+        # Get target values
+        target_start_time = time.time()
+        with T.no_grad():
+            _, target_actions = self.target_actor_model(next_states, desired_goals)
+            noise = (T.randn_like(target_actions) * self.target_noise_stddev).clamp(-self.target_noise_clip, self.target_noise_clip)
+            target_actions = (target_actions + noise).clamp(self.env.action_space.low[0], self.env.action_space.high[0])
+            # target_actions = T.clamp(target_actions, min=T.tensor(self.env.action_space.low[0], dtype=T.float, device=self.device), max=T.tensor(self.env.action_space.high[0], dtype=T.float, device=self.device))
+            target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
+            target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
+            target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
+            #DEBUG
+            # print(f'rewards device:{rewards.device}')
+            # print(f'target critic values device:{target_critic_values.device}')
+            targets = rewards + (1 - dones) * self.discount * target_critic_values
+            if self._use_her:
+                targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
+        # print(f'Time to get target values: {time.time() - target_start_time} seconds')
 
-        if self._use_her:
-            targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
-
+        # Zero gradients for the optimizers
+        zero_grad_start_time = time.time()
         self.critic_model_a.optimizer.zero_grad()
         self.critic_model_b.optimizer.zero_grad()
+        # print(f'Time to zero gradients: {time.time() - zero_grad_start_time} seconds')
 
-        # get current critic values and calculate critic losses
-        # timer = time.time()
+        # Get current critic values and calculate critic losses
+        critic_loss_start_time = time.time()
         predictions_a = self.critic_model_a(states, actions, desired_goals)
-        # print(f'time for predictions a: {time.time() - timer}')
-        logger.debug(f"predictions a: {predictions_a}")
-        # timer = time.time()
         predictions_b = self.critic_model_b(states, actions, desired_goals)
-        # print(f'time for predictions b: {time.time() - timer}')
-        logger.debug(f"predictions b: {predictions_b}")
-        # timer = time.time()
-        critic_loss_a = F.mse_loss(targets, predictions_a)
-        # print(f'time for critic loss a: {time.time() - timer}')
-        logger.debug(f"critic loss a: {critic_loss_a}")
-        # timer = time.time()
-        critic_loss_b = F.mse_loss(targets, predictions_b)
-        # print(f'time for critic loss b: {time.time() - timer}')
-        logger.debug(f"critic loss b: {critic_loss_b}")
-        
-        # add losses to get total critic loss
-        critic_loss = critic_loss_a + critic_loss_b
-        logger.debug(f"combined loss: {critic_loss}")
-        
-        # update critics
-        # critic_loss_a.backward(retain_graph=True)
-        # critic_loss_b.backward()
-        # timer = time.time()
+        # critic_loss_a = F.mse_loss(predictions_a, targets)
+        # critic_loss_b = F.mse_loss(predictions_b, targets)
+        critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
+        # print(f'Time to calculate critic losses: {time.time() - critic_loss_start_time} seconds')
+
+        # Backward pass and optimization for critics
+        critic_backward_start_time = time.time()
         critic_loss.backward()
-        # print(f'time for critics backwards pass: {time.time() - timer}')
-
-        # Print gradients
-        for name, param in self.critic_model_a.named_parameters():
-            if param.grad is not None:
-                logger.debug(f"Gradient for {name}: {param.grad}")
-            else:
-                logger.degub(f"No gradient calculated for {name}")
-        for name, param in self.critic_model_b.named_parameters():
-            if param.grad is not None:
-                logger.debug(f"Gradient for {name}: {param.grad}")
-            else:
-                logger.debug(f"No gradient calculated for {name}")
-
-        # if self._use_her:
-            # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached critic optimization')
-            # Synchronize gradients
-            ## T.DIST CUDA ##
-            # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
-            # for param in self.critic_model.parameters():
-            #     if param.grad is not None:
-            #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
-            #         print(param.grad)
-            #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                    # print(f'agent {dist.get_rank()} param grad after all reduce:')
-                    # print(param.grad)
-            #         # param.grad.data /= dist.get_world_size()
-            #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
-            #         # print(param.grad)
-
-        ## MPI CPU ##
-        if self.use_mpi:
+        if self.use_mpi==True:
             helper.sync_grads_sum(self.critic_model_a, self.comm)
             helper.sync_grads_sum(self.critic_model_b, self.comm)
-        
-        # timer = time.time()
         self.critic_model_a.optimizer.step()
         self.critic_model_b.optimizer.step()
-        # print(f'time to optimize critics: {time.time() - timer}')
+        # print(f'Time for critic backward pass and optimization: {time.time() - critic_backward_start_time} seconds')
 
+        # Zero gradients for the actor optimizer
+        actor_zero_grad_start_time = time.time()
         self.actor_model.optimizer.zero_grad()
-        # timer = time.time()
+        # print(f'Time to zero actor gradients: {time.time() - actor_zero_grad_start_time} seconds')
+
+        # Get current actor values and calculate actor loss
+        actor_loss_start_time = time.time()
         pre_act_values, action_values = self.actor_model(states, desired_goals)
-        # print(f'time for action values: {time.time() - timer}')
-        # logger.debug(f"action values: {action_values}")
-        # print(f'Agent {dist.get_rank()}: action_values: {action_values}')
-        # timer = time.time()
         critic_values = self.critic_model_a(states, action_values, desired_goals)
-        # print(f'time for critic values: {time.time() - timer}')
-        # logger.debug(f"critic values: {critic_values}")
-        # Calculate actor loss
-        # timer = time.time()
         actor_loss = -T.mean(critic_values)
-        # print(f'time for actor loss: {time.time() - timer}')
-        # logger.debug(f"actor loss: {actor_loss}")
-        if self._use_her:
+        if self._use_her==True:
             actor_loss += pre_act_values.pow(2).mean()
-        
-        # Update actor if actor update delay mod self._step = 0
+        # print(f'Time to calculate actor loss: {time.time() - actor_loss_start_time} seconds')
+
+        # Backward pass and optimization for the actor
+        actor_backward_start_time = time.time()
         if self._step % self.actor_update_delay == 0:
-            # logger.debug(f"updating actor: step {self._step}")
-            # timer = time.time()
             actor_loss.backward()
-
-            # print gradients
-            for name, param in self.actor_model.named_parameters():
-                if param.grad is not None:
-                    logger.debug(f"Gradient for {name}: {param.grad}")
-                else:
-                    logger.debug(f"No gradient calculated for {name}")
-            # print(f'time for actor loss: {time.time() - timer}')
-            # if self._use_her:
-                # Synchronize Gradients
-                ## T.DIST CUDA ##
-                # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached actor optimization')
-                # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
-                # for param in self.actor_model.parameters():
-                #     if param.grad is not None:
-                        # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
-                        # print(param.grad)
-                #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                #         # print(f'agent {dist.get_rank()} param grad after reduce:')
-                #         # print(param.grad)
-                #         # print(f'agent {dist.get_rank()} world size {dist.get_world_size()}')
-                #         param.grad.data /= dist.get_world_size()
-                #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
-                #         # print(param.grad)
-            ## MPI CPU ##
-            if self.use_mpi:
+            if self.use_mpi==True:
                 helper.sync_grads_sum(self.actor_model, self.comm)
-            
-            # timer = time.time()
             self.actor_model.optimizer.step()
-            # print(f'time to optimize actor: {time.time() - timer}')
-
-            # perform soft update on target networks
-            # timer = time.time()
             self.soft_update(self.actor_model, self.target_actor_model)
             self.soft_update(self.critic_model_a, self.target_critic_model_a)
             self.soft_update(self.critic_model_b, self.target_critic_model_b)
-            # print(f'time to perform soft update: {time.time() - timer}')
+        # print(f'Time for actor backward pass and optimization: {time.time() - actor_backward_start_time} seconds')
 
-        # add metrics to step_logs
+        # Total time for the learn function
+        # print(f'Total time for learn function: {time.time() - total_start_time} seconds')
+
+        # Add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
         self._train_step_config['critic_predictions'] = critic_values.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
         self._train_step_config['target_critic_predictions'] = target_critic_values_a.mean()
-        
-        return actor_loss.item(), critic_loss_a.item()
+
+        return actor_loss.item(), critic_loss.item()
         
     
     def soft_update(self, current, target):
@@ -3042,8 +3170,8 @@ class TD3(Agent):
                 replay_buffer = replay_buffer,
                 batch_size = config[model_type][f"{model_type}_batch_size"],
                 noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
-                target_action_stddev = config[model_type][f"{model_type}_target_action_stddev"],
-                target_action_clip = config[model_type][f"{model_type}_target_action_clip"],
+                target_noise_stddev = config[model_type][f"{model_type}_target_action_stddev"],
+                target_noise_clip = config[model_type][f"{model_type}_target_action_clip"],
                 actor_update_delay = config[model_type][f"{model_type}_actor_update_delay"],
                 warmup = config[model_type][f"{model_type}_warmup"],
                 callbacks = callbacks,
@@ -3207,7 +3335,7 @@ class TD3(Agent):
                 episode_steps += 1
                 
                 # check if enough samples in replay buffer and if so, learn from experiences
-                if self.replay_buffer.counter > self.batch_size:
+                if self.replay_buffer.counter > self.batch_size and self.replay_buffer.counter > self.warmup:
                     learn_time = time.time()
                     actor_loss, critic_loss = self.learn()
                     self._train_step_config["actor_loss"] = actor_loss
@@ -3290,7 +3418,7 @@ class TD3(Agent):
         self.env.close()
 
        
-    def test(self, num_episodes, render, render_freq, save_dir):
+    def test(self, num_episodes, render, render_freq, save_dir=None):
         """Runs a test over 'num_episodes'."""
 
         # set model in eval mode
@@ -3299,10 +3427,10 @@ class TD3(Agent):
         self.critic_model_b.eval()
 
         # Update save_dir if passed
-        if save_dir is not None and save_dir.split("/")[-2] != "ddpg":
-            self.save_dir = save_dir + "/ddpg/"
+        if save_dir is not None and save_dir.split("/")[-2] != "td3":
+            self.save_dir = save_dir + "/td3/"
             print(f'new save dir: {self.save_dir}')
-        elif save_dir is not None and save_dir.split("/")[-2] == "ddpg":
+        elif save_dir is not None and save_dir.split("/")[-2] == "td3":
             self.save_dir = save_dir
             print(f'new save dir: {self.save_dir}')
 
@@ -3330,7 +3458,7 @@ class TD3(Agent):
                 episode_reward = 0
                 while not done:
                     action = self.get_action(state, test=True)
-                    next_state, reward, term, trunc, _ = self.env.step(action.numpy(force=True))
+                    next_state, reward, term, trunc, _ = self.env.step(action)
                     # extract observation from next state if next_state is dict (robotics)
                     if isinstance(next_state, dict):
                         next_state = next_state['observation']
@@ -3364,7 +3492,7 @@ class TD3(Agent):
     def get_config(self):
         return {
                 "agent_type": self.__class__.__name__,
-                "env": self.env.spec.to_json(),
+                "env": serialize_env_spec(self.env.spec),
                 "actor_model": self.actor_model.get_config(),
                 "critic_model": self.critic_model_a.get_config(),
                 "discount": self.discount,
@@ -3373,8 +3501,8 @@ class TD3(Agent):
                 "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
                 "batch_size": self.batch_size,
                 "noise": self.noise.get_config(),
-                "target_action_stddev": self.target_action_stddev,
-                "target_action_clip": self.target_action_clip,
+                "target_noise_stddev": self.target_noise_stddev,
+                "target_noise_clip": self.target_noise_clip,
                 "actor_update_delay": self.actor_update_delay,
                 'normalize_inputs': self.normalize_inputs,
                 # 'normalize_kwargs': self.normalize_kwargs,
@@ -3382,7 +3510,8 @@ class TD3(Agent):
                 'normalizer_eps': self.normalizer_eps,
                 'warmup': self.warmup,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
-                "save_dir": self.save_dir
+                "save_dir": self.save_dir,
+                "device": self.device,
             }
 
 
@@ -3400,7 +3529,7 @@ class TD3(Agent):
 
         # writes and saves JSON file of DDPG agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
+            json.dump(config, f, cls=CustomJSONEncoder)
 
         # saves policy and value model
         self.actor_model.save(self.save_dir)
@@ -3426,28 +3555,28 @@ class TD3(Agent):
         # ) as f:
         #     config = json.load(f)
 
+        # create EnvSpec from config
+        env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
+
         # load policy model
         actor_model = models.ActorModel.load(config['save_dir'], load_weights)
         # load value model
         critic_model = models.CriticModel.load(config['save_dir'], load_weights)
         # load replay buffer if not None
         if config['replay_buffer'] is not None:
-            config['replay_buffer']['config']['env'] = gym.make(config['env'])
+            config['replay_buffer']['config']['env'] = gym.make(env_spec)
             replay_buffer = helper.ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
         # load noise
         noise = helper.Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
-        # if normalizer, load
-        normalize_inputs = config['normalize_inputs']
-        # normalize_kwargs = obj_config['normalize_kwargs']
-        normalizer_clip = config['normalizer_clip']
         # load callbacks
         callbacks = [rl_callbacks.load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]
 
-        # return DDPG agent
+        # return TD3 agent
         agent = cls(
-            gym.make(gym.envs.registration.EnvSpec.from_json(config["env"])),
+            gym.make(env_spec),
             actor_model = actor_model,
             critic_model = critic_model,
             discount=config["discount"],
@@ -3456,11 +3585,15 @@ class TD3(Agent):
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             noise=noise,
-            normalize_inputs = normalize_inputs,
-            # normalize_kwargs = normalize_kwargs,
-            normalizer_clip = normalizer_clip,
+            target_noise_stddev = config['target_noise_stddev'],
+            target_noise_clip = config['target_noise_clip'],
+            actor_update_delay = config['actor_update_delay'],
+            normalize_inputs = config['normalize_inputs'],
+            normalizer_clip = config['normalizer_clip'],
+            warmup = config['warmup'],
             callbacks=callbacks,
             save_dir=config["save_dir"],
+            device=config["device"],
         )
 
         if agent.normalize_inputs:
@@ -3896,8 +4029,8 @@ class HER(Agent):
                     replay_buffer = None,
                     batch_size = config[model_type][f"{model_type}_batch_size"],
                     noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
-                    target_action_stddev= config[model_type][f"{model_type}_target_action_stddev"],
-                    target_action_clip= config[model_type][f"{model_type}_target_action_clip"],
+                    target_noise_stddev= config[model_type][f"{model_type}_target_action_stddev"],
+                    target_noise_clip= config[model_type][f"{model_type}_target_action_clip"],
                     actor_update_delay= config[model_type][f"{model_type}_actor_update_delay"],
                     callbacks = callbacks,
                     comm = comm

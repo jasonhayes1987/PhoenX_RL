@@ -38,7 +38,6 @@ class Model(nn.Module):
                     _, _, init_config = layer_config[config_index]
                 elif isinstance(layer_config, dict) or isinstance(layer_config, str):
                     init_config=layer_config
-                    # print(f'init config: {init_config}')
 
                 ##DEBUG
                 # print(f'{layer_name} using {init_config} for {layer}')
@@ -370,10 +369,10 @@ class ValueModel(Model):
     def __init__(
         self,
         env: gym.Env,
-        dense_layers: List[Tuple[int, str, str]] = None,
+        dense_layers: List[Tuple[int, str, dict]] = [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})],
         optimizer: str = 'Adam',
         optimizer_params:dict={},
-        learning_rate: float = 0.0001,
+        learning_rate: float = 0.001,
     ):
         super().__init__()
         self.env = env
@@ -545,7 +544,13 @@ class ValueModel(Model):
     def get_config(self):
         """Get model config."""
 
-        config = self.get_config()
+        config = {
+            'env': self.env.spec.id,
+            'num_layers': len(self.dense_layers),
+            'dense_layers': self.layer_config,
+            'optimizer': self.optimizer_class,
+            'learning_rate': self.learning_rate,
+        }
 
         return config
 
@@ -578,14 +583,18 @@ class ValueModel(Model):
         if config_path.is_file():
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-            env = config.get("env")
-            dense_layers = config.get("dense_layers")
-            optimizer = config.get("optimizer")
-            learning_rate = config.get("learning_rate")
+            # env = config.get("env")
+            # dense_layers = config.get("dense_layers", [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})])
+            # optimizer = config.get("optimizer")
+            # learning_rate = config.get("learning_rate")
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        model = cls(env, dense_layers, optimizer, learning_rate)
+        model = cls(env = config["env"],
+                    dense_layers = config.get("dense_layers", [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})]),
+                    optimizer = config.get("optimizer", "Adam"),
+                    learning_rate = config.get("learning_rate", 0.001)
+                    )
 
         # Load weights if True
         if load_weights:
@@ -596,8 +605,17 @@ class ValueModel(Model):
 
 class ActorModel(Model):
     
-    def __init__(self, env, cnn_model=None, dense_layers=None, output_layer_kernel:dict=None, goal_shape:tuple=None, optimizer: str = 'Adam',
-                 optimizer_params:dict={}, learning_rate=0.0001, normalize_layers:bool=False, device=None):
+    def __init__(self,
+                 env,
+                 cnn_model = None,
+                 dense_layers: List[Tuple[int, str, dict]] = [(400,"relu",{"default":{}}),(300,"relu",{"default":{}})],
+                 output_layer_kernel: dict = {"default":{}},
+                 goal_shape: tuple = None,
+                 optimizer: str = 'Adam',
+                 optimizer_params: dict = {},
+                 learning_rate = 0.001,
+                 normalize_layers: bool = False,
+                 device = None):
         super().__init__()
         self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         self.env = env
@@ -668,7 +686,7 @@ class ActorModel(Model):
         # Initialize weights
         self._init_weights(self.dense_layers, self.layer_config)
 
-        # add output layer to dict
+        # add output layers to dicts
         self.output_layer['actor_dense_output'] = nn.Linear(input_size, env.action_space.shape[0])
         self.output_activation['actor_output_activation'] = nn.Tanh()
 
@@ -724,7 +742,7 @@ class ActorModel(Model):
 
     def get_config(self):
         config = {
-            'env': self.env.spec.id if hasattr(self.env, 'spec') else 'Custom/UnknownEnv',
+            'env': self.env.spec.id,
             'cnn_model': self.cnn_model.get_config() if self.cnn_model is not None else None,
             'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
@@ -734,7 +752,7 @@ class ActorModel(Model):
             'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
             'normalize_layers': self.normalize_layers,
-            # 'clamp_output': self.clamp_output,
+            'device': self.device,
         }
 
         return config
@@ -791,18 +809,28 @@ class ActorModel(Model):
             cnn_model = config.get("cnn_model", None)
             if cnn_model:
                 cnn_model = cnn_models.CNN(cnn_model['layers'], env)
-            dense_layers = config.get("dense_layers")
-            output_layer_kernel = config.get("output_layer_kernel")
-            goal_shape = config.get("goal_shape", None)
-            optimizer = config.get("optimizer")
-            optimizer_params = config.get("optimizer_params")
-            learning_rate = config.get("learning_rate")
-            normalize = config.get("normalize", False)
-            # clamp_output = config.get("clamp_output", None)
+            # dense_layers = config.get("dense_layers")
+            # output_layer_kernel = config.get("output_layer_kernel")
+            # goal_shape = config.get("goal_shape", None)
+            # optimizer = config.get("optimizer")
+            # optimizer_params = config.get("optimizer_params")
+            # learning_rate = config.get("learning_rate")
+            # normalize = config.get("normalize", False)
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        actor_model = cls(env, cnn_model, dense_layers, output_layer_kernel, goal_shape, optimizer, optimizer_params, learning_rate, normalize, clamp_output)
+        actor_model = cls(
+            env=env,
+            cnn_model=cnn_model,
+            dense_layers=config.get("dense_layers", [(400,"relu",{"default":{}}),(300,"relu",{"default":{}})]),
+            output_layer_kernel=config.get("output_layer_kernel", {"default":{}}),
+            goal_shape=config.get("goal_shape", None),
+            optimizer=config.get("optimizer", "Adam"),
+            optimizer_params=config.get("optimizer_params", {}),
+            learning_rate=config.get("learning_rate", 0.001),
+            normalize_layers=config.get("normalize_layers", False),
+            device=config.get("device", None),
+            )
         
         # Load weights if True
         if load_weights:
@@ -812,9 +840,19 @@ class ActorModel(Model):
 
 
 class CriticModel(Model):
-    def __init__(self, env, cnn_model=None, state_layers=None, merged_layers=None, output_layer_kernel:dict=None,
-                 goal_shape:tuple=None, optimizer: str = 'Adam', optimizer_params:dict={},
-                 learning_rate=0.001, normalize_layers:bool=False, device=None):
+    def __init__(self,
+                 env,
+                 cnn_model = None,
+                 state_layers: List[Tuple[int, str, dict]] = [(400,"relu",{"default":{}})],
+                 merged_layers: list = [(300,"relu",{"default":{}})],
+                 output_layer_kernel: dict = {"default":{}},
+                 goal_shape: tuple = None,
+                 optimizer: str = 'Adam',
+                 optimizer_params: dict = {},
+                 learning_rate = 0.001,
+                 normalize_layers: bool = False,
+                 device = None
+                 ):
         super().__init__()
         self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         self.env = env
@@ -942,7 +980,7 @@ class CriticModel(Model):
 
     def get_config(self):
         config = {
-            'env': self.env.spec.id if hasattr(self.env, 'spec') and hasattr(self.env.spec, 'id') else 'Custom/UnknownEnv',
+            'env': self.env.spec.id,
             'cnn_model': self.cnn_model.get_config() if self.cnn_model is not None else None,
             'num_layers': len(self.state_layers) + len(self.merged_layers),
             'state_layers': self.state_config,
@@ -953,6 +991,7 @@ class CriticModel(Model):
             'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
             'normalize_layers': self.normalize_layers,
+            'device': self.device,
         }
 
         return config
@@ -1012,18 +1051,29 @@ class CriticModel(Model):
             cnn_model = config.get("cnn_model", None)
             if cnn_model:
                 cnn_model = cnn_models.CNN(cnn_model['layers'], env)
-            state_layers = config.get("state_layers")
-            merged_layers = config.get("merged_layers")
-            output_layer_kernel = config.get("output_layer_kernel")
-            goal_shape = config.get("goal_shape", None)
-            optimizer = config.get("optimizer")
-            learning_rate = config.get("learning_rate")
-            optimizer_params = config.get("optimizer_params")
-            normalize = config.get("normalize", False)
+            # state_layers = config.get("state_layers")
+            # merged_layers = config.get("merged_layers")
+            # output_layer_kernel = config.get("output_layer_kernel")
+            # goal_shape = config.get("goal_shape", None)
+            # optimizer = config.get("optimizer")
+            # learning_rate = config.get("learning_rate")
+            # optimizer_params = config.get("optimizer_params")
+            # normalize = config.get("normalize", False)
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        model = cls(env, cnn_model, state_layers, merged_layers, output_layer_kernel, goal_shape, optimizer, optimizer_params, learning_rate, normalize)
+        model = cls(env=env,
+                    cnn_model=cnn_model,
+                    state_layers=config.get("state_layers", [(400,"relu",{"default":{}})]),
+                    merged_layers=config.get("merged_layers", [(300,"relu",{"default":{}})]),
+                    output_layer_kernel=config.get("output_layer_kernel", {"default":{}}),
+                    goal_shape=config.get("goal_shape", None),
+                    optimizer=config.get("optimizer", "Adam"),
+                    optimizer_params=config.get("optimizer_params", {}),
+                    learning_rate=config.get("learning_rate", 0.001),
+                    normalize_layers=config.get("normalize", False),
+                    device=config.get("device", None)
+                    )
         
         # Load weights if True
         if load_weights:

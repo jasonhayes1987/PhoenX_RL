@@ -1,0 +1,100 @@
+# Use the CUDA 12.5 base image
+FROM nvidia/cuda:12.5.1-cudnn-runtime-ubuntu22.04
+
+# Install necessary system packages
+RUN apt-get update && apt-get install -y \
+    sudo \
+    wget \
+    build-essential \
+    htop \
+    git \
+    swig \
+    cmake \
+    gcc \
+    libglfw3-dev \
+    libglew-dev \
+    libopengl0 \
+    python3-opengl \
+    libglu1-mesa-dev \
+    libgl1-mesa-dev \
+    libosmesa6-dev \
+    python3-opengl \
+    patchelf \
+    ffmpeg \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    gdb \
+    mesa-utils libgl1-mesa-glx \
+    libsdl2-dev \
+    libsdl2-image-dev \
+    libsdl2-mixer-dev \
+    libsdl2-ttf-dev \
+    libfreetype6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Miniconda
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh && \
+    bash ~/miniconda.sh -b -p /opt/conda && \
+    rm ~/miniconda.sh && \
+    /opt/conda/bin/conda init
+
+# Set PATH to include conda
+ENV PATH /opt/conda/bin:$PATH
+
+# Create a conda environment
+RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda create -n myenv python=3.10 -y"
+
+# Initialize conda for the current shell
+RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda init"
+
+# Install specific versions of PyTorch in the conda environment
+RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate myenv && conda install pytorch=2.0.1 torchvision=0.15.2 torchaudio=2.0.2 magma-cuda124 -c pytorch"
+
+# Install libstdcxx-ng from conda-forge
+RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate myenv && conda install -y -c conda-forge libstdcxx-ng=12.2.0"
+
+# Ignore uninstall of blinker
+RUN pip install --ignore-installed blinker
+
+# Copy over requirements for RL API and app
+COPY src/requirements.txt .
+
+# Activate the conda environment and install packages in requirements
+RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate myenv && pip install --no-cache-dir -r requirements.txt"
+
+# Install mpi4py compatible with Python 3.10
+RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate myenv && conda install -y mpi4py=3.1.4"
+
+# Uninstall mujoco-py
+RUN pip uninstall mujoco-py -y
+
+# # Get and install Mujoco
+# RUN mkdir -p /root/.mujoco && \
+#     wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz && \
+#     tar -xf mujoco.tar.gz -C /root/.mujoco && \
+#     rm mujoco.tar.gz && \
+#     echo "export LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:$LD_LIBRARY_PATH" >> /root/.bashrc && \
+#     echo "export LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:$LD_LIBRARY_PATH" >> /root/.profile && \
+#     ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1.4 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 && \
+#     ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so
+
+# Set environment variables
+# ENV MUJOCO_GL=egl
+# ENV PYOPENGL_PLATFORM=egl
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Pull most recent robotics repo (pip install seems outdated 1.2.4)
+# RUN mkdir -p /tmp/robotics && \
+#     git clone https://github.com/Farama-Foundation/Gymnasium-Robotics.git && \
+#     cd Gymnasium-Robotics && \
+#     pip install -e .
+
+# Set working directory
+WORKDIR /app
+
+# Copy your app from your host to the container
+COPY src/ /
