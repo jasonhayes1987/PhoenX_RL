@@ -1,0 +1,477 @@
+{
+    "method": "bayes",
+    "project": "LunarLander-v2-continuous",
+    "name": "Alpha",
+    "metric": {
+        "name": "episode_reward",
+        "goal": "maximize"
+    },
+    "parameters": {
+        "env": {
+            "parameters": {
+                "id": {
+                    "value": "LunarLander-v2"
+                },
+                "continuous": {
+                    "value": true
+                },
+                "gravity": {
+                    "value": -10
+                },
+                "enable_wind": {
+                    "value": false
+                },
+                "wind_power": {
+                    "value": 15
+                },
+                "turbulence_power": {
+                    "value": 1.5
+                }
+            }
+        },
+        "model_type": {
+            "values": [
+                "TD3"
+            ]
+        },
+        "TD3": {
+            "parameters": {
+                "TD3_actor_learning_rate": {
+                    "values": [
+                        0.001,
+                        0.0001,
+                        1e-05
+                    ]
+                },
+                "TD3_critic_learning_rate": {
+                    "values": [
+                        0.001,
+                        0.0001,
+                        1e-05
+                    ]
+                },
+                "TD3_discount": {
+                    "values": [
+                        0.9,
+                        0.99
+                    ]
+                },
+                "TD3_tau": {
+                    "values": [
+                        0.001,
+                        0.005,
+                        0.01
+                    ]
+                },
+                "TD3_epsilon_greedy": {
+                    "values": [
+                        0,
+                        0.1,
+                        0.2
+                    ]
+                },
+                "TD3_warmup": {
+                    "values": [
+                        500,
+                        1000
+                    ]
+                },
+                "TD3_normalize_input": {
+                    "values": [
+                        "True",
+                        "False"
+                    ]
+                },
+                "TD3_normalizer_clip": {
+                    "values": [
+                        5
+                    ]
+                },
+                "TD3_replay_buffer_size": {
+                    "values": [
+                        1000000
+                    ]
+                },
+                "TD3_device": {
+                    "value": "cpu"
+                },
+                "TD3_actor_num_cnn_layers": {
+                    "value": 0
+                },
+                "TD3_actor_num_layers": {
+                    "min": 2,
+                    "max": 3
+                },
+                "TD3_actor_activation": {
+                    "values": [
+                        "relu"
+                    ]
+                },
+                "TD3_actor_hidden_kernel_initializer": {
+                    "values": [
+                        "default",
+                        "kaiming_uniform",
+                        "kaiming_normal",
+                        "variance_scaling"
+                    ]
+                },
+                "TD3_actor_hidden_kernel_kaiming_uniform": {
+                    "parameters": {
+                        "kaiming_uniform_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_actor_hidden_kernel_kaiming_normal": {
+                    "parameters": {
+                        "kaiming_normal_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_actor_hidden_kernel_variance_scaling": {
+                    "parameters": {
+                        "variance_scaling_scale": {
+                            "values": [
+                                1,
+                                2
+                            ]
+                        },
+                        "variance_scaling_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out",
+                                "fan_avg"
+                            ]
+                        },
+                        "variance_scaling_distribution": {
+                            "values": [
+                                "truncated normal",
+                                "uniform"
+                            ]
+                        }
+                    }
+                },
+                "TD3_actor_output_kernel_initializer": {
+                    "values": [
+                        "default",
+                        "kaiming_uniform",
+                        "kaiming_normal",
+                        "uniform"
+                    ]
+                },
+                "TD3_actor_output_kernel_kaiming_uniform": {
+                    "parameters": {
+                        "kaiming_uniform_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_actor_output_kernel_kaiming_normal": {
+                    "parameters": {
+                        "kaiming_normal_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_actor_output_kernel_uniform": {
+                    "parameters": {
+                        "uniform_maxval": {
+                            "values": [
+                                0.1,
+                                0.3,
+                                0.5
+                            ]
+                        },
+                        "uniform_minval": {
+                            "values": [
+                                -0.1,
+                                -0.3,
+                                -0.5
+                            ]
+                        }
+                    }
+                },
+                "TD3_actor_optimizer": {
+                    "values": [
+                        "Adam"
+                    ]
+                },
+                "TD3_actor_optimizer_Adam_options": {
+                    "parameters": {
+                        "Adam_weight_decay": {
+                            "values": [
+                                0,
+                                0.1
+                            ]
+                        }
+                    }
+                },
+                "TD3_actor_normalize_layers": {
+                    "values": [
+                        true,
+                        false
+                    ]
+                },
+                "TD3_critic_num_cnn_layers": {
+                    "value": 0
+                },
+                "TD3_critic_state_num_layers": {
+                    "min": 0,
+                    "max": 2
+                },
+                "TD3_critic_merged_num_layers": {
+                    "min": 1,
+                    "max": 2
+                },
+                "TD3_critic_activation": {
+                    "values": [
+                        "relu"
+                    ]
+                },
+                "TD3_critic_hidden_kernel_initializer": {
+                    "values": [
+                        "default",
+                        "kaiming_uniform",
+                        "kaiming_normal",
+                        "variance_scaling"
+                    ]
+                },
+                "TD3_critic_hidden_kernel_kaiming_uniform": {
+                    "parameters": {
+                        "kaiming_uniform_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_critic_hidden_kernel_kaiming_normal": {
+                    "parameters": {
+                        "kaiming_normal_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_critic_hidden_kernel_variance_scaling": {
+                    "parameters": {
+                        "variance_scaling_scale": {
+                            "values": [
+                                1,
+                                2
+                            ]
+                        },
+                        "variance_scaling_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out",
+                                "fan_avg"
+                            ]
+                        },
+                        "variance_scaling_distribution": {
+                            "values": [
+                                "truncated normal",
+                                "uniform"
+                            ]
+                        }
+                    }
+                },
+                "TD3_critic_output_kernel_initializer": {
+                    "values": [
+                        "default",
+                        "kaiming_uniform",
+                        "kaiming_normal",
+                        "uniform"
+                    ]
+                },
+                "TD3_critic_output_kernel_kaiming_uniform": {
+                    "parameters": {
+                        "kaiming_uniform_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_critic_output_kernel_kaiming_normal": {
+                    "parameters": {
+                        "kaiming_normal_mode": {
+                            "values": [
+                                "fan_in",
+                                "fan_out"
+                            ]
+                        }
+                    }
+                },
+                "TD3_critic_output_kernel_uniform": {
+                    "parameters": {
+                        "uniform_maxval": {
+                            "values": [
+                                0.1,
+                                0.3,
+                                0.5
+                            ]
+                        },
+                        "uniform_minval": {
+                            "values": [
+                                -0.1,
+                                -0.3,
+                                -0.5
+                            ]
+                        }
+                    }
+                },
+                "TD3_critic_optimizer": {
+                    "values": [
+                        "Adam"
+                    ]
+                },
+                "TD3_critic_optimizer_Adam_options": {
+                    "parameters": {
+                        "Adam_weight_decay": {
+                            "values": [
+                                0,
+                                0.1
+                            ]
+                        }
+                    }
+                },
+                "TD3_critic_normalize_layers": {
+                    "values": [
+                        true,
+                        false
+                    ]
+                },
+                "TD3_batch_size": {
+                    "values": [
+                        128,
+                        256,
+                        512,
+                        1024
+                    ]
+                },
+                "TD3_noise": {
+                    "values": [
+                        "Normal",
+                        "Uniform"
+                    ]
+                },
+                "TD3_noise_Normal": {
+                    "parameters": {
+                        "mean": {
+                            "values": [
+                                0
+                            ]
+                        },
+                        "stddev": {
+                            "values": [
+                                0.1,
+                                0.2
+                            ]
+                        }
+                    }
+                },
+                "TD3_noise_Uniform": {
+                    "parameters": {
+                        "minval": {
+                            "values": [
+                                -0.1,
+                                -0.3
+                            ]
+                        },
+                        "maxval": {
+                            "values": [
+                                0.1,
+                                0.3
+                            ]
+                        }
+                    }
+                },
+                "actor_units_layer_1_TD3": {
+                    "values": [
+                        256,
+                        512
+                    ]
+                },
+                "actor_units_layer_2_TD3": {
+                    "values": [
+                        128,
+                        256,
+                        512
+                    ]
+                },
+                "actor_units_layer_3_TD3": {
+                    "values": [
+                        128,
+                        256
+                    ]
+                },
+                "critic_units_state_layer_1_TD3": {
+                    "values": [
+                        256,
+                        512
+                    ]
+                },
+                "critic_units_state_layer_2_TD3": {
+                    "values": [
+                        128,
+                        256,
+                        512
+                    ]
+                },
+                "critic_units_merged_layer_1_TD3": {
+                    "values": [
+                        128,
+                        256,
+                        512
+                    ]
+                },
+                "critic_units_merged_layer_2_TD3": {
+                    "values": [
+                        128,
+                        256
+                    ]
+                },
+                "TD3_save_dir": {
+                    "value": "TD3_Test"
+                },
+                "TD3_target_action_stddev": {
+                    "value": [
+                        0.1,
+                        0.2
+                    ]
+                },
+                "TD3_target_action_clip": {
+                    "value": [
+                        0.3,
+                        0.5
+                    ]
+                },
+                "TD3_actor_update_delay": {
+                    "value": [
+                        2,
+                        4,
+                        8
+                    ]
+                }
+            }
+        }
+    }
+}

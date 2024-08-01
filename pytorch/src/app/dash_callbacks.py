@@ -7,13 +7,14 @@ from queue import Empty
 import threading
 import time
 import json
+# import logging
+from logging_config import logger
 import base64
 import dash
 from dash import html, dcc, dash_table
 from dash.dependencies import Input, Output, State, MATCH, ALL
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
-from flask import request
 import numpy as np
 import io
 import ast
@@ -39,7 +40,7 @@ import models
 import cnn_models
 import rl_agents
 import wandb_support
-# import tasks
+
 
 # Create a queue to store the formatted data
 formatted_data_queue = Queue()
@@ -49,39 +50,46 @@ def fetch_data_process(project, sweep_name, shared_data):
         try:
             # print("Fetching data from wandb...")
             metrics_data = wandb_support.get_metrics(project, sweep_name)
+            logger.debug(f'fetch_data_process metrics data:{metrics_data}')
             formatted_data = wandb_support.format_metrics(metrics_data)
+            logger.debug(f'fetch_data_process formatted data:{formatted_data}')
             shared_data['formatted_data'] = formatted_data
-            # print("Data fetched and formatted successfully.")
-            time.sleep(10)  # Wait for 60 seconds before fetching data again
+            logger.debug(f"fetch_data_process shared_data[formatted_data]:{shared_data['formatted_data']}")
+            time.sleep(10)  # Wait before fetching data again
         except Exception as e:
-            print(f"Error in fetch_data_process: {str(e)}")
+            logger.error(f"Error in fetch_data_process: {str(e)}", exc_info=True)
             time.sleep(5)
 
 
 def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_threshold):
-    # while True
+    print(f'update heatmap process shared data: {shared_data}')
     try:
         if 'formatted_data' in shared_data:
             #DEBUG
-            # print(f'shared data: {shared_data}')
-            # print("Calculating co-occurrence matrix...")
             formatted_data = shared_data['formatted_data']
+            logger.debug(f'update_heatmap_process: formatted_data:{formatted_data}')
             # Convert the JSON string back to a pandas DataFrame
             # formatted_data = pd.read_json(data, orient='split')
-            #DEBUG
-            print(f'formatted data passed to wandb_support: {formatted_data}')
+            # print(f'formatted data passed to wandb_support: {formatted_data}')
             matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
-            #DEBUG
-            # print(f'bin ranges returned from wandb_support: {bin_ranges}')
+            logger.debug(f'update_heatmap_process: matrix_data:{matrix_data}')
+            logger.debug(f'update_heatmap_process: bin_ranges:{bin_ranges}')
             shared_data['matrix_data'] = matrix_data.to_dict(orient='split')
+            logger.debug(f"update_heatmap_process: shared_data[matrix_data]:{shared_data['matrix_data']}")
             shared_data['bin_ranges'] = bin_ranges
-            #DEBUG
-            # print(f'data in shared data: {shared_data}')
-            # print("Co-occurrence matrix calculated successfully.")
+            logger.debug(f"update_heatmap_process: shared_data[bin_ranges]:{shared_data['bin_ranges']}")
         # time.sleep(5)  # Wait for 5 seconds before updating the heatmap again
     except Exception as e:
         print(f"Error in update_heatmap_process: {str(e)}")
         # time.sleep(5)
+
+def run_agent(sweep_id, sweep_config, train_config):
+    wandb.agent(
+        sweep_id,
+        function=lambda: wandb_support._run_sweep(sweep_config, train_config),
+        count=train_config['num_sweeps'],
+        project=sweep_config["project"],
+    )
 
 
 def register_callbacks(app, shared_data):
@@ -801,7 +809,7 @@ def register_callbacks(app, shared_data):
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("CartPole-v1")
 
-            learning_rate=utils.get_specific_value(
+            learning_rate=10**utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='learning-rate',
@@ -989,9 +997,18 @@ def register_callbacks(app, shared_data):
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("Pendulum-v1")
 
+            # Get device
+            device = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=utils.get_specific_value(
+            actor_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1014,10 +1031,10 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            actor_initializer = utils.format_kernel_initializer_config(
+            actor_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor',
+                value_model='actor-hidden',
                 agent_type=agent_type_dropdown_value
             )
 
@@ -1032,6 +1049,8 @@ def register_callbacks(app, shared_data):
 
             if actor_conv_layers:
                 actor_cnn = cnn_models.CNN(actor_conv_layers, env)
+            else:
+                actor_cnn = None
 
 
             actor_dense_layers = models.build_layers(
@@ -1051,16 +1070,15 @@ def register_callbacks(app, shared_data):
                     model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
-                actor_initializer,
+                actor_hidden_kernel,
             )
 
-            actor_output_layer_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='actor-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
+            actor_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-output',
+                agent_type=agent_type_dropdown_value
+            )
 
             actor_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1070,36 +1088,17 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
-            actor_clamp_output = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='clamp-output',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            if actor_clamp_output:
-                clamp_value = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='clamp-value',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
-            else:
-                clamp_value = None
-
             # Create actor model
             actor_model = models.ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
-                output_layer_kernel=actor_output_layer_kernel,
+                output_layer_kernel=actor_output_kernel,
                 optimizer=actor_optimizer,
                 optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
                 normalize_layers=actor_normalize_layers,
-                clamp_output=clamp_value,
+                device=device,
             )
             
             #DEBUG
@@ -1111,7 +1110,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=utils.get_specific_value(
+            critic_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1134,10 +1133,10 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            critic_initializer = utils.format_kernel_initializer_config(
+            critic_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='critic',
+                value_model='critic-hidden',
                 agent_type=agent_type_dropdown_value
             )
             
@@ -1158,7 +1157,7 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
            
             critic_conv_layers = utils.format_cnn_layers(
@@ -1172,6 +1171,8 @@ def register_callbacks(app, shared_data):
 
             if critic_conv_layers:
                 critic_cnn = cnn_models.CNN(critic_conv_layers, env)
+            else:
+                critic_cnn = None
 
             critic_merged_layers = models.build_layers(
                 utils.format_layers(
@@ -1190,16 +1191,15 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
 
-            critic_output_layer_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='critic-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
+            critic_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-output',
+                agent_type=agent_type_dropdown_value
+            )
            
             critic_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1214,11 +1214,12 @@ def register_callbacks(app, shared_data):
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
-                output_layer_kernel=critic_output_layer_kernel,
+                output_layer_kernel=critic_output_kernel,
                 learning_rate=critic_learning_rate,
                 optimizer=critic_optimizer,
                 optimizer_params=critic_opt_params,
                 normalize_layers=critic_normalize_layers,
+                device=device,
             )
 
             #DEBUG
@@ -1287,6 +1288,14 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
+            warmup = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'warmup',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
             save_dir = utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
@@ -1302,32 +1311,33 @@ def register_callbacks(app, shared_data):
                 discount = discount,
                 tau = tau,
                 action_epsilon = epsilon,
-                replay_buffer = helper.ReplayBuffer(env, 100000),
+                replay_buffer = helper.ReplayBuffer(env, 100000, device=device),
                 batch_size = batch_size,
                 noise = noise,
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
+                warmup = warmup,
                 callbacks = utils.get_callbacks(callbacks, project),
                 save_dir = os.path.join(os.getcwd(), save_dir),
+                device=device,
             )
 
-        elif agent_type_dropdown_value == "HER_DDPG":
+        elif agent_type_dropdown_value == "TD3":
+            # set defualt gym environment in order to build policy and value models and save
+            # env = gym.make("Pendulum-v1")
 
-            # get goal and reward functions and goal shape
-            desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
-            
-            # Reset env in order to instantiate and get goal shape
-            _,_ = env.reset()
-            goal_shape = desired_goal_func(env).shape
-
-            print(f'desired goal: {desired_goal_func}')
-            print(f'achieved goal: {achieved_goal_func}')
-            print(f'reward func: {reward_func}')
-            print(f'goal shape: {goal_shape}')
+            # Get device
+            device = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=utils.get_specific_value(
+            actor_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1350,10 +1360,383 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            actor_initializer = utils.format_kernel_initializer_config(
+            actor_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor',
+                value_model='actor-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+
+            actor_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'actor',
+                agent_type_dropdown_value
+            )
+
+            if actor_conv_layers:
+                actor_cnn = cnn_models.CNN(actor_conv_layers, env)
+            else:
+                actor_cnn = None
+
+
+            actor_dense_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='actor',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                actor_hidden_kernel,
+            )
+
+            actor_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-output',
+                agent_type=agent_type_dropdown_value
+            )
+
+            actor_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='actor',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            # Create actor model
+            actor_model = models.ActorModel(
+                env=env,
+                cnn_model=actor_cnn,
+                dense_layers=actor_dense_layers,
+                output_layer_kernel=actor_output_kernel,
+                optimizer=actor_optimizer,
+                optimizer_params=actor_opt_params,
+                learning_rate=actor_learning_rate,
+                normalize_layers=actor_normalize_layers,
+                device=device,
+            )
+            
+            #DEBUG
+            # print(f'actor cnn model: {actor_cnn}')
+            # print(f'actor dense layers: {actor_dense_layers}')
+            # print(f'actor optimizer: {actor_optimizer}')
+            # print(f'actor learning rate: {actor_learning_rate}')
+            # print(f'actor model: {actor_model}')
+            
+            # Set critic params
+
+            critic_learning_rate=10**utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='learning-rate',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            critic_optimizer = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='optimizer',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            critic_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='critic',
+                all_values=all_values,
+                all_ids=all_ids
+            )
+
+            critic_hidden_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+            
+            critic_state_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='critic-state',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                critic_hidden_kernel,
+            )
+           
+            critic_conv_layers = utils.format_cnn_layers(
+                all_values,
+                all_ids,
+                layer_index_values,
+                layer_index_ids,
+                'critic',
+                agent_type_dropdown_value
+            )
+
+            if critic_conv_layers:
+                critic_cnn = cnn_models.CNN(critic_conv_layers, env)
+            else:
+                critic_cnn = None
+
+            critic_merged_layers = models.build_layers(
+                utils.format_layers(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    layer_units_values=layer_index_values,
+                    layer_units_ids=layer_index_ids,
+                    value_type='layer-units',
+                    value_model='critic-merged',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='activation-function',
+                    model_type='critic',
+                    agent_type=agent_type_dropdown_value,
+                ),
+                critic_hidden_kernel,
+            )
+
+            critic_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-output',
+                agent_type=agent_type_dropdown_value
+            )
+           
+            critic_normalize_layers = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='normalize-layers',
+                model_type='critic',
+                agent_type=agent_type_dropdown_value,
+            )
+           
+            critic_model = models.CriticModel(
+                env=env,
+                cnn_model=critic_cnn,
+                state_layers=critic_state_layers,
+                merged_layers=critic_merged_layers,
+                output_layer_kernel=critic_output_kernel,
+                learning_rate=critic_learning_rate,
+                optimizer=critic_optimizer,
+                optimizer_params=critic_opt_params,
+                normalize_layers=critic_normalize_layers,
+                device=device,
+            )
+
+            #DEBUG
+            # print(f'critic cnn model: {critic_cnn}')
+            # print(f'critic state layers: {critic_state_layers}')
+            # print(f'critic merged layers: {critic_merged_layers}')
+            # print(f'critic optimizer: {critic_optimizer}')
+            # print(f'critic learning rate: {critic_learning_rate}')
+            # print(f'critic model: {critic_model}')
+
+
+            # Set DDPG params
+
+            discount = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'discount',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            tau=utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'tau',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            epsilon = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'epsilon-greedy',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            batch_size = utils.get_specific_value(
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    id_type = 'batch-size',
+                    model_type = 'none',
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            noise=utils.create_noise_object(
+                    env = env,
+                    all_values = all_values,
+                    all_ids = all_ids,
+                    agent_type = agent_type_dropdown_value,
+                )
+            
+            target_noise_stddev = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'target-noise-stddev',
+                model_type = 'actor',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            target_noise_clip = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'target-noise-clip',
+                model_type = 'actor',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            actor_update_delay = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'actor-update-delay',
+                model_type = 'actor',
+                agent_type = agent_type_dropdown_value,
+            )
+            
+            normalize_inputs = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'normalize-input',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            clip_value = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'clip-value',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            warmup = utils.get_specific_value(
+                all_values = all_values,
+                all_ids = all_ids,
+                id_type = 'warmup',
+                model_type = 'none',
+                agent_type = agent_type_dropdown_value,
+            )
+
+            save_dir = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='save-dir',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+            
+            agent = rl_agents.TD3(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = discount,
+                tau = tau,
+                action_epsilon = epsilon,
+                replay_buffer = helper.ReplayBuffer(env, 100000, device=device),
+                batch_size = batch_size,
+                noise = noise,
+                target_noise_stddev = target_noise_stddev,
+                target_noise_clip = target_noise_clip,
+                actor_update_delay = actor_update_delay,
+                normalize_inputs = normalize_inputs,
+                normalizer_clip = clip_value,
+                warmup = warmup,
+                callbacks = utils.get_callbacks(callbacks, project),
+                save_dir = os.path.join(os.getcwd(), save_dir),
+                device=device,
+            )
+
+        elif agent_type_dropdown_value == "HER_DDPG":
+
+            # Get device
+            device = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            # get goal and reward functions and goal shape
+            desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
+            
+            # Reset env in order to instantiate and get goal shape
+            _,_ = env.reset()
+            goal_shape = desired_goal_func(env).shape
+
+            print(f'desired goal: {desired_goal_func}')
+            print(f'achieved goal: {achieved_goal_func}')
+            print(f'reward func: {reward_func}')
+            print(f'goal shape: {goal_shape}')
+
+            # Set actor params
+            # Set actor learning rate
+            actor_learning_rate=10**utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='learning-rate',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                )
+
+            actor_optimizer = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='optimizer',
+                    model_type='actor',
+                    agent_type=agent_type_dropdown_value,
+                )
+            
+            actor_opt_params = utils.get_optimizer_params(
+                agent_type=agent_type_dropdown_value,
+                model_type='actor',
+                all_values=all_values,
+                all_ids=all_ids
+            )
+
+            actor_hidden_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+
+            actor_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='actor-output',
                 agent_type=agent_type_dropdown_value
             )
 
@@ -1389,16 +1772,8 @@ def register_callbacks(app, shared_data):
                     model_type='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
-                actor_initializer,
+                actor_hidden_kernel,
             )
-
-            actor_output_layer_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='actor-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
 
             actor_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1410,18 +1785,19 @@ def register_callbacks(app, shared_data):
 
             #DEBUG
             print(f'actor dense layers: {actor_dense_layers}')
-            print(f'actor output kernel: {actor_output_layer_kernel}, type: {type(actor_output_layer_kernel)}')
+            print(f'actor output kernel: {actor_output_kernel}, type: {type(actor_output_kernel)}')
             # Create actor model
             actor_model = models.ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
-                output_layer_kernel=actor_output_layer_kernel,
+                output_layer_kernel=actor_output_kernel,
                 goal_shape=goal_shape,
                 optimizer=actor_optimizer,
                 optimizer_params=actor_opt_params,
                 learning_rate=actor_learning_rate,
                 normalize_layers=actor_normalize_layers,
+                device=device,
             )
             
             #DEBUG
@@ -1433,7 +1809,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=utils.get_specific_value(
+            critic_learning_rate=10**utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1456,10 +1832,17 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            critic_initializer = utils.format_kernel_initializer_config(
+            critic_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='critic',
+                value_model='critic-hidden',
+                agent_type=agent_type_dropdown_value
+            )
+
+            critic_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='critic-output',
                 agent_type=agent_type_dropdown_value
             )
             
@@ -1480,7 +1863,7 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
            
             critic_conv_layers = utils.format_cnn_layers(
@@ -1514,16 +1897,8 @@ def register_callbacks(app, shared_data):
                     model_type='critic',
                     agent_type=agent_type_dropdown_value,
                 ),
-                critic_initializer,
+                critic_hidden_kernel,
             )
-
-            critic_output_layer_kernel = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='kernel-function',
-                    model_type='critic-output',
-                    agent_type=agent_type_dropdown_value,
-                ),
            
             critic_normalize_layers = utils.get_specific_value(
                 all_values=all_values,
@@ -1538,12 +1913,13 @@ def register_callbacks(app, shared_data):
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
-                output_layer_kernel=critic_output_layer_kernel,
+                output_layer_kernel=critic_output_kernel,
                 goal_shape=goal_shape,
                 learning_rate=critic_learning_rate,
                 optimizer=critic_optimizer,
                 optimizer_params=critic_opt_params,
                 normalize_layers=critic_normalize_layers,
+                device=device,
             )
 
             #DEBUG
@@ -1619,13 +1995,14 @@ def register_callbacks(app, shared_data):
                 discount = discount,
                 tau = tau,
                 action_epsilon = epsilon,
-                replay_buffer = helper.ReplayBuffer(env, 100000, goal_shape),
+                replay_buffer = helper.ReplayBuffer(env, 100000, goal_shape, device=device),
                 batch_size = batch_size,
                 noise = noise,
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
                 callbacks = utils.get_callbacks(callbacks, project),
-                save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
+                # save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
+                device = device
             )
 
             # set HER specific hyperparams
@@ -1659,15 +2036,6 @@ def register_callbacks(app, shared_data):
                 id_type = 'clip-value',
                 model_type = 'none',
                 agent_type = agent_type_dropdown_value,
-            )
-
-            # Get device
-            device = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
             )
 
             save_dir = utils.get_specific_value(
@@ -1801,56 +2169,71 @@ def register_callbacks(app, shared_data):
         State({'type':'epochs', 'page':'/train-agent'}, 'value'),
         State({'type':'cycles', 'page':'/train-agent'}, 'value'),
         State({'type':'learning-cycles', 'page':'/train-agent'}, 'value'),
+        State({'type':'mpi', 'page':'/train-agent'}, 'value'),
         State({'type':'workers', 'page':'/train-agent'}, 'value'),
+        State({'type':'load-weights', 'page':'/train-agent'}, 'value'),
+        State({'type':'seed', 'page':'/train-agent'}, 'value'),
+        State({'type':'run-number', 'page':'/train-agent'}, 'value'),
+        State({'type':'num-runs', 'page':'/train-agent'}, 'value'),
+        State({'type':'save-dir', 'page':'/train-agent'}, 'value'),
+        prevent_initial_call=True,
     )
-    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, learning_cycles, workers):
+    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, use_mpi, workers, load_weights, seed, run_number, num_runs, save_dir):
         #DEBUG
         # print("Start callback called.")
         if n_clicks > 0:
-            # clear the renders in the train folder
-            agent_type = agent_data['agent_type']
-            if agent_type == "HER":
-                agent_type = agent_data['agent']['agent_type']
-            if os.path.exists(f'assets/models/{agent_type}/renders/training'):
-                utils.delete_renders(f"assets/models/{agent_type}/renders/training")
             
-            # Use the agent_data['save_dir'] to load your agent
+            # Use the agent_data['save_dir'] to load agent
             if agent_data:  # Check if agent_data is not empty
+                # set save dir to agent config save dir if save dir == None
+                if not save_dir:
+                    save_dir = agent_data['save_dir']
+                
+                # Create an empty dict for train_config.json
+                train_config = {}
                 render = 'RENDER' in render_option
-                use_mpi = agent_data.get('use_mpi', False)
+                # use_mpi = agent_data.get('use_mpi', False)
+                
+                # clear the renders in the train folder
+                if render:
+                    if os.path.exists(save_dir + '/renders/training'):
+                        utils.delete_renders(save_dir + '/renders/training')
 
                 # Update the configuration with render settings
-                agent_data['render'] = render
-                agent_data['render_freq'] = render_freq
+                train_config['num_episodes'] = num_episodes
+                train_config['render'] = render
+                train_config['render_freq'] = render_freq
+                train_config['load_weights'] = load_weights
+                train_config['seed'] = seed
+                train_config['run_number'] = run_number
+                train_config['num_runs'] = num_runs
+                train_config['save_dir'] = save_dir
+
+                # Add MPI settings to config if DDPG or HER
+                if agent_data['agent_type'] in ['DDPG','TD3','HER']:
+                    train_config['use_mpi'] = use_mpi
+                    train_config['num_workers'] = workers
                 
                 # Update additional settings for HER agent
-                if agent_type == 'HER':
-                    agent_data['num_epochs'] = epochs
-                    agent_data['num_cycles'] = cycles
-                    agent_data['num_learning_cycles'] = learning_cycles
+                if agent_data['agent_type'] == 'HER':
+                    train_config['num_epochs'] = epochs
+                    train_config['num_cycles'] = cycles
+                    train_config['num_updates'] = num_updates
             
-                # Save the updated configuration to a file
-                config_path = agent_data['save_dir'] + '/config.json'
-                with open(config_path, 'w') as f:
-                    json.dump(agent_data, f)
+                # Save the updated configuration to a train config file
+                train_config_path = save_dir + '/train_config.json'
+                print(f'agent train config path:{train_config_path}')
+                with open(train_config_path, 'w') as f:
+                    json.dump(train_config, f)
 
-                if use_mpi:
-                    if agent_type == 'HER':
-                        script_path = 'train_her.py'
-                    elif agent_type == 'DDPG':
-                        script_path = 'train_ddpg.py'
-                    else:
-                        raise ValueError(f"Unsupported agent type for MPI: {agent_type}")
-                    
-                    num_workers = workers
-                
-                    mpi_command = f"mpirun -np {num_workers} python {script_path} {config_path}"
-                    subprocess.Popen(mpi_command, shell=True)
-                
-                thread = threading.Thread(target=utils.train_model, args=(agent_data, env_name, num_episodes, render, render_freq, epochs, cycles, learning_cycles, workers))
-                thread.daemon = True
-                thread.start()
-      
+                # Set the config path of the agent
+                agent_config_path = save_dir + '/config.json'
+                print(f'agent config path:{agent_config_path}')
+
+                script_path = 'train.py'
+                run_command = f"python {script_path} --agent_config {agent_config_path} --train_config {train_config_path}"
+                subprocess.Popen(run_command, shell=True)
+
         raise PreventUpdate
     
     @app.callback(
@@ -1863,27 +2246,102 @@ def register_callbacks(app, shared_data):
         State({'type':'num-episodes', 'page':'/test-agent'}, 'value'),
         State({'type':'render-option', 'page':'/test-agent'}, 'value'),
         State({'type':'render-freq', 'page':'/test-agent'}, 'value'),
+        State({'type':'load-weights', 'page':'/test-agent'}, 'value'),
+        State({'type':'seed', 'page':'/test-agent'}, 'value'),
+        State({'type':'run-number', 'page':'/test-agent'}, 'value'),
+        State({'type':'num-runs', 'page':'/test-agent'}, 'value'),
+        prevent_initial_call=True,
     )
-    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq):
-        #DEBUG
-        # print("Start callback called.")
-        if n_clicks > 0:
-            print(f'render options:{render_option}')
-            print(f'render freq:{render_freq}')
-            # clear the renders in the test folder
-            agent_type = agent_data['agent_type']
-            if agent_type == "HER":
-                agent_type = agent_data['agent']['agent_type']
-            if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
-                utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
-            # Use the agent_data['save_dir'] to load your agent
-            if agent_data:  # Check if agent_data is not empty
+    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, load_weights, seed, run_number, num_runs):
+
+        print('test agent fired...')
+        try:
+            if n_clicks > 0 and agent_data:
+                #DEBUG
+                print('n clicks and agent data passed')
+                # clear the renders in the train folder
+                agent_type = agent_data['agent_type']
+                if agent_type == "HER":
+                    agent_type = agent_data['agent']['agent_type']
+                if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
+                    utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
+
+                # Create empty dict for test_config.json
+                test_config = {}
+                # Update the configuration with render settings
                 render = 'RENDER' in render_option
-                thread = threading.Thread(target=utils.test_model, args=(agent_data, env_name, num_episodes, render, render_freq))
-                thread.daemon = True 
-                thread.start()
-      
-        raise PreventUpdate
+                test_config['render'] = render
+                test_config['num_episodes'] = num_episodes
+                test_config['render_freq'] = render_freq
+                test_config['load_weights'] = load_weights
+                test_config['seed'] = seed
+                test_config['run_number'] = run_number
+                test_config['num_runs'] = num_runs
+
+                # Save the updated configuration to a file
+                test_config_path = agent_data['save_dir'] + '/test_config.json'
+                with open(test_config_path, 'w') as f:
+                    json.dump(test_config, f)
+
+                # Set the config path of the agent
+                agent_config_path = agent_data['save_dir'] + '/config.json'
+                
+                script_path = 'test.py'
+                #DEBUG
+                print(f'script set to {script_path}')
+                run_command = f"python {script_path} --agent_config {agent_config_path} --test_config {test_config_path}"
+                subprocess.Popen(run_command, shell=True)
+
+            raise PreventUpdate
+
+        except KeyError as e:
+            print(f"KeyError: {str(e)}")
+            # Handle the case when a required key is missing in agent_data
+            # You can choose to raise an exception, return an error message, or take appropriate action
+
+        except FileNotFoundError as e:
+            print(f"FileNotFoundError: {str(e)}")
+            # Handle the case when the specified file or directory is not found
+            # You can choose to raise an exception, return an error message, or take appropriate action
+
+        except subprocess.SubprocessError as e:
+            print(f"SubprocessError: {str(e)}")
+            # Handle the case when there is an error executing the subprocess
+            # You can choose to raise an exception, return an error message, or take appropriate action
+
+        except Exception as e:
+            print(f"An unexpected error occurred: {str(e)}")
+    # Handle any other unexpected exceptions
+    # You can choose to raise an exception, return an error message, or take appropriate action
+
+        # if n_clicks > 0:
+        #     # clear the renders in the train folder
+        #     agent_type = agent_data['agent_type']
+        #     if agent_type == "HER":
+        #         agent_type = agent_data['agent']['agent_type']
+        #     if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
+        #         utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
+            
+        #     # Use the agent_data['save_dir'] to load agent
+        #     if agent_data:  # Check if agent_data is not empty
+        #         render = 'RENDER' in render_option
+
+        #         # Update the configuration with render settings
+        #         agent_data['num_episodes'] = num_episodes
+        #         agent_data['render'] = render
+        #         agent_data['render_freq'] = render_freq
+        #         agent_data['load_weights'] = load_weights
+                
+        #         # Save the updated configuration to a file
+        #         config_path = agent_data['save_dir'] + '/test_config.json'
+        #         with open(config_path, 'w') as f:
+        #             json.dump(agent_data, f)
+
+        #         script_path = 'test.py'
+        #         run_command = f"python {script_path} {config_path}"
+        #         subprocess.Popen(run_command, shell=True)
+
+        # raise PreventUpdate
             
     
     @app.callback(
@@ -1895,7 +2353,6 @@ def register_callbacks(app, shared_data):
     )
     def store_agent(contents, upload_id):
         # for content, page in zip(contents, id):
-        print(f'content: {contents}')
         if contents is not None:
             _, encoded = contents.split(',')
             decoded = base64.b64decode(encoded)           
@@ -1930,16 +2387,38 @@ def register_callbacks(app, shared_data):
     )
     def update_mpi_options(agent_data):
 
-        if agent_data['agent_type'] in ['DDPG', 'HER']:
+        if agent_data['agent_type'] in ['DDPG', 'TD3', 'HER']:
             mpi_options_style = {'display': 'block'}
+        
         else:
             mpi_options_style = {'display': 'none'}
         
         return mpi_options_style
     
     @app.callback(
-    Output({'type': 'workers', 'page': '/train-agent'}, 'style'),
-    Input({'type':'mpi', 'page': '/train-agent'}, 'value'),
+    Output({'type': 'mpi-options', 'page': '/hyperparameter-search'}, 'style'),
+    Input({'type':'agent-type-selector', 'page': '/hyperparameter-search'}, 'value'),
+    prevent_initial_call = True,
+    )
+    def update_mpi_hyperparam_options(agent_types):
+
+        print(f'agent types: {agent_types}')
+
+        if any(agent in ['DDPG', 'TD3', 'HER_DDPG'] for agent in agent_types):
+        # if agent_types:
+            print(f'hyperparam options true')
+            mpi_options = {'display': 'block'}
+        
+        else:
+            print(f'hyperparam options false')
+            mpi_options = {'display': 'none'}
+        
+        print(f'mpi options: {mpi_options}')
+        return mpi_options
+    
+    @app.callback(
+    Output({'type': 'workers', 'page': MATCH}, 'style'),
+    Input({'type':'mpi', 'page': MATCH}, 'value'),
     prevent_initial_call = True,
     )
     def update_workers_option(use_mpi):
@@ -1950,6 +2429,23 @@ def register_callbacks(app, shared_data):
             workers_style = {'display': 'none'}
         
         return workers_style
+    
+    @app.callback(
+    Output({'type': 'sweep-options', 'page': '/hyperparameter-search'}, 'style'),
+    Input({'type':'device', 'model': 'none', 'agent':ALL}, 'value'),
+    State('url', 'pathname'),
+    prevent_initial_call = True,
+    )
+    def update_sweep_option(device, page):
+
+        if page == '/hyperparameter-search':
+
+            if any([d=='cpu' for d in device]):
+                options = {'display': 'block'}
+            else:
+                options = {'display': 'none'}
+            
+            return options
     
     @app.callback(
     Output({'type': 'clamp-value', 'model':MATCH, 'agent':MATCH}, 'style'),
@@ -1994,10 +2490,14 @@ def register_callbacks(app, shared_data):
     Output({'type':'storage', 'page':MATCH}, 'data'),
     [Input({'type':'interval-component', 'page':MATCH}, 'n_intervals')],
     [State({'type':'storage', 'page':MATCH}, 'data'),
+     State({'type':'agent-store', 'page':MATCH}, 'data'),
      State({'type':'num-episodes', 'page':MATCH}, 'value'),
-     State('url', 'pathname')]
+     State({'type':'epochs', 'page':MATCH}, 'value'),
+     State({'type':'cycles', 'page':MATCH}, 'value'),
+     State('url', 'pathname')],
+     prevent_initial_call = True,
 )
-    def update_data(n, storage_data, num_episodes, pathname):
+    def update_data(n, storage_data, agent_config, num_episodes, num_epochs, num_cycles, pathname):
         if num_episodes is not None:
             if pathname == '/train-agent':
                 file_name = 'training_data.json'
@@ -2018,14 +2518,12 @@ def register_callbacks(app, shared_data):
             except (FileNotFoundError, json.JSONDecodeError):
                 data = {}  # Use an empty dict if there's an issue reading the file
             
-            #DEBUG
-            # print(f'current data: {storage_data}')
-            # print(f'new data: {data}')
 
             # if the new data dict isn't empty, update storage data
             if data != {}:
-                #DEBUG
-                # print('updating data...')
+                # Need to determine agent type in order to correctly calculate num_episodes and progress
+                if agent_config['agent_type'] == 'HER':
+                    num_episodes = num_epochs * num_cycles * num_episodes
                 storage_data['data'] = data
                 storage_data['progress'] = round(data['episode']/num_episodes, ndigits=2)
                 if storage_data['progress'] == 1.0:
@@ -2202,7 +2700,7 @@ def register_callbacks(app, shared_data):
     
     @app.callback(
         Output('agent-options-tabs', 'children'),
-        Input('agent-type-selector', 'value')
+        Input({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value')
     )
     def update_hyperparam_inputs(selected_agent_types):
         # This function updates the inputs based on selected agent types
@@ -2216,6 +2714,9 @@ def register_callbacks(app, shared_data):
             
             elif agent_type == 'DDPG':
                 tabs.append(utils.create_ddpg_hyperparam_input(agent_type))
+
+            elif agent_type == 'TD3':
+                tabs.append(utils.create_td3_hyperparam_input(agent_type))
 
             elif agent_type == 'HER_DDPG':
                 tabs.append(utils.create_her_ddpg_hyperparam_input(agent_type))
@@ -2512,6 +3013,16 @@ def register_callbacks(app, shared_data):
         return tabs, hide_header
     
     @app.callback(
+        Output('her-options-hyperparam', 'hidden'),
+        Input({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
+        prevent_initial_call=True
+    )
+    def update_her_hyperparam_options(agent_types):
+        if 'HER_DDPG' in agent_types:
+            return False
+        return True
+    
+    @app.callback(
         Output({'type': 'noise-options-tabs', 'model': MATCH, 'agent': MATCH}, 'children'),
         Output({'type': 'noise-options-header' , 'model': MATCH, 'agent': MATCH}, 'hidden'),
         Input({'type': 'noise-function-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
@@ -2540,44 +3051,98 @@ def register_callbacks(app, shared_data):
         State('goal-type', 'value'),
         State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
         State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
-        State('agent-type-selector', 'value'),
+        State({'type':'seed', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
         State('num-sweeps', 'value'),
         State('num-episodes', 'value'),
+        State('num-epochs', 'value'),
+        State('num-cycles', 'value'),
+        State('num-updates', 'value'),
+        State({'type':'mpi', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'workers', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'num-sweep-agents', 'page':'/hyperparameter-search'}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, num_sweeps, num_episodes, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
 
-        # extract any additional gym env params
-        params = utils.extract_gym_params(env_params)
+        try:
+            if num_clicks > 0:
+                # extract any additional gym env params
+                params = utils.extract_gym_params(env_params)
+                sweep_config = utils.create_wandb_config(
+                    method,
+                    project,
+                    sweep_name,
+                    metric_name,
+                    metric_goal,
+                    env,
+                    params,
+                    agent_selection,
+                    all_values,
+                    all_ids,
+                    all_indexed_values,
+                    all_indexed_ids
+                )
 
-        if num_clicks > 0:
-            sweep_config = utils.create_wandb_config(
-                method,
-                project,
-                sweep_name,
-                metric_name,
-                metric_goal,
-                env,
-                params,
-                agent_selection,
-                all_values,
-                all_ids,
-                all_indexed_values,
-                all_indexed_ids
-            )
-            #DEBUG
-            print(f'wandb config: {sweep_config}')
-            thread = threading.Thread(target=wandb_support.hyperparameter_sweep, args=(sweep_config, num_sweeps, num_episodes, os.path.join(os.getcwd(), 'assets')))
-            #DEBUG
-            # print("thread set")
-            thread.daemon = True  # This ensures the thread will be automatically cleaned up when the main process exits
-            thread.start()
-            #DEBUG
-            # print("thread started")
+                if sweep_config:  # Check if sweep_config is not empty
+                    # Create an empty dict for sweep_config.json
+                    train_config = {}
+                    # Add config options to run_config
+                    train_config['num_sweeps'] = num_sweeps
+                    train_config['num_episodes'] = num_episodes
+                    train_config['seed'] = seed if seed is not None else None
+
+                    # Add MPI config if not None else None
+                    train_config['use_mpi'] = use_mpi if use_mpi is not None else None
+                    train_config['num_workers'] = num_workers if num_workers is not None else None
+                    train_config['num_agents'] = num_agents if num_agents is not None else None
+                    
+                    # Update additional settings for HER agent
+                    train_config['num_epochs'] = num_epochs if num_epochs is not None else None
+                    train_config['num_cycles'] = num_cycles if num_cycles is not None else None
+                    train_config['num_updates'] = num_updates if num_updates is not None else 1
+                
+                    # Save the updated configuration to a train config file
+                    os.makedirs('sweep', exist_ok=True)
+                    train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
+                    with open(train_config_path, 'w') as f:
+                        json.dump(train_config, f)
+
+                    # Save the sweep config and set the sweep config path
+                    sweep_config_path = os.path.join(os.getcwd(), 'sweep/sweep_config.json')
+                    with open(sweep_config_path, 'w') as f:
+                        json.dump(sweep_config, f)
+
+                    # Construct and run the MPI command
+                    command = [
+                        'mpiexec', '-np', str(num_workers), 'python', 'init_sweep.py',
+                        '--sweep_config', sweep_config_path,
+                        '--train_config', train_config_path
+                    ]
+
+                    subprocess.Popen(command)
+                    
+
+
+        except KeyError as e:
+            logger.error(f"KeyError in W&B stream handling: {e}")
+        except Exception as e:
+            logger.error(f"An error occurred: {e}")
+                
+                
+                
+
+                # command = ['python', 'sweep.py']
+
+                
+                # subprocess.Popen(command)
+            
+
+        raise PreventUpdate
 
 
     @app.callback(
@@ -2613,6 +3178,7 @@ def register_callbacks(app, shared_data):
         if matrix_data:
             # print(f'heatmap data: {data}')
             new_data = {'matrix_data': matrix_data, 'bin_ranges': bin_ranges}
+            print(f'new data:{new_data}')
             return new_data
         else:
             return None
@@ -2667,6 +3233,7 @@ def register_callbacks(app, shared_data):
         if n_clicks > 0:
             z_score = 'zscore' in zscore_option
             # print('start matrix process callback called')
+            # print(f'hyperparameters passed to start matrix callback: {hyperparameters}')
             update_heatmap_thread = threading.Thread(target=update_heatmap_process, args=(shared_data, hyperparameters, bins, z_score, reward_threshold))
             update_heatmap_thread.start()
         
@@ -2693,33 +3260,50 @@ def register_callbacks(app, shared_data):
         prevent_initial_call=True,
     )
     def get_sweep_data(n_clicks, project, sweeps, co_occurrence_data):
-        if n_clicks > 0:
-            dfs = []
-            for sweep in sweeps:
-                metrics_data = wandb_support.get_metrics(project, sweep)
-                formatted_data = wandb_support.format_metrics(metrics_data)
-                dfs.append(formatted_data)
-            data = pd.concat(dfs, ignore_index=True)
-            data_json = data.to_json(orient='split')
-            co_occurrence_data['formatted_data'] = data_json
-            # create a Div containing a success message to return
-            success_message = html.Div([
-                dbc.Alert("Data Loaded.", color="success")
-            ])
-            return co_occurrence_data, success_message
+        try:
+            if n_clicks > 0:
+                dfs = []
+                for sweep in sweeps:
+                    metrics_data = wandb_support.get_metrics(project, sweep)
+                    logger.debug(f'get_sweep_data: metrics data: {metrics_data}')
+                    formatted_data = wandb_support.format_metrics(metrics_data)
+                    logger.debug(f'get_sweep_data: formatted data: {formatted_data}')
+                    dfs.append(formatted_data)
+                data = pd.concat(dfs, ignore_index=True)
+                data_json = data.to_json(orient='split')
+                co_occurrence_data['formatted_data'] = data_json
+                logger.debug(f'get_sweep_data: co_occurrence_data[formatted_data]: {co_occurrence_data["formatted_data"]}')
+                # create a Div containing a success message to return
+                success_message = html.Div([
+                    dbc.Alert("Data Loaded.", color="success")
+                ])
+                return co_occurrence_data, success_message
 
-        return None
+            return None
+        except Exception as e:
+            logger.error(f"Error in get_sweep_data: {e}", exc_info=True)
     
     @app.callback(
         Output({'type':'hyperparameter-selector', 'page':'/co-occurrence-analysis'}, 'options'),
-        Input({'type':'sweeps-dropdown', 'page': '/co-occurrence-analysis'}, 'value'),
-        State({'type':'projects-dropdown', 'page': '/co-occurrence-analysis'}, 'value'),
+        Input({'type':'sweeps-dropdown', 'page':'/co-occurrence-analysis'}, 'value'),
+        State({'type':'projects-dropdown', 'page':'/co-occurrence-analysis'}, 'value'),
         prevent_initial_call=True,
     )
-    def update_hyperparameter_dropdown(sweeps, project):
+    def update_co_occurance_hyperparameter_dropdown(sweeps, project):
         hyperparameters = wandb_support.fetch_sweep_hyperparameters_single_run(project, sweeps[0])
 
         return [{'label': hp, 'value': hp} for hp in hyperparameters]
+    
+    # @app.callback(
+    #     Output({'type':'hyperparameter-selector', 'page':'/hyperparameter-search'}, 'options'),
+    #     Input({'type':'sweeps-dropdown', 'page':'/hyperparameter-search'}, 'value'),
+    #     State({'type':'projects-dropdown', 'page':'/hyperparameter-search'}, 'value'),
+    #     prevent_initial_call=True,
+    # )
+    # def update_wandb_sweep_hyperparameter_dropdown(sweeps, project):
+    #     hyperparameters = wandb_support.fetch_sweep_hyperparameters_single_run(project, sweeps[0])
+
+    #     return [{'label': hp, 'value': hp} for hp in hyperparameters]
 
 
     @app.callback(
@@ -2733,17 +3317,101 @@ def register_callbacks(app, shared_data):
         prevent_initial_call=True,
     )
     def update_co_occurrence_graphs(data, hyperparameters, bins, zscore_option, reward_threshold):
-        print(f'formatted data: {data["formatted_data"]}')
-        f_data = data['formatted_data']
-        print(f'formatted data: {f_data}')
-        # Convert the JSON string back to a pandas DataFrame
-        formatted_data = pd.read_json(f_data, orient='split')
-        z_score = 'zscore' in zscore_option
-        matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
-        data['matrix_data'] = matrix_data.to_dict(orient='split')
-        print(f'matrix data: {data["matrix_data"]}')
-        data['bin_ranges'] = bin_ranges
-        print(f'bin_ranges: {data["bin_ranges"]}')
-        heatmap, bar_chart = utils.update_heatmap(data)
+        try:
+            logger.debug(f'update_co_occurrence_graphs: data: {data}')
+            # f_data = data['formatted_data']
+            # Convert the JSON string back to a pandas DataFrame
+            formatted_data = pd.read_json(data['formatted_data'], orient='split')
+            logger.debug(f"update_co_occurrence_graphs: formatted_data dataframe: {formatted_data}")
+            z_score = 'zscore' in zscore_option
+            matrix_data, bin_ranges = wandb_support.calculate_co_occurrence_matrix(formatted_data, hyperparameters, reward_threshold, bins, z_score)
+            data['matrix_data'] = matrix_data.to_dict(orient='split')
+            logger.debug(f'update_co_occurrence_graphs: matrix data: {data["matrix_data"]}')
+            data['bin_ranges'] = bin_ranges
+            logger.debug(f'update_co_occurrence_graphs: bin_ranges: {data["bin_ranges"]}')
+            heatmap, bar_chart = utils.update_heatmap(data)
+            
+            return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
+        except Exception as e:
+            logger.error(f"Error in update_co_occurrence_graphs: {e}", exc_info=True)
+
+    @app.callback(
+    Output("download-wandb-config", "data"),
+    [Input("download-wandb-config-button", "n_clicks")],
+    [
+        State('search-type', 'value'),
+        State({'type': 'projects-dropdown', 'page': '/hyperparameter-search'}, 'value'),
+        State('sweep-name', 'value'),
+        State('goal-metric', 'value'),
+        State('goal-type', 'value'),
+        State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
+        State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
+        State({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
+        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
+    ],
+    prevent_initial_call=True,
+    )
+    def download_wandb_config(num_clicks, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, all_values, all_ids, all_indexed_values, all_indexed_ids):
+        # extract any additional gym env params
+        params = utils.extract_gym_params(env_params)
+
+        if num_clicks > 0:
+            wandb_config = utils.create_wandb_config(
+                method,
+                project,
+                sweep_name,
+                metric_name,
+                metric_goal,
+                env,
+                params,
+                agent_selection,
+                all_values,
+                all_ids,
+                all_indexed_values,
+                all_indexed_ids
+            )
+            config_json = json.dumps(wandb_config, indent=4)
+
+            return dict(content=config_json, filename="wandb_config.json")
         
-        return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
+    @app.callback(
+    Output("download-sweep-config", "data"),
+    [Input("download-sweep-config-button", "n_clicks")],
+    [
+        State('num-sweeps', 'value'),
+        State('num-episodes', 'value'),
+        State('num-epochs', 'value'),
+        State('num-cycles', 'value'),
+        State('num-updates', 'value'),
+        State({'type':'mpi', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'workers', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'num-sweep-agents', 'page':'/hyperparameter-search'}, 'value'),
+        State({'type':'seed', 'page':'/hyperparameter-search'}, 'value'),
+    ],
+    prevent_initial_call=True,
+    )
+    def download_train_config(n_clicks, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, seed):
+        if n_clicks > 0:
+            # Create an empty dict for sweep_config.json
+            sweep_config = {}
+            # Add config options to run_config
+            sweep_config['num_sweeps'] = num_sweeps
+            sweep_config['num_episodes'] = num_episodes
+            sweep_config['seed'] = seed if seed is not None else None
+
+            # Add MPI config if not None else None
+            sweep_config['use_mpi'] = use_mpi if use_mpi is not None else None
+            sweep_config['num_workers'] = num_workers if num_workers is not None else None
+            sweep_config['num_agents'] = num_agents if num_agents is not None else None
+            
+            # Update additional settings for HER agent
+            sweep_config['num_epochs'] = num_epochs if num_epochs is not None else None
+            sweep_config['num_cycles'] = num_cycles if num_cycles is not None else None
+            sweep_config['num_updates'] = num_updates if num_updates is not None else 1
+
+            config_json = json.dumps(sweep_config, indent=4)
+
+            return dict(content=config_json, filename="sweep_config.json")

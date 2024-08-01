@@ -21,9 +21,10 @@ optree>=0.9.1
 lark
 ipykernel
 # jaxlib==0.4.26
-# mujoco==3.1.1
-gymnasium[all]==1.0.0a1
-# gymnasium-robotics
+# mujoco
+ale-py
+gymnasium[all]==1.0.0a2
+gymnasium-robotics
 pandas
 flask
 dash
