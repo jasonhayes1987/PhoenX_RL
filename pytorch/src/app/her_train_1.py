@@ -64,7 +64,7 @@ def main():
         )
     ]
 
-    actor = ActorModel(env, cnn_model=None, dense_layers=dense_layers, output_layer='default', goal_shape=goal_shape,
+    actor = ActorModel(env, cnn_model=None, dense_layers=dense_layers, output_layer_kernel='default', goal_shape=goal_shape,
                        optimizer='Adam', optimizer_params={'weight_decay':0.0},
                        learning_rate=0.001, normalize_layers=False, clamp_output=None, device=device)
 
@@ -100,7 +100,7 @@ def main():
     ]
 
     critic = CriticModel(env=env, cnn_model=None, state_layers=state_layers,
-                         merged_layers=merged_layers, output_layer='default', goal_shape=goal_shape,
+                         merged_layers=merged_layers, output_layer_kernel='default', goal_shape=goal_shape,
                          optimizer="Adam", optimizer_params={'weight_decay':0.0},
                          learning_rate=0.001, normalize_layers=False, device=device)
 
@@ -131,6 +131,7 @@ def main():
               achieved_goal=achieved_goal_func,
               reward_fn=reward_func,
               normalizer_clip=5.0,
+              device=device, # param not used
               save_dir="fetch_reach_v2_a/models/her/"
             )
     

@@ -29,6 +29,7 @@ def build_agent(page):
                     {'label': 'Actor Critic', 'value': 'ActorCritic'},
                     {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
                     {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
+                    {'label': 'TD3', 'value': 'TD3'},
                     {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
                 ],
                 placeholder="Select Agent Type",
@@ -145,7 +146,7 @@ def test_agent(page):
 
 
 def hyperparameter_search(page):
-    left_column = dbc.Col(
+    right_column = dbc.Col(
         [
             html.H3('Wandb Project'),
             utils.generate_wandb_project_dropdown(page),
@@ -215,20 +216,98 @@ def hyperparameter_search(page):
                 type='number',
                 placeholder='Episodes per Sweep',
             ),
+            html.Div(
+                id='her-options-hyperparam',
+                hidden=True,
+                children=[
+                    dcc.Input(
+                        id='num-epochs',
+                        type='number',
+                        placeholder='Epochs per Sweep',
+                    ),
+                    dcc.Input(
+                        id='num-cycles',
+                        type='number',
+                        placeholder='Cycles per Episode',
+                    ),
+                    dcc.Input(
+                        id='num-updates',
+                        type='number',
+                        placeholder='Updates per Episode',
+                    ),
+                ]
+            ),
+            html.Div(
+                id={
+                    'type': 'mpi-options',
+                    'page': page,
+                },
+                style={'display': 'none'},
+                children=[
+                    html.Label('Use MPI', style={'text-decoration': 'underline'}),
+                    dcc.RadioItems(
+                        id={
+                            'type': 'mpi',
+                            'page': page,
+                        },
+                        options=[
+                        {'label': 'Yes', 'value': True},
+                        {'label': 'No', 'value': False},
+                        ],
+                    ),
+                    dcc.Input(
+                        id={
+                            'type': 'workers',
+                            'page': page,
+                        },
+                        type='number',
+                        placeholder="Number of Workers",
+                        min=1,
+                        style={'display': 'none'},
+                    ),
+                ]
+            ),
+            html.Div(
+                id={
+                    'type': 'sweep-options',
+                    'page': page,
+                },
+                style={'display': 'none'},
+                children=[
+                    dcc.Input(
+                        id={
+                            'type': 'num-sweep-agents',
+                            'page': page,
+                        },
+                        type='number',
+                        placeholder="Number of Sweep Agents",
+                        min=1,
+                    ),
+                ],
+            ),
+            utils.generate_seed_component(page),
             html.Hr(),
+            dbc.Button("Download WandB Config", id="download-wandb-config-button", color="primary", className="mr-2"),
+            dcc.Download(id="download-wandb-config"),
+            dbc.Button("Download Sweep Config", id="download-sweep-config-button", color="primary", className="mr-2"),
+            dcc.Download(id="download-sweep-config"),
         ],
         md=6,
     )
 
-    right_column = dbc.Col(
+    left_column = dbc.Col(
         [
             html.H3('Agent Configuration'),
             dcc.Dropdown(
-                id='agent-type-selector',
+                id={
+                    'type':'agent-type-selector',
+                    'page':page,
+                    },
                 options=[
                     {'label': 'Reinforce', 'value': 'Reinforce'},
                     {'label': 'Actor Critic', 'value': 'ActorCritic'},
                     {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
+                    {'label': 'TD3', 'value': 'TD3'},
                     {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
                     {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
                    
@@ -237,7 +316,6 @@ def hyperparameter_search(page):
                 multi=True,
                 placeholder="Select Agent(s)",
             ),
-            utils.generate_seed_component('none', 'none'),
             html.Div(
                 id='agent-hyperparameters-inputs',
                 children=[
@@ -299,21 +377,22 @@ def hyperparameter_search(page):
             ),
             
             utils.render_heatmap(page),
-            dcc.Store(id={'type':'heatmap-data-store', 'page':page}),
+            dcc.Store(id={'type':'heatmap-data-store', 'page':page},
+                  data={'formatted_data':None, 'matrix_data':None, 'bin_ranges':None}),
             dcc.Interval(
                 id='heatmap-store-data-interval',
-                interval=1*1000,
+                interval=10*1000,
                 n_intervals=0
             ),
             dcc.Interval(
                 id='start-fetch-process-interval',
-                interval=1000,
+                interval=10*1000,
                 n_intervals=0,
                 max_intervals=1,
             ),
             dcc.Interval(
                 id='start-matrix-process-interval',
-                interval=1000,
+                interval=10*1000,
                 n_intervals=0,
             ),
             html.Div(id='hidden-div-fetch-process', style={'display': 'none'}),
