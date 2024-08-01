@@ -867,6 +867,7 @@ class DDPG(Agent):
                 else:
                     self.comm = MPI.COMM_WORLD
                     self.rank = MPI.COMM_WORLD.Get_rank()
+                    logger.error(f'rank:{self.rank}')
                 self.group = self.comm.Get_name()
             self.env = env
             self.actor_model = actor_model
@@ -1704,6 +1705,8 @@ class DDPG(Agent):
             print(f'new save dir: {self.save_dir}')
         
         if self.callbacks:
+            for callback in self.callbacks:
+                    self._config = callback._config(self)
             if self.use_mpi:
                 if self.rank == 0:
                     for callback in self.callbacks:
@@ -1962,6 +1965,7 @@ class DDPG(Agent):
                 'normalizer_eps': self.normalizer_eps,
                 'warmup': self.warmup,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
+                "use_mpi": self.use_mpi,
                 "save_dir": self.save_dir,
                 "device": self.device,
             }
@@ -3219,6 +3223,8 @@ class TD3(Agent):
             print(f'new save dir: {self.save_dir}')
         
         if self.callbacks:
+            for callback in self.callbacks:
+                    self._config = callback._config(self)
             if self.use_mpi:
                 if self.rank == 0:
                     for callback in self.callbacks:
@@ -3511,6 +3517,7 @@ class TD3(Agent):
                 'warmup': self.warmup,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir,
+                "use_mpi": self.use_mpi,
                 "device": self.device,
             }
 

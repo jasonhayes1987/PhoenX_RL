@@ -694,6 +694,40 @@ def get_all_gym_envs():
         "FetchSlide-v1",
         "FetchPush-v1",
         "FetchPickAndPlace-v1",
+        "HandReach-v0",
+        "HandManipulateBlockRotateZ-v0",
+        "HandManipulateBlockRotateZ_BooleanTouchSensors-v0",
+        "HandManipulateBlockRotateZ_ContinuousTouchSensors-v0",
+        "HandManipulateBlockRotateParallel-v0",
+        "HandManipulateBlockRotateParallel_BooleanTouchSensors-v0",
+        "HandManipulateBlockRotateParallel_ContinuousTouchSensors-v0",
+        "HandManipulateBlockRotateXYZ-v0",
+        "HandManipulateBlockRotateXYZ_BooleanTouchSensors-v0",
+        "HandManipulateBlockRotateXYZ_ContinuousTouchSensors-v0",
+        "HandManipulateBlockFull-v0",
+        "HandManipulateBlock-v0",
+        "HandManipulateBlockDense-v0",
+        "HandManipulateBlock_BooleanTouchSensors-v0",
+        "HandManipulateBlock_ContinuousTouchSensors-v0",
+        "HandManipulateEgg-v0",
+        "HandManipulateEggDense-v0",
+        "HandManipulateEggRotate-v0",
+        "HandManipulateEggRotateDense-v0",
+        "HandManipulateEggFull-v0",
+        "HandManipulateEggFullDense-v0",
+        "HandManipulateEgg-v0",
+        "HandManipulateEgg_ContinuousTouchSensors-v0",
+        "HandManipulateEggRotate_ContinuousTouchSensors-v0",
+        "HandManipulateEggFull_ContinuousTouchSensors-v0",
+        "HandManipulateEgg_BooleanTouchSensors-v0",
+        "HandManipulateEggRotate_BooleanTouchSensors-v0",
+        "HandManipulateEggFull_BooleanTouchSensors-v0",
+        "HandManipulateEgg_ContinuousTouchSensorsDense-v0",
+        "HandManipulateEggRotate_ContinuousTouchSensorsDense-v0",
+        "HandManipulateEggFull_ContinuousTouchSensorsDense-v0",
+        "HandManipulateEgg_BooleanTouchSensorsDense-v0",
+        "HandManipulateEggRotate_BooleanTouchSensorsDense-v0",
+        "HandManipulateEggFull_BooleanTouchSensorsDense-v0",
     ]
     return [
         env_spec
@@ -871,6 +905,240 @@ def get_env_data(env_name):
             top of a table by pushing with its gripper.",
         "gif_url": "https://robotics.farama.org/_images/push.gif",
     },
+    "HandReach-v1": {
+        "description": "The goal of the task is for the fingertips of the hand to reach a predefined \
+            target Cartesian position.",
+        "gif_url": "https://robotics.farama.org/_images/reach1.gif",
+    },
+    "HandManipulateBlockRotateZ-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a random target rotation \
+            around the z axis of the block. No target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockRotateZ_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateZ_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateParallel-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a random target rotation around \
+            the z axis of the block and axis-aligned target rotations for the x and y axes. \
+            No target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockRotateParallel_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateParallel_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateXYZ-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a random target rotation for all \
+            axes of the block. No target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockRotateXYZ_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateXYZ_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockFull-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a Random target rotation \
+            for all axes of the block. Random target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlock-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. Rewards are Sparse",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockDense-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. Rewards are Dense",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlock_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlock_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateEgg-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggDense-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            Rewards are dense.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggRotate-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. No target position. \
+            Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggRotateDense-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. No target position. \
+            Rewards are dense.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggFull-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. Random target position. \
+            Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggFullDense-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. Random target position. \
+            Rewards are dense.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEgg_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEgg_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEgg_ContinuousTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are dense. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_ContinuousTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are dense. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_ContinuousTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are dense. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEgg_BooleanTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are dense. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_BooleanTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are dense. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_BooleanTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are dense. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
 }
     description = env_data[env_name]['description']
     gif_url = env_data[env_name]['gif_url']
@@ -964,7 +1232,7 @@ def run_agent_settings_component(page, agent_type=None):
                 'type': 'load-weights',
                 'page': page,
             },
-            value=[True]
+
         ),
         dcc.Checklist(
             options=[
@@ -974,7 +1242,6 @@ def run_agent_settings_component(page, agent_type=None):
                 'type': 'render-option',
                 'page': page,
             },
-            value=[]
         ),
         dcc.Input(
             id={

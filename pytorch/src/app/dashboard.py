@@ -9,7 +9,8 @@ import dash_bootstrap_components as dbc
 import layouts
 import dash_callbacks
 import utils
-# from celery_config import broker_url
+import gymnasium as gym
+import gymnasium_robotics as gym_robo
 
 
 
@@ -46,6 +47,8 @@ app.layout = dbc.Container(
     fluid=True,
 )
 if __name__ == "__main__":
+    # Register Gym Robotics envs
+    gym_robo.register_robotics_envs()
     # Create a multiprocessing manager
     manager = multiprocessing.Manager()
     # Create a shared dictionary to store data between processes
@@ -53,4 +56,4 @@ if __name__ == "__main__":
 
     # Pass the shared data to the register_callbacks function
     dash_callbacks.register_callbacks(app, shared_data)
-    app.run(debug=False, dev_tools_ui=False, dev_tools_props_check=False)
+    app.run(debug=True, dev_tools_ui=True, dev_tools_props_check=True)

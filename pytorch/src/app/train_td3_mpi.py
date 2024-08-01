@@ -4,7 +4,7 @@ from logging_config import logger
 import argparse
 from mpi4py import MPI
 
-from rl_agents import DDPG
+from rl_agents import TD3
 
 # Configure logging
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,12 +33,12 @@ def train_agent(agent_config, train_config):
         save_dir = train_config.get('save_dir', agent_config['save_dir'])
         run_number = train_config.get('run_number', None)
 
-        assert agent_type == 'DDPG', f"Unsupported agent type: {agent_type}"
+        assert agent_type == 'TD3', f"Unsupported agent type: {agent_type}"
 
         if agent_type:
             #DEBUG
             # print(f'if agent passed in mpi')
-            agent = DDPG.load(agent_config, load_weights)
+            agent = TD3.load(agent_config, load_weights)
             agent.use_mpi = True
             agent.comm = MPI.COMM_WORLD
             agent.rank = MPI.COMM_WORLD.Get_rank()
