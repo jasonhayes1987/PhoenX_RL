@@ -2182,19 +2182,22 @@ def register_callbacks(app, shared_data):
         #DEBUG
         # print("Start callback called.")
         if n_clicks > 0:
-            # clear the renders in the train folder
-            agent_type = agent_data['agent_type']
-            if agent_type == "HER":
-                agent_type = agent_data['agent']['agent_type']
-            if os.path.exists(f'assets/models/{agent_type}/renders/training'):
-                utils.delete_renders(f"assets/models/{agent_type}/renders/training")
             
             # Use the agent_data['save_dir'] to load agent
             if agent_data:  # Check if agent_data is not empty
+                # set save dir to agent config save dir if save dir == None
+                if not save_dir:
+                    save_dir = agent_data['save_dir']
+                
                 # Create an empty dict for train_config.json
                 train_config = {}
                 render = 'RENDER' in render_option
                 # use_mpi = agent_data.get('use_mpi', False)
+                
+                # clear the renders in the train folder
+                if render:
+                    if os.path.exists(save_dir + '/renders/training'):
+                        utils.delete_renders(save_dir + '/renders/training')
 
                 # Update the configuration with render settings
                 train_config['num_episodes'] = num_episodes
@@ -2218,13 +2221,13 @@ def register_callbacks(app, shared_data):
                     train_config['num_updates'] = num_updates
             
                 # Save the updated configuration to a train config file
-                train_config_path = agent_data['save_dir'] + '/train_config.json'
+                train_config_path = save_dir + '/train_config.json'
                 print(f'agent train config path:{train_config_path}')
                 with open(train_config_path, 'w') as f:
                     json.dump(train_config, f)
 
                 # Set the config path of the agent
-                agent_config_path = agent_data['save_dir'] + '/config.json'
+                agent_config_path = save_dir + '/config.json'
                 print(f'agent config path:{agent_config_path}')
 
                 script_path = 'train.py'
