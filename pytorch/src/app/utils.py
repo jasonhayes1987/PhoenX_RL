@@ -77,7 +77,13 @@ def create_noise_object(env, all_values, all_ids, agent_type):
                 model_type='none',
                 agent_type=agent_type,
             ),
-
+            device=get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type,
+            )
         )
 
     elif noise_type == "Uniform":
@@ -98,7 +104,13 @@ def create_noise_object(env, all_values, all_ids, agent_type):
                 model_type='none',
                 agent_type=agent_type,
             ),
-
+            device=get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type,
+            )
         )
 
     elif noise_type == "Ornstein-Uhlenbeck":
@@ -133,7 +145,13 @@ def create_noise_object(env, all_values, all_ids, agent_type):
                 model_type='none',
                 agent_type=agent_type,
             ),
-
+            device=get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='device',
+                model_type='none',
+                agent_type=agent_type,
+            )
         )
 
 def format_layers(all_values, all_ids, layer_units_values, layer_units_ids, value_type, value_model, agent_type):
@@ -399,7 +417,7 @@ def load(agent_data, env_name):
         #DEBUG
         # print('env name matches!')
         # Load the agent
-        return rl_agents.load_agent_from_config(agent_data['save_dir'])
+        return rl_agents.load_agent_from_config(agent_data)
 
     # else (they don't match) change params to match new environment action space
     # check what the agent type is to update params accordingly
@@ -505,6 +523,8 @@ def load(agent_data, env_name):
             callbacks = [rl_callbacks.load(callback['class_name'], callback['config']) for callback in agent_data['callbacks']],
             save_dir=agent_data['save_dir'],
         )
+
+        #TODO: ADD IF HER
     
     return agent
 
@@ -674,6 +694,40 @@ def get_all_gym_envs():
         "FetchSlide-v1",
         "FetchPush-v1",
         "FetchPickAndPlace-v1",
+        "HandReach-v0",
+        "HandManipulateBlockRotateZ-v0",
+        "HandManipulateBlockRotateZ_BooleanTouchSensors-v0",
+        "HandManipulateBlockRotateZ_ContinuousTouchSensors-v0",
+        "HandManipulateBlockRotateParallel-v0",
+        "HandManipulateBlockRotateParallel_BooleanTouchSensors-v0",
+        "HandManipulateBlockRotateParallel_ContinuousTouchSensors-v0",
+        "HandManipulateBlockRotateXYZ-v0",
+        "HandManipulateBlockRotateXYZ_BooleanTouchSensors-v0",
+        "HandManipulateBlockRotateXYZ_ContinuousTouchSensors-v0",
+        "HandManipulateBlockFull-v0",
+        "HandManipulateBlock-v0",
+        "HandManipulateBlockDense-v0",
+        "HandManipulateBlock_BooleanTouchSensors-v0",
+        "HandManipulateBlock_ContinuousTouchSensors-v0",
+        "HandManipulateEgg-v0",
+        "HandManipulateEggDense-v0",
+        "HandManipulateEggRotate-v0",
+        "HandManipulateEggRotateDense-v0",
+        "HandManipulateEggFull-v0",
+        "HandManipulateEggFullDense-v0",
+        "HandManipulateEgg-v0",
+        "HandManipulateEgg_ContinuousTouchSensors-v0",
+        "HandManipulateEggRotate_ContinuousTouchSensors-v0",
+        "HandManipulateEggFull_ContinuousTouchSensors-v0",
+        "HandManipulateEgg_BooleanTouchSensors-v0",
+        "HandManipulateEggRotate_BooleanTouchSensors-v0",
+        "HandManipulateEggFull_BooleanTouchSensors-v0",
+        "HandManipulateEgg_ContinuousTouchSensorsDense-v0",
+        "HandManipulateEggRotate_ContinuousTouchSensorsDense-v0",
+        "HandManipulateEggFull_ContinuousTouchSensorsDense-v0",
+        "HandManipulateEgg_BooleanTouchSensorsDense-v0",
+        "HandManipulateEggRotate_BooleanTouchSensorsDense-v0",
+        "HandManipulateEggFull_BooleanTouchSensorsDense-v0",
     ]
     return [
         env_spec
@@ -851,13 +905,247 @@ def get_env_data(env_name):
             top of a table by pushing with its gripper.",
         "gif_url": "https://robotics.farama.org/_images/push.gif",
     },
+    "HandReach-v1": {
+        "description": "The goal of the task is for the fingertips of the hand to reach a predefined \
+            target Cartesian position.",
+        "gif_url": "https://robotics.farama.org/_images/reach1.gif",
+    },
+    "HandManipulateBlockRotateZ-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a random target rotation \
+            around the z axis of the block. No target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockRotateZ_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateZ_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateParallel-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a random target rotation around \
+            the z axis of the block and axis-aligned target rotations for the x and y axes. \
+            No target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockRotateParallel_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateParallel_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateXYZ-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a random target rotation for all \
+            axes of the block. No target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockRotateXYZ_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockRotateXYZ_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlockFull-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. There is a Random target rotation \
+            for all axes of the block. Random target position. Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlock-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. Rewards are Sparse",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlockDense-v1": {
+        "description": "In this task a block is placed on the palm of the hand. The task is to then \
+            manipulate the block such that a target pose is achieved. Rewards are Dense",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block.gif",
+    },
+    "HandManipulateBlock_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateBlock_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateBlock environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_block_touch_sensors.gif",
+    },
+    "HandManipulateEgg-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggDense-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            Rewards are dense.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggRotate-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. No target position. \
+            Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggRotateDense-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. No target position. \
+            Rewards are dense.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggFull-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. Random target position. \
+            Rewards are sparse.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEggFullDense-v1": {
+        "description": "The task to be solved is very similar to that in the HandManipulateBlock \
+            environment, but in this case an egg-shaped object is placed on the palm of the hand. \
+            The task is to then manipulate the object such that a target pose is achieved. \
+            There is a random target rotation for all axes of the egg. Random target position. \
+            Rewards are dense.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg.gif",
+    },
+    "HandManipulateEgg_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_ContinuousTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are sparse. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEgg_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_BooleanTouchSensors-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are sparse. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEgg_ContinuousTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are dense. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_ContinuousTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are dense. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_ContinuousTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are dense. Continuous action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEgg_BooleanTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. Rewards are dense. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggRotate_BooleanTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            No target position. Rewards are dense. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
+    "HandManipulateEggFull_BooleanTouchSensorsDense-v1": {
+        "description": "The task to be solved is the same as in the HandManipulateEgg environment. \
+            However, in this case the environment observation also includes tactile sensory information. \
+            This is achieved by placing a total of 92 MuJoCo touch sensors in the palm and finger \
+            phalanxes of the hand. There is a random target rotation for all axes of the egg. \
+            Random target position. Rewards are dense. Discrete action space.",
+        "gif_url": "https://robotics.farama.org/_images/manipulate_egg_touch_sensors.gif",
+    },
 }
     description = env_data[env_name]['description']
     gif_url = env_data[env_name]['gif_url']
 
     return description, gif_url
 
-# Testing settings component
+# Training settings component
 def run_agent_settings_component(page, agent_type=None):
     return html.Div([
         html.Div(
@@ -866,6 +1154,7 @@ def run_agent_settings_component(page, agent_type=None):
                 'page': page,
             },
             style={'display': 'none'},
+            # hidden=True,
             children=[
                 html.Label('Use MPI', style={'text-decoration': 'underline'}),
                 dcc.RadioItems(
@@ -937,13 +1226,22 @@ def run_agent_settings_component(page, agent_type=None):
         ),
         dcc.Checklist(
             options=[
-                {'label': 'Render Testing Episodes', 'value': 'RENDER'}
+                {'label': 'Load Weights', 'value': True}
+            ],
+            id={
+                'type': 'load-weights',
+                'page': page,
+            },
+
+        ),
+        dcc.Checklist(
+            options=[
+                {'label': 'Render Episodes', 'value': 'RENDER'}
             ],
             id={
                 'type': 'render-option',
                 'page': page,
             },
-            value=[]
         ),
         dcc.Input(
             id={
@@ -955,7 +1253,33 @@ def run_agent_settings_component(page, agent_type=None):
             min=1,
             disabled=True,
         ),
-        
+        generate_seed_component(page),
+        dcc.Input(
+            id={
+                'type': 'run-number',
+                'page': page,
+            },
+            type='number',
+            placeholder="WANDB Run Number (blank for None)",
+        ),
+        dcc.Input(
+            id={
+                'type': 'num-runs',
+                'page': page,
+            },
+            type='number',
+            placeholder="Number of Runs",
+            min=1,
+        ),
+        html.Label('Save Directory:', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+                'type':'save-dir',
+                'page':page,
+            },
+            type='text',
+            placeholder='path/to/model'
+        ),
         html.Div(
             id={
                 'type':'hidden-div',
@@ -1018,7 +1342,7 @@ def create_save_dir_input(agent_type):
                     'agent':agent_type
                 },
                 type='text',
-                placeholder='path/to/model/'
+                placeholder='path/to/model'
             )
         ]
     )
@@ -1211,10 +1535,10 @@ def create_uniform_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=0.01,
+                min=-0.99,
                 max=0.99,
-                step=0.01,
-                value=0.99,  # Default position
+                step=0.001,
+                value=-0.99,  # Default position
             ),
 
             html.Label('Maximum', style={'text-decoration': 'underline'}),
@@ -1225,9 +1549,10 @@ def create_uniform_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=0.01,
+                min=-0.99,
                 max=0.99,
-                step=0.01,
+                step=0.001,
+                value=0.99
             ),
             html.Hr(),
     ])
@@ -1280,9 +1605,9 @@ def create_constant_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=0.01,
+                min=0.001,
                 max=0.99,
-                step=0.01,
+                step=0.001,
                 value=0.99,
             ),
             html.Hr(),
@@ -1359,8 +1684,9 @@ def format_kernel_initializer_config(all_values, all_ids, value_model, agent_typ
     # create empty dictionary to store initializer config params
     config = {}
     # Iterate over initializer_type params list and get values
-    for param in initializer_configs[initializer_type]:
-        config[param] = get_specific_value(all_values, all_ids, param, value_model, agent_type)
+    if initializer_type not in ['zeros', 'ones', 'default']:
+        for param in initializer_configs[initializer_type]:
+            config[param] = get_specific_value(all_values, all_ids, param, value_model, agent_type)
     
     # format 
     initializer_config = {initializer_type: config}
@@ -1385,6 +1711,23 @@ def create_discount_factor_input(agent_type):
             )
         ]
     )
+
+def create_warmup_input(agent_type):
+    return html.Div([
+        html.Label('Warmup Period (Steps)'),
+        dcc.Input(
+            id={
+                'type': 'warmup',
+                'model': 'none',
+                'agent': agent_type
+            },
+            type='number',
+            min=0,
+            max=1000,
+            value=0,
+            step=500,
+        )
+    ])
 
 def create_tau_input(agent_type):
     return html.Div(
@@ -1442,6 +1785,63 @@ def create_noise_function_input(agent_type):
                     'model':'none',
                     'agent':agent_type,
                 }
+            ),
+        ]
+    )
+
+def create_target_noise_stddev_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Target Noise Standard Deviation', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'target-noise-stddev',
+                    'model':'actor',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.1,
+                max=0.9,
+                step=0.1,
+                value=0.2,
+            ),
+        ]
+    )
+
+def create_target_noise_clip_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Target Noise Clip', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'target-noise-clip',
+                    'model':'actor',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.1,
+                max=0.9,
+                step=0.1,
+                value=0.5,
+            ),
+        ]
+    )
+
+def create_actor_delay_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Actor Update Delay (steps)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'actor-update-delay',
+                    'model':'actor',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=10,
+                step=1,
+                value=2,
             ),
         ]
     )
@@ -1948,9 +2348,9 @@ def create_actor_model_input(agent_type):
             create_convolution_layers_input(agent_type, 'actor'),
             create_dense_layers_input(agent_type, 'actor'),
             create_normalize_layers_input(agent_type, 'actor'),
-            create_clamp_output_input(agent_type, 'actor'),
+            # create_clamp_output_input(agent_type, 'actor'),
             html.Label("Hidden Layers Kernel Initializers"),
-            create_kernel_input(agent_type, 'actor'),
+            create_kernel_input(agent_type, 'actor-hidden'),
             html.Label("Output Layer Kernel Initializer"),
             create_kernel_input(agent_type, 'actor-output'),
             create_activation_input(agent_type, 'actor'),
@@ -1969,7 +2369,7 @@ def create_critic_model_input(agent_type):
             create_dense_layers_input(agent_type, 'critic-merged'),
             create_normalize_layers_input(agent_type, 'critic'),
             html.Label("Hidden Layers Kernel Initializers"),
-            create_kernel_input(agent_type, 'critic'),
+            create_kernel_input(agent_type, 'critic-hidden'),
             html.Label("Output Layer Kernel Initializer"),
             create_kernel_input(agent_type, 'critic-output'),
             create_activation_input(agent_type, 'critic'),
@@ -2010,7 +2410,7 @@ def create_actor_critic_parameter_inputs(agent_type):
     )
 
 def create_ddpg_parameter_inputs(agent_type):
-    """Adds inputs for Hindsight Experience Replay w/DDPG Agent"""
+    """Adds inputs for DDPG Agent"""
     return html.Div(
         id=f'{agent_type}-inputs',
         children=[
@@ -2021,8 +2421,35 @@ def create_ddpg_parameter_inputs(agent_type):
             create_batch_size_input(agent_type),
             create_noise_function_input(agent_type),
             create_input_normalizer_input(agent_type),
+            create_warmup_input(agent_type),
             # Actor Model Configuration
             create_actor_model_input(agent_type),
+            # Critic Model Configuration
+            html.H3("Critic Model Configuration"),
+            create_critic_model_input(agent_type),
+            # Save dir
+            create_save_dir_input(agent_type)
+        ]
+    )
+
+def create_td3_parameter_inputs(agent_type):
+    """Adds inputs for TD3 Agent"""
+    return html.Div(
+        id=f'{agent_type}-inputs',
+        children=[
+            create_device_input(agent_type),
+            create_discount_factor_input(agent_type),
+            create_tau_input(agent_type),
+            create_epsilon_greedy_input(agent_type),
+            create_batch_size_input(agent_type),
+            create_noise_function_input(agent_type),
+            create_target_noise_stddev_input(agent_type),
+            create_target_noise_clip_input(agent_type),
+            create_input_normalizer_input(agent_type),
+            create_warmup_input(agent_type),
+            # Actor Model Configuration
+            create_actor_model_input(agent_type),
+            create_actor_delay_input(agent_type),
             # Critic Model Configuration
             html.H3("Critic Model Configuration"),
             create_critic_model_input(agent_type),
@@ -2067,6 +2494,9 @@ def create_agent_parameter_inputs(agent_type):
 
     elif agent_type == 'DDPG':
         return create_ddpg_parameter_inputs(agent_type)
+    
+    elif agent_type == 'TD3':
+        return create_td3_parameter_inputs(agent_type)
     
     elif agent_type == 'HER_DDPG':
         return create_her_ddpg_parameter_inputs(agent_type)
@@ -2147,14 +2577,18 @@ def create_ddpg_hyperparam_input(agent_type):
             create_epsilon_greedy_hyperparam_input(agent_type, 'none'),
             generate_batch_hyperparam_componenent(agent_type, 'none'),
             generate_noise_hyperparam_componenent(agent_type, 'none'),
+            create_replay_buffer_size_hyperparam_component(agent_type, 'none'),
             create_input_normalizer_hyperparam_input(agent_type, 'none'),
+            generate_warmup_hyperparam_input(agent_type, 'none'),
             html.Hr(),
             dcc.Tabs([
                 dcc.Tab([
                     generate_learning_rate_hyperparam_component(agent_type, 'actor'),
                     generate_cnn_layer_hyperparam_component(agent_type, 'actor'),
                     generate_hidden_layer_hyperparam_component(agent_type, 'actor'),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'actor'),
                     generate_optimizer_hyperparam_component(agent_type, 'actor'),
@@ -2171,7 +2605,65 @@ def create_ddpg_hyperparam_input(agent_type):
                     html.H4("Critic Merged (State + Action) Input Layer Configuration"),
                     generate_hidden_layer_hyperparam_component(agent_type, 'critic-merged'),
                     html.Hr(),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-output', 'Output Layer'),
+                    html.Hr(),
+                    generate_activation_function_hyperparam_component(agent_type, 'critic'),
+                    generate_optimizer_hyperparam_component(agent_type, 'critic'),
+                    create_normalize_layers_hyperparam_input(agent_type, 'critic'),
+                ],
+                label='Critic Model')
+            ]),
+            create_save_dir_input(agent_type),
+        ])
+    ],
+    label=agent_type)
+
+def create_td3_hyperparam_input(agent_type):
+    return dcc.Tab([
+        html.Div([
+            create_device_input(agent_type),
+            generate_discount_hyperparam_component(agent_type, 'none'),
+            generate_tau_hyperparam_componenent(agent_type, 'none'),
+            create_epsilon_greedy_hyperparam_input(agent_type, 'none'),
+            generate_batch_hyperparam_componenent(agent_type, 'none'),
+            generate_noise_hyperparam_componenent(agent_type, 'none'),
+            create_replay_buffer_size_hyperparam_component(agent_type, 'none'),
+            generate_target_action_noise_stddev_hyperparam_component(agent_type, 'none'),
+            generate_target_action_noise_clip_hyperparam_component(agent_type, 'none'),
+            generate_actor_update_delay_hyperparam_component(agent_type, 'none'),
+            create_input_normalizer_hyperparam_input(agent_type, 'none'),
+            generate_warmup_hyperparam_input(agent_type, 'none'),
+            html.Hr(),
+            dcc.Tabs([
+                dcc.Tab([
+                    generate_learning_rate_hyperparam_component(agent_type, 'actor'),
+                    generate_cnn_layer_hyperparam_component(agent_type, 'actor'),
+                    generate_hidden_layer_hyperparam_component(agent_type, 'actor'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-output', 'Output Layer'),
+                    html.Hr(),
+                    generate_activation_function_hyperparam_component(agent_type, 'actor'),
+                    generate_optimizer_hyperparam_component(agent_type, 'actor'),
+                    create_normalize_layers_hyperparam_input(agent_type, 'actor'),
+                    # create_clamp_output_hyperparam_input(agent_type, 'actor'),
+                ],
+                label='Actor Model'),
+                dcc.Tab([
+                    generate_learning_rate_hyperparam_component(agent_type, 'critic'),
+                    html.Hr(),
+                    generate_cnn_layer_hyperparam_component(agent_type, 'critic'),
+                    html.H4("Critic State Input Layer Configuration"),
+                    generate_hidden_layer_hyperparam_component(agent_type, 'critic-state'),
+                    html.Hr(),
+                    html.H4("Critic Merged (State + Action) Input Layer Configuration"),
+                    generate_hidden_layer_hyperparam_component(agent_type, 'critic-merged'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'critic'),
                     generate_optimizer_hyperparam_component(agent_type, 'critic'),
@@ -2195,21 +2687,24 @@ def create_her_ddpg_hyperparam_input(agent_type):
             create_epsilon_greedy_hyperparam_input(agent_type, 'none'),
             generate_batch_hyperparam_componenent(agent_type, 'none'),
             generate_noise_hyperparam_componenent(agent_type, 'none'),
-            html.Hr(),
+            create_replay_buffer_size_hyperparam_component(agent_type, 'none'),
             html.H6("Input Normalizers"),
-            create_input_normalizer_options_hyperparam_input(agent_type, 'none'),
-            create_input_normalizer_options_hyperparam_input(agent_type, 'none'),
+            create_input_normalizer_hyperparam_input(agent_type, 'none'),
+            html.Hr(),
             # Actor config
             dcc.Tabs([
                 dcc.Tab([
                     generate_learning_rate_hyperparam_component(agent_type, 'actor'),
                     generate_cnn_layer_hyperparam_component(agent_type, 'actor'),
                     generate_hidden_layer_hyperparam_component(agent_type, 'actor'),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'actor-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'actor'),
                     generate_optimizer_hyperparam_component(agent_type, 'actor'),
                     create_normalize_layers_hyperparam_input(agent_type, 'actor'),
+                    # create_clamp_output_hyperparam_input(agent_type, 'actor'),
                 ],
                 label='Actor Model'),
                 # Critic config
@@ -2223,7 +2718,9 @@ def create_her_ddpg_hyperparam_input(agent_type):
                     html.H4("Critic Merged (State + Action) Input Layer Configuration"),
                     generate_hidden_layer_hyperparam_component(agent_type, 'critic-merged'),
                     html.Hr(),
-                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'critic-output', 'Output Layer'),
                     html.Hr(),
                     generate_activation_function_hyperparam_component(agent_type, 'critic'),
                     generate_optimizer_hyperparam_component(agent_type, 'critic'),
@@ -2278,6 +2775,112 @@ def generate_discount_hyperparam_component(agent_type, model_type):
                     {'label': '0.8', 'value': 0.8},
                     {'label': '0.9', 'value': 0.9},
                     {'label': '0.99', 'value': 0.99},
+                    {'label': '1.0', 'value': 1.0},
+            ],
+            multi=True,
+        )
+    ])
+
+def generate_warmup_hyperparam_input(agent_type, model_type):
+    return html.Div([
+        html.H5('Warmup Period (Steps)'),
+        dcc.Dropdown(
+            id={
+                'type': 'warmup-slider-hyperparam',
+                'model': model_type,
+                'agent': agent_type
+            },
+            options=[
+                    
+                    {'label': '500', 'value': 500},
+                    {'label': '1000', 'value': 1000},
+                    {'label': '5000', 'value': 5000},
+                    {'label': '10000', 'value': 10000},
+            ],
+            multi=True,
+        )
+    ])
+
+def generate_actor_update_delay_hyperparam_component(agent_type, model_type):
+    return html.Div([
+        html.H5('Actor Update Delay (Steps)'),
+        dcc.Dropdown(
+            id={
+                'type': 'actor-update-delay-slider-hyperparam',
+                'model': model_type,
+                'agent': agent_type
+            },
+            options=[
+                    {'label': '1', 'value': 1},
+                    {'label': '2', 'value': 2},
+                    {'label': '3', 'value': 3},
+                    {'label': '4', 'value': 4},
+                    {'label': '5', 'value': 5},
+                    {'label': '6', 'value': 6},
+                    {'label': '7', 'value': 7},
+                    {'label': '8', 'value': 8},
+                    {'label': '9', 'value': 9},
+                    {'label': '10', 'value': 10},
+                    {'label': '20', 'value': 20},
+                    {'label': '30', 'value': 30},
+                    {'label': '40', 'value': 40},
+                    {'label': '50', 'value': 50},
+                    {'label': '60', 'value': 60},
+                    {'label': '70', 'value': 70},
+                    {'label': '80', 'value': 80},
+                    {'label': '90', 'value': 90},
+                    {'label': '100', 'value': 100},
+            ],
+            multi=True,
+        )
+    ])
+
+def generate_target_action_noise_stddev_hyperparam_component(agent_type, model_type):
+    return html.Div([
+        html.H5('Target Action Noise Stddev'),
+        dcc.Dropdown(
+            id={
+                'type': 'target-action-noise-stddev-slider-hyperparam',
+                'model': model_type,
+                'agent': agent_type
+            },
+            options=[
+                    {'label': '0.0', 'value': 0.0},
+                    {'label': '0.1', 'value': 0.1},
+                    {'label': '0.2', 'value': 0.2},
+                    {'label': '0.3', 'value': 0.3},
+                    {'label': '0.4', 'value': 0.4},
+                    {'label': '0.5', 'value': 0.5},
+                    {'label': '0.6', 'value': 0.6},
+                    {'label': '0.7', 'value': 0.7},
+                    {'label': '0.8', 'value': 0.8},
+                    {'label': '0.9', 'value': 0.9},
+                    {'label': '1.0', 'value': 1.0},
+            ],
+            multi=True,
+        )
+    ])
+
+def generate_target_action_noise_clip_hyperparam_component(agent_type, model_type):
+    return html.Div([
+        html.H5('Target Action Noise Clip'),
+        dcc.Dropdown(
+            id={
+                'type': 'target-action-noise-clip-slider-hyperparam',
+                'model': model_type,
+                'agent': agent_type
+            },
+            options=[
+                    {'label': '0.0', 'value': 0.0},
+                    {'label': '0.1', 'value': 0.1},
+                    {'label': '0.2', 'value': 0.2},
+                    {'label': '0.3', 'value': 0.3},
+                    {'label': '0.4', 'value': 0.4},
+                    {'label': '0.5', 'value': 0.5},
+                    {'label': '0.6', 'value': 0.6},
+                    {'label': '0.7', 'value': 0.7},
+                    {'label': '0.8', 'value': 0.8},
+                    {'label': '0.9', 'value': 0.9},
                     {'label': '1.0', 'value': 1.0},
             ],
             multi=True,
@@ -2569,9 +3172,9 @@ def generate_hidden_units_per_layer_hyperparam_component(agent_type, model_type,
         )
     ])
 
-def generate_kernel_initializer_hyperparam_component(agent_type, model_type):
+def generate_kernel_initializer_hyperparam_component(agent_type, model_type, layer_type):
     return html.Div([
-        html.H5('Hidden Layers Kernel Initializer'),
+        html.H5(f'{layer_type} Kernel Initializer'),
         dcc.Dropdown(
             id={
                 'type':'kernel-function-hyperparam',
@@ -2730,7 +3333,6 @@ def generate_kaiming_uniform_hyperparam_inputs(agent_type, model_type):
                             {'label': 'fan in', 'value': 'fan_in'},
                             {'label': 'fan out', 'value': 'fan_out'},
                         ],
-                    value='fan_in',
                     multi=True,
                 ),
                 html.Hr(),
@@ -2761,7 +3363,6 @@ def generate_kaiming_normal_hyperparam_inputs(agent_type, model_type):
                             {'label': 'fan in', 'value': 'fan_in'},
                             {'label': 'fan out', 'value': 'fan_out'},
                         ],
-                    value=['fan_in'],
                     multi=True,
                 ),
                 html.Hr(),
@@ -2797,7 +3398,6 @@ def generate_variance_scaling_hyperparam_inputs(agent_type, model_type):
                 },
                 options=[{'label': mode, 'value': mode} for mode in ['fan_in', 'fan_out', 'fan_avg']],
                 placeholder="Mode",
-                value=['fan_in'],
                 multi=True
             ),
             html.Label('Distribution', style={'text-decoration': 'underline'}),
@@ -2809,7 +3409,6 @@ def generate_variance_scaling_hyperparam_inputs(agent_type, model_type):
                 },
                 options=[{'label': dist, 'value': dist} for dist in ['truncated normal', 'uniform']],
                 placeholder="Distribution",
-                value=['truncated normal'],
                 multi=True
             ),
         ])
@@ -2827,6 +3426,24 @@ def generate_constant_kernel_hyperparam_inputs(agent_type, model_type):
                     'agent': agent_type,
                 },
                 options=[
+                    {'label': '0.001', 'value': 0.001},
+                    {'label': '0.002', 'value': 0.002},
+                    {'label': '0.003', 'value': 0.003},
+                    {'label': '0.004', 'value': 0.004},
+                    {'label': '0.005', 'value': 0.005},
+                    {'label': '0.006', 'value': 0.006},
+                    {'label': '0.007', 'value': 0.007},
+                    {'label': '0.008', 'value': 0.008},
+                    {'label': '0.009', 'value': 0.009},
+                    {'label': '0.01', 'value': 0.01},
+                    {'label': '0.02', 'value': 0.02},
+                    {'label': '0.03', 'value': 0.03},
+                    {'label': '0.04', 'value': 0.04},
+                    {'label': '0.05', 'value': 0.05},
+                    {'label': '0.06', 'value': 0.06},
+                    {'label': '0.07', 'value': 0.07},
+                    {'label': '0.08', 'value': 0.08},
+                    {'label': '0.09', 'value': 0.09},
                     {'label': '0.1', 'value': 0.1},
                     {'label': '0.2', 'value': 0.2},
                     {'label': '0.3', 'value': 0.3},
@@ -2906,16 +3523,16 @@ def generate_uniform_kernel_hyperparam_inputs(agent_type, model_type):
                 },
                 options=[
                     {'label': '0.0', 'value': 0.0},
-                    {'label': '0.1', 'value': 0.1},
-                    {'label': '0.2', 'value': 0.2},
-                    {'label': '0.3', 'value': 0.3},
-                    {'label': '0.4', 'value': 0.4},
-                    {'label': '0.5', 'value': 0.5},
-                    {'label': '0.6', 'value': 0.6},
-                    {'label': '0.7', 'value': 0.7},
-                    {'label': '0.8', 'value': 0.8},
-                    {'label': '0.9', 'value': 0.9},
-                    {'label': '1.0', 'value': 1.0},
+                    {'label': '-0.1', 'value': -0.1},
+                    {'label': '-0.2', 'value': -0.2},
+                    {'label': '-0.3', 'value': -0.3},
+                    {'label': '-0.4', 'value': -0.4},
+                    {'label': '-0.5', 'value': -0.5},
+                    {'label': '-0.6', 'value': -0.6},
+                    {'label': '-0.7', 'value': -0.7},
+                    {'label': '-0.8', 'value': -0.8},
+                    {'label': '-0.9', 'value': -0.9},
+                    {'label': '-1.0', 'value': -1.0},
                 ],
                 multi=True,
             ),
@@ -3244,16 +3861,16 @@ def generate_uniform_noise_hyperparam_inputs(agent_type, model_type):
                 },
                 options=[
                     {'label': '0.0', 'value': 0.0},
-                    {'label': '0.1', 'value': 0.1},
-                    {'label': '0.2', 'value': 0.2},
-                    {'label': '0.3', 'value': 0.3},
-                    {'label': '0.4', 'value': 0.4},
-                    {'label': '0.5', 'value': 0.5},
-                    {'label': '0.6', 'value': 0.6},
-                    {'label': '0.7', 'value': 0.7},
-                    {'label': '0.8', 'value': 0.8},
-                    {'label': '0.9', 'value': 0.9},
-                    {'label': '1.0', 'value': 1.0},
+                    {'label': '-0.1', 'value': -0.1},
+                    {'label': '-0.2', 'value': -0.2},
+                    {'label': '-0.3', 'value': -0.3},
+                    {'label': '-0.4', 'value': -0.4},
+                    {'label': '-0.5', 'value': -0.5},
+                    {'label': '-0.6', 'value': -0.6},
+                    {'label': '-0.7', 'value': -0.7},
+                    {'label': '-0.8', 'value': -0.8},
+                    {'label': '-0.9', 'value': -0.9},
+                    {'label': '-1.0', 'value': -1.0},
                 ],
                 multi=True,
             ),
@@ -3344,8 +3961,29 @@ def generate_normal_noise_hyperparam_inputs(agent_type, model_type):
     ],
     label='Normal')
 
-def generate_replay_buffer_hyperparam_component(agent_type, model_type):
+def create_replay_buffer_hyperparam_component(agent_type, model_type):
     pass
+
+def create_replay_buffer_size_hyperparam_component(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Buffer Size', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'buffer-size-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': '100,000', 'value': 100_000},
+                    {'label': '500,000', 'value': 500_000},
+                    {'label': '1,000,000', 'value': 1_000_000}
+                    ],
+                placeholder="Replay Buffer Size",
+                multi=True,
+            ),
+        ]
+    )
 
 def create_goal_strategy_hyperparam_input(agent_type, model_type):
     return html.Div(
@@ -3442,7 +4080,7 @@ def create_input_normalizer_options_hyperparam_input(agent_type, model_type):
             html.Label(f'Minimum/Maximum Clip Value', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
-                    'type':'clip-value-hyperparam',
+                    'type':'norm-clip-value-hyperparam',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -3512,6 +4150,42 @@ def create_normalize_layers_hyperparam_input(agent_type, model_type):
         ]
     )
 
+def create_clamp_output_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            dcc.Dropdown(
+                id={
+                    'type':'clamp-value-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': '0.01', 'value': 0.01},
+                    {'label': '0.02', 'value': 0.02},
+                    {'label': '0.03', 'value': 0.03},
+                    {'label': '0.04', 'value': 0.04},
+                    {'label': '0.05', 'value': 0.05},
+                    {'label': '0.06', 'value': 0.06},
+                    {'label': '0.07', 'value': 0.07},
+                    {'label': '0.08', 'value': 0.08},
+                    {'label': '0.09', 'value': 0.09},
+                    {'label': '0.1', 'value': 0.1},
+                    {'label': '0.2', 'value': 0.2},
+                    {'label': '0.3', 'value': 0.3},
+                    {'label': '0.4', 'value': 0.4},
+                    {'label': '0.5', 'value': 0.5},
+                    {'label': '0.6', 'value': 0.6},
+                    {'label': '0.7', 'value': 0.7},
+                    {'label': '0.8', 'value': 0.8},
+                    {'label': '0.9', 'value': 0.9},
+                    {'label': '1.0 (no clamp)', 'value': 1.0}, # Equals no clamp
+                ],
+                placeholder="Clamp Value",
+                multi=True,
+            ),
+        ]
+    )
+
 def update_goal_strategy_hyperparam_options(agent_type, goal_strategy):
     if goal_strategy == 'future':
         return future_goal_strategy_hyperparam_options(agent_type)
@@ -3539,17 +4213,17 @@ def future_goal_strategy_hyperparam_options(agent_type):
         ]
     )
 
-def generate_seed_component(agent_type, model_type):
+def generate_seed_component(page):
     return html.Div([
         html.Label('Seed', style={'text-decoration': 'underline'}),
         dcc.Input(
             id={
                 'type':'seed',
-                'model': model_type,
-                'agent': agent_type
+                'page': page,
             },
             type='number',
-            placeholder="Leave blank for random seed"
+            min=1,
+            placeholder="Blank for random"
         ),
     ])
 
@@ -3587,6 +4261,7 @@ def generate_wandb_project_dropdown(page):
             id={'type':'projects-dropdown', 'page':page},
             options=[{'label': project, 'value': project} for project in projects],
             placeholder="Select a W&B Project",
+            className="dropdown-field"
             )
         ])
 
@@ -3626,7 +4301,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
         if agent not in sweep_config["parameters"]:
             sweep_config["parameters"][agent] = {}
         
-        if agent == "DDPG":
+        if agent in ["DDPG", "TD3"]:
             sweep_config["parameters"][agent]["parameters"] = {}
 
             # actor learning rate
@@ -3654,16 +4329,33 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             config = {"values": value_range}
             sweep_config["parameters"][agent]["parameters"][f"{agent}_epsilon_greedy"] = config
 
+            # warmup
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_warmup"] = \
+                {"values": get_specific_value(all_values, all_ids, 'warmup-slider-hyperparam', 'none', agent)}
+
             # normalize input
             sweep_config["parameters"][agent]["parameters"][f"{agent}_normalize_input"] = \
                 {"values": get_specific_value(all_values, all_ids, 'normalize-input-hyperparam', 'none', agent)}
 
             # normalize input options
-            for value in sweep_config["parameters"][agent]["parameters"][f"{agent}_normalize_input"]['values']:
-                if value == 'True':
-                    value_range = get_specific_value(all_values, all_ids, 'state-clip-value-hyperparam', 'none', agent)
-                    config = {"values": value_range}
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_normalize_clip"] = config
+            # for value in sweep_config["parameters"][agent]["parameters"][f"{agent}_normalize_input"]['values']:
+            #     if value == 'True':
+            #         value_range = get_specific_value(all_values, all_ids, 'norm-clip-value-hyperparam', 'none', agent)
+            #         config = {"values": value_range}
+            #     sweep_config["parameters"][agent]["parameters"][f"{agent}_normalize_clip"] = config
+
+            value_range = get_specific_value(all_values, all_ids, 'norm-clip-value-hyperparam', 'none', agent)
+            config = {"values": value_range}
+            
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_normalizer_clip"] = config
+
+            # replay buffer size
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer_size"] = \
+                {"values": get_specific_value(all_values, all_ids, 'buffer-size-hyperparam', 'none', agent)}
+
+            # Get Device
+            value_range = get_specific_value(all_values, all_ids, 'device', 'none', agent)
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_device"] = {"value": value_range}
             
             # actor cnn layers
             value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'actor', agent)
@@ -3689,11 +4381,176 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG actor activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_activation"]}')
 
-            # actor kernel initializer
-            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"] = \
-                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent)}
+            # actor hidden layers kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-hidden', agent)}
             #DEBUG
             # print(f'DDPG actor kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"]}')
+
+            # actor hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-hidden', agent):
+                if kernel != 'default':
+                    if f"{agent}_actor_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]={"parameters":{}}
+
+                    # initialize empty config dictionary for parameters
+                    config = {}
+
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_value"] = {"values": value_range}
+        
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
+
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-hidden', agent)}
+
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-hidden', agent)}
+
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
+
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
+
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]["parameters"] = config
+
+
+            # actor output layer kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-output', agent)}
+
+            # actor output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-output', agent):
+                if kernel != 'default':
+                    if f"{agent}_actor_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]={"parameters":{}}
+
+                    # initialize empty config dictionary for parameters
+                    config = {}
+
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_value"] = {"values": value_range}
+        
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
+
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-output', agent)}
+
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-output', agent)}
+
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
+
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
+
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]["parameters"] = config
 
             # actor optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"] = \
@@ -3776,11 +4633,173 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG critic activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_activation"]}')
 
-            # critic kernel initializer
-            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"] = \
-                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent)}
+            # critic hidden layers kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-hidden', agent)}
             #DEBUG
             # print(f'DDPG critic kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"]}')
+
+            # critic hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-hidden', agent):
+                if kernel != 'default':
+                    if f"{agent}_critic_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]={"parameters":{}}
+
+                    # initialize empty config dictionary for parameters
+                    config = {}
+
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_value"] = {"values": value_range}
+        
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
+
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-hidden', agent)}
+
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-hidden', agent)}
+
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
+
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
+
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]["parameters"] = config
+
+            # critic output layer kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-output', agent)}
+
+            # critic output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-output', agent):
+                if kernel != "default":
+                    if f"{agent}_critic_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]={"parameters":{}}
+
+                    # initialize empty config dictionary for parameters
+                    config = {}
+
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_value"] = {"values": value_range}
+        
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
+
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-output', agent)}
+
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-output', agent)}
+
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
+
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
+
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]["parameters"] = config
 
             # critic optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer"] = \
@@ -3884,165 +4903,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG noise set to {config}')
 
-            # kernel options       
-            # actor kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent):
-                if f"{agent}_actor_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]={"parameters":{}}
-
-                # initialize empty config dictionary for parameters
-                config = {}
-
-                if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)
-                    config = {"values": value_range}
-       
-                elif kernel == "variance_scaling":
-                    # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)
-                    config["scale"] = {"values": value_range}
-
-                    # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor', agent)}
-
-                    # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent)}
-
-                elif kernel == "uniform":
-                    # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)
-                    config["maxval"] = {"values": value_range}
-
-                    # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)
-                    config["minval"] = {"values": value_range}
-
-                elif kernel == "normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)
-                    config["mean"] = {"values": value_range}
-
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)
-                    config["stddev"] = {"values": value_range}
-        
-                elif kernel == "truncated_normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)
-                    config["mean"] = {"values": value_range}
-
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)
-                    config["stddev"] = {"values": value_range}
-
-                elif kernel == "xavier_uniform":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor', agent)
-                    config["gain"] = {"values": value_range}
-
-                elif kernel == "xavier_normal":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor', agent)
-                    config["gain"] = {"values": value_range}
-
-                elif kernel == "kaiming_uniform":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor', agent)
-                    config["mode"] = {"values": values}
-
-
-                elif kernel == "kaiming_normal":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor', agent)
-                    config["mode"] = {"values": values}
-
-                    
-                else:
-                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
-                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
-                        raise ValueError(f"Unknown kernel: {kernel}")
-                    
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = config
-            #DEBUG
-            # print(f'DDPG actor kernel set to {config}')
-
-            # critic kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent):
-                if f"{agent}_critic_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]={"parameters":{}}
-
-                # initialize empty config dictionary for parameters
-                config = {}
-
-                if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)
-                    config = {"values": value_range}
-       
-                elif kernel == "variance_scaling":
-                    # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)
-                    config["scale"] = {"values": value_range}
-
-                    # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic', agent)}
-
-                    # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent)}
-
-                elif kernel == "uniform":
-                    # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)
-                    config["maxval"] = {"values": value_range}
-
-                    # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)
-                    config["minval"] = {"values": value_range}
-
-                elif kernel == "normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)
-                    config["mean"] = {"values": value_range}
-
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)
-                    config["stddev"] = {"values": value_range}
-        
-                elif kernel == "truncated_normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)
-                    config["mean"] = {"values": value_range}
-
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)
-                    config["stddev"] = {"values": value_range}
-
-                elif kernel == "xavier_uniform":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic', agent)
-                    config["gain"] = {"values": value_range}
-
-                elif kernel == "xavier_normal":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic', agent)
-                    config["gain"] = {"values": value_range}
-
-                elif kernel == "kaiming_uniform":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic', agent)
-                    config["mode"] = {"values": values}
-
-                elif kernel == "kaiming_normal":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic', agent)
-                    config["mode"] = {"values": values}
-
-                    
-                else:
-                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
-                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
-                        raise ValueError(f"Unknown kernel: {kernel}")
-                    
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = config
+            
             #DEBUG
             # print(f'DDPG critic kernel set to {config}')
 
@@ -4194,6 +5055,24 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                     "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
                 }
 
+            # Add save dir
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_save_dir"] = \
+                {"value": get_specific_value(all_values, all_ids, 'save-dir', 'none', agent)}
+            
+            if agent == "TD3":
+                # Add target action stddev
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_target_action_stddev"] = \
+                    {"values": get_specific_value(all_values, all_ids, 'target-action-noise-stddev-slider-hyperparam', 'none', agent)}
+                
+                # Add target action clip
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_target_action_clip"] = \
+                    {"values": get_specific_value(all_values, all_ids, 'target-action-noise-clip-slider-hyperparam', 'none', agent)}
+                
+                # Add actor update delay
+                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_update_delay"] = \
+                    {"values": get_specific_value(all_values, all_ids, 'actor-update-delay-slider-hyperparam', 'none', agent)}
+
+
         if agent == "HER_DDPG":
             sweep_config["parameters"][agent]["parameters"] = {}
 
@@ -4249,9 +5128,14 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             sweep_config["parameters"][agent]["parameters"][f"{agent}_epsilon_greedy"] = config
 
             # normalize input options
-            # state
-            value_range = get_specific_value(all_values, all_ids, 'clip-value-hyperparam', 'none', agent)
+            value_range = get_specific_value(all_values, all_ids, 'norm-clip-value-hyperparam', 'none', agent)
             config = {"values": value_range}
+            
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_normalizer_clip"] = config
+
+            # Get Device
+            value_range = get_specific_value(all_values, all_ids, 'device', 'none', agent)
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_device"] = {"value": value_range}
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_normalizer_clip"] = config
 
@@ -4279,11 +5163,15 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG actor activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_activation"]}')
 
-            # actor kernel initializer
-            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"] = \
-                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent)}
+            # actor hidden layer kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-hidden', agent)}
             #DEBUG
             # print(f'DDPG actor kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_initializer"]}')
+
+            # actor hidden layer kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-output', agent)}
 
             # actor optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"] = \
@@ -4326,6 +5214,10 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_normalize_layers"] = \
                 {"values": get_specific_value(all_values, all_ids, 'normalize-layers-hyperparam', 'actor', agent)}
 
+            # actor clamp output
+            # sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_clamp_output"] = \
+            #     {"values": get_specific_value(all_values, all_ids, 'clamp-value-hyperparam', 'actor', agent)}
+
             # critic cnn layers
             value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'critic', agent)
             if value_range[0] == value_range[1]:
@@ -4366,11 +5258,15 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             #DEBUG
             # print(f'DDPG critic activation set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_activation"]}')
 
-            # critic kernel initializer
-            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"] = \
-                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent)}
+            # critic hidden kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-hidden', agent)}
             #DEBUG
             # print(f'DDPG critic kernel initializer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_initializer"]}')
+
+            # critic output kernel initializer
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_initializer"] = \
+                {"values": get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-output', agent)}
 
             # critic optimizer
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_optimizer"] = \
@@ -4414,8 +5310,9 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 {"values": get_specific_value(all_values, all_ids, 'normalize-layers-hyperparam', 'critic', agent)}
             
             
-            # replay buffer # NOT NEEDED
-            # sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer"] = {"values": ["ReplayBuffer"]}
+            # replay buffer size
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer_size"] = \
+                {"values": get_specific_value(all_values, all_ids, 'buffer-size-hyperparam', 'none', agent)}
             #DEBUG
             # print(f'DDPG replay buffer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_replay_buffer"]}')
 
@@ -4476,164 +5373,327 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # print(f'DDPG noise set to {config}')
 
             # kernel options       
-            # actor kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor', agent):
-                if f"{agent}_actor_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]={"parameters":{}}
+            # actor hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-hidden', agent):
+                if kernel != 'default':
+                    if f"{agent}_actor_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]={"parameters":{}}
 
-                # initialize empty config dictionary for parameters
-                config = {}
+                    # initialize empty config dictionary for parameters
+                    config = {}
 
-                if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor', agent)
-                    config = {"values": value_range}
-       
-                elif kernel == "variance_scaling":
-                    # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor', agent)
-                    config["scale"] = {"values": value_range}
-
-                    # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor', agent)}
-
-                    # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor', agent)}
-
-                elif kernel == "uniform":
-                    # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor', agent)
-                    config["maxval"] = {"values": value_range}
-
-                    # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor', agent)
-                    config["minval"] = {"values": value_range}
-
-                elif kernel == "normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor', agent)
-                    config["mean"] = {"values": value_range}
-
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor', agent)
-                    config["stddev"] = {"values": value_range}
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-hidden', agent)
+                        config["value"] = {"values": value_range}
         
-                elif kernel == "truncated_normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor', agent)
-                    config["mean"] = {"values": value_range}
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
 
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor', agent)
-                    config["stddev"] = {"values": value_range}
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-hidden', agent)}
 
-                elif kernel == "xavier_uniform":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor', agent)
-                    config["gain"] = {"values": value_range}
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-hidden', agent)}
 
-                elif kernel == "xavier_normal":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor', agent)
-                    config["gain"] = {"values": value_range}
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
 
-                elif kernel == "kaiming_uniform":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor', agent)
-                    config["mode"] = {"values": values}
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
+
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-hidden', agent)
+                        config["stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
 
 
-                elif kernel == "kaiming_normal":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor', agent)
-                    config["mode"] = {"values": values}
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
 
-                    
-                else:
-                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
-                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
-                        raise ValueError(f"Unknown kernel: {kernel}")
-                    
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_kernel_{kernel}"]["parameters"] = config
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_hidden_kernel_{kernel}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG actor kernel set to {config}')
 
-            # critic kernel options
-            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic', agent):
-                if f"{agent}_critic_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
-                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]={"parameters":{}}
+            # actor output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'actor-output', agent):
+                if kernel != 'default':
+                    if f"{agent}_actor_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]={"parameters":{}}
 
-                # initialize empty config dictionary for parameters
-                config = {}
+                    # initialize empty config dictionary for parameters
+                    config = {}
 
-                if kernel == "constant":
-                    value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic', agent)
-                    config = {"values": value_range}
-       
-                elif kernel == "variance_scaling":
-                    # scale
-                    value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic', agent)
-                    config["scale"] = {"values": value_range}
-
-                    # mode
-                    config["mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic', agent)}
-
-                    # distribution
-                    config["distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic', agent)}
-
-                elif kernel == "uniform":
-                    # maxval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic', agent)
-                    config["maxval"] = {"values": value_range}
-
-                    # minval
-                    value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic', agent)
-                    config["minval"] = {"values": value_range}
-
-                elif kernel == "normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic', agent)
-                    config["mean"] = {"values": value_range}
-
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic', agent)
-                    config["stddev"] = {"values": value_range}
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_value"] = {"values": value_range}
         
-                elif kernel == "truncated_normal":
-                    # mean
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic', agent)
-                    config["mean"] = {"values": value_range}
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
 
-                    # stddev
-                    value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic', agent)
-                    config["stddev"] = {"values": value_range}
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'actor-output', agent)}
 
-                elif kernel == "xavier_uniform":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic', agent)
-                    config["gain"] = {"values": value_range}
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'actor-output', agent)}
 
-                elif kernel == "xavier_normal":
-                    # gain
-                    value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic', agent)
-                    config["gain"] = {"values": value_range}
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
 
-                elif kernel == "kaiming_uniform":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic', agent)
-                    config["mode"] = {"values": values}
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
 
-                elif kernel == "kaiming_normal":
-                    # mode
-                    values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic', agent)
-                    config["mode"] = {"values": values}
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
 
-                    
-                else:
-                    if kernel not in ["constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
-                        "uniform", "normal", "truncated_normal", "variance_scaling"]:
-                        raise ValueError(f"Unknown kernel: {kernel}")
-                    
-                sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_kernel_{kernel}"]["parameters"] = config
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'actor-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_output_kernel_{kernel}"]["parameters"] = config
+
+            # critic hidden kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-hidden', agent):
+                if kernel != 'default':
+                    if f"{agent}_critic_hidden_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]={"parameters":{}}
+
+                    # initialize empty config dictionary for parameters
+                    config = {}
+
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_value"] = {"values": value_range}
+        
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
+
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-hidden', agent)}
+
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-hidden', agent)}
+
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
+
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
+
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-hidden', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_hidden_kernel_{kernel}"]["parameters"] = config
+            #DEBUG
+            # print(f'DDPG critic kernel set to {config}')
+
+            # critic output kernel options
+            for kernel in get_specific_value(all_values, all_ids, 'kernel-function-hyperparam', 'critic-output', agent):
+                if kernel != "default":
+                    if f"{agent}_critic_output_kernel_{kernel}" not in sweep_config["parameters"][agent]["parameters"]:
+                        sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]={"parameters":{}}
+
+                    # initialize empty config dictionary for parameters
+                    config = {}
+
+                    if kernel == "constant":
+                        value_range = get_specific_value(all_values, all_ids, 'constant-value-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_value"] = {"values": value_range}
+        
+                    elif kernel == "variance_scaling":
+                        # scale
+                        value_range = get_specific_value(all_values, all_ids, 'variance-scaling-scale-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_scale"] = {"values": value_range}
+
+                        # mode
+                        config[f"{kernel}_mode"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-mode-hyperparam', 'critic-output', agent)}
+
+                        # distribution
+                        config[f"{kernel}_distribution"] = {"values": get_specific_value(all_values, all_ids, 'variance-scaling-distribution-hyperparam', 'critic-output', agent)}
+
+                    elif kernel == "uniform":
+                        # maxval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-maxval-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_maxval"] = {"values": value_range}
+
+                        # minval
+                        value_range = get_specific_value(all_values, all_ids, 'random-uniform-minval-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_minval"] = {"values": value_range}
+
+                    elif kernel == "normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-mean-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'random-normal-stddev-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+            
+                    elif kernel == "truncated_normal":
+                        # mean
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-mean-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mean"] = {"values": value_range}
+
+                        # stddev
+                        value_range = get_specific_value(all_values, all_ids, 'truncated-normal-stddev-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_stddev"] = {"values": value_range}
+
+                    elif kernel == "xavier_uniform":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-uniform-gain-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "xavier_normal":
+                        # gain
+                        value_range = get_specific_value(all_values, all_ids, 'xavier-normal-gain-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_gain"] = {"values": value_range}
+
+                    elif kernel == "kaiming_uniform":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                    elif kernel == "kaiming_normal":
+                        # mode
+                        values = get_specific_value(all_values, all_ids, 'kaiming-normal-mode-hyperparam', 'critic-output', agent)
+                        config[f"{kernel}_mode"] = {"values": values}
+
+                        
+                    else:
+                        if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform", "kaiming_normal", "zeros", "ones", \
+                            "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                            raise ValueError(f"Unknown kernel: {kernel}")
+                        
+                    sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_output_kernel_{kernel}"]["parameters"] = config
             #DEBUG
             # print(f'DDPG critic kernel set to {config}')
 
@@ -4784,6 +5844,11 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
                 sweep_config["parameters"][agent]["parameters"][f"critic_units_merged_layer_{i}_{agent}"] = {
                     "values": get_specific_value(all_values, all_ids, f'layer-{i}-units-slider', 'critic-merged', agent)
                 }
+
+            # Add save dir
+            sweep_config["parameters"][agent]["parameters"][f"{agent}_save_dir"] = \
+                {"value": get_specific_value(all_values, all_ids, 'save-dir', 'none', agent)}
+
 
                                     
         # elif agent == "Reinforce" or agent == "ActorCritic":
@@ -5132,19 +6197,19 @@ def get_extra_gym_params(env_spec_id):
     elif env_spec_id.startswith('FetchReach') or env_spec_id.startswith('FetchPush') or \
             env_spec_id.startswith('FetchSlide') or env_spec_id.startswith('FetchPickAndPlace'):
         extra_params = {
-            'reward_type': {
-                'type': 'string',
-                'default': 'sparse',
-                'description': "Type of reward function ('sparse' or 'dense')"
+            'max_episode_steps': {
+                'type': 'int',
+                'default': 50,
+                'description': "Number of steps per episode"
             }
         }
 
     elif env_spec_id.startswith('HandReach') or env_spec_id.startswith('HandManipulate'):
         extra_params = {
-            'distance_threshold': {
-                'type': 'float',
-                'default': 0.01,
-                'description': 'Threshold for the distance to the goal'
+            'max_episode_steps': {
+                'type': 'int',
+                'default': 50,
+                'description': "Number of steps per episode"
             }
         }
 

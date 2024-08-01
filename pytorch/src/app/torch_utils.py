@@ -1,8 +1,8 @@
-import torch
+import torch as T
 import torch.nn as nn
 
 
-def VarianceScaling_(tensor: torch.tensor, scale: float=1.0, mode: str='fan_in', distribution: str='normal'):
+def VarianceScaling_(tensor: T.tensor, scale: float=1.0, mode: str='fan_in', distribution: str='normal'):
 
     ##DEBUG
     print(f'scale: {scale}')
@@ -23,19 +23,19 @@ def VarianceScaling_(tensor: torch.tensor, scale: float=1.0, mode: str='fan_in',
     else:
         raise ValueError("Mode {} not supported, please use 'fan_in', 'fan_out', or 'fan_avg'.".format(mode))
 
-    val = 1.0 / torch.sqrt(torch.tensor(fan))
+    val = 1.0 / T.sqrt(T.tensor(fan))
 
     if distribution == 'normal' or distribution == 'truncated_normal':   
         if distribution == 'normal':
-            with torch.no_grad():
+            with T.no_grad():
                 nn.init.normal_(tensor, 0, val)
                 tensor.mul_(scale)
         elif distribution == 'truncated_normal':
-            with torch.no_grad():
+            with T.no_grad():
                 nn.init.trunc_normal_(tensor, mean=0.0, std=val, a=-2.0, b=2.0)
                 tensor.mul_(scale)
     elif distribution == 'uniform':
-        with torch.no_grad():
+        with T.no_grad():
             tensor.uniform_(-val, val)
             tensor.mul_(scale)
     else:
