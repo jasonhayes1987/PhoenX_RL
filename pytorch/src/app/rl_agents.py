@@ -23,7 +23,7 @@ import cnn_models
 import wandb
 import wandb_support
 import helper
-from helper import Buffer, ReplayBuffer, SharedReplayBuffer, Normalizer, SharedNormalizer
+from helper import Buffer, ReplayBuffer, SharedReplayBuffer, Normalizer, SharedNormalizer, calculate_gae
 import dash_callbacks
 import gym_helper
 
@@ -5000,6 +5000,70 @@ class HER(Agent):
         
         return her
     
+class PPO(Agent):
+
+    def __init__(self,
+                 env: gym.Env,
+                 value_function,
+                 replay_buffer: ReplayBuffer,
+                 timesteps: int = 2048,
+                 gamma: float = 0.99,
+                 lambda_: float = 0.95
+                 ):
+        self.env = env
+        self.value_function = value_function
+        self.replay_buffer = replay_buffer
+        self.timesteps = timesteps
+        self.gamma = gamma
+        self.lambda_ = lambda_
+
+    def collect_trajectories(self):
+        timestep = 0
+        while timestep < self.timesteps:
+            done = False
+            state, _ = self.env.reset()
+            while not done:
+                action = self.env.action_space.sample()  # Random action
+                next_state, reward, term, trunc, _ = self.env.step(action)
+                if term or trunc:
+                    done = True
+                self.replay_buffer.add(state, action, reward, next_state, done)
+                state = next_state
+                timestep += 1
+
+    def calculate_advantages_and_returns(self):
+        # Get the size of the current buffer
+        size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
+
+        # Extract the relevant data from the buffer
+        rewards = self.replay_buffer.rewards[:size]
+        states = self.replay_buffer.states[:size]
+        dones = self.replay_buffer.dones[:size]
+        
+        # Compute values for states using the value function
+        values = self.value_function(states).detach()
+
+        # Append a 0 value for the terminal state
+        values = T.cat([values, T.tensor([[0.0]], dtype=T.float32)])
+
+        # Compute GAE
+        advantages = calculate_gae(rewards, values, dones, self.gamma, self.lambda_)
+
+        advantages = advantages.unsqueeze(1)
+
+        # Remove last entry in values tensor (added for gae calc)
+        values = values[:-1]
+
+        # Compute returns
+        returns = values + advantages
+
+        return advantages, returns
+    
+    def train(self):
+        pass
+
+    def learn(self):
+        pass
 
 # def load_agent_from_config_path(config_path, load_weights=True):
 #     """Loads an agent from a config file path."""
