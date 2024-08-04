@@ -200,7 +200,12 @@ class Buffer():
 
 # New ReplayBuffer class using Tensors instead of Numpy arrays
 class ReplayBuffer:
-    def __init__(self, env: gym.Env, buffer_size: int = 100000, goal_shape: tuple = None, device='cpu'):
+    def __init__(self,
+                 env: gym.Env,
+                 buffer_size: int = 100000,
+                 goal_shape: tuple = None,
+                 device='cpu'
+                ):
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
@@ -226,6 +231,20 @@ class ReplayBuffer:
         
         self.counter = 0
         self.gen = np.random.default_rng()
+
+    def reset(self):
+        """Reset the buffer to all zeros and counter to zero."""
+        self.states.zero_()
+        self.actions.zero_()
+        self.rewards.zero_()
+        self.next_states.zero_()
+        self.dones.zero_()
+        
+        if self.goal_shape is not None:
+            self.desired_goals.zero_()
+            self.state_achieved_goals.zero_()
+            self.next_state_achieved_goals.zero_()
+        
         
     def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool,
             state_achieved_goal: np.ndarray = None, next_state_achieved_goal: np.ndarray = None, desired_goal: np.ndarray = None):
@@ -291,7 +310,7 @@ class ReplayBuffer:
         )
     
 class SharedReplayBuffer(Buffer):
-    def __init__(self, manager, env:gym.Env, buffer_size:int=100000, goal_shape:tuple=None, device='cpu'):
+    def __init__(self, env:gym.Env, buffer_size:int=100000, goal_shape:tuple=None, device='cpu'):
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
@@ -780,7 +799,7 @@ class Normalizer:
 
     
 class SharedNormalizer:
-    def __init__(self, manager, size, eps=1e-2, clip_range=5.0):
+    def __init__(self, size, eps=1e-2, clip_range=5.0):
         self.size = size
         self.eps = eps
         self.clip_range = clip_range
@@ -1024,3 +1043,20 @@ def sync_metrics(config, comm):
     averaged_metrics = {key: value / num_workers for key, value in summed_metrics.items()}
 
     return averaged_metrics
+
+def calculate_gae(rewards: T.tensor,
+                values: T.tensor,
+                dones: T.tensor,
+                gamma = 0.99,
+                lambda_ = 0.95
+                ):
+    advantages = T.zeros_like(rewards)
+    gae = 0
+
+    # Iterate in reverse to calculate GAE
+    for i in reversed(range(len(rewards))):
+        delta = rewards[i] + gamma * values[i + 1] - values[i]
+        gae = delta + gamma * lambda_ * gae * (1-dones[i])
+        advantages[i] = gae
+
+    return advantages
