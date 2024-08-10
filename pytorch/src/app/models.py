@@ -10,6 +10,8 @@ from pathlib import Path
 import torch as T
 import torch.nn as nn
 from torch import optim
+import torch.nn.functional as F
+from torch.distributions import Categorical, Beta, Normal
 
 import gymnasium as gym
 import numpy as np
@@ -348,6 +350,155 @@ class PolicyModel(Model):
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
         model = cls(env, dense_layers, optimizer, learning_rate)
+
+        # Load weights if True
+        if load_weights:
+            model.load_state_dict(T.load(model_path))
+
+        return model
+
+class StochasticContinuousPolicy(Model):
+    """Policy model for predicting a probability distribution of a continuous action space.
+
+    Attributes:
+      env: OpenAI gym environment.
+      dense_layers: List of Tuples containing dense layer sizes, activations, and kernel initializers.
+      output_layer_kernel: Dict of kernel initializer:params for the output layer.
+      optimizer: Optimizer for training.
+      optimizer_params: Dict of Parameter:value for the optimizer.
+      learning_rate: Learning rate for the optimizer.
+      distribution: Distribution returned by the policy ('Beta' or 'Normal').
+      device: Device to run the model on.
+
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        dense_layers: List[Tuple[int, str, str]] = None,
+        output_layer_kernel: dict = {"default":{}},
+        optimizer: str = "Adam",
+        optimizer_params:dict={},
+        learning_rate: float = 0.001,
+        distribution: str = 'Beta',
+        device: str = 'cpu'
+    ):
+        super().__init__()
+        self.env = env
+        self.layer_config = dense_layers
+        self.output_config = output_layer_kernel
+        self.optimizer_class = optimizer
+        self.optimizer_params = optimizer_params
+        self.learning_rate = learning_rate
+        self.distribution = distribution
+        self.device = device
+
+        # Create a ModuleDict for dense layers
+        self.dense_layers = nn.ModuleDict()
+
+
+        # set initial input size
+        input_size = np.prod(env.observation_space.shape)
+
+        # build model
+        for i, (units, activation, _) in enumerate(self.layer_config):
+            self.dense_layers[f'policy_dense_{i}'] = nn.Linear(input_size, units)
+
+            if activation == 'relu':
+                self.dense_layers[f'policy_activation_{i}'] = nn.ReLU()
+            elif activation == 'tanh':
+                self.dense_layers[f'policy_activation_{i}'] = nn.Tanh()
+
+            # update input size to be output size of previous layer
+            input_size = units
+
+        # initialize dense layer weights
+        self._init_weights(self.dense_layers, self.layer_config)
+        # Create output layers for each parameter of the distribution
+        self.param1 = nn.Linear(input_size, 1)
+        self.param2 = nn.Linear(input_size, 1)
+        # Initialize output layer weights
+        self._init_weights(self.param1, self.output_config)
+        self._init_weights(self.param2, self.output_config)
+        # Initialize optimizer
+        self.optimizer = self._init_optimizer()
+        # Move the model to the specified device
+        self.to(self.device)
+
+    def forward(self, x):
+        """Forward Propogation."""
+        x = x.to(self.device)
+        for layer in self.dense_layers.values():
+            x = layer(x)
+
+        param1 = self.param1(x)
+        param2 = self.param2(x)
+
+        if self.distribution == 'Beta':
+            alpha = F.softplus(param1) + 1
+            beta = F.softplus(param2) + 1
+            dist = Beta(alpha, beta)
+            return dist
+        elif self.distribution == 'Normal':
+            mu = param1
+            sigma = F.softplus(param2)
+            dist = Normal(mu, sigma)
+            return dist
+        else:
+            raise ValueError(f'Distribution {self.distribution} not supported.')
+
+    def get_config(self):
+        """Get model config."""
+
+        config = {
+            'env': self.env.spec.id,
+            'num_layers': len(self.dense_layers),
+            'dense_layers': self.layer_config,
+            'output_layer_kernel': self.output_config,
+            'optimizer': self.optimizer_class,
+            'optimizer_params': self.optimizer_params,
+            'learning_rate': self.learning_rate,
+            'distribution': self.distribution,
+            'device': self.device,
+        }
+
+        return config
+
+    def save(self, folder):
+        # Ensure the model directory exists
+        model_dir = Path(folder) / "policy_model"
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save the model parameters
+        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
+
+        config = self.get_config()
+
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
+
+    @classmethod
+    def load(cls, config_path, load_weights=True):
+        model_dir = Path(config_path) / "policy_model"
+        config_path = model_dir / "config.json"
+        model_path = model_dir / 'pytorch_model.onnx'
+
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            raise FileNotFoundError(f"No configuration file found in {config_path}")
+
+        model = cls(env = config.get("env"),
+                    dense_layers = config.get("dense_layers"),
+                    output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
+                    distribution = config.get("distribution", "Beta"),
+                    optimizer = config.get("optimizer", "Adam"),
+                    optimizer_params = config.get("optimizer_params", {}),
+                    learning_rate = config.get("learning_rate", 0.001),
+                    device = config.get("device", "cpu")
+                    )
 
         # Load weights if True
         if load_weights:
