@@ -30,7 +30,7 @@ import gym_helper
 import torch as T
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical
+from torch.distributions import Categorical, Beta, Normal
 from torch.multiprocessing import spawn, Manager
 import torch.distributed as dist
 import gymnasium as gym
@@ -5004,42 +5004,45 @@ class PPO(Agent):
 
     def __init__(self,
                  env: gym.Env,
+                 policy,
                  value_function,
-                 replay_buffer: ReplayBuffer,
-                 timesteps: int = 2048,
-                 gamma: float = 0.99,
-                 lambda_: float = 0.95
+                 distribution: str = 'Beta',
+                 discount: float = 0.99,
+                 gae_coefficient: float = 0.95,
+                 policy_clip: float = 0.2,
+                 entropy_coefficient: float = 0.01,
                  ):
         self.env = env
+        self.policy = policy
         self.value_function = value_function
-        self.replay_buffer = replay_buffer
-        self.timesteps = timesteps
-        self.gamma = gamma
-        self.lambda_ = lambda_
+        self.discount = discount
+        self.gae_coefficient = gae_coefficient
+        self.policy_clip = policy_clip
+        self.entropy_coefficient = entropy_coefficient
 
-    def collect_trajectories(self):
-        timestep = 0
-        while timestep < self.timesteps:
-            done = False
-            state, _ = self.env.reset()
-            while not done:
-                action = self.env.action_space.sample()  # Random action
-                next_state, reward, term, trunc, _ = self.env.step(action)
-                if term or trunc:
-                    done = True
-                self.replay_buffer.add(state, action, reward, next_state, done)
-                state = next_state
-                timestep += 1
+        if distribution == 'Beta':
+            self.distribution = Beta
+        elif distribution =='Normal':
+            self.distribution = Normal
+        else:
+            raise ValueError(f'Distribution {distribution} not supported.')
 
-    def calculate_advantages_and_returns(self):
-        # Get the size of the current buffer
-        size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
+    # def collect_trajectories(self):
+    #     timestep = 0
+    #     while timestep < self.timesteps:
+    #         done = False
+    #         state, _ = self.env.reset()
+    #         while not done:
+    #             action = self.env.action_space.sample()  # Random action
+    #             next_state, reward, term, trunc, _ = self.env.step(action)
+    #             if term or trunc:
+    #                 done = True
+    #             self.replay_buffer.add(state, action, reward, next_state, done)
+    #             state = next_state
+    #             timestep += 1
 
-        # Extract the relevant data from the buffer
-        rewards = self.replay_buffer.rewards[:size]
-        states = self.replay_buffer.states[:size]
-        dones = self.replay_buffer.dones[:size]
-        
+    def calculate_advantages_and_returns(self, rewards, states, dones):
+
         # Compute values for states using the value function
         values = self.value_function(states).detach()
 
@@ -5047,7 +5050,7 @@ class PPO(Agent):
         values = T.cat([values, T.tensor([[0.0]], dtype=T.float32)])
 
         # Compute GAE
-        advantages = calculate_gae(rewards, values, dones, self.gamma, self.lambda_)
+        advantages = calculate_gae(rewards, values, dones, self.discount, self.gae_coefficient)
 
         advantages = advantages.unsqueeze(1)
 
@@ -5058,12 +5061,104 @@ class PPO(Agent):
         returns = values + advantages
 
         return advantages, returns
-    
-    def train(self):
-        pass
 
-    def learn(self):
-        pass
+    def get_action(self, state):
+        # Run state through Policy to get distribution params
+        state = T.tensor(state, dtype=T.float32)
+        # param1, param2 = self.policy(state)
+        # dist = self.distribution(param1, param2)
+        dist = self.policy(state)
+        action = dist.sample(self.env.action_space.shape)
+        log_prob = dist.log_prob(action)
+        return action.detach().numpy().flatten(), log_prob.detach().numpy().flatten()
+
+    def train(self, timesteps, trajectory_length, batch_size, learning_epochs):
+        timestep = 0
+        states = []
+        actions = []
+        log_probs = []
+        rewards = []
+        next_states = []
+        dones = []
+        while timestep < timesteps:
+            done = False
+            state, _ = self.env.reset()
+            while not done:
+                action, log_prob = self.get_action(state)
+                reward, next_state, term, trunc, _ = self.env.step(action)
+                if term or trunc:
+                    done = True
+                states.append(state)
+                actions.append(action)
+                log_probs.append(log_prob)
+                rewards.append(reward)
+                next_states.append(next_state)
+                dones.append(done)
+                if timestep % trajectory_length == 0:
+                    trajectory = (states, actions, log_probs, rewards, next_states, dones)
+                    self.learn(trajectory, batch_size, learning_epochs)
+                    states = []
+                    actions = []
+                    log_probs = []
+                    rewards = []
+                    next_states = []
+                    dones = []
+                state = next_state
+                timestep += 1
+
+    def learn(self, trajectory, batch_size, learning_epochs):
+        # Unpack trajectory
+        states, actions, log_probs, rewards, next_states, dones = trajectory
+        # Convert to Tensors
+        states = T.tensor(states, dtype=T.float32)
+        actions = T.tensor(actions, dtype=T.float32)
+        log_probs = T.tensor(log_probs, dtype=T.float32)
+        rewards = T.tensor(rewards, dtype=T.float32)
+        next_states = T.tensor(next_states, dtype=T.float32)
+        dones = T.tensor(dones, dtype=T.bool)
+
+        # Calculate advantages and returns
+        advantages, returns = self.calculate_advantages_and_returns(rewards, states, dones)
+
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # Loop over learning_epochs epochs to train the policy and value functions
+        for epoch in range(learning_epochs):
+            # Sample mini batch from trajectory
+            indices = T.randperm(len(states))[:batch_size]
+            states_batch = states[indices]
+            actions_batch = actions[indices]
+            log_probs_batch = log_probs[indices]
+            rewards_batch = rewards[indices]
+            next_states_batch = next_states[indices]
+            dones_batch = dones[indices]
+            advantages_batch = advantages[indices]
+            returns_batch = returns[indices]
+
+            # Create new distribution with current policy
+            # param1, param2 = self.policy(states_batch)
+            # dist = self.distribution(param1, param2)
+            dist = self.policy(states_batch)
+            # Calculate new log probabilities of actions
+            new_log_probs_batch = dist.log_prob(actions_batch)
+            # Calculate the ratios of new to old probabilities of actions
+            prob_ratio = T.exp(new_log_probs_batch.sum(axis=1) - log_probs_batch.sum(axis=1))
+            # Calculate the surrogate loss
+            surr1 = prob_ratio * advantages_batch
+            surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
+            policy_loss = -T.min(surr1, surr2).mean() - self.entropy_coefficient * dist.entropy()
+
+            # Update the policy
+            self.policy.optimizer.zero_grad()
+            policy_loss.backward()
+            self.policy.optimizer.step()
+
+            # Update the value function
+            value_loss = F.mse_loss(self.value_function(states_batch), returns_batch)
+            self.value_function.optimizer.zero_grad()
+            value_loss.backward()
+            self.value_function.optimizer.step()
 
 # def load_agent_from_config_path(config_path, load_weights=True):
 #     """Loads an agent from a config file path."""
