@@ -16,8 +16,10 @@ from mpi4py import MPI
 from logging_config import logger
 import copy
 from encoder import CustomJSONEncoder, serialize_env_spec
+import cv2
 
 import rl_callbacks
+from rl_callbacks import WandbCallback
 import models
 import cnn_models
 import wandb
@@ -30,7 +32,7 @@ import gym_helper
 import torch as T
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical, Beta, Normal
+from torch.distributions import Categorical, Beta, Normal, kl_divergence
 from torch.multiprocessing import spawn, Manager
 import torch.distributed as dist
 import gymnasium as gym
@@ -72,17 +74,19 @@ class ActorCritic(Agent):
     def __init__(
         self,
         env: gym.Env,
-        policy_model: models.PolicyModel,
+        policy_model: models.StochasticDiscretePolicy,
         value_model: models.ValueModel,
         discount=0.99,
         policy_trace_decay: float = 0.0,
         value_trace_decay: float = 0.0,
         callbacks: list = [],
         save_dir: str = "models/",
+        device: str = None,
     ):
         
         # Set the device
-        device = T.device("cuda" if T.cuda.is_available() else "cpu")
+        if device == None:
+            device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
         self.env = env
@@ -133,7 +137,7 @@ class ActorCritic(Agent):
         value_optimizer = wandb.config.value_optimizer
         policy_learning_rate = wandb.config.learning_rate
         value_learning_rate = wandb.config.learning_rate
-        policy_model = models.PolicyModel(
+        policy_model = models.StochasticDiscretePolicy(
             env, dense_layers=policy_layers, optimizer=policy_optimizer, learning_rate=policy_learning_rate
         )
         value_model = models.ValueModel(
@@ -430,7 +434,7 @@ class ActorCritic(Agent):
         #     obj_config = json.load(f)
 
         # load policy model
-        policy_model = models.PolicyModel.load(config['save_dir'], load_weights)
+        policy_model = models.StochasticDiscretePolicy.load(config['save_dir'], load_weights)
         # load value model
         value_model = models.ValueModel.load(config['save_dir'], load_weights)
         # load callbacks
@@ -455,14 +459,16 @@ class Reinforce(Agent):
     def __init__(
         self,
         env: gym.Env,
-        policy_model: models.PolicyModel,
+        policy_model: models.StochasticDiscretePolicy,
         value_model: models.ValueModel = None,
         discount=0.99,
         callbacks: List = [],
         save_dir: str = "models/",
+        device: str = None,
     ):
         # Set the device
-        device = T.device("cuda" if T.cuda.is_available() else "cpu")
+        if device == None:
+            device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
         self.env = env
@@ -504,7 +510,7 @@ class Reinforce(Agent):
         """Builds the agent."""
         policy_optimizer = config.policy_optimizer
         value_optimizer = config.value_optimizer
-        policy_model = models.PolicyModel(
+        policy_model = models.StochasticDiscretePolicy(
             env, dense_layers=policy_layers, optimizer=policy_optimizer, learning_rate=config.learning_rate
         )
         value_model = models.ValueModel(
@@ -814,7 +820,7 @@ class Reinforce(Agent):
         #     obj_config = json.load(f)
 
         # load policy model
-        policy_model = models.PolicyModel.load(config['save_dir'])
+        policy_model = models.StochasticDiscretePolicy.load(config['save_dir'])
         # load value model
         value_model = models.ValueModel.load(config['save_dir'])
         # load callbacks
@@ -5005,160 +5011,734 @@ class PPO(Agent):
     def __init__(self,
                  env: gym.Env,
                  policy,
-                 value_function,
+                 value_model,
                  distribution: str = 'Beta',
                  discount: float = 0.99,
                  gae_coefficient: float = 0.95,
                  policy_clip: float = 0.2,
                  entropy_coefficient: float = 0.01,
+                 kl_coefficient: float = 0.01,
+                 loss:str = 'kl',
+                 lambda_:float = None,
+                 callbacks: List = [],
+                 save_dir = 'models',
+                 device = 'cuda',
                  ):
         self.env = env
         self.policy = policy
-        self.value_function = value_function
+        self.value_model = value_model
+        self.distribution = distribution
         self.discount = discount
         self.gae_coefficient = gae_coefficient
         self.policy_clip = policy_clip
         self.entropy_coefficient = entropy_coefficient
+        self.kl_coefficient = kl_coefficient
+        self.loss = loss
+        self.lambda_ = lambda_
+        self.callbacks = callbacks
+        self.device = device
 
-        if distribution == 'Beta':
-            self.distribution = Beta
-        elif distribution =='Normal':
-            self.distribution = Normal
+        # self.save_dir = save_dir + "/ddpg/"
+        if save_dir is not None and "/ppo/" not in save_dir:
+                self.save_dir = save_dir + "/ppo/"
+        elif save_dir is not None and "/ppo/" in save_dir:
+                self.save_dir = save_dir
+        
+
+        # self.lambda_param = 0.5
+        if self.loss == 'hybrid':
+            # Instantiate learnable parameter to blend Clipped and KL loss objectives
+            self.lambda_param = T.nn.Parameter(T.tensor(self.lambda_))
+            # # Add lambda param to policy optimizer
+            self.policy.optimizer.add_param_group({'params': [self.lambda_param]})
+        
+        # Set callbacks
+        try:
+            self.callbacks = callbacks
+            if callbacks:
+                for callback in self.callbacks:
+                    self._config = callback._config(self)
+                    if isinstance(callback, WandbCallback):  
+                        self._wandb = True
+
+            else:
+                self.callback_list = None
+                self._wandb = False
+            # if self.use_mpi:
+            #     logger.debug(f"rank {self.rank} TD3 init: callbacks set")
+            # else:
+            #     logger.debug(f"TD3 init: callbacks set")
+        except Exception as e:
+            logger.error(f"Error in TD3 init set callbacks: {e}", exc_info=True)
+
+        self._train_config = {}
+        self._train_episode_config = {}
+        self._train_step_config = {}
+        self._test_config = {}
+        self._test_episode_config = {}
+
+        self._step = None
+
+    def _initialize_env(self, render_freq=0, num_envs:int=1):
+        """Initializes a new environment."""
+        try:
+            if render_freq > 0:
+                return gym.make_vec(self.env.spec.id, num_envs, render_mode="rgb_array")
+            else:
+                return gym.make_vec(self.env.spec.id, num_envs)
+        except Exception as e:
+            logger.error(f"Error in PPO._initialize_env: {e}", exc_info=True)
+            raise
+
+    def render(self, frames, episode, context:str=None):
+        """renders movie to save dir
+
+        Args:
+            frames (np.array): array of frames
+            episode (int): episode number
+            context (str, optional): "train" or "test" separate into "train" and "test" directories under save_dir. Defaults to None.
+        """
+        
+        if context == 'train':
+            video_path = os.path.join(self.save_dir, f"train/episode_{episode+1}.mp4")
+        elif context == 'test':
+            video_path = os.path.join(self.save_dir, f"test/episode_{episode+1}.mp4")
         else:
-            raise ValueError(f'Distribution {distribution} not supported.')
+            video_path = os.path.join(self.save_dir, f"episode_{episode+1}.mp4")
 
-    # def collect_trajectories(self):
-    #     timestep = 0
-    #     while timestep < self.timesteps:
-    #         done = False
-    #         state, _ = self.env.reset()
-    #         while not done:
-    #             action = self.env.action_space.sample()  # Random action
-    #             next_state, reward, term, trunc, _ = self.env.step(action)
-    #             if term or trunc:
-    #                 done = True
-    #             self.replay_buffer.add(state, action, reward, next_state, done)
-    #             state = next_state
-    #             timestep += 1
+        height, width, layers = frames.shape
+        video = cv2.VideoWriter(Path(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 30, (width, height))
 
-    def calculate_advantages_and_returns(self, rewards, states, dones):
+        for frame in frames:
+            # print(f'frame shape:{frame.shape}')
+            # Convert RGB to BGR for OpenCV
+            video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-        # Compute values for states using the value function
-        values = self.value_function(states).detach()
+        video.release()
 
-        # Append a 0 value for the terminal state
-        values = T.cat([values, T.tensor([[0.0]], dtype=T.float32)])
 
-        # Compute GAE
-        advantages = calculate_gae(rewards, values, dones, self.discount, self.gae_coefficient)
+    def calculate_advantages_and_returns(self, all_rewards, all_states, all_next_states, all_dones):
 
-        advantages = advantages.unsqueeze(1)
+        all_advantages = []
+        all_returns = []
+        for t in range(self.num_envs):
+            # for states, rewards, next_states, dones in zip(all_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_rewards[self.trajectory_length*t:self.trajectory_length*(t+1)], all_next_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_dones[self.trajectory_length*t:self.trajectory_length*(t+1)]):
+            with T.no_grad():
+                states = all_states[self.trajectory_length*t:self.trajectory_length*(t+1)]
+                rewards = all_rewards[self.trajectory_length*t:self.trajectory_length*(t+1)]
+                next_states = all_next_states[self.trajectory_length*t:self.trajectory_length*(t+1)]
+                dones = all_dones[self.trajectory_length*t:self.trajectory_length*(t+1)]
+                # print(f'states:{states.shape}')
+                # print(f'rewards:{rewards.shape}')
+                # print(f'next_states:{next_states.shape}')
+                # print(f'dones:{dones.shape}')
+                # Compute values for states using the value function
+                values = self.value_model(states)
+                next_values = self.value_model(next_states)
+                deltas = rewards + self.discount * next_values - values
+                # print(f'deltas:{deltas}')
+                deltas = deltas.flatten()
+                dones = dones.flatten()
 
-        # Remove last entry in values tensor (added for gae calc)
-        values = values[:-1]
+                advantages = calculate_gae(rewards, values, next_values, dones, self.discount, self.gae_coefficient)
+                returns = advantages + values
+                # print(f'advantages shape:{advantages.shape}')
+                # print(f'advantages mean:{advantages.mean()}, std:{advantages.std()+1e-4}')
+                advantages = (advantages - advantages.mean()) / (advantages.std()+1e-4)
+                all_advantages.append(advantages)
+                all_returns.append(returns)
 
-        # Compute returns
-        returns = values + advantages
+        return all_advantages, all_returns
 
-        return advantages, returns
-
-    def get_action(self, state):
-        # Run state through Policy to get distribution params
-        state = T.tensor(state, dtype=T.float32)
-        # param1, param2 = self.policy(state)
-        # dist = self.distribution(param1, param2)
-        dist = self.policy(state)
-        action = dist.sample(self.env.action_space.shape)
-        log_prob = dist.log_prob(action)
-        return action.detach().numpy().flatten(), log_prob.detach().numpy().flatten()
-
-    def train(self, timesteps, trajectory_length, batch_size, learning_epochs):
-        timestep = 0
-        states = []
+    def get_action(self, states):
+        # Run states through each Policy to get distribution params
         actions = []
         log_probs = []
-        rewards = []
-        next_states = []
-        dones = []
+        for state in states:
+            with T.no_grad():
+                # make sure state is a tensor and on correct device
+                state = T.tensor(state, dtype=T.float32, device=self.policy.device)
+                #DEBUG
+                # print(f'state shape in get_action:{state.shape}')
+                # print(f'get action state:{state}')
+                dist, _, _ = self.policy(state)
+                action = dist.sample()
+                log_prob = dist.log_prob(action)
+                actions.append(action.detach().cpu().numpy().flatten())
+                log_probs.append(log_prob.detach().cpu().numpy().flatten())
+
+        return np.array(actions), np.array(log_probs)
+
+    def action_adapter(self, action):
+        # print(f'action adpater action:{action}')
+        # print(f'action adpater action shape:{action.shape}')
+        return 2 * (action.reshape(1,-1) -0.5 * self.env.action_space.high[0])
+        # print(f'action adpater a:{a}')
+        # print(f'action adpater a shape:{a.shape}')
+        # return a
+
+    def clip_reward(self, reward):
+        if reward > 1.0:
+            return 1.0
+        elif reward < -1.0:
+            return -1.0
+        else:
+            return reward
+
+    def train(self, timesteps, trajectory_length, batch_size, learning_epochs, num_envs, avg_num=10, render_freq:int=0, save_dir:str=None, run_number:int=None):
+        """
+        Trains the model for 'timesteps' number of 'timesteps',
+        updating the model every 'trajectory_length' number of timesteps.
+
+        Args:
+            timesteps: Number of timesteps to train for.
+            trajectory_length: Number of timesteps between updates.
+            batch_size: Number of samples in a batch.
+            learning_epochs: Number of epochs to train for.
+            num_envs: Number of environments.
+            avg_num: Number of episodes to average over.
+        """
+
+        # Update save_dir if passed
+        if save_dir is not None and save_dir.split("/")[-2] != "ppo":
+            self.save_dir = save_dir + "/ppo/"
+            print(f'new save dir: {self.save_dir}')
+        elif save_dir is not None and save_dir.split("/")[-2] == "ppo":
+            self.save_dir = save_dir
+            print(f'new save dir: {self.save_dir}')
+
+        if self.callbacks:
+            for callback in self.callbacks:
+                self._config = callback._config(self)
+                if isinstance(callback, WandbCallback):
+                    callback.on_train_begin((self.value_model, self.policy,), logs=self._config)
+                    # logger.debug(f'TD3.train on train begin callback complete')
+                else:
+                    callback.on_train_begin(logs=self._config)
+        
+        try:
+            # instantiate new environment. Only rank 0 env will render episodes if render==True
+            self.env = self._initialize_env(render_freq, num_envs)
+            # logger.debug(f'initiating environment with render {render}')
+        except Exception as e:
+            logger.error(f"Error in TD3.train agent._initialize_env process: {e}", exc_info=True)
+
+        # set best reward
+        try:
+            best_reward = self.env.reward_range[0]
+        except:
+            best_reward = -np.inf
+
+        self.trajectory_length = trajectory_length
+        self.num_envs = num_envs
+        self.policy.train()
+        self.value_model.train()
+        timestep = 1
+        all_states = []
+        all_actions = []
+        all_log_probs = []
+        all_rewards = []
+        all_next_states = []
+        all_dones = []
+        score_history = []
+        episode_scores = [[] for _ in range(self.num_envs)]  # Track scores for each env
+        policy_loss_history = []
+        value_loss_history = []
+        entropy_history = []
+        kl_history = []
+        time_history = []
+        lambda_values = []
+        param_history = []
+        frames = []  # List to store frames for the video
+        episodes = np.zeros(self.num_envs)
+        scores = np.zeros(self.num_envs)
+        states, _ = self.env.reset()
+
+
         while timestep < timesteps:
-            done = False
-            state, _ = self.env.reset()
-            while not done:
-                action, log_prob = self.get_action(state)
-                reward, next_state, term, trunc, _ = self.env.step(action)
+            dones = []
+            actions, log_probs = self.get_action(states)
+            # print(f'actions:{actions}')
+            # print(f'actions shape:{actions.shape}')
+            acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
+            # print(f'acts pre squeeze:{acts}')
+            # print(f'acts shape pre squeeze:{np.array(acts).shape}')
+            # acts = np.squeeze(np.array(acts))
+            acts = np.reshape(acts, self.env.action_space.shape)
+
+            #DEBUG
+            # print(f'reshaped acts shape:{acts.shape}')
+
+            # if self.distribution == 'Beta':
+            #     acts = []
+            #     for action in actions:
+            #         print(f'action:{action}')
+            #         print(f'action shape:{action.shape}')
+            #         act = [self.action_adapter(a) for a in action]
+            #         print(f'act:{act}')
+            #         print(f'act shape:{np.array(act).shape}')
+            #         acts.append(act)
+            # else:
+            #     acts = actions
+
+            next_states, rewards, terms, truncs, _ = self.env.step(acts)
+            # print(f'rewards:{rewards.mean()}')
+            self._train_step_config["step_reward"] = rewards.mean()
+
+            for i, (term, trunc) in enumerate(zip(terms, truncs)):
                 if term or trunc:
-                    done = True
-                states.append(state)
-                actions.append(action)
-                log_probs.append(log_prob)
-                rewards.append(reward)
-                next_states.append(next_state)
-                dones.append(done)
-                if timestep % trajectory_length == 0:
-                    trajectory = (states, actions, log_probs, rewards, next_states, dones)
-                    self.learn(trajectory, batch_size, learning_epochs)
-                    states = []
-                    actions = []
-                    log_probs = []
-                    rewards = []
-                    next_states = []
-                    dones = []
-                state = next_state
-                timestep += 1
+                    dones.append(True)
+                    # print(f'append true')
+                    episode_scores[i].append(scores[i])  # Store score at end of episode
+                    self._train_step_config["episode_reward"] = scores[i]
+                    scores[i] = 0  # Reset score for this environment
+                else:
+                    dones.append(False)
+                    # print(f'append false')
+            
+            # Add frame of first env to frames array if rendering
+            if render_freq > 0:
+                # Capture the frame
+                frame = self.env.render()[0]
+                # print(f'frame:{frame}')
+                frames.append(frame)
+
+            
+            episodes += dones
+            # print(f'dones:{dones}')
+            # print(f'episodes:{episodes}')
+            self._train_episode_config['episode'] = episodes[0]
+            all_states.append(states)
+            all_actions.append(actions)
+            all_log_probs.append(log_probs)
+            clipped_rewards = [self.clip_reward(reward) for reward in rewards]
+            all_rewards.append(clipped_rewards)
+            all_next_states.append(next_states)
+            all_dones.append(dones)
+            scores += rewards
+
+            # render episode if first env shows done and first env episode num % render_freq == 0
+            if render_freq > 0:
+                if dones[0] == True and episodes[0] % render_freq == 0:
+                    self.render(frames, episodes[0], 'train')
+            
+            avg_scores = np.array([np.mean(env_scores[-avg_num:]) if len(env_scores) >= avg_num else np.mean(env_scores)
+                                    for env_scores in episode_scores])
+
+            if timestep % self.trajectory_length == 0:
+                print(f'learning timestep: {timestep}')
+                trajectory = (all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones)
+                policy_loss, value_loss, entropy, kl, time, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
+                self._train_episode_config["actor_loss"] = policy_loss
+                self._train_episode_config["critic_loss"] = value_loss
+                self._train_episode_config["entropy"] = entropy
+                self._train_episode_config["kl_divergence"] = kl
+                self._train_episode_config["lambda"] = lambda_value
+                self._train_episode_config["param1"] = param1
+                self._train_episode_config["param2"] = param2
+                # check if best reward
+                if avg_scores.mean() > best_reward:
+                    best_reward = avg_scores.mean()
+                    self._train_episode_config["best"] = True
+                    # save model
+                    self.save()
+                else:
+                    self._train_episode_config["best"] = False
+
+                policy_loss_history.append(policy_loss)
+                value_loss_history.append(value_loss)
+                entropy_history.append(entropy)
+                kl_history.append(kl)
+                time_history.append(time)
+                lambda_values.append(lambda_value)
+                param_history.append((param1, param2))
+                all_states = []
+                all_actions = []
+                all_log_probs = []
+                all_rewards = []
+                all_next_states = []
+                all_dones = []
+
+                if self.callbacks:
+                    for callback in self.callbacks:
+                        callback.on_train_epoch_end(epoch=timestep, logs=self._train_episode_config)
+
+            states = next_states
+            timestep += 1
+
+            if timestep % 1000 == 0:
+                print(f'episode: {episodes}; total steps: {timestep}; avg scores/{avg_num} episodes: {avg_scores}; avg total score: {avg_scores.mean()}')
+
+            if self.callbacks:
+                for callback in self.callbacks:
+                    callback.on_train_step_end(step=timestep, logs=self._train_step_config)
+
+        if self.callbacks:
+            for callback in self.callbacks:
+                callback.on_train_end(logs=self._train_episode_config)
+
+        return {
+                'scores': episode_scores,  # Changed to episode_scores
+                'policy loss': policy_loss_history,
+                'value loss': value_loss_history,
+                'entropy': entropy_history,
+                'kl': kl_history,
+                'time': time_history,
+                'lambda': lambda_values,
+                'params': param_history,
+                }
 
     def learn(self, trajectory, batch_size, learning_epochs):
         # Unpack trajectory
-        states, actions, log_probs, rewards, next_states, dones = trajectory
+        all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones = trajectory
+        # Flatten the lists of numpy arrays across the num_envs dimension
+        states = np.concatenate(all_states, axis=0)
+        actions = np.concatenate(all_actions, axis=0)
+        log_probs = np.concatenate(all_log_probs, axis=0)
+        rewards = np.concatenate(all_rewards, axis=0)
+        next_states = np.concatenate(all_next_states, axis=0)
+        dones = np.concatenate(all_dones, axis=0)
+
         # Convert to Tensors
-        states = T.tensor(states, dtype=T.float32)
-        actions = T.tensor(actions, dtype=T.float32)
-        log_probs = T.tensor(log_probs, dtype=T.float32)
-        rewards = T.tensor(rewards, dtype=T.float32)
-        next_states = T.tensor(next_states, dtype=T.float32)
-        dones = T.tensor(dones, dtype=T.bool)
+        states = T.tensor(states, dtype=T.float32, device=self.policy.device)
+        actions = T.tensor(actions, dtype=T.float32, device=self.policy.device)
+        log_probs = T.tensor(log_probs, dtype=T.float32, device=self.policy.device)
+        rewards = T.tensor(rewards, dtype=T.float32, device=self.value_model.device).unsqueeze(1)
+        next_states = T.tensor(next_states, dtype=T.float32, device=self.policy.device)
+        dones = T.tensor(dones, dtype=T.int, device=self.policy.device)
+
 
         # Calculate advantages and returns
-        advantages, returns = self.calculate_advantages_and_returns(rewards, states, dones)
+        advantages, returns = self.calculate_advantages_and_returns(rewards, states, next_states, dones)
+        
+        # advantages = T.tensor(advantages, dtype=T.float32, device=self.policy.device)
+        advantages = T.cat(advantages, dim=0)
+        advantages = advantages.to(self.policy.device, dtype=T.float32)
+        returns = T.cat(returns, dim=0)
+        returns = returns.to(self.policy.device, dtype=T.float32)
+        # returns = T.tensor(returns, dtype=T.float32, device=self.value_function.device)
+        # advantages = advantages.reshape(-1, 1)
+        # returns = returns.reshape(-1, 1)
+        # print(f'advantages shape:{advantages.shape}')
+        # print(f'returns shape:{returns.shape}')
 
-        # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Set previous distribution to none (used for KL divergence calculation)
+        prev_dist = None
+
+        num_batches = len(states) // batch_size
+        print(f'num batches:{num_batches}')
 
         # Loop over learning_epochs epochs to train the policy and value functions
         for epoch in range(learning_epochs):
+            times = []
+            start_time = time.time()
             # Sample mini batch from trajectory
-            indices = T.randperm(len(states))[:batch_size]
-            states_batch = states[indices]
-            actions_batch = actions[indices]
-            log_probs_batch = log_probs[indices]
-            rewards_batch = rewards[indices]
-            next_states_batch = next_states[indices]
-            dones_batch = dones[indices]
-            advantages_batch = advantages[indices]
-            returns_batch = returns[indices]
+            indices = T.randperm(len(states))
+            batches = [indices[i * batch_size:(i + 1) * batch_size] for i in range(num_batches)]
+            for batch in batches:
+                states_batch = states[batch]
+                actions_batch = actions[batch]
+                log_probs_batch = log_probs[batch]
+                rewards_batch = rewards[batch]
+                next_states_batch = next_states[batch]
+                dones_batch = dones[batch]
+                advantages_batch = advantages[batch]
+                returns_batch = returns[batch]
 
-            # Create new distribution with current policy
-            # param1, param2 = self.policy(states_batch)
-            # dist = self.distribution(param1, param2)
-            dist = self.policy(states_batch)
-            # Calculate new log probabilities of actions
-            new_log_probs_batch = dist.log_prob(actions_batch)
-            # Calculate the ratios of new to old probabilities of actions
-            prob_ratio = T.exp(new_log_probs_batch.sum(axis=1) - log_probs_batch.sum(axis=1))
-            # Calculate the surrogate loss
-            surr1 = prob_ratio * advantages_batch
-            surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
-            policy_loss = -T.min(surr1, surr2).mean() - self.entropy_coefficient * dist.entropy()
+                dist, param1, param2 = self.policy(states_batch)
+                dist_time = time.time()
+                # Create prev_dist by recreating the distribution from the previous step's parameters
+                if prev_dist is None:
+                    prev_dist = dist
 
-            # Update the policy
-            self.policy.optimizer.zero_grad()
-            policy_loss.backward()
-            self.policy.optimizer.step()
+                else:
+                    # Recreate prev_dist by passing in the previous parameters
+                    if self.distribution == 'Beta':
+                        param1_prev = prev_dist.concentration1.clone().detach()
+                        param2_prev = prev_dist.concentration0.clone().detach()
+                        prev_dist = Beta(param1_prev, param2_prev)
+                    elif self.distribution == 'Normal':
+                        param1_prev = prev_dist.loc.clone().detach()
+                        param2_prev = prev_dist.scale.clone().detach()
+                        prev_dist = Normal(param1_prev, param2_prev)
+                    else:
+                        raise ValueError(f'Unknown distribution: {self.distribution}')
+                dist_delta = time.time() - dist_time
+                # print(f'dist_delta: {dist_delta}')
 
-            # Update the value function
-            value_loss = F.mse_loss(self.value_function(states_batch), returns_batch)
-            self.value_function.optimizer.zero_grad()
-            value_loss.backward()
-            self.value_function.optimizer.step()
+                # Calculate new log probabilities of actions
+                new_log_probs = dist.log_prob(actions_batch)
+                # print(f'new_log_probs:{new_log_probs.shape}')
+
+                # Calculate the ratios of new to old probabilities of actions
+                prob_ratio = T.exp(new_log_probs.sum(axis=-1, keepdim=True) - log_probs_batch.sum(axis=-1, keepdim=True))
+                # Calculate the surrogate loss
+                surr1 = prob_ratio * advantages_batch
+
+                surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
+
+                # Calculate the entropy of the distribution
+                entropy = dist.entropy().sum(axis=-1, keepdims=True)
+                kl = kl_divergence(prev_dist, dist).sum(dim=-1, keepdim=True)
+
+                # Clipped policy loss
+                clipped_loss = (-(T.min(surr1, surr2)) - self.entropy_coefficient * entropy).mean()
+                # KL loss with entropy
+                kl_loss = (-surr1 + (self.kl_coefficient * kl)).mean()
+                # - (self.entropy_coefficient * entropy)
+
+                if self.loss == 'clipped':
+                    lambda_value = 1.0
+                    policy_loss = clipped_loss
+                elif self.loss == 'kl':
+                    lambda_value = 0.0
+                    policy_loss = kl_loss
+                elif self.loss == 'hybrid':
+                    # Run lambda param through sigmoid to clamp between 0 and 1
+                    lambda_value = T.sigmoid(self.lambda_param)
+                    policy_loss = lambda_value * clipped_loss + (1-lambda_value) * kl_loss
+                else:
+                    raise ValueError(f'Unknown loss: {self.loss}')
+
+                # Update the policy
+                self.policy.optimizer.zero_grad()
+                policy_loss.backward()
+                self.policy.optimizer.step()
+
+                # Update the value function
+                # value_loss = F.mse_loss(self.value_function(states_batch), returns_batch)
+                values = self.value_model(states_batch)
+                value_loss = (values - returns_batch).pow(2).mean()
+                self.value_model.optimizer.zero_grad()
+                value_loss.backward()
+                self.value_model.optimizer.step()
+                epoch_time = time.time() - start_time
+                times.append((epoch_time, dist_delta))
+
+                # set dist as previous dist
+                prev_dist = dist
+
+        print(f'Policy Loss: {policy_loss.sum()}')
+        print(f'Value Loss: {value_loss}')
+        print(f'Entropy: {entropy.sum()}')
+        print(f'KL Divergence: {kl.sum()}')
+        if self.loss == 'hybrid':
+            print(f'Lambda: {lambda_value}')
+
+        return policy_loss, value_loss, entropy.sum(), kl.sum(), times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
+
+    def test(self, num_episodes, save_dir="renders", render_freq:int=0):
+        """
+        Tests the PPO agent in the environment for a specified number of episodes,
+        renders each episode, and saves the renders as video files.
+
+        Args:
+            num_episodes (int): Number of episodes to test the agent.
+            render_dir (str): Directory to save the rendered video files.
+
+        Returns:
+            dict: A dictionary containing the scores, entropy, and KL divergence for each episode.
+        """
+
+        # Set the policy and value function models to evaluation mode
+        self.policy.eval()
+        self.value_model.eval()
+
+        # Create the render directory if it doesn't exist
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        self.env = self._initialize_env(render_freq)
+
+        scores = []
+        entropy_list = []
+        kl_list = []
+
+        for episode in range(num_episodes):
+            done = False
+            states, _ = self.env.reset()
+            score = 0
+            episode_entropy = 0
+            episode_kl = 0
+            steps = 0
+            frames = []  # List to store frames for the video
+
+            prev_dist = None  # To track the previous distribution for KL divergence
+
+
+            while not done:
+
+                # Get action and log probability from the current policy
+                actions, log_probs = self.get_action(states)
+                acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
+                acts = np.reshape(acts, (1,-1))
+
+                # Step the environment
+                next_states, rewards, terms, truncs, _ = self.env.step(acts)
+                # Accumulate the score for the episode
+                score += rewards[0]
+
+                for i, (term, trunc) in enumerate(zip(terms, truncs)):
+                    if term or trunc:
+                        done = True
+                        # episode_scores[i].append(scores[i])  # Store score at end of episode
+                        # Append the score for the episode
+                        scores.append(score)
+                        score = 0  # Reset score for this environment
+                    else:
+                        done = False
+
+                if render_freq > 0:
+                    # Capture the frame
+                    frame = self.env.render()[0]
+                    # print(f'frame:{frame}')
+                    frames.append(frame)
+
+                # Calculate the distribution and entropy
+                dist, param1, param2 = self.policy(T.tensor(states, dtype=T.float32, device=self.policy.device).flatten())
+                entropy = dist.entropy().sum().item()  # Sum entropy over actions
+
+                # Update KL divergence
+                if prev_dist is not None:
+                    kl = kl_divergence(prev_dist, dist).sum().item()  # Sum KL divergence over actions
+                else:
+                    kl = 0  # No KL divergence for the first step in the episode
+
+                # Update the previous distribution to the current one
+                if self.distribution == 'Beta':
+                    param1_prev = dist.concentration1.clone().detach()
+                    param2_prev = dist.concentration0.clone().detach()
+                    prev_dist = Beta(param1_prev, param2_prev)
+                elif self.distribution == 'Normal':
+                    param1_prev = dist.loc.clone().detach()
+                    param2_prev = dist.scale.clone().detach()
+                    prev_dist = Normal(param1_prev, param2_prev)
+
+                # Accumulate the entropy and KL divergence for the episode
+                
+                episode_entropy += entropy
+                episode_kl += kl
+                steps += 1
+
+                # Move to the next state
+                states = next_states
+
+            # Save the video if the episode number is divisible by render_freq
+            if (render_freq > 0) and ((episode + 1) % render_freq == 0):
+                
+                self.render(frames[0], episode)
+
+                # # print(f"frames[0]:{frames[0]}")
+                # height, width, layers = frames[0].shape
+                # video = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (width, height))
+
+                # for frame in frames:
+                #     # print(f'frame shape:{frame.shape}')
+                #     # Convert RGB to BGR for OpenCV
+                #     video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+                # video.release()
+
+            # Append the results for the episode
+            entropy_list.append(episode_entropy / steps)  # Average entropy over the episode
+            kl_list.append(episode_kl / steps)  # Average KL divergence over the episode
+
+            print(f'Episode {episode+1}/{num_episodes} - Score: {scores[-1]}, Avg Entropy: {entropy_list[-1]}, Avg KL Divergence: {kl_list[-1]}')
+
+        # close the environment
+        self.env.close()
+
+        return {
+            'scores': scores,
+            'entropy': entropy_list,
+            'kl_divergence': kl_list
+        }
+
+    def get_config(self):
+        return {
+                "agent_type": self.__class__.__name__,
+                "env": serialize_env_spec(self.env.spec),
+                "policy": self.policy.get_config(),
+                "value_model": self.value_model.get_config(),
+                "distribution": self.distribution,
+                "discount": self.discount,
+                "gae_coefficient": self.gae_coefficient,
+                "policy_clip": self.policy_clip,
+                "entropy_coefficient": self.entropy_coefficient,
+                "kl_coefficient": self.kl_coefficient,
+                "loss": self.loss,
+                "lambda_": self.lambda_,
+                "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
+                "save_dir": self.save_dir,
+                "device": self.device,
+            }
+
+    def save(self, save_dir=None):
+        """Saves the model."""
+
+        # Change self.save_dir if save_dir
+        # if save_dir is not None:
+        #     self.save_dir = save_dir + "/ddpg/"
+
+        config = self.get_config()
+
+        # makes directory if it doesn't exist
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # writes and saves JSON file of DDPG agent config
+        with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f, cls=CustomJSONEncoder)
+
+        # saves policy and value model
+        self.policy.save(self.save_dir)
+        self.value_model.save(self.save_dir)
+
+        # if self.normalize_inputs:
+        #     self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
+
+        # if wandb callback, save wandb config
+        # if self._wandb:
+        #     for callback in self.callbacks:
+        #         if isinstance(callback, rl_callbacks.WandbCallback):
+        #             callback.save(self.save_dir + "/wandb_config.json")
+
+
+    @classmethod
+    def load(cls, config, load_weights=True):
+        """Loads the model."""
+
+        # create EnvSpec from config
+        env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
+        # load policy model
+        policy_model = models.ActorModel.load(config['save_dir'], load_weights)
+        # load value model
+        value_model = models.CriticModel.load(config['save_dir'], load_weights)
+        # load callbacks
+        callbacks = [rl_callbacks.load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]
+
+        # return TD3 agent
+        agent = cls(
+            gym.make_vec(env_spec),
+            policy = policy_model,
+            value_model = value_model,
+            distribution = config["distribution"],
+            discount=config["discount"],
+            gae_coefficient = config["gae_coefficient"],
+            policy_clip = config["policy_clip"],
+            entropy_coefficient = config["entropy_coefficient"],
+            kl_coefficient = config["kl_coefficient"],
+            loss = config["loss"],
+            lambda_ = config["lambda_"],
+            callbacks=callbacks,
+            save_dir=config["save_dir"],
+            device=config["device"],
+        )
+
+        # if agent.normalize_inputs:
+        #     agent.state_normalizer = helper.Normalizer.load_state(config['save_dir'] + "state_normalizer.npz")
+
+        return agent
 
 # def load_agent_from_config_path(config_path, load_weights=True):
 #     """Loads an agent from a config file path."""

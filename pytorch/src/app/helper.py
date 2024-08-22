@@ -1046,17 +1046,28 @@ def sync_metrics(config, comm):
 
 def calculate_gae(rewards: T.tensor,
                 values: T.tensor,
+                next_values: T.tensor,
                 dones: T.tensor,
                 gamma = 0.99,
                 lambda_ = 0.95
                 ):
-    advantages = T.zeros_like(rewards)
-    gae = 0
 
+    deltas = rewards + gamma * next_values - values
+    deltas = deltas.flatten()
+
+
+    advantages = T.zeros_like(rewards, dtype=T.float, device=rewards.device)
+    gae = 0
+    # advantages = [0]
     # Iterate in reverse to calculate GAE
     for i in reversed(range(len(rewards))):
-        delta = rewards[i] + gamma * values[i + 1] - values[i]
-        gae = delta + gamma * lambda_ * gae * (1-dones[i])
+        gae = deltas[i] + gamma * lambda_ * gae * (1-dones[i])
+        # print(f'gae: {gae}')
+        # print(f'gae shape: {gae.shape}')
+        # advantages.append(gae)
         advantages[i] = gae
+    # advantages.reverse()
+    # advantages = advantages[:-1]
+    # advantages = T.tensor(advantages, dtype=T.float, device=self.value_function.device).unsqueeze(1)
 
     return advantages

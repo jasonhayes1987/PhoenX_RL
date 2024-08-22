@@ -19,6 +19,7 @@ import numpy as np
 
 import rl_agents
 import models
+from models import StochasticContinuousPolicy, StochasticDiscretePolicy, ActorModel, ValueModel, CriticModel
 import helper
 import rl_callbacks
 
@@ -438,7 +439,7 @@ def load(agent_data, env_name):
         ##DEBUG
         # print("Value layers:", value_layers)
 
-        policy_model = models.PolicyModel(
+        policy_model = models.StochasticDiscretePolicy(
                 env=env,
                 dense_layers=policy_layers,
                 optimizer=policy_optimizer,
@@ -2316,15 +2317,36 @@ def create_trace_decay_input(agent_type, model_type):
         ]
     )
     
+def create_policy_model_type_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label(f"{model_type.capitalize()} Type", style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'policy-type',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[{'label': 'Stochastic Continuous', 'value': 'StochasticContinuousPolicy'},
+                         {'label': 'Stochastic Discrete', 'value': 'StochasticDiscretePolicy'},
+                         ],
+                placeholder="Policy Model Type",
+            ),
+        ]
+    )
 
 def create_policy_model_input(agent_type):
     return html.Div(
         [
             html.H3("Policy Model Configuration"),
             create_dense_layers_input(agent_type, 'policy'),
-            create_kernel_input(agent_type, 'policy'),
+            html.Label("Hidden Layers Kernel Initializers"),
+            create_kernel_input(agent_type, 'policy-hidden'),
+            html.Label("Output Layer Kernel Initializer"),
+            create_kernel_input(agent_type, 'actor-output'),
             create_activation_input(agent_type, 'policy'),
             create_optimizer_input(agent_type, 'policy'),
+            create_learning_rate_input(agent_type, 'policy'),
         ]
     )
 
@@ -2332,11 +2354,15 @@ def create_policy_model_input(agent_type):
 def create_value_model_input(agent_type):
     return html.Div(
         [
-            html.H3("Policy Model Configuration"),
+            html.H3("Value Model Configuration"),
             create_dense_layers_input(agent_type, 'value'),
-            create_kernel_input(agent_type, 'value'),
+            html.Label("Hidden Layers Kernel Initializers"),
+            create_kernel_input(agent_type, 'value-hidden'),
+            html.Label("Output Layer Kernel Initializer"),
+            create_kernel_input(agent_type, 'value-output'),
             create_activation_input(agent_type, 'value'),
             create_optimizer_input(agent_type, 'value'),
+            create_learning_rate_input(agent_type, 'value'),
         ]
     )
     
@@ -2483,6 +2509,22 @@ def create_her_ddpg_parameter_inputs(agent_type):
         ]
     )
 
+def create_ppo_parameter_inputs(agent_type):
+    """Adds inputs for PPO Agent"""
+    return html.Div(
+        id=f'{agent_type}-inputs',
+        children=[
+            create_device_input(agent_type),
+            create_discount_factor_input(agent_type),
+            # Actor Model Configuration
+            create_policy_model_type_input(agent_type, 'policy'),
+            create_policy_model_input(agent_type),
+            # Critic Model Configuration
+            create_value_model_input(agent_type),
+            # Save dir
+            create_save_dir_input(agent_type),
+        ]
+    )
 
 def create_agent_parameter_inputs(agent_type):
     """Component for agent hyperparameters"""
@@ -2500,6 +2542,9 @@ def create_agent_parameter_inputs(agent_type):
     
     elif agent_type == 'HER_DDPG':
         return create_her_ddpg_parameter_inputs(agent_type)
+    
+    elif agent_type == 'PPO':
+        return create_ppo_parameter_inputs(agent_type)
 
     else:
         return html.Div("Select a model type to configure its parameters.")
