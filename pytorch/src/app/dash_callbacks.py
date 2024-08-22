@@ -137,126 +137,6 @@ def register_callbacks(app, shared_data):
         agent_type = optimizer_id['agent']
         model_type = optimizer_id['model']
         return utils.create_optimizer_params_input(agent_type, model_type, optimizer)
-        # if optimizer == 'Adam':
-        #     return html.Div([
-        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-        #         dcc.Slider(
-        #             id=
-        #             {
-        #                 'type':'adam-weight-decay',
-        #                 'model':optimizer_id['model'],
-        #                 'agent':optimizer_id['agent'],
-        #             },
-        #             min=0.0,
-        #             max=1.0,
-        #             step=0.01,
-        #             value=0.01,
-        #             marks={0:'0.0', 1:'1.0'},
-        #             tooltip={"placement": "bottom", "always_visible": True},
-        #         )
-        #     ])
-        
-        # elif optimizer == 'Adagrad':
-        #     return html.Div([
-        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-        #         dcc.Slider(
-        #             id=
-        #             {
-        #                 'type':'adagrad-weight-decay',
-        #                 'model':optimizer_id['model'],
-        #                 'agent':optimizer_id['agent'],
-        #             },
-        #             min=0.0,
-        #             max=1.0,
-        #             step=0.01,
-        #             value=0.01,
-        #             marks={0:'0.0', 1:'1.0'},
-        #             tooltip={"placement": "bottom", "always_visible": True},
-        #         ),
-        #         html.Label("Learning Rate Decay", style={'text-decoration': 'underline'}),
-        #         dcc.Slider(
-        #             id=
-        #             {
-        #                 'type':'adagrad-lr-decay',
-        #                 'model':optimizer_id['model'],
-        #                 'agent':optimizer_id['agent'],
-        #             },
-        #             min=0.0,
-        #             max=1.0,
-        #             step=0.01,
-        #             value=0.01,
-        #             marks={0:'0.0', 1:'1.0'},
-        #             tooltip={"placement": "bottom", "always_visible": True},
-        #         )
-        #     ])
-        
-        # elif optimizer == 'RMSprop':
-        #     return html.Div([
-        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-        #         dcc.Slider(
-        #             id=
-        #             {
-        #                 'type':'rmsprop-weight-decay',
-        #                 'model':optimizer_id['model'],
-        #                 'agent':optimizer_id['agent'],
-        #             },
-        #             min=0.0,
-        #             max=1.0,
-        #             step=0.01,
-        #             value=0.01,
-        #             marks={0:'0.0', 1:'1.0'},
-        #             tooltip={"placement": "bottom", "always_visible": True},
-        #         ),
-        #         html.Label("Momentum", style={'text-decoration': 'underline'}),
-        #         dcc.Slider(
-        #             id=
-        #             {
-        #                 'type':'rmsprop-momentum',
-        #                 'model':optimizer_id['model'],
-        #                 'agent':optimizer_id['agent'],
-        #             },
-        #             min=0.0,
-        #             max=1.0,
-        #             step=0.01,
-        #             value=0.01,
-        #             marks={0:'0.0', 1:'1.0'},
-        #             tooltip={"placement": "bottom", "always_visible": True},
-        #         )
-        #     ])
-        
-        # elif optimizer == 'SGD':
-        #     return html.Div([
-        #         html.Label("Weight Decay", style={'text-decoration': 'underline'}),
-        #         dcc.Slider(
-        #             id=
-        #             {
-        #                 'type':'sgd-weight-decay',
-        #                 'model':optimizer_id['model'],
-        #                 'agent':optimizer_id['agent'],
-        #             },
-        #             min=0.0,
-        #             max=1.0,
-        #             step=0.01,
-        #             value=0.01,
-        #             marks={0:'0.0', 1:'1.0'},
-        #             tooltip={"placement": "bottom", "always_visible": True},
-        #         ),
-        #         html.Label("Momentum", style={'text-decoration': 'underline'}),
-        #         dcc.Slider(
-        #             id=
-        #             {
-        #                 'type':'sgd-momentum',
-        #                 'model':optimizer_id['model'],
-        #                 'agent':optimizer_id['agent'],
-        #             },
-        #             min=0.0,
-        #             max=1.0,
-        #             step=0.01,
-        #             value=0.01,
-        #             marks={0:'0.0', 1:'1.0'},
-        #             tooltip={"placement": "bottom", "always_visible": True},
-        #         )
-        #     ])
 
         
     @app.callback(
@@ -862,7 +742,7 @@ def register_callbacks(app, shared_data):
             ##DEBUG
             # print("Policy layers:", policy_layers)
 
-            policy_model = models.PolicyModel(
+            policy_model = models.StochasticDiscretePolicy(
                     env=gym.make(env),
                     dense_layers=policy_layers,
                     optimizer=policy_optimizer,
