@@ -5421,6 +5421,7 @@ class PPO(Agent):
         # returns = returns.reshape(-1, 1)
         # print(f'advantages shape:{advantages.shape}')
         # print(f'returns shape:{returns.shape}')
+        kl_div_loss_fn = T.nn.KLDivLoss(reduction="batchmean", log_target=True)
 
         # Set previous distribution to none (used for KL divergence calculation)
         prev_dist = None
@@ -5469,11 +5470,15 @@ class PPO(Agent):
                 # Calculate new log probabilities of actions
                 new_log_probs = dist.log_prob(actions_batch)
                 # print(f'new_log_probs:{new_log_probs.shape}')
+                # print(f'new_log_probs shape:{new_log_probs.sum(axis=-1, keepdim=True).shape}')
+                # print(f'log_probs shape:{log_probs_batch.sum(axis=-1, keepdim=True).shape}')
 
                 # Calculate the ratios of new to old probabilities of actions
                 prob_ratio = T.exp(new_log_probs.sum(axis=-1, keepdim=True) - log_probs_batch.sum(axis=-1, keepdim=True))
+                # print(f'prob ratio shape:{prob_ratio.shape}')
                 # Calculate the surrogate loss
                 surr1 = prob_ratio * advantages_batch
+                # print(f'surr1 shape:{surr1.shape}')
 
                 surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
 
@@ -5484,7 +5489,11 @@ class PPO(Agent):
                 # Clipped policy loss
                 clipped_loss = (-(T.min(surr1, surr2)) - self.entropy_coefficient * entropy).mean()
                 # KL loss with entropy
-                kl_loss = (-surr1 + (self.kl_coefficient * kl)).mean()
+                # kl_loss = (-surr1 + (self.kl_coefficient * kl)).mean()
+                kl_div_loss = kl_div_loss_fn(log_probs_batch.sum(axis=-1, keepdim=True), new_log_probs.sum(axis=-1, keepdim=True))
+                # print(f'kl_div_loss:{kl_div_loss}')
+                # print(f'kl_div_loss shape:{kl_div_loss.shape}')
+                kl_loss = (-surr1 + self.kl_coefficient * kl_div_loss).mean()
                 # - (self.entropy_coefficient * entropy)
 
                 if self.loss == 'clipped':
@@ -5521,7 +5530,8 @@ class PPO(Agent):
         print(f'Policy Loss: {policy_loss.sum()}')
         print(f'Value Loss: {value_loss}')
         print(f'Entropy: {entropy.sum()}')
-        print(f'KL Divergence: {kl}')
+        print(f'KL Divergence: {kl.sum()}')
+        print(f'KL div loss mean: {kl_div_loss.mean()}')
         if self.loss == 'hybrid':
             print(f'Lambda: {lambda_value}')
 
