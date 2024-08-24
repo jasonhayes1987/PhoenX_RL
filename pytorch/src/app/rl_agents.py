@@ -5521,11 +5521,11 @@ class PPO(Agent):
         print(f'Policy Loss: {policy_loss.sum()}')
         print(f'Value Loss: {value_loss}')
         print(f'Entropy: {entropy.sum()}')
-        print(f'KL Divergence: {kl.sum()}')
+        print(f'KL Divergence: {kl}')
         if self.loss == 'hybrid':
             print(f'Lambda: {lambda_value}')
 
-        return policy_loss, value_loss, entropy.sum(), kl.sum(), times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
+        return policy_loss, value_loss, entropy.sum(), kl, times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
 
     def test(self, num_episodes, save_dir="renders", render_freq:int=0):
         """
