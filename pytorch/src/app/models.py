@@ -382,8 +382,10 @@ class StochasticContinuousPolicy(Model):
         param1, param2 = T.split(x, self.env.action_space.shape[-1], dim=-1)
 
         if self.distribution == 'Beta':
-            alpha = T.add(F.softplus(param1), 1.0)
-            beta = T.add(F.softplus(param2), 1.0)
+            # alpha = T.add(F.relu(param1), 1.0)
+            # beta = T.add(F.relu(param2), 1.0)
+            alpha = F.softplus(param1)
+            beta = F.softplus(param2)
             dist = Beta(alpha, beta)
             return dist, alpha, beta
         elif self.distribution == 'Normal':
@@ -398,7 +400,8 @@ class StochasticContinuousPolicy(Model):
         """Get model config."""
 
         config = {
-            'env': self.env.spec.id,
+            # 'env': self.env.spec.id,
+            "env": self.env.spec.to_json(),
             'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
             'output_layer_kernel': self.output_config,
@@ -436,8 +439,12 @@ class StochasticContinuousPolicy(Model):
                 config = json.load(f)
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
+        
+        # create EnvSpec from config
+        env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
 
-        model = cls(env = config.get("env"),
+        model = cls(env = gym.make_vec(env_spec),
                     dense_layers = config.get("dense_layers"),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
                     distribution = config.get("distribution", "Beta"),
@@ -536,7 +543,8 @@ class ValueModel(Model):
         """Get model config."""
 
         config = {
-            'env': self.env.spec.id,
+            # 'env': self.env.spec.id,
+            "env": self.env.spec.to_json(),
             'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
             'output_layer_kernel': self.output_config,
@@ -556,13 +564,9 @@ class ValueModel(Model):
 
         # Save the model parameters
         T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
 
-        config = {
-            "env": self.env.spec.id,
-            "dense_layers": self.layer_config,
-            "optimizer": self.optimizer_class,
-            "learning_rate": self.learning_rate,
-        }
+        config = self.get_config()
 
         with open(model_dir / "config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
@@ -577,14 +581,14 @@ class ValueModel(Model):
         if config_path.is_file():
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-            # env = config.get("env")
-            # dense_layers = config.get("dense_layers", [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})])
-            # optimizer = config.get("optimizer")
-            # learning_rate = config.get("learning_rate")
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
+        
+        # create EnvSpec from config
+        env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
 
-        model = cls(env = config["env"],
+        model = cls(env = gym.make_vec(env_spec),
                     dense_layers = config.get("dense_layers", [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})]),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
                     optimizer = config.get("optimizer", "Adam"),
