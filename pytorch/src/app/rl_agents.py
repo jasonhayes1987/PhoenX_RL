@@ -5421,7 +5421,7 @@ class PPO(Agent):
         # returns = returns.reshape(-1, 1)
         # print(f'advantages shape:{advantages.shape}')
         # print(f'returns shape:{returns.shape}')
-        kl_div_loss_fn = T.nn.KLDivLoss(reduction="batchmean", log_target=True)
+        # kl_div_loss_fn = T.nn.KLDivLoss(reduction="batchmean", log_target=True)
 
         # Set previous distribution to none (used for KL divergence calculation)
         prev_dist = None
@@ -5447,6 +5447,10 @@ class PPO(Agent):
                 returns_batch = returns[batch]
 
                 dist, param1, param2 = self.policy(states_batch)
+                # print(f'dist mean:{dist.loc}')
+                # print(f'dist var:{dist.scale}')
+                # print(f'param 1:{param1}')
+                # print(f'param 2:{param2}')
                 dist_time = time.time()
                 # Create prev_dist by recreating the distribution from the previous step's parameters
                 if prev_dist is None:
@@ -5485,9 +5489,10 @@ class PPO(Agent):
 
                 # Calculate the entropy of the distribution
                 entropy = dist.entropy().sum(axis=-1, keepdims=True)
+                # print(f'full entropy:{dist.entropy()}')
 
                 # Calculate the KL Divergence
-                kl = kl_divergence(prev_dist, dist).sum(dim=-1, keepdim=True)
+                kl = kl_divergence(dist, prev_dist).sum(dim=-1, keepdim=True)
 
                 if self.loss == 'clipped':
                     lambda_value = 1.0
@@ -5503,7 +5508,8 @@ class PPO(Agent):
                     # print(f'kl_div shape:{kl_div.shape}')
                     # print(f'kl_div:{kl_div}')
                     # print(f'kl mean:{kl.mean()}')
-                    kl_loss = (-surr1 + self.kl_coefficient * kl.mean()).mean()
+                    # kl_loss = -(surr1 - self.kl_coefficient * kl_div.sum(dim=-1, keepdim=True)).mean()
+                    kl_loss = -(surr1 - self.kl_coefficient * kl).mean()
                     policy_loss = kl_loss
                 elif self.loss == 'hybrid':
                     # Run lambda param through sigmoid to clamp between 0 and 1
@@ -5522,6 +5528,7 @@ class PPO(Agent):
                 # Update the policy
                 self.policy.optimizer.zero_grad()
                 policy_loss.backward()
+                # T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=5)
                 self.policy.optimizer.step()
 
                 # Update the value function
@@ -5539,12 +5546,13 @@ class PPO(Agent):
 
         print(f'Policy Loss: {policy_loss.sum()}')
         print(f'Value Loss: {value_loss}')
-        print(f'Entropy: {entropy.sum()}')
-        print(f'KL Divergence: {kl.sum()}')
+        print(f'Entropy: {entropy.mean()}')
+        print(f'KL Divergence: {kl.mean()}')
+        # print(f'kl div:{kl_div.mean()}')
         if self.loss == 'hybrid':
             print(f'Lambda: {lambda_value}')
 
-        return policy_loss, value_loss, entropy.sum(), kl, times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
+        return policy_loss, value_loss, entropy.sum(), kl.mean(), times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
 
     def test(self, num_episodes, save_dir="renders", render_freq:int=0):
         """
