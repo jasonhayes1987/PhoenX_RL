@@ -5019,6 +5019,7 @@ class PPO(Agent):
                  entropy_coefficient: float = 0.01,
                  kl_coefficient: float = 0.01,
                  loss:str = 'kl',
+                 clip_grad:float = None,
                  lambda_:float = None,
                  callbacks: List = [],
                  save_dir = 'models',
@@ -5034,6 +5035,7 @@ class PPO(Agent):
         self.entropy_coefficient = entropy_coefficient
         self.kl_coefficient = kl_coefficient
         self.loss = loss
+        self.clip_grad = clip_grad
         self.lambda_ = lambda_
         self.callbacks = callbacks
         self.device = device
@@ -5528,7 +5530,8 @@ class PPO(Agent):
                 # Update the policy
                 self.policy.optimizer.zero_grad()
                 policy_loss.backward()
-                # T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=5)
+                if self.clip_grad is not None:
+                    T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.clip_grad)
                 self.policy.optimizer.step()
 
                 # Update the value function
@@ -5552,7 +5555,7 @@ class PPO(Agent):
         if self.loss == 'hybrid':
             print(f'Lambda: {lambda_value}')
 
-        return policy_loss, value_loss, entropy.sum(), kl.mean(), times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
+        return policy_loss, value_loss, entropy.mean(), kl.mean(), times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
 
     def test(self, num_episodes, save_dir="renders", render_freq:int=0):
         """
