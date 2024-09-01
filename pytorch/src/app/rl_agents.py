@@ -5019,11 +5019,12 @@ class PPO(Agent):
                  entropy_coefficient: float = 0.01,
                  kl_coefficient: float = 0.01,
                  loss:str = 'kl',
-                 clip_grad:float = None,
+                 grad_clip:float = None,
                  lambda_:float = None,
                  callbacks: List = [],
                  save_dir = 'models',
                  device = 'cuda',
+                 seed: float = None,
                  ):
         self.env = env
         self.policy = policy
@@ -5035,10 +5036,13 @@ class PPO(Agent):
         self.entropy_coefficient = entropy_coefficient
         self.kl_coefficient = kl_coefficient
         self.loss = loss
-        self.clip_grad = clip_grad
+        self.grad_clip = grad_clip
         self.lambda_ = lambda_
         self.callbacks = callbacks
         self.device = device
+        if seed is None:
+            seed = np.random.randint(100)
+        self.seed = seed
 
         # self.save_dir = save_dir + "/ddpg/"
         if save_dir is not None and "/ppo/" not in save_dir:
@@ -5530,8 +5534,8 @@ class PPO(Agent):
                 # Update the policy
                 self.policy.optimizer.zero_grad()
                 policy_loss.backward()
-                if self.clip_grad is not None:
-                    T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.clip_grad)
+                if self.grad_clip is not None:
+                    T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.grad_clip)
                 self.policy.optimizer.step()
 
                 # Update the value function
@@ -5698,10 +5702,12 @@ class PPO(Agent):
                 "entropy_coefficient": self.entropy_coefficient,
                 "kl_coefficient": self.kl_coefficient,
                 "loss": self.loss,
+                "clip_grad": self.grad_clip,
                 "lambda_": self.lambda_,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir,
                 "device": self.device,
+                "seed": self.seed,
             }
 
     def save(self, save_dir=None):
