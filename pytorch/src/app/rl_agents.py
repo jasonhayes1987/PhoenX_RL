@@ -5017,8 +5017,11 @@ class PPO(Agent):
                  gae_coefficient: float = 0.95,
                  policy_clip: float = 0.2,
                  entropy_coefficient: float = 0.01,
-                 kl_coefficient: float = 0.01,
                  loss:str = 'kl',
+                 kl_coefficient: float = 0.01,
+                 normalize_advantages: bool = True,
+                 normalize_values: bool = True,
+                 normalizer_clip: float = None,
                  grad_clip:float = None,
                  lambda_:float = None,
                  callbacks: List = [],
@@ -5034,8 +5037,13 @@ class PPO(Agent):
         self.gae_coefficient = gae_coefficient
         self.policy_clip = policy_clip
         self.entropy_coefficient = entropy_coefficient
-        self.kl_coefficient = kl_coefficient
         self.loss = loss
+        self.kl_coefficient = kl_coefficient
+        self.normalize_advantages = normalize_advantages
+        self.normalize_values = normalize_values
+        self.norm_clip = normalizer_clip
+        if self.normalize_values:
+            self.normalizer = Normalizer((1), clip_range=self.norm_clip, device=device)
         self.grad_clip = grad_clip
         self.lambda_ = lambda_
         self.callbacks = callbacks
@@ -5127,6 +5135,8 @@ class PPO(Agent):
 
         all_advantages = []
         all_returns = []
+        all_values = []
+
         for t in range(self.num_envs):
             # for states, rewards, next_states, dones in zip(all_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_rewards[self.trajectory_length*t:self.trajectory_length*(t+1)], all_next_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_dones[self.trajectory_length*t:self.trajectory_length*(t+1)]):
             with T.no_grad():
@@ -5141,6 +5151,12 @@ class PPO(Agent):
                 # Compute values for states using the value function
                 values = self.value_model(states)
                 next_values = self.value_model(next_states)
+
+                if self.normalize_values:
+                    self.normalizer.update_local_stats(values)
+                    self.normalizer.update_global_stats()
+                    values = self.normalizer.denormalize(values)
+                    next_values = self.normalizer.denormalize(next_values)
                 deltas = rewards + self.discount * next_values - values
                 # print(f'deltas:{deltas}')
                 deltas = deltas.flatten()
@@ -5148,11 +5164,27 @@ class PPO(Agent):
 
                 advantages = calculate_gae(rewards, values, next_values, dones, self.discount, self.gae_coefficient)
                 returns = advantages + values
+
+                # print(f'pre normalized returns:{returns}')
+                if self.normalize_values:
+                    returns = self.normalizer.normalize(returns)
+                    # print(f'post normalized returns:{returns}')
                 # print(f'advantages shape:{advantages.shape}')
                 # print(f'advantages mean:{advantages.mean()}, std:{advantages.std()+1e-4}')
-                advantages = (advantages - advantages.mean()) / (advantages.std()+1e-4)
+                
+                # Normalize advantages
+                if self.normalize_advantages:
+                    advantages = (advantages - advantages.mean()) / (advantages.std()+1e-4)
+                
+                # Append to the lists
+                all_values.append(values)
                 all_advantages.append(advantages)
                 all_returns.append(returns)
+
+        # Log to wandb
+        self._train_episode_config["values"] = T.cat(all_values, dim=0).cpu().numpy().flatten().mean()
+        self._train_episode_config["advantages"] = T.cat(all_advantages, dim=0).cpu().numpy().flatten().mean()
+        self._train_episode_config["returns"] = T.cat(all_returns, dim=0).cpu().numpy().flatten().mean()
 
         return all_advantages, all_returns
 
@@ -5700,9 +5732,11 @@ class PPO(Agent):
                 "gae_coefficient": self.gae_coefficient,
                 "policy_clip": self.policy_clip,
                 "entropy_coefficient": self.entropy_coefficient,
-                "kl_coefficient": self.kl_coefficient,
                 "loss": self.loss,
-                "clip_grad": self.grad_clip,
+                "kl_coefficient": self.kl_coefficient,
+                "normalize_values": self.normalize_values,
+                "normalizer_clip": self.norm_clip,
+                "grad_clip":self.grad_clip,
                 "lambda_": self.lambda_,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir,
