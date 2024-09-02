@@ -689,7 +689,7 @@ class OUNoise(Noise):
 class Normalizer:
     def __init__(self, size, eps=1e-2, clip_range=5.0, device='cpu'):
         self.size = size
-        self.eps = eps
+        self.eps = T.tensor(eps, device=device)
         self.clip_range = clip_range
         self.device = device
 
@@ -703,37 +703,40 @@ class Normalizer:
         self.running_sum_sq = T.zeros(self.size, dtype=T.float32, device=self.device)
         self.running_cnt = T.zeros(1, dtype=T.int32, device=self.device)
 
-        self.lock = threading.Lock()
+        # self.lock = threading.Lock()
 
     def normalize(self, v):
         return T.clamp((v - self.running_mean) / self.running_std,
                        -self.clip_range, self.clip_range).float()
+
+    def denormalize(self, v):
+        return (v * self.running_std) + self.running_mean
     
     def update_local_stats(self, new_data):
         try:
-            with self.lock:
-                self.local_sum += new_data.sum(dim=0)
-                self.local_sum_sq += (new_data**2).sum(dim=0)
-                self.local_cnt += new_data.size(0)
+            # with self.lock:
+            self.local_sum += new_data.sum(dim=0)
+            self.local_sum_sq += (new_data**2).sum(dim=0)
+            self.local_cnt += new_data.size(0)
         except Exception as e:
             print(f"Error during update: {e}")
     
     def update_global_stats(self):
-        with self.lock:
-            local_cnt = self.local_cnt.clone()
-            local_sum = self.local_sum.clone()
-            local_sum_sq = self.local_sum_sq.clone()
+        # with self.lock:
+        # local_cnt = self.local_cnt.clone()
+        # local_sum = self.local_sum.clone()
+        # local_sum_sq = self.local_sum_sq.clone()
 
-            self.local_cnt.zero_()
-            self.local_sum.zero_()
-            self.local_sum_sq.zero_()
+        self.running_cnt += self.local_cnt
+        self.running_sum += self.local_sum
+        self.running_sum_sq += self.local_sum_sq
 
-        sync_sum, sync_sum_sq, sync_cnt = self.sync_thread_stats(
-                local_sum, local_sum_sq, local_cnt)
+        self.local_cnt.zero_()
+        self.local_sum.zero_()
+        self.local_sum_sq.zero_()
 
-        self.running_cnt += sync_cnt
-        self.running_sum += sync_sum
-        self.running_sum_sq += sync_sum_sq
+        # sync_sum, sync_sum_sq, sync_cnt = self.sync_thread_stats(
+        #         local_sum, local_sum_sq, local_cnt)
 
         self.running_mean = self.running_sum / self.running_cnt
         tmp = self.running_sum_sq / self.running_cnt -\
