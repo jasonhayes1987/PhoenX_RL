@@ -1713,6 +1713,223 @@ def create_discount_factor_input(agent_type):
         ]
     )
 
+def create_advantage_coeff_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Advantage Coefficient', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'advantage-coeff',
+                    'model':'none',
+                    'agent':agent_type
+                },
+                type='number',
+                min=0.01,
+                max=0.99,
+                step=0.01,
+                value=0.99,
+            )
+        ]
+    )
+
+def create_policy_clip_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Policy Clip', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'policy-clip',
+                    'model':'none',
+                    'agent':agent_type
+                },
+                type='number',
+                min=0.01,
+                max=0.99,
+                step=0.01,
+                value=0.99,
+            )
+        ]
+    )
+
+def create_entropy_coeff_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Entropy Coefficient', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-coeff',
+                    'model':'none',
+                    'agent':agent_type
+                },
+                type='number',
+                min=0.01,
+                max=0.99,
+                step=0.01,
+                value=0.99,
+            )
+        ]
+    )
+
+def create_ppo_loss_type_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Loss Type', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'loss-type',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                options=[{'label': i, 'value': i} for i in ["KL", "Clipped", "Hybrid"]],
+                placeholder="select loss type"
+            ),
+            html.Div(
+                id={
+                    'type':'entropy-block',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                children = [
+                    html.Label('Entropy Coefficient', style={'text-decoration': 'underline'}),
+                    dcc.Input(
+                    id={
+                        'type':'entropy-value',
+                        'model':'none',
+                        'agent':agent_type,
+                    },
+                    type='number',
+                    # placeholder="Clamp Value",
+                    min=0.001,
+                    max=1.00,
+                    step=0.001,
+                    ),
+                ],
+                style={'display': 'none'},
+            ),
+            html.Div(
+                id={
+                    'type':'kl-block',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                children = [
+                    html.Label('KL Coefficient', style={'text-decoration': 'underline'}),
+                    dcc.Input(
+                    id={
+                        'type':'kl-value',
+                        'model':'none',
+                        'agent':agent_type,
+                    },
+                    type='number',
+                    # placeholder="Clamp Value",
+                    min=0.01,
+                    max=5.00,
+                    step=0.01,
+                    ),
+                ],
+                style={'display': 'none'},
+            ),
+            html.Div(
+                id={
+                    'type':'lambda-block',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                children = [
+                    html.Label('Lambda Coefficient', style={'text-decoration': 'underline'}),
+                    dcc.Input(
+                    id={
+                        'type':'lambda-value',
+                        'model':'none',
+                        'agent':agent_type,
+                    },
+                    type='number',
+                    # placeholder="Clamp Value",
+                    min=0.01,
+                    max=1.00,
+                    step=0.01,
+                    ),
+                ],
+                style={'display': 'none'},
+            ),
+        ]
+    )
+
+def create_normalize_advantage_input(agent_type):
+    return html.Div(
+        [
+            # html.Label('Normalize Advantage', style={'text-decoration': 'underline'}),
+            dcc.Checklist(
+                id={'type':'norm-adv',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': 'Normalize Advantage', 'value': True},
+                ],
+                value=[],
+                style={'display':'inline-block'}
+            ),
+        ]
+    )
+
+def create_normalize_values_input(agent_type):
+    return html.Div(
+        [
+            # html.Label('Normalize Advantage', style={'text-decoration': 'underline'}),
+            dcc.Checklist(
+                id={'type':'norm-values',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': 'Normalize Value Function', 'value': True},
+                ],
+                value=[],
+                style={'display':'inline-block'}
+            ),
+            html.Div(
+                id = {
+                    'type':'norm-clip-block',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                children = [
+                    html.Label('Norm Clip'),
+                    dcc.Input(
+                        id={
+                            'type': 'norm-clip',
+                            'model': 'none',
+                            'agent': agent_type
+                        },
+                        type='number',
+                        min=0.1,
+                        max=10.0,
+                        value=0.5,
+                        step=0.1,
+                    )
+                ],
+                style={'display':'none'}
+            )
+        ]
+    )
+
+def create_distribution_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Probability Distribution', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+            id={
+                'type':'distribution',
+                'model':'none',
+                'agent':agent_type,
+                },
+                options=[{'label': i, 'value': i} for i in ["Beta", "Normal"]],
+                placeholder="select distribution"
+            ),
+        ]
+    )
+
 def create_warmup_input(agent_type):
     return html.Div([
         html.Label('Warmup Period (Steps)'),
@@ -2515,7 +2732,14 @@ def create_ppo_parameter_inputs(agent_type):
         id=f'{agent_type}-inputs',
         children=[
             create_device_input(agent_type),
+            create_distribution_input(agent_type),
             create_discount_factor_input(agent_type),
+            create_advantage_coeff_input(agent_type),
+            create_policy_clip_input(agent_type),
+            # create_entropy_coeff_input(agent_type),
+            create_ppo_loss_type_input(agent_type),
+            create_normalize_advantage_input(agent_type),
+            create_normalize_values_input(agent_type),
             # Actor Model Configuration
             create_policy_model_type_input(agent_type, 'policy'),
             create_policy_model_input(agent_type),
@@ -6156,12 +6380,12 @@ def render_heatmap(page):
             style={'display':'inline-block'}
         ),
         dcc.Checklist(
-                id={'type':'z-score-checkbox', 'page':page},
-                options=[
-                    {'label': ' Display Z-Scores', 'value': 'zscore'},
-                ],
-                value=[],
-                style={'display':'inline-block'}
+            id={'type':'z-score-checkbox', 'page':page},
+            options=[
+                {'label': ' Display Z-Scores', 'value': 'zscore'},
+            ],
+            value=[],
+            style={'display':'inline-block'}
         ),
         html.Div(id={'type':'heatmap-container', 'page':page}),
         html.Div(
