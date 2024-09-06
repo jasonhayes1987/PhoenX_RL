@@ -5530,7 +5530,7 @@ class PPO(Agent):
                 # print(f'full entropy:{dist.entropy()}')
 
                 # Calculate the KL Divergence
-                kl = kl_divergence(dist, prev_dist).sum(dim=-1, keepdim=True)
+                kl = kl_divergence(prev_dist, dist).sum(dim=-1, keepdim=True)
 
                 if self.loss == 'clipped':
                     lambda_value = 1.0

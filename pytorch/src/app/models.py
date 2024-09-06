@@ -382,8 +382,8 @@ class StochasticContinuousPolicy(Model):
         param1, param2 = T.split(x, self.env.action_space.shape[-1], dim=-1)
 
         if self.distribution == 'Beta':
-            alpha = F.relu(param1) + 10.0
-            beta = F.relu(param2) + 10.0
+            alpha = F.relu(param1) + 1.0
+            beta = F.relu(param2) + 1.0
             # alpha = F.softplus(param1) + 1.0
             # beta = F.softplus(param2) + 1.0
             dist = Beta(alpha, beta)
