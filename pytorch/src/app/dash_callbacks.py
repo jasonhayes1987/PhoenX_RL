@@ -37,6 +37,7 @@ import helper
 import gym_helper
 import utils
 import models
+from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueModel, CriticModel, ActorModel
 import cnn_models
 import rl_agents
 import wandb_support
@@ -684,8 +685,17 @@ def register_callbacks(app, shared_data):
         env = gym.make(env_selection)
         print(f'env spec: {env.spec}')
 
+        # Get device
+        device = utils.get_specific_value(
+            all_values=all_values,
+            all_ids=all_ids,
+            id_type='device',
+            model_type='none',
+            agent_type=agent_type_dropdown_value,
+        )
+
         # set params if agent is reinforce or actor critic
-        if agent_type_dropdown_value == "Reinforce" or agent_type_dropdown_value == "ActorCritic":
+        if agent_type_dropdown_value in ["Reinforce", "ActorCritic", "PPO"]:
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("CartPole-v1")
 
@@ -739,12 +749,34 @@ def register_callbacks(app, shared_data):
                 policy_initializer,
             )
 
+            policy_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='policy-output',
+                agent_type=agent_type_dropdown_value
+            )
+
             ##DEBUG
             # print("Policy layers:", policy_layers)
+            if agent_type_dropdown_value == "PPO":
+                policy_type = utils.get_specific_value(
+                    all_values=all_values,
+                    add_ids=all_ids,
+                    model_type='policy',
+                    agent_type=agent_type_dropdown_value,
+                )
 
-            policy_model = models.StochasticDiscretePolicy(
+                if policy_type == 'StochasticContinuousPolicy':
+                    model = StochasticContinuousPolicy
+                else:
+                    model = StochasticDiscretePolicy
+            else:
+                model = StochasticDiscretePolicy
+
+            policy_model = model(
                     env=gym.make(env),
                     dense_layers=policy_layers,
+                    output_layer_kernel=policy_output_kernel,
                     optimizer=policy_optimizer,
                     optimizer_params=policy_opt_params,
                     learning_rate=learning_rate,
@@ -791,35 +823,41 @@ def register_callbacks(app, shared_data):
                 ),
                 value_initializer,
             )
+
+            value_output_kernel = utils.format_kernel_initializer_config(
+                all_values=all_values,
+                all_ids=all_ids,
+                value_model='value-output',
+                agent_type=agent_type_dropdown_value
+            )
             
-            value_model = models.ValueModel(
+            value_model = ValueModel(
                 env=gym.make(env),
                 dense_layers=value_layers,
+                output_layer_kernel=value_output_kernel,
                 optimizer=value_optimizer,
                 optimizer_params=value_opt_params,
                 learning_rate=learning_rate,
             )
 
-            
-            if agent_type_dropdown_value == "Reinforce":
-
-                discount=utils.get_specific_value(
+            discount=utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
                         id_type='discount',
                         model_type='none',
                         agent_type=agent_type_dropdown_value,
                     ),
-                
-                save_dir = utils.get_specific_value(
+            
+            save_dir = utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='save-dir',
                 model_type='none',
                 agent_type=agent_type_dropdown_value,
                 )
+            
+            if agent_type_dropdown_value == "Reinforce":
 
-                
                 agent = rl_agents.Reinforce(
                     env=gym.make(env),
                     policy_model=policy_model,
@@ -830,14 +868,6 @@ def register_callbacks(app, shared_data):
                 )
 
             elif agent_type_dropdown_value == "ActorCritic":
-
-                discount=utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='discount',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    ),
 
                 policy_trace_decay=utils.get_specific_value(
                         all_values=all_values,
@@ -853,14 +883,6 @@ def register_callbacks(app, shared_data):
                         model_type='value',
                         agent_type=agent_type_dropdown_value,
                     )
-                
-                save_dir = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='save-dir',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-                )
 
                 agent = rl_agents.ActorCritic(
                     env=gym.make(env),
@@ -873,18 +895,22 @@ def register_callbacks(app, shared_data):
                     save_dir=os.path.join(os.getcwd(), save_dir),
                 )
 
+            # elif agent_type_dropdown_value == "PPO":
+
+            #     dist = 
+
         elif agent_type_dropdown_value == "DDPG":
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("Pendulum-v1")
 
-            # Get device
-            device = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
+            # # Get device
+            # device = utils.get_specific_value(
+            #     all_values=all_values,
+            #     all_ids=all_ids,
+            #     id_type='device',
+            #     model_type='none',
+            #     agent_type=agent_type_dropdown_value,
+            # )
 
             # Set actor params
             # Set actor learning rate
@@ -969,7 +995,7 @@ def register_callbacks(app, shared_data):
             )
 
             # Create actor model
-            actor_model = models.ActorModel(
+            actor_model = ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
@@ -1089,7 +1115,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
            
-            critic_model = models.CriticModel(
+            critic_model = CriticModel(
                 env=env,
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
@@ -1206,14 +1232,14 @@ def register_callbacks(app, shared_data):
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("Pendulum-v1")
 
-            # Get device
-            device = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
+            # # Get device
+            # device = utils.get_specific_value(
+            #     all_values=all_values,
+            #     all_ids=all_ids,
+            #     id_type='device',
+            #     model_type='none',
+            #     agent_type=agent_type_dropdown_value,
+            # )
 
             # Set actor params
             # Set actor learning rate
@@ -1298,7 +1324,7 @@ def register_callbacks(app, shared_data):
             )
 
             # Create actor model
-            actor_model = models.ActorModel(
+            actor_model = ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
@@ -1418,7 +1444,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
            
-            critic_model = models.CriticModel(
+            critic_model = CriticModel(
                 env=env,
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
@@ -1560,14 +1586,14 @@ def register_callbacks(app, shared_data):
 
         elif agent_type_dropdown_value == "HER_DDPG":
 
-            # Get device
-            device = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
+            # # Get device
+            # device = utils.get_specific_value(
+            #     all_values=all_values,
+            #     all_ids=all_ids,
+            #     id_type='device',
+            #     model_type='none',
+            #     agent_type=agent_type_dropdown_value,
+            # )
 
             # get goal and reward functions and goal shape
             desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
@@ -1667,7 +1693,7 @@ def register_callbacks(app, shared_data):
             print(f'actor dense layers: {actor_dense_layers}')
             print(f'actor output kernel: {actor_output_kernel}, type: {type(actor_output_kernel)}')
             # Create actor model
-            actor_model = models.ActorModel(
+            actor_model = ActorModel(
                 env=env,
                 cnn_model=actor_cnn,
                 dense_layers=actor_dense_layers,
@@ -1788,7 +1814,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
            
-            critic_model = models.CriticModel(
+            critic_model = CriticModel(
                 env=env,
                 cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
@@ -2891,6 +2917,42 @@ def register_callbacks(app, shared_data):
         hide_header = True if not kernel_functions else False
 
         return tabs, hide_header
+    
+    @app.callback(
+        Output({'type': 'entropy-block', 'model': 'none', 'agent': MATCH},'style'),
+        Output({'type': 'kl-block', 'model': 'none', 'agent': MATCH},'style'),
+        Output({'type': 'lambda-block', 'model': 'none', 'agent': MATCH},'style'),
+        Input({'type':'loss-type', 'model': 'none', 'agent': MATCH}, 'value'),
+        prevent_initial_call=True
+    )
+    def update_ppo_loss_options(loss_type):
+        if loss_type == 'KL':
+            kl_block = {'display': 'block'}
+            ep_block = {'display': 'none'}
+            lm_block = {'display': 'none'}
+            return ep_block, kl_block, lm_block
+        elif loss_type == 'Clipped':
+            kl_block = {'display': 'none'}
+            ep_block = {'display': 'block'}
+            lm_block = {'display': 'none'}
+            return ep_block, kl_block, lm_block
+        kl_block = {'display': 'block'}
+        ep_block = {'display': 'block'}
+        lm_block = {'display': 'block'}
+        return ep_block, kl_block, lm_block
+
+    @app.callback(
+        Output({'type': 'norm-clip-block', 'model': 'none', 'agent': MATCH},'style'),
+        Input({'type':'norm-values', 'model': 'none', 'agent': MATCH}, 'value'),
+        prevent_initial_call=True
+    )
+    def update_ppo_loss_options(norm_values):
+        if norm_values:
+            norm_block = {'display': 'block'}
+            return norm_block
+        
+        norm_block = {'display': 'none'}
+        return norm_block
     
     @app.callback(
         Output('her-options-hyperparam', 'hidden'),

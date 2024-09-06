@@ -690,6 +690,7 @@ class Normalizer:
     def __init__(self, size, eps=1e-2, clip_range=5.0, device='cpu'):
         self.size = size
         self.eps = T.tensor(eps, device=device)
+        # self.eps = eps
         self.clip_range = clip_range
         self.device = device
 

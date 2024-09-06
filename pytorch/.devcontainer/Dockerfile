@@ -1,5 +1,6 @@
 # Use the CUDA 12.5 devel base image
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+# FROM nvidia/cuda:12.6.0-cudnn-devel-ubuntu22.04
 
 # Install necessary system packages
 RUN apt-get update && apt-get install -y \
@@ -66,9 +67,9 @@ ENV MUJOCO_GL=egl
 ENV PYOPENGL_PLATFORM=egl
 ENV LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}
 ENV MUJOCO_PATH=/root/.mujoco/mujoco-3.1.4
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=/usr/local/cuda/bin:$PATH
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+# ENV CUDA_HOME=/usr/local/cuda
+# ENV PATH=/usr/local/cuda/bin:$PATH
+# ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 # Copy over requirements for RL API and app
 COPY src/requirements.txt .
