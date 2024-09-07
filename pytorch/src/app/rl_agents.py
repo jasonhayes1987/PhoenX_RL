@@ -5021,13 +5021,13 @@ class PPO(Agent):
                  kl_coefficient: float = 0.01,
                  normalize_advantages: bool = True,
                  normalize_values: bool = True,
-                 normalizer_clip: float = None,
-                 grad_clip:float = None,
+                 value_normalizer_clip: float = np.inf,
+                 policy_grad_clip:float = np.inf,
                  lambda_:float = None,
                  callbacks: List = [],
                  save_dir = 'models',
                  device = 'cuda',
-                 seed: float = None,
+                #  seed: float = None,
                  ):
         self.env = env
         self.policy = policy
@@ -5041,16 +5041,16 @@ class PPO(Agent):
         self.kl_coefficient = kl_coefficient
         self.normalize_advantages = normalize_advantages
         self.normalize_values = normalize_values
-        self.norm_clip = normalizer_clip
+        self.value_norm_clip = value_normalizer_clip
         if self.normalize_values:
-            self.normalizer = Normalizer((1), clip_range=self.norm_clip, device=device)
-        self.grad_clip = grad_clip
+            self.normalizer = Normalizer((1), clip_range=self.value_norm_clip, device=device)
+        self.policy_grad_clip = policy_grad_clip
         self.lambda_ = lambda_
         self.callbacks = callbacks
         self.device = device
-        if seed is None:
-            seed = np.random.randint(100)
-        self.seed = seed
+        # if seed is None:
+        #     seed = np.random.randint(100)
+        # self.seed = seed
 
         # self.save_dir = save_dir + "/ddpg/"
         if save_dir is not None and "/ppo/" not in save_dir:
@@ -5223,7 +5223,7 @@ class PPO(Agent):
         else:
             return reward
 
-    def train(self, timesteps, trajectory_length, batch_size, learning_epochs, num_envs, avg_num=10, render_freq:int=0, save_dir:str=None, run_number:int=None):
+    def train(self, timesteps, trajectory_length, batch_size, learning_epochs, num_envs, seed=None, avg_num=10, render_freq:int=0, save_dir:str=None, run_number:int=None):
         """
         Trains the model for 'timesteps' number of 'timesteps',
         updating the model every 'trajectory_length' number of timesteps.
@@ -5245,9 +5245,19 @@ class PPO(Agent):
             self.save_dir = save_dir
             print(f'new save dir: {self.save_dir}')
 
+        if seed is None:
+            seed = np.random.randint(100)
+
+        # Set seeds
+        T.manual_seed(seed)
+        T.cuda.manual_seed(seed)
+        np.random.seed(seed)
+        gym.utils.seeding.np_random.seed = seed
+
         if self.callbacks:
             for callback in self.callbacks:
                 self._config = callback._config(self)
+                self._config['seed'] = seed # Add seed to config to send to wandb for logging
                 if isinstance(callback, WandbCallback):
                     callback.on_train_begin((self.value_model, self.policy,), logs=self._config)
                     # logger.debug(f'TD3.train on train begin callback complete')
@@ -5566,8 +5576,8 @@ class PPO(Agent):
                 # Update the policy
                 self.policy.optimizer.zero_grad()
                 policy_loss.backward()
-                if self.grad_clip is not None:
-                    T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.grad_clip)
+                # if self.policy_grad_clip is not None:
+                T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
                 self.policy.optimizer.step()
 
                 # Update the value function
@@ -5735,13 +5745,13 @@ class PPO(Agent):
                 "loss": self.loss,
                 "kl_coefficient": self.kl_coefficient,
                 "normalize_values": self.normalize_values,
-                "normalizer_clip": self.norm_clip,
-                "grad_clip":self.grad_clip,
+                "normalizer_clip": self.value_norm_clip,
+                "grad_clip":self.policy_grad_clip,
                 "lambda_": self.lambda_,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir,
                 "device": self.device,
-                "seed": self.seed,
+                # "seed": self.seed,
             }
 
     def save(self, save_dir=None):
