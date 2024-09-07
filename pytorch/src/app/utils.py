@@ -1727,7 +1727,7 @@ def create_advantage_coeff_input(agent_type):
                 min=0.01,
                 max=0.99,
                 step=0.01,
-                value=0.99,
+                value=0.95,
             )
         ]
     )
@@ -1735,7 +1735,7 @@ def create_advantage_coeff_input(agent_type):
 def create_policy_clip_input(agent_type):
     return html.Div(
         [
-            html.Label('Policy Clip', style={'text-decoration': 'underline'}),
+            html.Label('Policy Loss Clip', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
                     'type':'policy-clip',
@@ -1746,8 +1746,34 @@ def create_policy_clip_input(agent_type):
                 min=0.01,
                 max=0.99,
                 step=0.01,
-                value=0.99,
+                value=0.02,
             )
+        ]
+    )
+
+def create_policy_grad_clip_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Policy Gradient Clip', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'policy-grad-clip',
+                    'model':'none',
+                    'agent':agent_type
+                },
+                type='number',
+                min=0.01,
+                max=9999999,  # Use a very high max value to indicate "off"
+                step=0.01,
+                value=0.05,
+                placeholder="Enter gradient clip value (high = off)",
+                # title="Set to a very high value (e.g., 9999999) to turn off clipping"
+            ),
+            dbc.Tooltip(
+            "Enter 9999 to disable clipping",
+            target={'type':"policy-grad-clip", 'model':'none', 'agent':agent_type},  # ID of the element to target
+            placement="right",  # Tooltip placement
+            ),
         ]
     )
 
@@ -2732,16 +2758,17 @@ def create_ppo_parameter_inputs(agent_type):
         id=f'{agent_type}-inputs',
         children=[
             create_device_input(agent_type),
+            create_ppo_loss_type_input(agent_type),
             create_distribution_input(agent_type),
             create_discount_factor_input(agent_type),
             create_advantage_coeff_input(agent_type),
-            create_policy_clip_input(agent_type),
             # create_entropy_coeff_input(agent_type),
-            create_ppo_loss_type_input(agent_type),
             create_normalize_advantage_input(agent_type),
             create_normalize_values_input(agent_type),
             # Actor Model Configuration
             create_policy_model_type_input(agent_type, 'policy'),
+            create_policy_clip_input(agent_type),
+            create_policy_grad_clip_input(agent_type),
             create_policy_model_input(agent_type),
             # Critic Model Configuration
             create_value_model_input(agent_type),

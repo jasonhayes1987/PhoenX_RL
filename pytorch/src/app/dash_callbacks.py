@@ -761,7 +761,8 @@ def register_callbacks(app, shared_data):
             if agent_type_dropdown_value == "PPO":
                 policy_type = utils.get_specific_value(
                     all_values=all_values,
-                    add_ids=all_ids,
+                    all_ids=all_ids,
+                    id_type='policy-type',
                     model_type='policy',
                     agent_type=agent_type_dropdown_value,
                 )
