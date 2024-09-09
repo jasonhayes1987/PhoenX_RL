@@ -5010,7 +5010,7 @@ class PPO(Agent):
 
     def __init__(self,
                  env: gym.Env,
-                 policy,
+                 policy_model,
                  value_model,
                  distribution: str = 'Beta',
                  discount: float = 0.99,
@@ -5020,7 +5020,7 @@ class PPO(Agent):
                  loss:str = 'kl',
                  kl_coefficient: float = 0.01,
                  normalize_advantages: bool = True,
-                 normalize_values: bool = True,
+                 normalize_values: bool = False,
                  value_normalizer_clip: float = np.inf,
                  policy_grad_clip:float = np.inf,
                  lambda_:float = None,
@@ -5030,7 +5030,7 @@ class PPO(Agent):
                 #  seed: float = None,
                  ):
         self.env = env
-        self.policy = policy
+        self.policy_model = policy_model
         self.value_model = value_model
         self.distribution = distribution
         self.discount = discount
@@ -5064,7 +5064,7 @@ class PPO(Agent):
             # Instantiate learnable parameter to blend Clipped and KL loss objectives
             self.lambda_param = T.nn.Parameter(T.tensor(self.lambda_))
             # # Add lambda param to policy optimizer
-            self.policy.optimizer.add_param_group({'params': [self.lambda_param]})
+            self.policy_model.optimizer.add_param_group({'params': [self.lambda_param]})
         
         # Set callbacks
         try:
@@ -5195,11 +5195,11 @@ class PPO(Agent):
         for state in states:
             with T.no_grad():
                 # make sure state is a tensor and on correct device
-                state = T.tensor(state, dtype=T.float32, device=self.policy.device)
+                state = T.tensor(state, dtype=T.float32, device=self.policy_model.device)
                 #DEBUG
                 # print(f'state shape in get_action:{state.shape}')
                 # print(f'get action state:{state}')
-                dist, _, _ = self.policy(state)
+                dist, _, _ = self.policy_model(state)
                 action = dist.sample()
                 log_prob = dist.log_prob(action)
                 actions.append(action.detach().cpu().numpy().flatten())
@@ -5245,9 +5245,14 @@ class PPO(Agent):
             self.save_dir = save_dir
             print(f'new save dir: {self.save_dir}')
 
+        #DEBUG
+        print(f'discount:{self.discount}')
+
+
         if seed is None:
             seed = np.random.randint(100)
 
+        print(f'seed value:{seed}')
         # Set seeds
         T.manual_seed(seed)
         T.cuda.manual_seed(seed)
@@ -5256,10 +5261,13 @@ class PPO(Agent):
 
         if self.callbacks:
             for callback in self.callbacks:
+                print(f'callback:{callback}')
                 self._config = callback._config(self)
-                self._config['seed'] = seed # Add seed to config to send to wandb for logging
+                print(f'self._config:{self._config}')
                 if isinstance(callback, WandbCallback):
-                    callback.on_train_begin((self.value_model, self.policy,), logs=self._config)
+                    self._config['seed'] = seed # Add seed to config to send to wandb for logging
+                    self._config['num_envs'] = num_envs
+                    callback.on_train_begin((self.value_model, self.policy_model,), logs=self._config)
                     # logger.debug(f'TD3.train on train begin callback complete')
                 else:
                     callback.on_train_begin(logs=self._config)
@@ -5279,7 +5287,7 @@ class PPO(Agent):
 
         self.trajectory_length = trajectory_length
         self.num_envs = num_envs
-        self.policy.train()
+        self.policy_model.train()
         self.value_model.train()
         timestep = 1
         all_states = []
@@ -5448,12 +5456,12 @@ class PPO(Agent):
         dones = np.concatenate(all_dones, axis=0)
 
         # Convert to Tensors
-        states = T.tensor(states, dtype=T.float32, device=self.policy.device)
-        actions = T.tensor(actions, dtype=T.float32, device=self.policy.device)
-        log_probs = T.tensor(log_probs, dtype=T.float32, device=self.policy.device)
+        states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
+        actions = T.tensor(actions, dtype=T.float32, device=self.policy_model.device)
+        log_probs = T.tensor(log_probs, dtype=T.float32, device=self.policy_model.device)
         rewards = T.tensor(rewards, dtype=T.float32, device=self.value_model.device).unsqueeze(1)
-        next_states = T.tensor(next_states, dtype=T.float32, device=self.policy.device)
-        dones = T.tensor(dones, dtype=T.int, device=self.policy.device)
+        next_states = T.tensor(next_states, dtype=T.float32, device=self.policy_model.device)
+        dones = T.tensor(dones, dtype=T.int, device=self.policy_model.device)
 
 
         # Calculate advantages and returns
@@ -5461,9 +5469,9 @@ class PPO(Agent):
         
         # advantages = T.tensor(advantages, dtype=T.float32, device=self.policy.device)
         advantages = T.cat(advantages, dim=0)
-        advantages = advantages.to(self.policy.device, dtype=T.float32)
+        advantages = advantages.to(self.policy_model.device, dtype=T.float32)
         returns = T.cat(returns, dim=0)
-        returns = returns.to(self.policy.device, dtype=T.float32)
+        returns = returns.to(self.policy_model.device, dtype=T.float32)
         # returns = T.tensor(returns, dtype=T.float32, device=self.value_function.device)
         # advantages = advantages.reshape(-1, 1)
         # returns = returns.reshape(-1, 1)
@@ -5494,7 +5502,7 @@ class PPO(Agent):
                 advantages_batch = advantages[batch]
                 returns_batch = returns[batch]
 
-                dist, param1, param2 = self.policy(states_batch)
+                dist, param1, param2 = self.policy_model(states_batch)
                 # print(f'dist mean:{dist.loc}')
                 # print(f'dist var:{dist.scale}')
                 # print(f'param 1:{param1}')
@@ -5542,13 +5550,13 @@ class PPO(Agent):
                 # Calculate the KL Divergence
                 kl = kl_divergence(prev_dist, dist).sum(dim=-1, keepdim=True)
 
-                if self.loss == 'clipped':
+                if self.loss == 'Clipped':
                     lambda_value = 1.0
                     surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
                     # Clipped policy loss
                     clipped_loss = (-(T.min(surr1, surr2)) - self.entropy_coefficient * entropy).mean()
                     policy_loss = clipped_loss
-                elif self.loss == 'kl':
+                elif self.loss == 'KL':
                     lambda_value = 0.0
                     # probs_old = T.exp(log_probs_batch)
                     # kl_div = probs_old * (log_probs_batch - new_log_probs)
@@ -5559,7 +5567,7 @@ class PPO(Agent):
                     # kl_loss = -(surr1 - self.kl_coefficient * kl_div.sum(dim=-1, keepdim=True)).mean()
                     kl_loss = -(surr1 - self.kl_coefficient * kl).mean()
                     policy_loss = kl_loss
-                elif self.loss == 'hybrid':
+                elif self.loss == 'Hybrid':
                     # Run lambda param through sigmoid to clamp between 0 and 1
                     lambda_value = T.sigmoid(self.lambda_param)
                     surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
@@ -5574,11 +5582,11 @@ class PPO(Agent):
                     raise ValueError(f'Unknown loss: {self.loss}')
 
                 # Update the policy
-                self.policy.optimizer.zero_grad()
+                self.policy_model.optimizer.zero_grad()
                 policy_loss.backward()
                 # if self.policy_grad_clip is not None:
-                T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
-                self.policy.optimizer.step()
+                T.nn.utils.clip_grad_norm_(self.policy_model.parameters(), max_norm=self.policy_grad_clip)
+                self.policy_model.optimizer.step()
 
                 # Update the value function
                 # value_loss = F.mse_loss(self.value_function(states_batch), returns_batch)
@@ -5617,7 +5625,7 @@ class PPO(Agent):
         """
 
         # Set the policy and value function models to evaluation mode
-        self.policy.eval()
+        self.policy_model.eval()
         self.value_model.eval()
 
         # Create the render directory if it doesn't exist
@@ -5671,7 +5679,7 @@ class PPO(Agent):
                     frames.append(frame)
 
                 # Calculate the distribution and entropy
-                dist, param1, param2 = self.policy(T.tensor(states, dtype=T.float32, device=self.policy.device).flatten())
+                dist, param1, param2 = self.policy_model(T.tensor(states, dtype=T.float32, device=self.policy_model.device).flatten())
                 entropy = dist.entropy().sum().item()  # Sum entropy over actions
 
                 # Update KL divergence
@@ -5735,7 +5743,7 @@ class PPO(Agent):
                 "agent_type": self.__class__.__name__,
                 # "env": serialize_env_spec(self.env.spec),
                 "env": self.env.spec.to_json(),
-                "policy": self.policy.get_config(),
+                "policy": self.policy_model.get_config(),
                 "value_model": self.value_model.get_config(),
                 "distribution": self.distribution,
                 "discount": self.discount,
@@ -5744,6 +5752,7 @@ class PPO(Agent):
                 "entropy_coefficient": self.entropy_coefficient,
                 "loss": self.loss,
                 "kl_coefficient": self.kl_coefficient,
+                "normalize_advantages":self.normalize_advantages,
                 "normalize_values": self.normalize_values,
                 "normalizer_clip": self.value_norm_clip,
                 "grad_clip":self.policy_grad_clip,
@@ -5771,7 +5780,7 @@ class PPO(Agent):
             json.dump(config, f, cls=CustomJSONEncoder)
 
         # saves policy and value model
-        self.policy.save(self.save_dir)
+        self.policy_model.save(self.save_dir)
         self.value_model.save(self.save_dir)
 
         # if self.normalize_inputs:
@@ -5789,8 +5798,9 @@ class PPO(Agent):
         """Loads the model."""
 
         # create EnvSpec from config
-        env_spec_json = json.dumps(config["env"])
-        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
+        # env_spec_json = json.dumps(config["env"])
+        # print(f'env spec json: {env_spec_json}')
+        env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
         # load policy model
         policy_model = models.StochasticContinuousPolicy.load(config['save_dir'], load_weights)
         # load value model
@@ -5798,18 +5808,22 @@ class PPO(Agent):
         # load callbacks
         callbacks = [rl_callbacks.load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]
 
-        # return TD3 agent
+        # return PPO agent
         agent = cls(
             gym.make_vec(env_spec),
-            policy = policy_model,
+            policy_model = policy_model,
             value_model = value_model,
             distribution = config["distribution"],
             discount=config["discount"],
             gae_coefficient = config["gae_coefficient"],
             policy_clip = config["policy_clip"],
             entropy_coefficient = config["entropy_coefficient"],
-            kl_coefficient = config["kl_coefficient"],
             loss = config["loss"],
+            kl_coefficient = config["kl_coefficient"],
+            normalize_advantages = config["normalize_advantages"],
+            normalize_values = config["normalize_values"],
+            value_normalizer_clip = config["normalizer_clip"],
+            policy_grad_clip = config["grad_clip"],
             lambda_ = config["lambda_"],
             callbacks=callbacks,
             save_dir=config["save_dir"],

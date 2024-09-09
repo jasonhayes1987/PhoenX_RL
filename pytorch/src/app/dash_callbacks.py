@@ -694,16 +694,32 @@ def register_callbacks(app, shared_data):
             agent_type=agent_type_dropdown_value,
         )
 
+        save_dir = utils.get_specific_value(
+            all_values=all_values,
+            all_ids=all_ids,
+            id_type='save-dir',
+            model_type='none',
+            agent_type=agent_type_dropdown_value,
+            )
+
         # set params if agent is reinforce or actor critic
         if agent_type_dropdown_value in ["Reinforce", "ActorCritic", "PPO"]:
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("CartPole-v1")
 
-            learning_rate=10**utils.get_specific_value(
+            policy_learning_rate=10**utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='learning-rate',
-                model_type='none',
+                model_type='policy',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            value_func_learning_rate=10**utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='learning-rate',
+                model_type='value',
                 agent_type=agent_type_dropdown_value,
             )
 
@@ -722,10 +738,10 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
             
-            policy_initializer = utils.format_kernel_initializer_config(
+            policy_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='policy',
+                value_model='policy-hidden',
                 agent_type=agent_type_dropdown_value
             )
 
@@ -746,7 +762,7 @@ def register_callbacks(app, shared_data):
                     model_type='policy',
                     agent_type=agent_type_dropdown_value,
                 ),
-                policy_initializer,
+                policy_hidden_kernel,
             )
 
             policy_output_kernel = utils.format_kernel_initializer_config(
@@ -769,19 +785,38 @@ def register_callbacks(app, shared_data):
 
                 if policy_type == 'StochasticContinuousPolicy':
                     model = StochasticContinuousPolicy
-                else:
-                    model = StochasticDiscretePolicy
+                    dist = utils.get_specific_value(
+                    all_values=all_values,
+                    all_ids=all_ids,
+                    id_type='distribution',
+                    model_type='none',
+                    agent_type=agent_type_dropdown_value,
+                    )
+
+                    policy_model = model(
+                        env=env,
+                        dense_layers=policy_layers,
+                        output_layer_kernel=policy_output_kernel,
+                        optimizer=policy_optimizer,
+                        optimizer_params=policy_opt_params,
+                        learning_rate=policy_learning_rate,
+                        distribution=dist,
+                        device=device,
+                    )
+                # else:
+                #     model = StochasticDiscretePolicy
             else:
                 model = StochasticDiscretePolicy
-
-            policy_model = model(
-                    env=gym.make(env),
+                policy_model = model(
+                    env=env,
                     dense_layers=policy_layers,
                     output_layer_kernel=policy_output_kernel,
                     optimizer=policy_optimizer,
                     optimizer_params=policy_opt_params,
-                    learning_rate=learning_rate,
+                    learning_rate=policy_learning_rate,
+                    device=device,
                 )
+
 
             value_optimizer = utils.get_specific_value(
                     all_values=all_values,
@@ -798,10 +833,10 @@ def register_callbacks(app, shared_data):
                 all_ids=all_ids
             )
 
-            value_initializer = utils.format_kernel_initializer_config(
+            value_hidden_kernel = utils.format_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='value',
+                value_model='value-hidden',
                 agent_type=agent_type_dropdown_value
             )
             
@@ -822,7 +857,7 @@ def register_callbacks(app, shared_data):
                     model_type='value',
                     agent_type=agent_type_dropdown_value,
                 ),
-                value_initializer,
+                value_hidden_kernel,
             )
 
             value_output_kernel = utils.format_kernel_initializer_config(
@@ -833,34 +868,27 @@ def register_callbacks(app, shared_data):
             )
             
             value_model = ValueModel(
-                env=gym.make(env),
+                env=env,
                 dense_layers=value_layers,
                 output_layer_kernel=value_output_kernel,
                 optimizer=value_optimizer,
                 optimizer_params=value_opt_params,
-                learning_rate=learning_rate,
+                learning_rate=value_func_learning_rate,
+                device=device,
             )
 
             discount=utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='discount',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    ),
-            
-            save_dir = utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
-                id_type='save-dir',
+                id_type='discount',
                 model_type='none',
                 agent_type=agent_type_dropdown_value,
-                )
+            )
             
             if agent_type_dropdown_value == "Reinforce":
 
                 agent = rl_agents.Reinforce(
-                    env=gym.make(env),
+                    env=env,
                     policy_model=policy_model,
                     value_model=value_model,
                     discount=discount,
@@ -886,7 +914,7 @@ def register_callbacks(app, shared_data):
                     )
 
                 agent = rl_agents.ActorCritic(
-                    env=gym.make(env),
+                    env=env,
                     policy_model=policy_model,
                     value_model=value_model,
                     discount=discount,
@@ -896,9 +924,128 @@ def register_callbacks(app, shared_data):
                     save_dir=os.path.join(os.getcwd(), save_dir),
                 )
 
-            # elif agent_type_dropdown_value == "PPO":
+            elif agent_type_dropdown_value == "PPO":
+                
+                gae_coeff = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='advantage-coeff',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                policy_clip = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='policy-clip',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                entropy_coeff = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='entropy-value',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                loss = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='loss-type',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                kl_coeff = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='kl-value',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                normalize_advs = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='norm-adv',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )[0]
 
-            #     dist = 
+                normalize_values = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='norm-values',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                if normalize_values is not True:
+                    normalize_values = False
+
+                
+                val_norm_clip = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='norm-clip',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                
+                clip_policy_grad = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='clip-policy-grad',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                if clip_policy_grad:
+
+                    policy_grad_clip = utils.get_specific_value(
+                            all_values=all_values,
+                            all_ids=all_ids,
+                            id_type='policy-grad-clip',
+                            model_type='none',
+                            agent_type=agent_type_dropdown_value,
+                        )
+                    
+                else:
+                    policy_grad_clip = np.inf
+               
+                
+                lambda_ = utils.get_specific_value(
+                        all_values=all_values,
+                        all_ids=all_ids,
+                        id_type='lambda-value',
+                        model_type='none',
+                        agent_type=agent_type_dropdown_value,
+                    )
+                
+                agent = rl_agents.PPO(
+                    env=env,
+                    policy_model=policy_model,
+                    value_model=value_model,
+                    distribution=dist,
+                    discount=discount,
+                    gae_coefficient=gae_coeff,
+                    policy_clip=policy_clip,
+                    entropy_coefficient=entropy_coeff,
+                    loss=loss,
+                    kl_coefficient=kl_coeff,
+                    normalize_advantages=normalize_advs,
+                    normalize_values=normalize_values,
+                    value_normalizer_clip=val_norm_clip,
+                    policy_grad_clip=policy_grad_clip,
+                    lambda_=lambda_,
+                    callbacks = utils.get_callbacks(callbacks, project),
+                    save_dir = os.path.join(os.getcwd(), save_dir),
+                    device=device,
+
+                )
 
         elif agent_type_dropdown_value == "DDPG":
             # set defualt gym environment in order to build policy and value models and save
@@ -1201,14 +1348,6 @@ def register_callbacks(app, shared_data):
                 id_type = 'warmup',
                 model_type = 'none',
                 agent_type = agent_type_dropdown_value,
-            )
-
-            save_dir = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='save-dir',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
             )
             
             agent = rl_agents.DDPG(
@@ -1556,13 +1695,6 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            save_dir = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='save-dir',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
             
             agent = rl_agents.TD3(
                 env = env,
@@ -2076,6 +2208,11 @@ def register_callbacks(app, shared_data):
         State({'type':'epochs', 'page':'/train-agent'}, 'value'),
         State({'type':'cycles', 'page':'/train-agent'}, 'value'),
         State({'type':'learning-cycles', 'page':'/train-agent'}, 'value'),
+        State({'type':'num-timesteps', 'page':'/train-agent'}, 'value'),
+        State({'type':'traj-length', 'page':'/train-agent'}, 'value'),
+        State({'type':'batch-size', 'page':'/train-agent'}, 'value'),
+        State({'type':'learning-epochs', 'page':'/train-agent'}, 'value'),
+        State({'type':'num-envs', 'page':'/train-agent'}, 'value'),
         State({'type':'mpi', 'page':'/train-agent'}, 'value'),
         State({'type':'workers', 'page':'/train-agent'}, 'value'),
         State({'type':'load-weights', 'page':'/train-agent'}, 'value'),
@@ -2085,7 +2222,8 @@ def register_callbacks(app, shared_data):
         State({'type':'save-dir', 'page':'/train-agent'}, 'value'),
         prevent_initial_call=True,
     )
-    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, use_mpi, workers, load_weights, seed, run_number, num_runs, save_dir):
+    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, num_timesteps, traj_length, batch_size,
+                    learning_epochs, num_envs, use_mpi, workers, load_weights, seed, run_number, num_runs, save_dir):
         #DEBUG
         # print("Start callback called.")
         if n_clicks > 0:
@@ -2098,7 +2236,7 @@ def register_callbacks(app, shared_data):
                 
                 # Create an empty dict for train_config.json
                 train_config = {}
-                render = 'RENDER' in render_option
+                render = True if render_option == 'RENDER' else False
                 # use_mpi = agent_data.get('use_mpi', False)
                 
                 # clear the renders in the train folder
@@ -2107,9 +2245,9 @@ def register_callbacks(app, shared_data):
                         utils.delete_renders(save_dir + '/renders/training')
 
                 # Update the configuration with render settings
-                train_config['num_episodes'] = num_episodes
+                train_config['num_envs'] = num_envs
                 train_config['render'] = render
-                train_config['render_freq'] = render_freq
+                train_config['render_freq'] = render_freq if render_freq is not None else 0
                 train_config['load_weights'] = load_weights
                 train_config['seed'] = seed
                 train_config['run_number'] = run_number
@@ -2118,6 +2256,7 @@ def register_callbacks(app, shared_data):
 
                 # Add MPI settings to config if DDPG or HER
                 if agent_data['agent_type'] in ['DDPG','TD3','HER']:
+                    train_config['num_episodes'] = num_episodes
                     train_config['use_mpi'] = use_mpi
                     train_config['num_workers'] = workers
                 
@@ -2126,6 +2265,13 @@ def register_callbacks(app, shared_data):
                     train_config['num_epochs'] = epochs
                     train_config['num_cycles'] = cycles
                     train_config['num_updates'] = num_updates
+
+                # Update additional setting for PPO agent
+                if agent_data['agent_type'] == 'PPO':
+                    train_config['timesteps'] = num_timesteps
+                    train_config['trajectory_length'] = traj_length
+                    train_config['batch_size'] = batch_size
+                    train_config['learning_epochs'] = learning_epochs
             
                 # Save the updated configuration to a train config file
                 train_config_path = save_dir + '/train_config.json'
@@ -2288,6 +2434,20 @@ def register_callbacks(app, shared_data):
         return her_options_style
     
     @app.callback(
+    Output({'type': 'ppo-options', 'page': '/train-agent'}, 'style'),
+    Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
+    prevent_initial_call = True,
+    )
+    def update_ppo_options(agent_data):
+
+        if agent_data['agent_type'] == 'PPO':
+            ppo_options_style = {'display': 'block'}
+        else:
+            ppo_options_style = {'display': 'none'}
+        
+        return ppo_options_style
+    
+    @app.callback(
     Output({'type': 'mpi-options', 'page': '/train-agent'}, 'style'),
     Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
     prevent_initial_call = True,
@@ -2368,6 +2528,20 @@ def register_callbacks(app, shared_data):
         
         return clamp_options_style
     
+    @app.callback(
+    Output({'type': 'policy-grad-clip-block', 'model':MATCH, 'agent':MATCH}, 'style'),
+    Input({'type':'clip-policy-grad', 'model':MATCH, 'agent':MATCH}, 'value'),
+    prevent_initial_call = True,
+    )
+    def update_policy_grad_clip_options(clip_grad):
+
+        if clip_grad:
+            clip_options_style = {'display': 'block'}
+        else:
+            clip_options_style = {'display': 'none'}
+        
+        return clip_options_style
+    
     # @app.callback(
     # Output({'type': 'ddpg-workers', 'page': '/train-agent'}, 'style'),
     # Input({'type':'ddpg-mpi', 'page': '/train-agent'}, 'value'),
@@ -2385,8 +2559,9 @@ def register_callbacks(app, shared_data):
 
     @app.callback(
     Output({'type':'render-freq', 'page':MATCH}, 'disabled'),  
-    Input({'type':'render-option', 'page':MATCH}, 'value')
-)
+    Input({'type':'render-option', 'page':MATCH}, 'value'),
+    prevent_initial_call = True,
+    )
     def toggle_render_freq(render_option):
         if 'RENDER' in render_option:
             return False
@@ -2403,7 +2578,7 @@ def register_callbacks(app, shared_data):
      State({'type':'cycles', 'page':MATCH}, 'value'),
      State('url', 'pathname')],
      prevent_initial_call = True,
-)
+    )
     def update_data(n, storage_data, agent_config, num_episodes, num_epochs, num_cycles, pathname):
         if num_episodes is not None:
             if pathname == '/train-agent':

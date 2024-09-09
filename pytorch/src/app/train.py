@@ -31,12 +31,12 @@ def train_agent(agent_config, train_config):
         agent_type = agent_config['agent_type']
         print(f'agent type:{agent_type}')
         load_weights = train_config.get('load_weights', False)
-        num_episodes = train_config['num_episodes']
         render = train_config.get('render', False)
         render_freq = train_config.get('render_freq', 0)
         save_dir = train_config.get('save_dir', agent_config['save_dir'])
         #DEBUG
         # print(f'training save dir: {save_dir}')
+        num_envs = train_config['num_envs']
         seed = train_config['seed']
         run_number = train_config.get('run_number', None)
         # num_runs = train_config.get('num_runs', 1)
@@ -44,15 +44,18 @@ def train_agent(agent_config, train_config):
         # MPI flag
         use_mpi = train_config.get('use_mpi', False)
 
+        #TODO
+        # move setting seed to train function
+
         # set seed
-        random.seed(seed)
-        np.random.seed(seed)
-        T.manual_seed(seed)
-        T.cuda.manual_seed(seed)
+        # random.seed(seed)
+        # np.random.seed(seed)
+        # T.manual_seed(seed)
+        # T.cuda.manual_seed(seed)
 
         print(f'seed: {seed}')
 
-        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER'], f"Unsupported agent type: {agent_type}"
+        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
 
         # Check if WandbCallback is in the agent configuration
         # use_wandb = any(cb['class_name'] == 'WandbCallback' for cb in agent_config['agent']['callbacks'])
@@ -85,6 +88,7 @@ def train_agent(agent_config, train_config):
                     # time.sleep(5)
                 
                 else:
+                    num_episodes = train_config['num_episodes']
                     num_epochs = train_config['num_epochs']
                     num_cycles = train_config['num_cycles']
                     num_updates = train_config['num_updates']
@@ -103,6 +107,7 @@ def train_agent(agent_config, train_config):
                 
                 else:
                     # for i in range(num_runs):
+                    num_episodes = train_config['num_episodes']
                     agent.train(num_episodes, render, render_freq)
                     # print(f'training run {i+1} initiated')
 
@@ -117,8 +122,27 @@ def train_agent(agent_config, train_config):
                 
                 else:
                     # for i in range(num_runs):
+                    num_episodes = train_config['num_episodes']
                     agent.train(num_episodes, render, render_freq, run_number=run_number)
                     # print(f'training run {i+1} initiated')
+            
+            elif agent_type == 'PPO':
+
+                # if use_mpi:
+                #     num_workers = train_config['num_workers']
+                #     mpi_command = f"mpirun -np {num_workers} python train_td3_mpi.py --agent_config {agent_config_path} --train_config {train_config_path}"
+                #     # for i in range(num_runs):
+                #     subprocess.Popen(mpi_command, shell=True)
+                #     # print(f'training run {i+1} initiated')
+                
+                # else:
+                # for i in range(num_runs):
+                timesteps = train_config['timesteps']
+                traj_length = train_config['trajectory_length']
+                batch_size = train_config['batch_size']
+                learning_epochs = train_config['learning_epochs']
+                agent.train(timesteps, traj_length, batch_size, learning_epochs, num_envs, seed, 10, render_freq, run_number=run_number)
+                # print(f'training run {i+1} initiated')
 
     except KeyError as e:
         logger.error(f"Missing configuration parameter: {str(e)}")
