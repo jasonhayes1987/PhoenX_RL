@@ -1,0 +1,1 @@
+{"num_envs": 10, "render": false, "render_freq": null, "load_weights": [true], "seed": 42, "run_number": null, "num_runs": null, "save_dir": "ppo_test", "timesteps": 10000, "trajectory_length": 2000, "batch_size": 64, "learning_epochs": 10}

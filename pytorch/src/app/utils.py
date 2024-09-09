@@ -1216,13 +1216,76 @@ def run_agent_settings_component(page, agent_type=None):
                 ),
             ]
         ),
+        html.Div(
+            id={
+                'type': 'episode-option',
+                'page': page,
+            },
+            style={'display': 'none'},
+            children=[
+                dcc.Input(
+                    id={
+                        'type': 'num-episodes',
+                        'page': page,
+                    },
+                    type='number',
+                    placeholder="Number of Episodes",
+                    min=1,
+                ),
+            ],
+        ),
+        html.Div(
+            id={
+                'type': 'ppo-options',
+                'page': page,
+            },
+            style={'display': 'none'},
+            children=[
+                dcc.Input(
+                    id={
+                        'type': 'num-timesteps',
+                        'page': page,
+                    },
+                    type='number',
+                    placeholder="Number of Timesteps",
+                    min=1,
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'traj-length',
+                        'page': page,
+                    },
+                    type='number',
+                    placeholder="Trajectories Length (timesteps)",
+                    min=1,
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'batch-size',
+                        'page': page,
+                    },
+                    type='number',
+                    placeholder="Batch Size",
+                    min=1,
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'learning-epochs',
+                        'page': page,
+                    },
+                    type='number',
+                    placeholder="Learning Epochs",
+                    min=1,
+                ),
+            ],
+        ),
         dcc.Input(
             id={
-                'type': 'num-episodes',
+                'type': 'num-envs',
                 'page': page,
             },
             type='number',
-            placeholder="Number of Episodes",
+            placeholder="Number of Envs",
             min=1,
         ),
         dcc.Checklist(
@@ -1708,7 +1771,7 @@ def create_discount_factor_input(agent_type):
                 min=0.01,
                 max=0.99,
                 step=0.01,
-                value=0.99,
+                value=0.99
             )
         ]
     )
@@ -1727,7 +1790,7 @@ def create_advantage_coeff_input(agent_type):
                 min=0.01,
                 max=0.99,
                 step=0.01,
-                value=0.95,
+                value=0.95
             )
         ]
     )
@@ -1754,26 +1817,41 @@ def create_policy_clip_input(agent_type):
 def create_policy_grad_clip_input(agent_type):
     return html.Div(
         [
-            html.Label('Policy Gradient Clip', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'policy-grad-clip',
+            # html.Label('Normalize Advantage', style={'text-decoration': 'underline'}),
+            dcc.Checklist(
+                id={'type':'clip-policy-grad',
                     'model':'none',
-                    'agent':agent_type
+                    'agent':agent_type,
                 },
-                type='number',
-                min=0.01,
-                max=9999999,  # Use a very high max value to indicate "off"
-                step=0.01,
-                value=0.05,
-                placeholder="Enter gradient clip value (high = off)",
-                # title="Set to a very high value (e.g., 9999999) to turn off clipping"
+                options=[
+                    {'label': 'Clip Policy Gradient', 'value': True},
+                ],
+                # value=False
+                style={'display':'inline-block'}
             ),
-            dbc.Tooltip(
-            "Enter 9999 to disable clipping",
-            target={'type':"policy-grad-clip", 'model':'none', 'agent':agent_type},  # ID of the element to target
-            placement="right",  # Tooltip placement
-            ),
+            html.Div(
+                id = {
+                    'type':'policy-grad-clip-block',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                children = [
+                    html.Label('Policy Gradient Clip'),
+                    dcc.Input(
+                        id={
+                            'type': 'policy-grad-clip',
+                            'model': 'none',
+                            'agent': agent_type
+                        },
+                        type='number',
+                        min=0.1,
+                        max=10.0,
+                        value=0.5,
+                        step=0.1,
+                    )
+                ],
+                style={'display':'none'}
+            )
         ]
     )
 
@@ -1828,6 +1906,7 @@ def create_ppo_loss_type_input(agent_type):
                     min=0.001,
                     max=1.00,
                     step=0.001,
+                    # value=0.01,
                     ),
                 ],
                 style={'display': 'none'},
@@ -1871,9 +1950,10 @@ def create_ppo_loss_type_input(agent_type):
                     },
                     type='number',
                     # placeholder="Clamp Value",
-                    min=0.01,
+                    min=0.00,
                     max=1.00,
                     step=0.01,
+                    # value=0.00,
                     ),
                 ],
                 style={'display': 'none'},
@@ -1891,9 +1971,8 @@ def create_normalize_advantage_input(agent_type):
                     'agent':agent_type,
                 },
                 options=[
-                    {'label': 'Normalize Advantage', 'value': True},
+                    {'label': 'Normalize Advantage', 'value': True}
                 ],
-                value=[],
                 style={'display':'inline-block'}
             ),
         ]
@@ -1909,9 +1988,9 @@ def create_normalize_values_input(agent_type):
                     'agent':agent_type,
                 },
                 options=[
-                    {'label': 'Normalize Value Function', 'value': True},
+                    {'label': 'Normalize Value Function', 'value': True}
                 ],
-                value=[],
+                # value=False
                 style={'display':'inline-block'}
             ),
             html.Div(
@@ -2586,7 +2665,7 @@ def create_policy_model_input(agent_type):
             html.Label("Hidden Layers Kernel Initializers"),
             create_kernel_input(agent_type, 'policy-hidden'),
             html.Label("Output Layer Kernel Initializer"),
-            create_kernel_input(agent_type, 'actor-output'),
+            create_kernel_input(agent_type, 'policy-output'),
             create_activation_input(agent_type, 'policy'),
             create_optimizer_input(agent_type, 'policy'),
             create_learning_rate_input(agent_type, 'policy'),
