@@ -279,14 +279,22 @@ class StochasticDiscretePolicy(Model):
         if config_path.is_file():
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-            env = config.get("env")
-            dense_layers = config.get("dense_layers")
-            optimizer = config.get("optimizer")
-            learning_rate = config.get("learning_rate")
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
+        
+        # create EnvSpec from config
+        # env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
 
-        model = cls(env, dense_layers, optimizer, learning_rate)
+        model = cls(env = gym.make_vec(env_spec),
+                    dense_layers = config.get("dense_layers"),
+                    output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
+                    distribution = config.get("distribution", "Beta"),
+                    optimizer = config.get("optimizer", "Adam"),
+                    optimizer_params = config.get("optimizer_params", {}),
+                    learning_rate = config.get("learning_rate", 0.001),
+                    device = config.get("device", "cpu")
+                    )
 
         # Load weights if True
         if load_weights:
@@ -441,8 +449,8 @@ class StochasticContinuousPolicy(Model):
             raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         # create EnvSpec from config
-        env_spec_json = json.dumps(config["env"])
-        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
+        # env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
 
         model = cls(env = gym.make_vec(env_spec),
                     dense_layers = config.get("dense_layers"),
@@ -585,8 +593,8 @@ class ValueModel(Model):
             raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         # create EnvSpec from config
-        env_spec_json = json.dumps(config["env"])
-        env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
+        # env_spec_json = json.dumps(config["env"])
+        env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
 
         model = cls(env = gym.make_vec(env_spec),
                     dense_layers = config.get("dense_layers", [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})]),
