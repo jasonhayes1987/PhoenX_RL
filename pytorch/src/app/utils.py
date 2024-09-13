@@ -1300,7 +1300,7 @@ def run_agent_settings_component(page, agent_type=None):
         ),
         dcc.Checklist(
             options=[
-                {'label': 'Render Episodes', 'value': 'RENDER'}
+                {'label': 'Render Episodes', 'value': True}
             ],
             id={
                 'type': 'render-option',
@@ -2432,14 +2432,32 @@ def get_optimizer_params(agent_type, model_type, all_values, all_ids):
     
     return params
 
-    
-def create_learning_rate_input(agent_type, model_type):
+def create_learning_rate_constant_input(agent_type, model_type):
     return html.Div(
         [
-            html.Label('Learning Rate (10^x)', style={'text-decoration': 'underline'}),
+            html.Label('Learning Rate Constant', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'learning-rate',
+                    'type':'learning-rate-const',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=9,
+                step=1,
+                value=1,
+            ),
+        ]
+    )
+    
+def create_learning_rate_exponent_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Learning Rate Exponent(10^x)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'learning-rate-exp',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2668,7 +2686,8 @@ def create_policy_model_input(agent_type):
             create_kernel_input(agent_type, 'policy-output'),
             create_activation_input(agent_type, 'policy'),
             create_optimizer_input(agent_type, 'policy'),
-            create_learning_rate_input(agent_type, 'policy'),
+            create_learning_rate_constant_input(agent_type, 'policy'),
+            create_learning_rate_exponent_input(agent_type, 'policy'),
         ]
     )
 
@@ -2684,7 +2703,8 @@ def create_value_model_input(agent_type):
             create_kernel_input(agent_type, 'value-output'),
             create_activation_input(agent_type, 'value'),
             create_optimizer_input(agent_type, 'value'),
-            create_learning_rate_input(agent_type, 'value'),
+            create_learning_rate_constant_input(agent_type, 'value'),
+            create_learning_rate_exponent_input(agent_type, 'value'),
         ]
     )
     

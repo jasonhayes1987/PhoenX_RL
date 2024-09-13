@@ -707,18 +707,34 @@ def register_callbacks(app, shared_data):
             # set defualt gym environment in order to build policy and value models and save
             # env = gym.make("CartPole-v1")
 
-            policy_learning_rate=10**utils.get_specific_value(
+            policy_learning_rate_constant = utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
-                id_type='learning-rate',
+                id_type='learning-rate-const',
                 model_type='policy',
                 agent_type=agent_type_dropdown_value,
             )
 
-            value_func_learning_rate=10**utils.get_specific_value(
+            policy_learning_rate=policy_learning_rate_constant * 10**utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
-                id_type='learning-rate',
+                id_type='learning-rate-exp',
+                model_type='policy',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            value_learning_rate_constant = utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='learning-rate-const',
+                model_type='value',
+                agent_type=agent_type_dropdown_value,
+            )
+
+            value_func_learning_rate=value_learning_rate_constant * 10**utils.get_specific_value(
+                all_values=all_values,
+                all_ids=all_ids,
+                id_type='learning-rate-exp',
                 model_type='value',
                 agent_type=agent_type_dropdown_value,
             )
@@ -803,8 +819,18 @@ def register_callbacks(app, shared_data):
                         distribution=dist,
                         device=device,
                     )
-                # else:
-                #     model = StochasticDiscretePolicy
+                
+                else:
+                    model = StochasticDiscretePolicy
+                    policy_model = model(
+                        env=env,
+                        dense_layers=policy_layers,
+                        output_layer_kernel=policy_output_kernel,
+                        optimizer=policy_optimizer,
+                        optimizer_params=policy_opt_params,
+                        learning_rate=policy_learning_rate,
+                        device=device,
+                    )
             else:
                 model = StochasticDiscretePolicy
                 policy_model = model(
@@ -2224,8 +2250,10 @@ def register_callbacks(app, shared_data):
     )
     def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, num_timesteps, traj_length, batch_size,
                     learning_epochs, num_envs, use_mpi, workers, load_weights, seed, run_number, num_runs, save_dir):
-        #DEBUG
-        # print("Start callback called.")
+        # clear metrics in storage
+        if os.path.exists('/workspaces/RL_Agents/pytorch/src/app/assets/training_data.json'):
+            # Remove the file
+            os.remove('/workspaces/RL_Agents/pytorch/src/app/assets/training_data.json')
         if n_clicks > 0:
             
             # Use the agent_data['save_dir'] to load agent
@@ -2316,13 +2344,14 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_data['agent_type']
                 if agent_type == "HER":
                     agent_type = agent_data['agent']['agent_type']
-                if os.path.exists(f'assets/models/{agent_type}/renders/testing'):
-                    utils.delete_renders(f"assets/models/{agent_type}/renders/testing")
+                if os.path.exists(agent_data['save_dir'] + '/renders'):
+                    utils.delete_renders(agent_data['save_dir'] + '/renders')
 
                 # Create empty dict for test_config.json
                 test_config = {}
                 # Update the configuration with render settings
-                render = 'RENDER' in render_option
+                print(f'render option:{render_option}')
+                render = render_option is True
                 test_config['render'] = render
                 test_config['num_episodes'] = num_episodes
                 test_config['render_freq'] = render_freq
@@ -2569,51 +2598,75 @@ def register_callbacks(app, shared_data):
     
 
     @app.callback(
-    Output({'type':'storage', 'page':MATCH}, 'data'),
-    [Input({'type':'interval-component', 'page':MATCH}, 'n_intervals')],
-    [State({'type':'storage', 'page':MATCH}, 'data'),
-     State({'type':'agent-store', 'page':MATCH}, 'data'),
-     State({'type':'num-episodes', 'page':MATCH}, 'value'),
-     State({'type':'epochs', 'page':MATCH}, 'value'),
-     State({'type':'cycles', 'page':MATCH}, 'value'),
-     State('url', 'pathname')],
-     prevent_initial_call = True,
+        Output({'type':'storage', 'page':MATCH}, 'data'),
+        [Input({'type':'interval-component', 'page':MATCH}, 'n_intervals'),
+        Input({'type':'start', 'page':MATCH}, 'n_clicks')],  # Add the train button as an input
+        [State({'type':'storage', 'page':MATCH}, 'data'),
+        State({'type':'agent-store', 'page':MATCH}, 'data'),
+        State({'type':'num-episodes', 'page':MATCH}, 'value'),
+        State({'type':'num-timesteps', 'page':MATCH}, 'value'),
+        State({'type':'epochs', 'page':MATCH}, 'value'),
+        State({'type':'cycles', 'page':MATCH}, 'value'),
+        State('url', 'pathname')],
+        prevent_initial_call=True,
     )
-    def update_data(n, storage_data, agent_config, num_episodes, num_epochs, num_cycles, pathname):
-        if num_episodes is not None:
-            if pathname == '/train-agent':
-                file_name = 'training_data.json'
-                process = 'Training'
-            elif pathname == '/test-agent':
-                file_name = 'testing_data.json'
-                process = 'Testing'
-            else:
-                # If the pathname does not match expected values, prevent update
-                raise PreventUpdate
-            # Read the latest training progress data from the JSON file
-            try:
-                #DEBUG
-                # print('update data callback called...')
-                with open(Path("assets") / file_name, 'r') as f:
-                    data = json.load(f)
-                    # print(f"Updating {process} data")
-            except (FileNotFoundError, json.JSONDecodeError):
-                data = {}  # Use an empty dict if there's an issue reading the file
-            
+    def update_data(n, n_clicks, storage_data, agent_config, num_episodes, num_timesteps, num_epochs, num_cycles, pathname):
+        ctx = dash.callback_context
 
-            # if the new data dict isn't empty, update storage data
-            if data != {}:
-                # Need to determine agent type in order to correctly calculate num_episodes and progress
-                if agent_config['agent_type'] == 'HER':
-                    num_episodes = num_epochs * num_cycles * num_episodes
-                storage_data['data'] = data
-                storage_data['progress'] = round(data['episode']/num_episodes, ndigits=2)
-                if storage_data['progress'] == 1.0:
-                    storage_data['status'] = f"{process} Completed"
-                else:
-                    storage_data['status'] = f"{process} in Progress..."
+        # Determine which input fired the callback
+        if not ctx.triggered:
+            raise PreventUpdate
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+        # Clear data if the train button was clicked
+        if trigger_id == '{"page":"/train-agent","type":"start"}':
+            print('train start trigger')
+            storage_data = {'data': {}, 'progress': 0, 'status': 'Training Started...'}
+            print(f'storage_data:{storage_data}')
+            return storage_data
         
-        return storage_data
+        elif trigger_id == '{"page":"/test-agent","type":"start"}':
+            storage_data = {'data': {}, 'progress': 0, 'status': 'Testing Started...'}
+            return storage_data
+        
+        # Proceed with regular data update if the interval component fired the callback
+        # if trigger_id == f"{'type':'interval-component', 'page':MATCH}":
+        else:
+            if num_episodes is not None or num_timesteps is not None:
+                if pathname == '/train-agent':
+                    file_name = 'training_data.json'
+                    process = 'Training'
+                elif pathname == '/test-agent':
+                    file_name = 'testing_data.json'
+                    process = 'Testing'
+                else:
+                    raise PreventUpdate
+
+                # Read the latest training progress data from the JSON file
+                try:
+                    with open(Path("assets") / file_name, 'r') as f:
+                        data = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    data = {}
+
+                # If the new data dict isn't empty, update storage data
+                if data:
+                    # Determine agent type to correctly calculate num_episodes and progress
+                    if agent_config['agent_type'] == 'HER':
+                        num_episodes = num_epochs * num_cycles * num_episodes
+                    storage_data['data'] = data
+                    if agent_config['agent_type'] in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3']:
+                        storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
+                    elif agent_config['agent_type'] == 'PPO':
+                        storage_data['progress'] = round(data['episode'] / num_timesteps, ndigits=2)
+                    
+                    # Update status
+                    if storage_data['progress'] == 1.0:
+                        storage_data['status'] = f"{process} Completed"
+                    else:
+                        storage_data['status'] = f"{process} in Progress..."
+            
+            return storage_data
     
     
     @app.callback(
