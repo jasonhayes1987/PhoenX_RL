@@ -1,6 +1,8 @@
 import os
 import json
 import requests
+import numpy as np
+import torch as T
 
 
 import wandb
@@ -184,14 +186,39 @@ class DashCallback(Callback):
         pass
 
     def on_train_epoch_end(self, epoch, logs=None):
-        self._episode_num += 1
-        logs['episode'] = self._episode_num
+        # Convert tensors and other non-serializable types to floats
+        def convert_values_to_serializable(d):
+            for key, value in d.items():
+                if isinstance(value, T.Tensor):
+                    d[key] = value.item() if value.numel() == 1 else value.tolist()  # Convert scalar tensors or tensors with more elements
+                elif isinstance(value, np.float32) or isinstance(value, np.float64):
+                    d[key] = float(value)  # Convert np.float32/float64 to standard Python float
+                elif isinstance(value, (np.int32, np.int64)):
+                    d[key] = int(value)  # Convert numpy int types to Python int
+                elif isinstance(value, dict):
+                    # Recursively handle nested dictionaries
+                    convert_values_to_serializable(value)
+            return d
+        
+        # Check for 'kl_divergence' key and increment episode number if not found
+        if 'kl_divergence' in logs:
+            logs['episode'] = epoch
+        else:
+            self._episode_num += 1
+            logs['episode'] = self._episode_num
 
+        print(f'attempting to write train data file...')
+        
         try:
-            # write logs to json file to be loaded into Dash app for updating status
+            # Convert any tensor, float32, or other non-serializable types in the logs to serializable formats
+            logs = convert_values_to_serializable(logs)
+
+            # Write logs to JSON file
             os.makedirs("assets", exist_ok=True)
             with open("assets/training_data.json", 'w') as f:
                 json.dump(logs, f)
+            print(f'training data file saved!')
+            
         except Exception as e:
             print(f"Failed to send update to Dash app: {e}")
 

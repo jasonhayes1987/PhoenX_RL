@@ -33,22 +33,14 @@ def test_agent(agent_config, test_config):
         run_number = test_config['run_number']
         num_runs = test_config['num_runs']
 
-        # set seed
-        random.seed(seed)
-        np.random.seed(seed)
-        T.manual_seed(seed)
-        T.cuda.manual_seed(seed)
-
-        print(f'seed: {seed}')
-
-        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER'], f"Unsupported agent type: {agent_type}"
+        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
             agent = load_agent_from_config(agent_config, load_weights)
             print('agent config loaded')
-            for i in range(num_runs):
-                agent.test(num_episodes, render, render_freq, run_number)
-                print(f'testing run {i+1} initiated')
+            # for i in range(num_runs):
+            agent.test(num_episodes, render_freq, seed)
+            print(f'testing run {i+1} initiated')
 
     except KeyError as e:
         logging.error(f"Missing configuration parameter: {str(e)}")
