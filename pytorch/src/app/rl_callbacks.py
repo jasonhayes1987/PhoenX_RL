@@ -105,7 +105,8 @@ class WandbCallback(Callback):
         wandb.log(logs, step=step)
 
     def on_test_begin(self, logs=None, run_number=None):
-        run_number = wandb_support.get_run_number_from_name(self.run_name)
+        if run_number == None:
+            run_number = wandb_support.get_run_number_from_name(self.run_name)
 
         run = wandb.init(
             project=self.project_name,
@@ -186,20 +187,6 @@ class DashCallback(Callback):
         pass
 
     def on_train_epoch_end(self, epoch, logs=None):
-        # Convert tensors and other non-serializable types to floats
-        def convert_values_to_serializable(d):
-            for key, value in d.items():
-                if isinstance(value, T.Tensor):
-                    d[key] = value.item() if value.numel() == 1 else value.tolist()  # Convert scalar tensors or tensors with more elements
-                elif isinstance(value, np.float32) or isinstance(value, np.float64):
-                    d[key] = float(value)  # Convert np.float32/float64 to standard Python float
-                elif isinstance(value, (np.int32, np.int64)):
-                    d[key] = int(value)  # Convert numpy int types to Python int
-                elif isinstance(value, dict):
-                    # Recursively handle nested dictionaries
-                    convert_values_to_serializable(value)
-            return d
-        
         # Check for 'kl_divergence' key and increment episode number if not found
         if 'kl_divergence' in logs:
             logs['episode'] = epoch
@@ -211,7 +198,7 @@ class DashCallback(Callback):
         
         try:
             # Convert any tensor, float32, or other non-serializable types in the logs to serializable formats
-            logs = convert_values_to_serializable(logs)
+            logs = self.convert_values_to_serializable(logs)
 
             # Write logs to JSON file
             os.makedirs("assets", exist_ok=True)
@@ -238,6 +225,8 @@ class DashCallback(Callback):
         pass
 
     def on_test_epoch_end(self, epoch, logs=None):
+        # Convert any tensor, float32, or other non-serializable types in the logs to serializable formats
+        logs = self.convert_values_to_serializable(logs)
         self._episode_num += 1
         logs['episode'] = self._episode_num
 
@@ -268,6 +257,20 @@ class DashCallback(Callback):
                 'dash_app_url': self.dash_app_url
             }
         }
+    
+    def convert_values_to_serializable(self, d):
+        """Converts tensors and other non-serializable types to floats"""
+        for key, value in d.items():
+            if isinstance(value, T.Tensor):
+                d[key] = value.item() if value.numel() == 1 else value.tolist()  # Convert scalar tensors or tensors with more elements
+            elif isinstance(value, np.float32) or isinstance(value, np.float64):
+                d[key] = float(value)  # Convert np.float32/float64 to standard Python float
+            elif isinstance(value, (np.int32, np.int64)):
+                d[key] = int(value)  # Convert numpy int types to Python int
+            elif isinstance(value, dict):
+                # Recursively handle nested dictionaries
+                self.convert_values_to_serializable(value)
+        return d
 
     def save(self, folder: str = "wandb_config.json"):
         pass
