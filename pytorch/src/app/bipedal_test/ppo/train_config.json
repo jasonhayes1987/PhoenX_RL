@@ -1,0 +1,1 @@
+{"num_envs": 10, "render": false, "render_freq": 0, "load_weights": null, "seed": 42, "run_number": null, "num_runs": null, "save_dir": "/workspaces/RL_Agents/pytorch/src/app/bipedal_test/ppo/", "timesteps": 100000, "trajectory_length": 200, "batch_size": 64, "learning_epochs": 10}

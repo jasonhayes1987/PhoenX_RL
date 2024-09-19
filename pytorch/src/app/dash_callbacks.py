@@ -2325,6 +2325,7 @@ def register_callbacks(app, shared_data):
         State({'type':'storage', 'page':'/test-agent'}, 'data'),
         State({'type':'env-dropdown', 'page':'/test-agent'}, 'value'),
         State({'type':'num-episodes', 'page':'/test-agent'}, 'value'),
+        State({'type':'num-envs', 'page':'/test-agent'}, 'value'),
         State({'type':'render-option', 'page':'/test-agent'}, 'value'),
         State({'type':'render-freq', 'page':'/test-agent'}, 'value'),
         State({'type':'load-weights', 'page':'/test-agent'}, 'value'),
@@ -2333,9 +2334,12 @@ def register_callbacks(app, shared_data):
         State({'type':'num-runs', 'page':'/test-agent'}, 'value'),
         prevent_initial_call=True,
     )
-    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, load_weights, seed, run_number, num_runs):
+    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, num_envs, render_option, render_freq, load_weights, seed, run_number, num_runs):
 
-        print('test agent fired...')
+        # clear metrics in storage
+        if os.path.exists('/workspaces/RL_Agents/pytorch/src/app/assets/testing_data.json'):
+            # Remove the file
+            os.remove('/workspaces/RL_Agents/pytorch/src/app/assets/testing_data.json')
         try:
             if n_clicks > 0 and agent_data:
                 #DEBUG
@@ -2354,6 +2358,7 @@ def register_callbacks(app, shared_data):
                 render = render_option is True
                 test_config['render'] = render
                 test_config['num_episodes'] = num_episodes
+                test_config['num_envs'] = num_envs
                 test_config['render_freq'] = render_freq
                 test_config['load_weights'] = load_weights
                 test_config['seed'] = seed
@@ -2475,6 +2480,20 @@ def register_callbacks(app, shared_data):
             ppo_options_style = {'display': 'none'}
         
         return ppo_options_style
+    
+    @app.callback(
+    Output({'type': 'episode-option', 'page': '/test-agent'}, 'style'),
+    Input({'type':'agent-store', 'page': '/test-agent'}, 'data'),
+    prevent_initial_call = True,
+    )
+    def update_ppo_test_options(agent_data):
+
+        if agent_data['agent_type'] == 'PPO':
+            episode_option_style = {'display': 'block'}
+        else:
+            episode_option_style = {'display': 'none'}
+        
+        return episode_option_style
     
     @app.callback(
     Output({'type': 'mpi-options', 'page': '/train-agent'}, 'style'),
@@ -2658,7 +2677,10 @@ def register_callbacks(app, shared_data):
                     if agent_config['agent_type'] in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3']:
                         storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
                     elif agent_config['agent_type'] == 'PPO':
-                        storage_data['progress'] = round(data['episode'] / num_timesteps, ndigits=2)
+                        if pathname == "/train-agent":
+                            storage_data['progress'] = round(data['episode'] / num_timesteps, ndigits=2)
+                        elif pathname == "/test-agent":
+                            storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
                     
                     # Update status
                     if storage_data['progress'] == 1.0:

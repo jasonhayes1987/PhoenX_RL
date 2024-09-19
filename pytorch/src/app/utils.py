@@ -1809,7 +1809,7 @@ def create_policy_clip_input(agent_type):
                 min=0.01,
                 max=0.99,
                 step=0.01,
-                value=0.02,
+                value=0.2,
             )
         ]
     )

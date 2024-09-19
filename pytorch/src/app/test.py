@@ -27,11 +27,12 @@ def test_agent(agent_config, test_config):
         agent_type = agent_config['agent_type']
         load_weights = test_config['load_weights']
         num_episodes = test_config['num_episodes']
-        render = test_config['render']
+        num_envs = test_config['num_envs']
+        # render = test_config['render']
         render_freq = test_config['render_freq']
         seed = test_config['seed']
-        run_number = test_config['run_number']
-        num_runs = test_config['num_runs']
+        # run_number = test_config['run_number']
+        # num_runs = test_config['num_runs']
 
         assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
 
@@ -39,8 +40,8 @@ def test_agent(agent_config, test_config):
             agent = load_agent_from_config(agent_config, load_weights)
             print('agent config loaded')
             # for i in range(num_runs):
-            agent.test(num_episodes, render_freq, seed)
-            print(f'testing run {i+1} initiated')
+            agent.test(num_episodes, num_envs, seed, render_freq)
+            # print(f'testing run {i+1} initiated')
 
     except KeyError as e:
         logging.error(f"Missing configuration parameter: {str(e)}")
@@ -51,7 +52,7 @@ def test_agent(agent_config, test_config):
         raise
 
     except Exception as e:
-        logging.exception("An unexpected error occurred during training")
+        logging.exception("An unexpected error occurred during testing")
         raise
 
 if __name__ == '__main__':
