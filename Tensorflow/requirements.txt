@@ -1,9 +1,0 @@
-ipykernel
-gymnasium[all]
-pandas
-flask
-dash
-dash-bootstrap-components
-wandb
-natsort
-tensorflow_probability[tf]
