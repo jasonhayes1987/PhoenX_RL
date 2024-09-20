@@ -1883,7 +1883,7 @@ class DDPG(Agent):
         self.env.close()
 
        
-    def test(self, num_episodes, render, render_freq, save_dir):
+    def test(self, num_episodes, render, render_freq, save_dir=None):
         """Runs a test over 'num_episodes'."""
 
         # set model in eval mode
@@ -4748,7 +4748,7 @@ class HER(Agent):
     #     # close the environment
     #     agent.env.close()
 
-    def test(self, num_episodes, render, render_freq):
+    def test(self, num_episodes, render, render_freq, save_dir=None):
         """Runs a test over 'num_episodes'."""
 
         # set model in eval mode
@@ -5089,20 +5089,47 @@ class PPO(Agent):
         self._train_episode_config = {}
         self._train_step_config = {}
         self._test_config = {}
+        self._test_step_config = {}
         self._test_episode_config = {}
 
         self._step = None
 
-    def _initialize_env(self, render_freq=0, num_envs:int=1):
-        """Initializes a new environment."""
+    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
+        """Initializes a vectorized environment with different seeds for each environment."""
         try:
+            # Create a list of different seeds for each environment
+            if seed is None:
+                seed = np.random.randint(0, 10000)
+            
+            seeds = [seed + i for i in range(num_envs)]
+            
+            # Function to seed the environment correctly and store the seed
+            def make_env(env_id, seed, render_mode=None):
+                def _init():
+                    env = gym.make(env_id, render_mode=render_mode)
+                    env.reset(seed=seed)
+                    # Store the seed in the environment for future reference
+                    env.seed_value = seed
+                    if hasattr(env, 'seed'):
+                        env.seed(seed)
+                    return env
+                return _init
+
+            # Initialize vectorized environments with different seeds
             if render_freq > 0:
-                return gym.make_vec(self.env.spec.id, num_envs, render_mode="rgb_array")
+                return gym.vector.SyncVectorEnv([
+                    make_env(self.env.spec.id, seed, render_mode="rgb_array")
+                    for seed in seeds
+                ])
             else:
-                return gym.make_vec(self.env.spec.id, num_envs)
+                return gym.vector.SyncVectorEnv([
+                    make_env(self.env.spec.id, seed)
+                    for seed in seeds
+                ])
         except Exception as e:
             logger.error(f"Error in PPO._initialize_env: {e}", exc_info=True)
             raise
+            
 
     def render(self, frames, episode, context:str=None):
         """renders movie to save dir
@@ -5112,15 +5139,18 @@ class PPO(Agent):
             episode (int): episode number
             context (str, optional): "train" or "test" separate into "train" and "test" directories under save_dir. Defaults to None.
         """
-        
+        # frames = np.array(frames)
+        # print(f'frames shape:{np.array(frames).shape}')
+        if not isinstance(frames, np.ndarray):
+            frames = np.array(frames)
         if context == 'train':
-            video_path = os.path.join(self.save_dir, f"train/episode_{episode+1}.mp4")
+            video_path = os.path.join(self.save_dir, f"renders/train/episode_{episode}.mp4")
         elif context == 'test':
-            video_path = os.path.join(self.save_dir, f"test/episode_{episode+1}.mp4")
+            video_path = os.path.join(self.save_dir, f"renders/test/episode_{episode}.mp4")
         else:
-            video_path = os.path.join(self.save_dir, f"episode_{episode+1}.mp4")
+            video_path = os.path.join(self.save_dir, f"renders/episode_{episode}.mp4")
 
-        height, width, layers = frames.shape
+        num_frames, height, width, layers = frames.shape
         video = cv2.VideoWriter(Path(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 30, (width, height))
 
         for frame in frames:
@@ -5192,6 +5222,7 @@ class PPO(Agent):
         # Run states through each Policy to get distribution params
         actions = []
         log_probs = []
+        # print(f'states sent to get action: {states}')
         for state in states:
             with T.no_grad():
                 # make sure state is a tensor and on correct device
@@ -5252,18 +5283,19 @@ class PPO(Agent):
         if seed is None:
             seed = np.random.randint(100)
 
-        print(f'seed value:{seed}')
+        # Set render freq to 0 if None is passed
+        if render_freq == None:
+            render_freq = 0
+
         # Set seeds
         T.manual_seed(seed)
         T.cuda.manual_seed(seed)
         np.random.seed(seed)
-        gym.utils.seeding.np_random.seed = seed
+        # gym.utils.seeding.np_random.seed = seed # Seeds of envs now set in _initialize_env
 
         if self.callbacks:
             for callback in self.callbacks:
-                print(f'callback:{callback}')
                 self._config = callback._config(self)
-                print(f'self._config:{self._config}')
                 if isinstance(callback, WandbCallback):
                     self._config['seed'] = seed # Add seed to config to send to wandb for logging
                     self._config['num_envs'] = num_envs
@@ -5273,15 +5305,15 @@ class PPO(Agent):
                     callback.on_train_begin(logs=self._config)
         
         try:
-            # instantiate new environment. Only rank 0 env will render episodes if render==True
-            self.env = self._initialize_env(render_freq, num_envs)
+            # instantiate new vec environment
+            env = self._initialize_env(0, num_envs, seed)
             # logger.debug(f'initiating environment with render {render}')
         except Exception as e:
-            logger.error(f"Error in TD3.train agent._initialize_env process: {e}", exc_info=True)
+            logger.error(f"Error in PPO.train agent._initialize_env process: {e}", exc_info=True)
 
         # set best reward
         try:
-            best_reward = self.env.reward_range[0]
+            best_reward = self.env.reward_range
         except:
             best_reward = -np.inf
 
@@ -5289,15 +5321,16 @@ class PPO(Agent):
         self.num_envs = num_envs
         self.policy_model.train()
         self.value_model.train()
-        timestep = 1
+        # timestep = 0
+        self._step = 0
         all_states = []
         all_actions = []
         all_log_probs = []
         all_rewards = []
         all_next_states = []
         all_dones = []
-        score_history = []
-        episode_scores = [[] for _ in range(self.num_envs)]  # Track scores for each env
+        # score_history = []
+        episode_scores = [[] for _ in range(num_envs)]  # Track scores for each env
         policy_loss_history = []
         value_loss_history = []
         entropy_history = []
@@ -5305,22 +5338,22 @@ class PPO(Agent):
         time_history = []
         lambda_values = []
         param_history = []
-        frames = []  # List to store frames for the video
-        episodes = np.zeros(self.num_envs)
-        scores = np.zeros(self.num_envs)
-        states, _ = self.env.reset()
+        # frames = []  # List to store frames for the video
+        self.episodes = np.zeros(num_envs)
+        scores = np.zeros(num_envs)
+        states, _ = env.reset()
 
+        # set an episode rendered flag to track if an episode has yet to be rendered
+        episode_rendered = False
+        # track the previous episode number of the first env for rendering
+        prev_episode = self.episodes[0]
 
-        while timestep < timesteps:
+        while self._step <= timesteps:
+            self._step += 1
             dones = []
             actions, log_probs = self.get_action(states)
-            # print(f'actions:{actions}')
-            # print(f'actions shape:{actions.shape}')
             acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
-            # print(f'acts pre squeeze:{acts}')
-            # print(f'acts shape pre squeeze:{np.array(acts).shape}')
-            # acts = np.squeeze(np.array(acts))
-            acts = np.reshape(acts, self.env.action_space.shape)
+            acts = np.reshape(acts, env.action_space.shape)
 
             #DEBUG
             # print(f'reshaped acts shape:{acts.shape}')
@@ -5337,7 +5370,9 @@ class PPO(Agent):
             # else:
             #     acts = actions
 
-            next_states, rewards, terms, truncs, _ = self.env.step(acts)
+            next_states, rewards, terms, truncs, _ = env.step(acts)
+            # Update scores of each episode
+            scores += rewards
             # print(f'rewards:{rewards.mean()}')
             self._train_step_config["step_reward"] = rewards.mean()
 
@@ -5353,17 +5388,20 @@ class PPO(Agent):
                     # print(f'append false')
             
             # Add frame of first env to frames array if rendering
-            if render_freq > 0:
-                # Capture the frame
-                frame = self.env.render()[0]
-                # print(f'frame:{frame}')
-                frames.append(frame)
+            # if render_freq > 0:
+            #     # Capture the frame
+            #     frame = self.env.render()[0]
+            #     # print(f'frame:{frame}')
+            #     frames.append(frame)
 
             
-            episodes += dones
+            self.episodes += dones
+            # set episode rendered to false if episode number has changed
+            if prev_episode != self.episodes[0]:
+                episode_rendered = False
             # print(f'dones:{dones}')
             # print(f'episodes:{episodes}')
-            self._train_episode_config['episode'] = episodes[0]
+            self._train_episode_config['episode'] = self.episodes[0]
             all_states.append(states)
             all_actions.append(actions)
             all_log_probs.append(log_probs)
@@ -5371,27 +5409,34 @@ class PPO(Agent):
             all_rewards.append(clipped_rewards)
             all_next_states.append(next_states)
             all_dones.append(dones)
-            scores += rewards
 
             # render episode if first env shows done and first env episode num % render_freq == 0
-            if render_freq > 0:
-                if dones[0] == True and episodes[0] % render_freq == 0:
-                    self.render(frames, episodes[0], 'train')
+            if render_freq > 0 and self.episodes[0] % render_freq == 0 and episode_rendered == False:
+                print(f"Rendering episode {self.episodes[0]} during training...")
+                # Call the test function to render an episode
+                self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
+                episode_rendered = True
+                # Switch models back to train mode after rendering
+                self.policy_model.train()
+                self.value_model.train()
+            
+            prev_episode = self.episodes[0]
             
             avg_scores = np.array([np.mean(env_scores[-avg_num:]) if len(env_scores) >= avg_num else np.mean(env_scores)
                                     for env_scores in episode_scores])
 
-            if timestep % self.trajectory_length == 0:
-                print(f'learning timestep: {timestep}')
+            if self._step % self.trajectory_length == 0:
+                print(f'learning timestep: {self._step}')
                 trajectory = (all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones)
                 policy_loss, value_loss, entropy, kl, time, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
+                self._train_episode_config[f"avg_env_scores"] = avg_scores.mean()
                 self._train_episode_config["actor_loss"] = policy_loss
                 self._train_episode_config["critic_loss"] = value_loss
                 self._train_episode_config["entropy"] = entropy
                 self._train_episode_config["kl_divergence"] = kl
                 self._train_episode_config["lambda"] = lambda_value
-                self._train_episode_config["param1"] = param1
-                self._train_episode_config["param2"] = param2
+                self._train_episode_config["param1"] = param1.mean()
+                self._train_episode_config["param2"] = param2.mean()
                 # check if best reward
                 if avg_scores.mean() > best_reward:
                     best_reward = avg_scores.mean()
@@ -5417,17 +5462,16 @@ class PPO(Agent):
 
                 if self.callbacks:
                     for callback in self.callbacks:
-                        callback.on_train_epoch_end(epoch=timestep, logs=self._train_episode_config)
+                        callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
 
             states = next_states
-            timestep += 1
 
-            if timestep % 1000 == 0:
-                print(f'episode: {episodes}; total steps: {timestep}; avg scores/{avg_num} episodes: {avg_scores}; avg total score: {avg_scores.mean()}')
+            if self._step % 1000 == 0:
+                print(f'episode: {self.episodes}; total steps: {self._step}; avg scores/{avg_num} episodes: {avg_scores}; avg total score: {avg_scores.mean()}')
 
             if self.callbacks:
                 for callback in self.callbacks:
-                    callback.on_train_step_end(step=timestep, logs=self._train_step_config)
+                    callback.on_train_step_end(step=self._step, logs=self._train_step_config)
 
         if self.callbacks:
             for callback in self.callbacks:
@@ -5611,7 +5655,7 @@ class PPO(Agent):
 
         return policy_loss, value_loss, entropy.mean(), kl.mean(), times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
 
-    def test(self, num_episodes, save_dir="renders", render_freq:int=0):
+    def test(self, num_episodes, num_envs:int=1, seed=None, render_freq:int=0, training=False):
         """
         Tests the PPO agent in the environment for a specified number of episodes,
         renders each episode, and saves the renders as video files.
@@ -5628,89 +5672,116 @@ class PPO(Agent):
         self.policy_model.eval()
         self.value_model.eval()
 
+        if seed is None:
+            seed = np.random.randint(100)
+
+        # Set render freq to 0 if None is passed
+        if render_freq == None:
+            render_freq = 0
+        
+
+        print(f'seed value:{seed}')
+        # Set seeds
+        T.manual_seed(seed)
+        T.cuda.manual_seed(seed)
+        np.random.seed(seed)
+        gym.utils.seeding.np_random.seed = seed
+
         # Create the render directory if it doesn't exist
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+        # if not os.path.exists(save_dir):
+        #     os.makedirs(save_dir)
 
-        self.env = self._initialize_env(render_freq)
-
-        scores = []
-        entropy_list = []
-        kl_list = []
+        # if not training:
+        # self.env = self._initialize_env(render_freq)
+        env = self._initialize_env(render_freq, num_envs)
+        if self.callbacks:
+            for callback in self.callbacks:
+                self._config = callback._config(self)
+                if isinstance(callback, WandbCallback):
+                    # Add to config to send to wandb for logging
+                    self._config['seed'] = seed
+                    self._config['num_envs'] = num_envs
+                callback.on_test_begin(logs=self._config)
+        
+        # episode_scores = [[] for _ in range(num_envs)]  # Track scores for each env
+        # reset step counter
+        self._step = 0
+        scores_list = []
 
         for episode in range(num_episodes):
+            if self.callbacks:
+                for callback in self.callbacks:
+                    callback.on_test_epoch_begin(epoch=self._step, logs=None)
             done = False
-            states, _ = self.env.reset()
-            score = 0
-            episode_entropy = 0
-            episode_kl = 0
-            steps = 0
+            states, _ = env.reset()
+            scores = 0
             frames = []  # List to store frames for the video
-
-            prev_dist = None  # To track the previous distribution for KL divergence
-
 
             while not done:
 
                 # Get action and log probability from the current policy
                 actions, log_probs = self.get_action(states)
                 acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
-                acts = np.reshape(acts, (1,-1))
+                acts = np.reshape(acts, env.action_space.shape)
 
                 # Step the environment
-                next_states, rewards, terms, truncs, _ = self.env.step(acts)
-                # Accumulate the score for the episode
-                score += rewards[0]
+                next_states, rewards, terms, truncs, _ = env.step(acts)
+                # Update scores of each episode
+                scores += rewards
 
                 for i, (term, trunc) in enumerate(zip(terms, truncs)):
                     if term or trunc:
+                        # dones.append(True)
                         done = True
-                        # episode_scores[i].append(scores[i])  # Store score at end of episode
-                        # Append the score for the episode
-                        scores.append(score)
-                        score = 0  # Reset score for this environment
-                    else:
-                        done = False
+                        # print(f'append true')
+                    # else:
+                    #     dones.append(False)
 
                 if render_freq > 0:
                     # Capture the frame
-                    frame = self.env.render()[0]
+                    frame = env.render()[0]
                     # print(f'frame:{frame}')
                     frames.append(frame)
 
-                # Calculate the distribution and entropy
-                dist, param1, param2 = self.policy_model(T.tensor(states, dtype=T.float32, device=self.policy_model.device).flatten())
-                entropy = dist.entropy().sum().item()  # Sum entropy over actions
+                # Calculate the distribution and entropy (uses only first env in env vector for calculation)
+                # dist, param1, param2 = self.policy_model(T.tensor(states[0], dtype=T.float32, device=self.policy_model.device).flatten())
+                # entropy = dist.entropy().mean().item()  # Mean entropy over actions
 
                 # Update KL divergence
-                if prev_dist is not None:
-                    kl = kl_divergence(prev_dist, dist).sum().item()  # Sum KL divergence over actions
-                else:
-                    kl = 0  # No KL divergence for the first step in the episode
+                # if prev_dist is not None:
+                #     kl = kl_divergence(prev_dist, dist).mean().item()  # Mean KL divergence over actions
+                # else:
+                #     kl = 0  # No KL divergence for the first step in the episode
 
                 # Update the previous distribution to the current one
-                if self.distribution == 'Beta':
-                    param1_prev = dist.concentration1.clone().detach()
-                    param2_prev = dist.concentration0.clone().detach()
-                    prev_dist = Beta(param1_prev, param2_prev)
-                elif self.distribution == 'Normal':
-                    param1_prev = dist.loc.clone().detach()
-                    param2_prev = dist.scale.clone().detach()
-                    prev_dist = Normal(param1_prev, param2_prev)
+                # if self.distribution == 'Beta':
+                #     param1_prev = dist.concentration1.clone().detach()
+                #     param2_prev = dist.concentration0.clone().detach()
+                #     prev_dist = Beta(param1_prev, param2_prev)
+                # elif self.distribution == 'Normal':
+                #     param1_prev = dist.loc.clone().detach()
+                #     param2_prev = dist.scale.clone().detach()
+                #     prev_dist = Normal(param1_prev, param2_prev)
 
-                # Accumulate the entropy and KL divergence for the episode
-                
-                episode_entropy += entropy
-                episode_kl += kl
-                steps += 1
+                # Increment step count
+                self._step += 1
 
                 # Move to the next state
                 states = next_states
 
+                # Add metrics to test step config to log
+                self._test_step_config['step_reward'] = rewards[0]
+                if self.callbacks:
+                    for callback in self.callbacks:
+                        callback.on_test_step_end(step=self._step, logs=self._test_step_config)
+
             # Save the video if the episode number is divisible by render_freq
             if (render_freq > 0) and ((episode + 1) % render_freq == 0):
-                
-                self.render(frames, episode)
+                if training:
+                    print(f'episode number sent to renderer:{self.episodes[0]}')
+                    self.render(frames, self.episodes[0])
+                else:
+                    self.render(frames, episode)
 
                 # # print(f"frames[0]:{frames[0]}")
                 # height, width, layers = frames[0].shape
@@ -5724,18 +5795,29 @@ class PPO(Agent):
                 # video.release()
 
             # Append the results for the episode
-            entropy_list.append(episode_entropy / steps)  # Average entropy over the episode
-            kl_list.append(episode_kl / steps)  # Average KL divergence over the episode
+            scores_list.append(scores)  # Store score at end of episode
+            self._test_episode_config["episode_reward"] = scores[0]
 
-            print(f'Episode {episode+1}/{num_episodes} - Score: {scores[-1]}, Avg Entropy: {entropy_list[-1]}, Avg KL Divergence: {kl_list[-1]}')
+            # Log to callbacks
+            if self.callbacks:
+                for callback in self.callbacks:
+                    callback.on_test_epoch_end(epoch=self._step, logs=self._test_episode_config)
+
+            # Reset score for this environment
+            scores = 0  
+        if self.callbacks:
+            for callback in self.callbacks:
+                callback.on_test_end(logs=self._test_episode_config)
+
+            print(f'Episode {episode+1}/{num_episodes} - Score: {scores_list[-1]}')
 
         # close the environment
-        self.env.close()
+        env.close()
 
         return {
             'scores': scores,
-            'entropy': entropy_list,
-            'kl_divergence': kl_list
+            # 'entropy': entropy_list,
+            # 'kl_divergence': kl_list
         }
 
     def get_config(self):
