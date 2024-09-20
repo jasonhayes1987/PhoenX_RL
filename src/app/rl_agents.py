@@ -5338,18 +5338,19 @@ class PPO(Agent):
         time_history = []
         lambda_values = []
         param_history = []
-        # frames = []  # List to store frames for the video
-        self.episodes = np.zeros(num_envs)
-        scores = np.zeros(num_envs)
-        states, _ = env.reset()
+        frames = []  # List to store frames for the video
+        episodes = np.zeros(self.num_envs) # Tracks current episode for each env
+        episode_lengths = np.zeros(self.num_envs) # Tracks step count for each env
+        scores = np.zeros(self.num_envs) # Tracks current score for each env
+        states, _ = self.env.reset()
 
         # set an episode rendered flag to track if an episode has yet to be rendered
         episode_rendered = False
         # track the previous episode number of the first env for rendering
         prev_episode = self.episodes[0]
 
-        while self._step <= timesteps:
-            self._step += 1
+        while timestep < timesteps:
+            episode_lengths += 1 # increments the step count of each env by 1
             dones = []
             actions, log_probs = self.get_action(states)
             acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
@@ -5383,6 +5384,8 @@ class PPO(Agent):
                     episode_scores[i].append(scores[i])  # Store score at end of episode
                     self._train_step_config["episode_reward"] = scores[i]
                     scores[i] = 0  # Reset score for this environment
+                    self._train_step_config["episode_length"] = episode_lengths[i]
+                    episode_lengths[i]  = 0 # Resets the step count of the env that returned term/trunc to 0
                 else:
                     dones.append(False)
                     # print(f'append false')
