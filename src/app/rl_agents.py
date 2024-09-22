@@ -5101,31 +5101,37 @@ class PPO(Agent):
             if seed is None:
                 seed = np.random.randint(0, 10000)
             
-            seeds = [seed + i for i in range(num_envs)]
+            # seeds = [seed + i for i in range(num_envs)]
             
             # Function to seed the environment correctly and store the seed
-            def make_env(env_id, seed, render_mode=None):
+            def make_env(env_id, render_mode=None):
                 def _init():
                     env = gym.make(env_id, render_mode=render_mode)
-                    env.reset(seed=seed)
+                    # env.reset(seed=seed)
                     # Store the seed in the environment for future reference
-                    env.seed_value = seed
-                    if hasattr(env, 'seed'):
-                        env.seed(seed)
+                    # env.seed_value = seed
+                    # if hasattr(env, 'seed'):
+                    #     env.seed(seed)
                     return env
                 return _init
 
             # Initialize vectorized environments with different seeds
             if render_freq > 0:
-                return gym.vector.SyncVectorEnv([
-                    make_env(self.env.spec.id, seed, render_mode="rgb_array")
-                    for seed in seeds
+                env_vec = gym.vector.SyncVectorEnv([
+                    make_env(self.env.spec.id, render_mode="rgb_array")
+                    for _ in range(num_envs)
                 ])
+                _, _ = env_vec.reset(seed=seed)
+                _ = env_vec.action_space.seed(seed)
+                return env_vec
             else:
-                return gym.vector.SyncVectorEnv([
-                    make_env(self.env.spec.id, seed)
-                    for seed in seeds
+                env_vec = gym.vector.SyncVectorEnv([
+                    make_env(self.env.spec.id)
+                    for _ in range(num_envs)
                 ])
+                _,_ = env_vec.reset(seed=seed)
+                _ = env_vec.action_space.seed(seed)
+                return env_vec
         except Exception as e:
             logger.error(f"Error in PPO._initialize_env: {e}", exc_info=True)
             raise
@@ -5297,6 +5303,10 @@ class PPO(Agent):
             for callback in self.callbacks:
                 self._config = callback._config(self)
                 if isinstance(callback, WandbCallback):
+                    self._config['timesteps'] = timesteps
+                    self._config['trajectory_length'] = trajectory_length
+                    self._config['batch_size'] = batch_size
+                    self._config['learning_epochs'] = learning_epochs
                     self._config['seed'] = seed # Add seed to config to send to wandb for logging
                     self._config['num_envs'] = num_envs
                     callback.on_train_begin((self.value_model, self.policy_model,), logs=self._config)
@@ -5342,15 +5352,16 @@ class PPO(Agent):
         episodes = np.zeros(self.num_envs) # Tracks current episode for each env
         episode_lengths = np.zeros(self.num_envs) # Tracks step count for each env
         scores = np.zeros(self.num_envs) # Tracks current score for each env
-        states, _ = self.env.reset()
+        states, _ = env.reset()
 
         # set an episode rendered flag to track if an episode has yet to be rendered
         episode_rendered = False
         # track the previous episode number of the first env for rendering
-        prev_episode = self.episodes[0]
+        prev_episode = episodes[0]
 
-        while timestep < timesteps:
-            episode_lengths += 1 # increments the step count of each env by 1
+        while self._step < timesteps:
+            self._step += 1 # Increment step count by 1
+            episode_lengths += 1 # increment the step count of each episode of each env by 1
             dones = []
             actions, log_probs = self.get_action(states)
             acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
@@ -5398,13 +5409,13 @@ class PPO(Agent):
             #     frames.append(frame)
 
             
-            self.episodes += dones
+            episodes += dones
             # set episode rendered to false if episode number has changed
-            if prev_episode != self.episodes[0]:
+            if prev_episode != episodes[0]:
                 episode_rendered = False
             # print(f'dones:{dones}')
             # print(f'episodes:{episodes}')
-            self._train_episode_config['episode'] = self.episodes[0]
+            self._train_episode_config['episode'] = episodes[0]
             all_states.append(states)
             all_actions.append(actions)
             all_log_probs.append(log_probs)
@@ -5414,8 +5425,8 @@ class PPO(Agent):
             all_dones.append(dones)
 
             # render episode if first env shows done and first env episode num % render_freq == 0
-            if render_freq > 0 and self.episodes[0] % render_freq == 0 and episode_rendered == False:
-                print(f"Rendering episode {self.episodes[0]} during training...")
+            if render_freq > 0 and episodes[0] % render_freq == 0 and episode_rendered == False:
+                print(f"Rendering episode {episodes[0]} during training...")
                 # Call the test function to render an episode
                 self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
                 episode_rendered = True
@@ -5423,7 +5434,7 @@ class PPO(Agent):
                 self.policy_model.train()
                 self.value_model.train()
             
-            prev_episode = self.episodes[0]
+            prev_episode = episodes[0]
             
             avg_scores = np.array([np.mean(env_scores[-avg_num:]) if len(env_scores) >= avg_num else np.mean(env_scores)
                                     for env_scores in episode_scores])
@@ -5470,7 +5481,7 @@ class PPO(Agent):
             states = next_states
 
             if self._step % 1000 == 0:
-                print(f'episode: {self.episodes}; total steps: {self._step}; avg scores/{avg_num} episodes: {avg_scores}; avg total score: {avg_scores.mean()}')
+                print(f'episode: {episodes}; total steps: {self._step}; avg scores/{avg_num} episodes: {avg_scores}; avg total score: {avg_scores.mean()}')
 
             if self.callbacks:
                 for callback in self.callbacks:
