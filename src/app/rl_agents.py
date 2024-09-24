@@ -5012,12 +5012,12 @@ class PPO(Agent):
                  env: gym.Env,
                  policy_model,
                  value_model,
-                 distribution: str = 'Beta',
+                 distribution: str = 'beta',
                  discount: float = 0.99,
                  gae_coefficient: float = 0.95,
                  policy_clip: float = 0.2,
                  entropy_coefficient: float = 0.01,
-                 loss:str = 'kl',
+                 loss:str = 'clipped',
                  kl_coefficient: float = 0.01,
                  normalize_advantages: bool = True,
                  normalize_values: bool = False,
@@ -5364,7 +5364,7 @@ class PPO(Agent):
             episode_lengths += 1 # increment the step count of each episode of each env by 1
             dones = []
             actions, log_probs = self.get_action(states)
-            acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
+            acts = [self.action_adapter(action) if self.distribution == 'beta' else action for action in actions]
             acts = np.reshape(acts, env.action_space.shape)
 
             #DEBUG
@@ -5436,14 +5436,13 @@ class PPO(Agent):
             
             prev_episode = episodes[0]
             
-            avg_scores = np.array([np.mean(env_scores[-avg_num:]) if len(env_scores) >= avg_num else np.mean(env_scores)
-                                    for env_scores in episode_scores])
+            env_scores = np.array([env_score[-1] for env_score in episode_scores])
 
             if self._step % self.trajectory_length == 0:
                 print(f'learning timestep: {self._step}')
                 trajectory = (all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones)
                 policy_loss, value_loss, entropy, kl, time, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
-                self._train_episode_config[f"avg_env_scores"] = avg_scores.mean()
+                self._train_episode_config[f"avg_env_scores"] = env_scores.mean()
                 self._train_episode_config["actor_loss"] = policy_loss
                 self._train_episode_config["critic_loss"] = value_loss
                 self._train_episode_config["entropy"] = entropy
@@ -5451,9 +5450,11 @@ class PPO(Agent):
                 self._train_episode_config["lambda"] = lambda_value
                 self._train_episode_config["param1"] = param1.mean()
                 self._train_episode_config["param2"] = param2.mean()
+                
                 # check if best reward
-                if avg_scores.mean() > best_reward:
-                    best_reward = avg_scores.mean()
+                avg_score = np.array([env_score[-avg_num:] if len(episode_scores) > avg_num else env_score for env_score in episode_scores]).mean()
+                if avg_score > best_reward:
+                    best_reward = avg_score
                     self._train_episode_config["best"] = True
                     # save model
                     self.save()
@@ -5572,7 +5573,7 @@ class PPO(Agent):
 
                 else:
                     # Recreate prev_dist by passing in the previous parameters
-                    if self.distribution == 'Beta':
+                    if self.distribution == 'beta':
                         param1_prev = prev_dist.concentration1.clone().detach()
                         param2_prev = prev_dist.concentration0.clone().detach()
                         prev_dist = Beta(param1_prev, param2_prev)
@@ -5735,7 +5736,7 @@ class PPO(Agent):
 
                 # Get action and log probability from the current policy
                 actions, log_probs = self.get_action(states)
-                acts = [self.action_adapter(action) if self.distribution == 'Beta' else action for action in actions]
+                acts = [self.action_adapter(action) if self.distribution == 'beta' else action for action in actions]
                 acts = np.reshape(acts, env.action_space.shape)
 
                 # Step the environment
