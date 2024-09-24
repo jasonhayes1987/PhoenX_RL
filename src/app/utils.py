@@ -2657,14 +2657,14 @@ def create_trace_decay_input(agent_type, model_type):
         ]
     )
     
-def create_policy_model_type_input(agent_type, model_type):
+def create_policy_model_type_input(agent_type):
     return html.Div(
         [
-            html.Label(f"{model_type.capitalize()} Type", style={'text-decoration': 'underline'}),
+            html.Label("Policy Type", style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
                     'type':'policy-type',
-                    'model':model_type,
+                    'model':'policy',
                     'agent':agent_type,
                 },
                 options=[{'label': 'Stochastic Continuous', 'value': 'StochasticContinuousPolicy'},
@@ -2722,8 +2722,8 @@ def create_actor_model_input(agent_type):
             html.Label("Output Layer Kernel Initializer"),
             create_kernel_input(agent_type, 'actor-output'),
             create_activation_input(agent_type, 'actor'),
-            create_optimizer_input(agent_type, 'actor'),
-            create_learning_rate_input(agent_type, 'actor'),
+            create_learning_rate_constant_input(agent_type, 'actor'),
+            create_learning_rate_exponent_input(agent_type, 'actor'),
         ]
     )
 
@@ -2742,7 +2742,8 @@ def create_critic_model_input(agent_type):
             create_kernel_input(agent_type, 'critic-output'),
             create_activation_input(agent_type, 'critic'),
             create_optimizer_input(agent_type, 'critic'),
-            create_learning_rate_input(agent_type, 'critic'),
+            create_learning_rate_constant_input(agent_type, 'critic'),
+            create_learning_rate_exponent_input(agent_type, 'critic'),
         ]
     )
 
@@ -2750,7 +2751,8 @@ def create_critic_model_input(agent_type):
 def create_reinforce_parameter_inputs(agent_type):
     return html.Div(
         [
-            create_learning_rate_input(agent_type, 'none'),
+            create_learning_rate_constant_input(agent_type, 'none'),
+            create_learning_rate_exponent_input(agent_type, 'none'),
             create_discount_factor_input(agent_type),
             # Policy Model
             create_policy_model_input(agent_type),
@@ -2764,7 +2766,8 @@ def create_reinforce_parameter_inputs(agent_type):
 def create_actor_critic_parameter_inputs(agent_type):
     return html.Div(
         [
-            create_learning_rate_input(agent_type, 'none'),
+            create_learning_rate_constant_input(agent_type, 'none'),
+            create_learning_rate_exponent_input(agent_type, 'none'),
             create_discount_factor_input(agent_type),
             create_trace_decay_input(agent_type, 'policy'),
             create_trace_decay_input(agent_type, 'value'),
@@ -2865,7 +2868,7 @@ def create_ppo_parameter_inputs(agent_type):
             create_normalize_advantage_input(agent_type),
             create_normalize_values_input(agent_type),
             # Actor Model Configuration
-            create_policy_model_type_input(agent_type, 'policy'),
+            create_policy_model_type_input(agent_type),
             create_policy_clip_input(agent_type),
             create_policy_grad_clip_input(agent_type),
             create_policy_model_input(agent_type),
@@ -3128,6 +3131,59 @@ def create_her_ddpg_hyperparam_input(agent_type):
     ],
     label=agent_type)
 
+def create_ppo_hyperparam_input(agent_type):
+    return dcc.Tab([
+        html.Div([
+            create_device_input(agent_type),
+            generate_discount_hyperparam_component(agent_type, 'none'),
+            create_advantage_coeff_hyperparam_input(agent_type, 'none'),
+            create_entropy_coeff_hyperparam_input(agent_type, 'none'),
+            create_advantage_normalizer_hyperparam_input(agent_type, 'none'),
+            generate_batch_hyperparam_componenent(agent_type, 'none'),
+            html.Hr(),
+            # Actor config
+            dcc.Tabs([
+                dcc.Tab([
+                    create_distribution_hyperparam_input(agent_type, 'policy'),
+                    create_policy_clip_hyperparam_input(agent_type, 'policy'),
+                    create_policy_grad_clip_hyperparam_input(agent_type, 'policy'),
+                    create_learning_rate_constant_hyperparam_input(agent_type, 'policy'),
+                    create_learning_rate_exponent_hyperparam_input(agent_type, 'policy'),
+                    # generate_cnn_layer_hyperparam_component(agent_type, 'policy'),
+                    generate_hidden_layer_hyperparam_component(agent_type, 'policy'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'policy-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'policy-output', 'Output Layer'),
+                    html.Hr(),
+                    generate_activation_function_hyperparam_component(agent_type, 'policy'),
+                    generate_optimizer_hyperparam_component(agent_type, 'policy'),
+                    # create_normalize_layers_hyperparam_input(agent_type, 'policy'),
+                    # create_clamp_output_hyperparam_input(agent_type, 'actor'),
+                ],
+                label='Policy Model'),
+                # Critic config
+                dcc.Tab([
+                    create_learning_rate_constant_hyperparam_input(agent_type, 'value'),
+                    create_learning_rate_exponent_hyperparam_input(agent_type, 'value'),
+                    # generate_cnn_layer_hyperparam_component(agent_type, 'critic'),
+                    generate_hidden_layer_hyperparam_component(agent_type, 'value'),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'value-hidden', 'Hidden Layers'),
+                    html.Hr(),
+                    generate_kernel_initializer_hyperparam_component(agent_type, 'value-output', 'Output Layer'),
+                    html.Hr(),
+                    generate_activation_function_hyperparam_component(agent_type, 'value'),
+                    generate_optimizer_hyperparam_component(agent_type, 'value'),
+                    html.H6("Value Normalizer"),
+                    create_value_normalizer_hyperparam_input(agent_type, 'none'),
+                    # create_normalize_layers_hyperparam_input(agent_type, 'critic'),
+                ],
+                label='Value Model')
+            ]),
+            create_save_dir_input(agent_type),
+        ])
+    ],
+    label=agent_type)
+
 def generate_learning_rate_hyperparam_component(agent_type, model_type):
     return html.Div([
         html.H5('Learning Rate'),
@@ -3148,6 +3204,109 @@ def generate_learning_rate_hyperparam_component(agent_type, model_type):
             multi=True,
         )             
     ])
+
+def create_learning_rate_constant_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Learning Rate Constant', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'learning-rate-const-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[{'label': str(i), 'value': i} for i in range(0,10)],
+                multi=True,
+            ),
+        ]
+    )
+
+def create_learning_rate_exponent_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Learning Rate Exponent(10^x)', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'learning-rate-exp-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[{'label': str(i), 'value': i} for i in range(-9,0)],
+                multi=True,
+            ),
+        ]
+    )
+
+def create_advantage_coeff_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Advantage Coefficient', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'advantage-coeff-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type
+                },
+                options=[{'label': str(i), 'value': i} for i in np.arange(0.0, 1.0, 0.05).round(2)],
+                multi=True,
+            )
+        ]
+    )
+
+def create_policy_clip_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Policy Clip', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'policy-clip-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type
+                },
+                options=[{'label': str(i), 'value': i} for i in np.arange(0.0, 1.0, 0.05).round(2)],
+                multi=True,
+            )
+        ]
+    )
+
+def create_entropy_coeff_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Entropy Coefficient', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'entropy-coeff-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type
+                },
+                options=[
+                    {'label': '0.001', 'value': 0.001},
+                    {'label': '0.005', 'value': 0.005},
+                    {'label': '0.01', 'value': 0.01},
+                    {'label': '0.05', 'value': 0.05},
+                    {'label': '0.1', 'value': 0.1},
+                
+                ],
+                multi=True,
+            )
+        ]
+    )
+
+def create_distribution_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Distribution', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'distribution-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[{'label': i.capitalize(), 'value': i} for i in ['beta', 'normal']],
+                multi=True,
+            ),
+        ]
+    )
 
 def generate_discount_hyperparam_component(agent_type, model_type):
     return html.Div([
@@ -4526,6 +4685,117 @@ def create_input_normalizer_hyperparam_input(agent_type, model_type):
                     'agent':agent_type,
                 }
             )
+        ]
+    )
+
+def create_value_normalizer_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            dcc.Dropdown(
+                id={
+                    'type':'normalize-values-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[{'label': i, 'value': i} for i in ['True', 'False']],
+                placeholder="Normalize Values",
+                multi=True,
+            ),
+            html.Div(
+                id={
+                    'type':'normalize-values-options-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                }
+            )
+        ]
+    )
+
+def create_value_normalizer_options_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label(f'Minimum/Maximum Clip Value', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'value-norm-clip-value-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': '0.0', 'value': 0.0},
+                    {'label': '0.1', 'value': 0.1},
+                    {'label': '0.2', 'value': 0.2},
+                    {'label': '0.3', 'value': 0.3},
+                    {'label': '0.4', 'value': 0.4},
+                    {'label': '0.5', 'value': 0.5},
+                    {'label': '0.6', 'value': 0.6},
+                    {'label': '0.7', 'value': 0.7},
+                    {'label': '0.8', 'value': 0.8},
+                    {'label': '0.9', 'value': 0.9},
+                    {'label': '1.0', 'value': 1.0},
+                    {'label': '2.0', 'value': 2.0},
+                    {'label': '3.0', 'value': 3.0},
+                    {'label': '4.0', 'value': 4.0},
+                    {'label': '5.0', 'value': 5.0},
+                    {'label': '6.0', 'value': 6.0},
+                    {'label': '7.0', 'value': 7.0},
+                    {'label': '8.0', 'value': 8.0},
+                    {'label': '9.0', 'value': 9.0},
+                    {'label': '10.0', 'value': 10.0},
+                    {'label': 'Infinity', 'value': 1e8},
+                ],
+                multi=True,
+            ),
+        ]
+    )
+
+def create_policy_grad_clip_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label(f'Policy Gradient Clip', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'policy-grad-clip-value-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': '0.1', 'value': 0.1},
+                    {'label': '0.2', 'value': 0.2},
+                    {'label': '0.3', 'value': 0.3},
+                    {'label': '0.4', 'value': 0.4},
+                    {'label': '0.5', 'value': 0.5},
+                    {'label': '0.6', 'value': 0.6},
+                    {'label': '0.7', 'value': 0.7},
+                    {'label': '0.8', 'value': 0.8},
+                    {'label': '0.9', 'value': 0.9},
+                    {'label': '1.0', 'value': 1.0}, # no clipping
+                ],
+                multi=True,
+            ),
+        ]
+    )
+
+def create_advantage_normalizer_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            dcc.Dropdown(
+                id={
+                    'type':'normalize-advantage-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[{'label': i, 'value': i} for i in ['True', 'False']],
+                placeholder="Normalize Advantages",
+                multi=True,
+            ),
+            # html.Div(
+            #     id={
+            #         'type':'normalize-advantage-options-hyperparam',
+            #         'model':model_type,
+            #         'agent':agent_type,
+            #     }
+            # )
         ]
     )
 
@@ -6248,13 +6518,13 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             sweep_config["parameters"][agent]["parameters"] = {}
 
             # actor learning rate
-            value_range = get_specific_value(all_values, all_ids, 'learning-rate-slider', 'actor', agent)
+            value_range = get_specific_value(all_values, all_ids, 'learning-rate-slider', 'policy', agent)
             config = {"values": value_range}
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_learning_rate"] = config
             
             # critic learning rate
-            value_range = get_specific_value(all_values, all_ids, 'learning-rate-slider', 'critic', agent)
+            value_range = get_specific_value(all_values, all_ids, 'learning-rate-slider', 'value', agent)
             config = {"values": value_range}
             
             sweep_config["parameters"][agent]["parameters"][f"{agent}_critic_learning_rate"] = config

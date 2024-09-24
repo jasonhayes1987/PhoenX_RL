@@ -638,6 +638,24 @@ def register_callbacks(app, shared_data):
                 # if agent_type == 'DDPG':
                 return utils.create_input_normalizer_options_hyperparam_input(agent_type, model_type)
         return html.Div()
+    
+
+    @app.callback(
+        Output({'type': 'normalize-values-options-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'normalize-values-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'normalize-values-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_normalize_value_hyperparam_options(normalize, normalize_id):
+        for norm in normalize:
+            if norm == 'True':
+                agent_type = normalize_id['agent']
+                model_type = normalize_id['model']
+                # if agent_type == 'DDPG':
+                return utils.create_value_normalizer_options_hyperparam_input(agent_type, model_type)
+        return html.Div()
+
+    
         
     @app.callback(
         Output('callback-selection', 'children'),
@@ -2877,6 +2895,9 @@ def register_callbacks(app, shared_data):
 
             elif agent_type == 'HER_DDPG':
                 tabs.append(utils.create_her_ddpg_hyperparam_input(agent_type))
+
+            elif agent_type == 'PPO':
+                tabs.append(utils.create_ppo_hyperparam_input(agent_type))
 
         return tabs
     
