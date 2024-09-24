@@ -312,7 +312,7 @@ class StochasticContinuousPolicy(Model):
       optimizer: Optimizer for training.
       optimizer_params: Dict of Parameter:value for the optimizer.
       learning_rate: Learning rate for the optimizer.
-      distribution: Distribution returned by the policy ('Beta' or 'Normal').
+      distribution: Distribution returned by the policy ('beta' or 'normal').
       device: Device to run the model on.
 
     """
@@ -325,7 +325,7 @@ class StochasticContinuousPolicy(Model):
         optimizer: str = "Adam",
         optimizer_params:dict={},
         learning_rate: float = 0.001,
-        distribution: str = 'Beta',
+        distribution: str = 'beta',
         device: str = None
     ):
         super().__init__()
@@ -389,7 +389,7 @@ class StochasticContinuousPolicy(Model):
         # Split x into param1 and param2
         param1, param2 = T.split(x, self.env.action_space.shape[-1], dim=-1)
 
-        if self.distribution == 'Beta':
+        if self.distribution == 'beta':
             alpha = F.relu(param1) + 1.0
             beta = F.relu(param2) + 1.0
             # alpha = F.softplus(param1) + 1.0
