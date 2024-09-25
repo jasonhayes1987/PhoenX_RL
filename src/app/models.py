@@ -1097,3 +1097,23 @@ def build_layers(units_per_layer: List[int], activation: str, initializer: str):
     for units in units_per_layer:
         layers.append((units, activation, initializer))
     return layers
+
+def select_policy_model(env):
+    """
+    Select the appropriate policy model based on the environment's action space.
+
+    Args:
+        env (gym.Env): The environment object.
+
+    Returns:
+        Class: The class of the appropriate policy model.
+    """
+    # Check if the action space is discrete
+    if isinstance(env.action_space, gym.spaces.Discrete):
+        model_class = StochasticDiscretePolicy
+    # Check if the action space is continuous
+    elif isinstance(env.action_space, gym.spaces.Box):
+        model_class = StochasticContinuousPolicy
+    else:
+        raise ValueError("Unsupported action space type. Only Discrete and Box spaces are supported.")
+    return model_class

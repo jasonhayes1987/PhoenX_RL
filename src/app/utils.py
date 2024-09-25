@@ -6668,21 +6668,15 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # Policy Clip
             sweep_config = format_wandb_config_value(sweep_config, "policy_clip", all_values, all_ids, 'policy-clip-hyperparam', 'policy', agent)
 
+            # Policy Grad Clip
+            sweep_config = format_wandb_config_value(sweep_config, "policy_grad_clip", all_values, all_ids, 'policy-grad-clip-value-hyperparam', 'policy', agent)
+
             # Entropy Coeff
             sweep_config = format_wandb_config_value(sweep_config, "entropy", all_values, all_ids, 'entropy-coeff-hyperparam', 'none', agent)
 
             # Normalize Advantage
             sweep_config = format_wandb_config_value(sweep_config, "normalize_advantage", all_values, all_ids, 'normalize-advantage-hyperparam', 'none', agent)
 
-            # Normalize Values
-            sweep_config = format_wandb_config_value(sweep_config, "normalize_value", all_values, all_ids, 'normalize-values-hyperparam', 'value', agent)
-            
-
-            # Get Device
-            sweep_config = format_wandb_config_value(sweep_config, "device", all_values, all_ids, 'device', 'none', agent)
-            # config = {"value": get_specific_value(all_values, all_ids, 'device', 'none', agent)}
-            # sweep_config["parameters"][agent]["parameters"][f"{agent}_device"] = config
-            
             # Normalize Values
             sweep_config = format_wandb_config_value(sweep_config, "value_normalizer", all_values, all_ids, 'normalize-values-hyperparam', 'value', agent)
             # config = {"value": get_specific_value(all_values, all_ids, 'normalize-values-hyperparam', 'value', agent)}
@@ -6692,6 +6686,11 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             sweep_config = format_wandb_config_value(sweep_config, "value_normalizer_clip", all_values, all_ids, 'value-norm-clip-value-hyperparam', 'value', agent)
             # config = {"value": get_specific_value(all_values, all_ids, 'value-norm-clip-value-hyperparam', 'value', agent)}
             # sweep_config["parameters"][agent]["parameters"][f"{agent}_value_normalizer_clip"] = config
+
+            # Get Device
+            sweep_config = format_wandb_config_value(sweep_config, "device", all_values, all_ids, 'device', 'none', agent)
+            # config = {"value": get_specific_value(all_values, all_ids, 'device', 'none', agent)}
+            # sweep_config["parameters"][agent]["parameters"][f"{agent}_device"] = config
 
             # Policy cnn layers
             # value_range = get_specific_value(all_values, all_ids, 'cnn-layers-slider-hyperparam', 'actor', agent)
@@ -6738,7 +6737,7 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
             # print(f'DDPG actor optimizer set to {sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"]}')
 
             # Policy optimizer options
-            sweep_config = format_wandb_optimizer_options(sweep_config, "actor_optimizer", all_values, all_ids, "policy", agent)
+            sweep_config = format_wandb_optimizer_options(sweep_config, "policy_optimizer", all_values, all_ids, "policy", agent)
             # for value in sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer"]['values']:
             #     sweep_config["parameters"][agent]["parameters"][f"{agent}_actor_optimizer_{value}_options"] = {'parameters': {}}
             #     config = {}
