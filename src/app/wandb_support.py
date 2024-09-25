@@ -974,3 +974,28 @@ def modify_keys(dicts):
         modified_dicts.append(new_dict)
     return modified_dicts
 
+def get_wandb_config_value(config, model_type, param_name):
+    """Retrieves value from wandb config"""
+    return config[model_type][f"{model_type}_{param_name}"]
+
+def get_wandb_config_optimizer_params(config, model_type, param_name):
+    """Retrieves the parameters of the optimizer from the wandb config"""
+    optimizer = get_wandb_config_value(config, model_type, param_name)
+    params = {}
+    if optimizer == "Adam":
+        params['weight_decay'] = \
+            config[model_type][f"{model_type}_{param_name}_{optimizer}_options"][f'{optimizer}_weight_decay']
+    
+    elif optimizer == "Adagrad":
+        params['weight_decay'] = \
+            config[model_type][f"{model_type}_{param_name}_{optimizer}_options"][f'{optimizer}_weight_decay']
+        params['lr_decay'] = \
+            config[model_type][f"{model_type}_{param_name}_{optimizer}_options"][f'{optimizer}_lr_decay']
+    
+    elif optimizer == "RMSprop" or optimizer == "SGD":
+        params['weight_decay'] = \
+            config[model_type][f"{model_type}_{param_name}_{optimizer}_options"][f'{optimizer}_weight_decay']
+        params['momentum'] = \
+            config[model_type][f"{model_type}_{param_name}_{optimizer}_options"][f'{optimizer}_momentum']
+    return params
+
