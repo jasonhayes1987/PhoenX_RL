@@ -21,9 +21,11 @@ import cv2
 import rl_callbacks
 from rl_callbacks import WandbCallback
 import models
+from models import select_policy_model
 import cnn_models
 import wandb
 import wandb_support
+from wandb_support import get_wandb_config_value
 import helper
 from helper import Buffer, ReplayBuffer, SharedReplayBuffer, Normalizer, SharedNormalizer, calculate_gae
 import dash_callbacks
@@ -5260,6 +5262,226 @@ class PPO(Agent):
         else:
             return reward
 
+    @classmethod
+    def sweep_train(
+        cls,
+        config, # wandb.config,
+        train_config,
+        env_spec,
+        callbacks,
+        run_number,
+        # comm=None,
+    ):
+        """Builds and trains agents from sweep configs"""
+
+        logger.debug(f"init_sweep fired")
+        try:
+            # Instantiate env from env_spec
+            env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
+            
+            logger.debug(f"train config: {train_config}")
+            logger.debug(f"env spec id: {env.spec.id}")
+            logger.debug(f"callbacks: {callbacks}")
+            logger.debug(f"run number: {run_number}")
+            logger.debug(f"config set: {config}")
+            model_type = list(config.keys())[0]
+            logger.debug(f"model type: {model_type}")
+
+            # actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
+            # logger.debug(f"layers built")
+            
+            # Policy
+            # Learning Rate
+            policy_learning_rate_const = get_wandb_config_value(config, model_type, 'policy_learning_rate_constant')
+            policy_learning_rate_exp = get_wandb_config_value(config, model_type, 'policy_learning_rate_exponent')
+            policy_learning_rate = policy_learning_rate_const * (10 ** policy_learning_rate_exp)
+            logger.debug(f"policy learning rate set to {actor_learning_rate}")
+            # Distribution
+            distribution = get_wandb_config_value(config, model_type, 'distribution')
+            # Optimizer
+            policy_optimizer = get_wandb_config_value(config, model_type, 'policy_optimizer')
+            logger.debug(f"policy optimizer set to {policy_optimizer}")
+            # Get optimizer params
+            policy_optimizer_params = get_wandb_config_optimizer_params(config, model_type, 'policy_optimizer')
+            logger.debug(f"policy optimizer params set to {policy_optimizer_params}")
+            # Get correct policy model for env action space
+            policy = select_policy_model(env)
+            # Create policy model
+            policy_model = policy(env = env,
+                                  dense_layers = actor_layers,
+                                  output_layer_kernel=kernels[f'actor_output_kernel'],
+                                  optimizer = actor_optimizer,
+                                  optimizer_params = actor_optimizer_params,
+                                  learning_rate = actor_learning_rate,
+                                  distribution = distribution,
+                                  device=device,
+                                 )
+            
+            # Value Func
+            # Learning Rate
+            value_learning_rate_const = get_wandb_config_value(config, model_type, "value_learning_rate_constant")
+            value_learning_rate_exp = get_wandb_config_value(config, model_type, "value_learning_rate_exponent")
+            critic_learning_rate = value_learning_rate_const * (10 ** value_learning_rate_exp)
+            logger.debug(f"value learning rate set to {critic_learning_rate}")
+            # Optimizer
+            value_optimizer = get_wandb_config_value(config, model_type, 'value_optimizer')
+            logger.debug(f"critic optimizer set to {value_optimizer}")
+            value_optimizer_params = get_wandb_config_optimizer_params(config, model_type, 'value_optimizer')
+            if critic_optimizer == "Adam":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+            
+            elif critic_optimizer == "Adagrad":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['lr_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
+            
+            elif critic_optimizer == "RMSprop" or critic_optimizer == "SGD":
+                critic_optimizer_params['weight_decay'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
+                critic_optimizer_params['momentum'] = \
+                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer params set")
+            else:
+                logger.debug(f"critic optimizer params set")
+
+            critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic normalize layers set")
+            else:
+                logger.debug(f"critic normalize layers set")
+            # Set device
+            device = config[model_type][f"{model_type}_device"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} device set")
+            else:
+                logger.debug(f"device set")
+            # Check if CNN layers and if so, build CNN model
+            if actor_cnn_layers:
+                actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
+            else:
+                actor_cnn_model = None
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
+            else:
+                logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
+
+            if critic_cnn_layers:
+                critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
+            else:
+                critic_cnn_model = None
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
+            else:
+                logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
+            # # Get actor clamp value
+            # clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
+            # if comm is not None:
+            #     logger.debug(f"{comm.Get_name()}; Rank {rank} clamp output set: {clamp_output}")
+            # else:
+            #     logger.debug(f"clamp output set: {clamp_output}")
+            actor_model = models.ActorModel(env = env,
+                                            cnn_model = actor_cnn_model,
+                                            dense_layers = actor_layers,
+                                            output_layer_kernel=kernels[f'actor_output_kernel'],
+                                            optimizer = actor_optimizer,
+                                            optimizer_params = actor_optimizer_params,
+                                            learning_rate = actor_learning_rate,
+                                            normalize_layers = actor_normalize_layers,
+                                            # clamp_output=clamp_output,
+                                            device=device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} actor model built: {actor_model.get_config()}")
+            else:
+                logger.debug(f"actor model built: {actor_model.get_config()}")
+            critic_model = models.CriticModel(env = env,
+                                            cnn_model = critic_cnn_model,
+                                            state_layers = critic_state_layers,
+                                            merged_layers = critic_merged_layers,
+                                            output_layer_kernel=kernels[f'critic_output_kernel'],
+                                            optimizer = critic_optimizer,
+                                            optimizer_params = critic_optimizer_params,
+                                            learning_rate = critic_learning_rate,
+                                            normalize_layers = critic_normalize_layers,
+                                            device=device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} critic model built: {critic_model.get_config()}")
+            else:
+                logger.debug(f"critic model built: {critic_model.get_config()}")
+            # get normalizer clip value
+            normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} normalizer clip set: {normalizer_clip}")
+            else:
+                logger.debug(f"normalizer clip set: {normalizer_clip}")
+            # get action epsilon
+            action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} action epsilon set: {action_epsilon}")
+            else:
+                logger.debug(f"action epsilon set: {action_epsilon}")
+            # Replay buffer size
+            replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} replay buffer size set: {replay_buffer_size}")
+            else:
+                logger.debug(f"replay buffer size set: {replay_buffer_size}")
+            # Save dir
+            save_dir = config[model_type][f"{model_type}_save_dir"]
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} save dir set: {save_dir}")
+            else:
+                logger.debug(f"save dir set: {save_dir}")
+
+            # create replay buffer
+            replay_buffer = ReplayBuffer(env, replay_buffer_size, device=device)
+
+            # create TD3 agent
+            td3_agent= cls(
+                env = env,
+                actor_model = actor_model,
+                critic_model = critic_model,
+                discount = config[model_type][f"{model_type}_discount"],
+                tau = config[model_type][f"{model_type}_tau"],
+                action_epsilon = action_epsilon,
+                replay_buffer = replay_buffer,
+                batch_size = config[model_type][f"{model_type}_batch_size"],
+                noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
+                target_noise_stddev = config[model_type][f"{model_type}_target_action_stddev"],
+                target_noise_clip = config[model_type][f"{model_type}_target_action_clip"],
+                actor_update_delay = config[model_type][f"{model_type}_actor_update_delay"],
+                warmup = config[model_type][f"{model_type}_warmup"],
+                callbacks = callbacks,
+                comm = comm,
+                device = device,
+            )
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} TD3 agent built: {td3_agent.get_config()}")
+            else:
+                logger.debug(f"TD3 agent built: {td3_agent.get_config()}")
+            
+            if comm is not None:
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier called")
+            else:
+                logger.debug(f"train barrier called")
+
+            if comm is not None:
+                comm.Barrier()
+                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier passed")
+
+            td3_agent.train(
+                    num_episodes=train_config['num_episodes'],
+                    render=False,
+                    render_freq=0,
+                    )
+
+        except Exception as e:
+            logger.error(f"An error occurred: {e}", exc_info=True)
+
     def train(self, timesteps, trajectory_length, batch_size, learning_epochs, num_envs, seed=None, avg_num=10, render_freq:int=0, save_dir:str=None, run_number:int=None):
         """
         Trains the model for 'timesteps' number of 'timesteps',
@@ -5994,11 +6216,11 @@ def init_sweep(sweep_config, train_config, comm=None):
         os.environ['WANDB_DISABLE_SERVICE'] = 'true'
         # logger.debug(f"{comm.Get_name()}; Rank {rank} WANDB_DISABLE_SERVICE set to true")
 
-        # Set seeds
-        random.seed(train_config['seed'])
-        np.random.seed(train_config['seed'])
-        T.manual_seed(train_config['seed'])
-        T.cuda.manual_seed(train_config['seed'])
+        # Set seeds (Seeds now set in train.  Update each)
+        # random.seed(train_config['seed'])
+        # np.random.seed(train_config['seed'])
+        # T.manual_seed(train_config['seed'])
+        # T.cuda.manual_seed(train_config['seed'])
         # logger.debug(f'{comm.Get_name()}; Rank {rank} random seeds set')
 
         # Only primary process (rank 0) calls wandb.init() to build agent and log data
