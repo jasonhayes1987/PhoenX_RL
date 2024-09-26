@@ -82,7 +82,49 @@ def build_layers(sweep_config):
         tuple: The policy layers and value layers.
     """
     model_type = list(sweep_config.keys())[0]
-    if model_type == "Reinforce" or model_type == "ActorCritic":
+    if model_type in ["Reinforce", "ActorCritic", "PPO"]:
+        # Create empty dict to store kernel params
+        kernels = {}
+        # Create kernel initializer params
+        for model in ['policy', 'value']:
+            for layer in ['hidden', 'output']:
+                kernel = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_initializer"]
+                params = {}
+                if kernel == "constant":
+                    params["val"] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_value"]
+
+                elif kernel == 'variance_scaling':
+                    params['scale'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_scale"]
+                    params['mode'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
+                    params['distribution'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_distribution"]
+
+                elif kernel == 'normal':
+                    params['mean'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
+                    params['std'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
+
+                elif kernel == 'uniform':
+                    params['a'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_minval"]
+                    params['b'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_maxval"]
+                
+                elif kernel == 'truncated_normal':
+                    params['mean'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
+                    params['std'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
+
+                elif kernel == "xavier_uniform":
+                    params['gain'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
+
+                elif kernel == "xavier_normal":
+                    params['gain'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
+
+                elif kernel == "kaiming_uniform":
+                    params['mode'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
+
+                elif kernel == "kaiming_normal":
+                    params['mode'] = sweep_config[model_type][f"{model_type}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
+
+                # Create dict with kernel and params
+                kernels[f'{model}_{layer}_kernel'] = {kernel:params}
+        
         # get policy layers
         policy_layers = []
         if sweep_config[model_type][f"{model_type}_policy_num_layers"] > 0:
@@ -91,6 +133,7 @@ def build_layers(sweep_config):
                     (
                         sweep_config[model_type][f"policy_units_layer_{layer_num}_{model_type}"],
                         sweep_config[model_type][f"{model_type}_policy_activation"],
+                        kernels['policy_hidden_kernel'],
                     )
                 )
         # get value layers
@@ -101,10 +144,11 @@ def build_layers(sweep_config):
                     (
                         sweep_config[model_type][f"value_units_layer_{layer_num}_{model_type}"],
                         sweep_config[model_type][f"{model_type}_value_activation"],
+                        kernels['value_hidden_kernel'],
                     )
                 )
 
-        return policy_layers, value_layers
+        return policy_layers, value_layers, kernels
     
     elif model_type in ["DDPG", "HER_DDPG", "TD3"]:
         

@@ -2464,7 +2464,7 @@ def register_callbacks(app, shared_data):
             config = json.loads(decoded.decode('utf-8'))
             
             success_message = html.Div([
-            dbc.Alert(f"Config loaded successfully from: {config['save_dir']}", color="success")
+            dbc.Alert("Config loaded successfully", color="success")
             ])
             
             return config, success_message
@@ -2640,14 +2640,14 @@ def register_callbacks(app, shared_data):
         Input({'type':'start', 'page':MATCH}, 'n_clicks')],  # Add the train button as an input
         [State({'type':'storage', 'page':MATCH}, 'data'),
         State({'type':'agent-store', 'page':MATCH}, 'data'),
-        State({'type':'num-episodes', 'page':MATCH}, 'value'),
-        State({'type':'num-timesteps', 'page':MATCH}, 'value'),
-        State({'type':'epochs', 'page':MATCH}, 'value'),
-        State({'type':'cycles', 'page':MATCH}, 'value'),
+        # State({'type':'num-episodes', 'page':MATCH}, 'value'),
+        # State({'type':'num-timesteps', 'page':MATCH}, 'value'),
+        # State({'type':'epochs', 'page':MATCH}, 'value'),
+        # State({'type':'cycles', 'page':MATCH}, 'value'),
         State('url', 'pathname')],
         prevent_initial_call=True,
     )
-    def update_data(n, n_clicks, storage_data, agent_config, num_episodes, num_timesteps, num_epochs, num_cycles, pathname):
+    def update_data(n, n_clicks, storage_data, agent_config, pathname):
         ctx = dash.callback_context
 
         # Determine which input fired the callback
@@ -2669,42 +2669,42 @@ def register_callbacks(app, shared_data):
         # Proceed with regular data update if the interval component fired the callback
         # if trigger_id == f"{'type':'interval-component', 'page':MATCH}":
         else:
-            if num_episodes is not None or num_timesteps is not None:
-                if pathname == '/train-agent':
-                    file_name = 'training_data.json'
-                    process = 'Training'
-                elif pathname == '/test-agent':
-                    file_name = 'testing_data.json'
-                    process = 'Testing'
-                else:
-                    raise PreventUpdate
+            # if num_episodes is not None or num_timesteps is not None:
+            #     if pathname == '/train-agent':
+            #         file_name = 'training_data.json'
+            #         process = 'Training'
+            #     elif pathname == '/test-agent':
+            #         file_name = 'testing_data.json'
+            #         process = 'Testing'
+            #     else:
+            #         raise PreventUpdate
 
-                # Read the latest training progress data from the JSON file
-                try:
-                    with open(Path("assets") / file_name, 'r') as f:
-                        data = json.load(f)
-                except (FileNotFoundError, json.JSONDecodeError):
-                    data = {}
+            #     # Read the latest training progress data from the JSON file
+            #     try:
+            #         with open(Path("assets") / file_name, 'r') as f:
+            #             data = json.load(f)
+            #     except (FileNotFoundError, json.JSONDecodeError):
+            #         data = {}
 
-                # If the new data dict isn't empty, update storage data
-                if data:
-                    # Determine agent type to correctly calculate num_episodes and progress
-                    if agent_config['agent_type'] == 'HER':
-                        num_episodes = num_epochs * num_cycles * num_episodes
-                    storage_data['data'] = data
-                    if agent_config['agent_type'] in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3']:
-                        storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
-                    elif agent_config['agent_type'] == 'PPO':
-                        if pathname == "/train-agent":
-                            storage_data['progress'] = round(data['episode'] / num_timesteps, ndigits=2)
-                        elif pathname == "/test-agent":
-                            storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
+            #     # If the new data dict isn't empty, update storage data
+            #     if data:
+            #         # Determine agent type to correctly calculate num_episodes and progress
+            #         if agent_config['agent_type'] == 'HER':
+            #             num_episodes = num_epochs * num_cycles * num_episodes
+            #         storage_data['data'] = data
+            #         if agent_config['agent_type'] in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3']:
+            #             storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
+            #         elif agent_config['agent_type'] == 'PPO':
+            #             if pathname == "/train-agent":
+            #                 storage_data['progress'] = round(data['episode'] / num_timesteps, ndigits=2)
+            #             elif pathname == "/test-agent":
+            #                 storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
                     
-                    # Update status
-                    if storage_data['progress'] == 1.0:
-                        storage_data['status'] = f"{process} Completed"
-                    else:
-                        storage_data['status'] = f"{process} in Progress..."
+            #         # Update status
+            #         if storage_data['progress'] == 1.0:
+            #             storage_data['status'] = f"{process} Completed"
+            #         else:
+            #             storage_data['status'] = f"{process} in Progress..."
             
             return storage_data
     
@@ -2875,31 +2875,33 @@ def register_callbacks(app, shared_data):
     
     @app.callback(
         Output('agent-options-tabs', 'children'),
+        Output('agent-sweep-options', 'children'),
         Input({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value')
     )
-    def update_hyperparam_inputs(selected_agent_types):
+    def update_hyperparam_inputs(agent_type):
         # This function updates the inputs based on selected agent types
         tabs = []
-        for agent_type in selected_agent_types:
-            if agent_type == 'Reinforce':
-                tabs.append(utils.create_reinforce_hyperparam_input(agent_type))
-            
-            elif agent_type == 'ActorCritic':
-                tabs.append(utils.create_actor_critic_hyperparam_input(agent_type))
-            
-            elif agent_type == 'DDPG':
-                tabs.append(utils.create_ddpg_hyperparam_input(agent_type))
+        # for agent_type in selected_agent_types:
+        if agent_type == 'Reinforce':
+            tabs.append(utils.create_reinforce_hyperparam_input(agent_type))
+        
+        elif agent_type == 'ActorCritic':
+            tabs.append(utils.create_actor_critic_hyperparam_input(agent_type))
+        
+        elif agent_type == 'DDPG':
+            tabs.append(utils.create_ddpg_hyperparam_input(agent_type))
 
-            elif agent_type == 'TD3':
-                tabs.append(utils.create_td3_hyperparam_input(agent_type))
+        elif agent_type == 'TD3':
+            tabs.append(utils.create_td3_hyperparam_input(agent_type))
 
-            elif agent_type == 'HER_DDPG':
-                tabs.append(utils.create_her_ddpg_hyperparam_input(agent_type))
+        elif agent_type == 'HER_DDPG':
+            tabs.append(utils.create_her_ddpg_hyperparam_input(agent_type))
 
-            elif agent_type == 'PPO':
-                tabs.append(utils.create_ppo_hyperparam_input(agent_type))
-
-        return tabs
+        elif agent_type == 'PPO':
+            tabs.append(utils.create_ppo_hyperparam_input(agent_type))
+        
+        options = utils.create_agent_sweep_options(agent_type)
+        return tabs, options
     
 
     @app.callback(
@@ -3257,6 +3259,7 @@ def register_callbacks(app, shared_data):
     @app.callback(
         Output({'type':'hidden-div-hyperparam', 'page':'/hyperparameter-search'}, 'children'),
         Input({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
+        State({'type':'agent-store', 'page':'/hyperparameter-search'}, 'data'),
         State({'type':'storage', 'page':'/hyperparameter-search'}, 'data'),
         State('search-type', 'value'),
         State({'type': 'projects-dropdown', 'page': '/hyperparameter-search'}, 'value'),
@@ -3265,78 +3268,76 @@ def register_callbacks(app, shared_data):
         State('goal-type', 'value'),
         State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
         State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
-        State({'type':'seed', 'page':'/hyperparameter-search'}, 'value'),
         State({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
         State('num-sweeps', 'value'),
-        State('num-episodes', 'value'),
-        State('num-epochs', 'value'),
-        State('num-cycles', 'value'),
-        State('num-updates', 'value'),
-        State({'type':'mpi', 'page':'/hyperparameter-search'}, 'value'),
-        State({'type':'workers', 'page':'/hyperparameter-search'}, 'value'),
-        State({'type':'num-sweep-agents', 'page':'/hyperparameter-search'}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, seed, agent_selection, num_sweeps, num_episodes, num_epochs, num_cycles, num_updates, use_mpi, num_workers, num_agents, all_values, all_ids, all_indexed_values, all_indexed_ids):
-
+    def begin_sweep(num_clicks, agent_data, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent, num_sweeps, all_values, all_ids, all_indexed_values, all_indexed_ids):
+        print('begin sweep callback fired...')
         try:
             if num_clicks > 0:
                 # extract any additional gym env params
                 params = utils.extract_gym_params(env_params)
-                sweep_config = utils.create_wandb_config(
-                    method,
-                    project,
-                    sweep_name,
-                    metric_name,
-                    metric_goal,
-                    env,
-                    params,
-                    agent_selection,
-                    all_values,
-                    all_ids,
-                    all_indexed_values,
-                    all_indexed_ids
-                )
+                print('gym params extracted')
+                # Check if wandb config is uploaded and if so, use it
+                if agent_data:
+                    print('sweep config detected')
+                    sweep_config = agent_data
+                    print('uploaded sweep config set')
+                else:
+                    sweep_config = utils.create_wandb_config(
+                        method,
+                        project,
+                        sweep_name,
+                        metric_name,
+                        metric_goal,
+                        env,
+                        params,
+                        agent,
+                        all_values,
+                        all_ids,
+                        all_indexed_values,
+                        all_indexed_ids
+                    )
 
                 if sweep_config:  # Check if sweep_config is not empty
                     # Create an empty dict for sweep_config.json
-                    train_config = {}
-                    # Add config options to run_config
-                    train_config['num_sweeps'] = num_sweeps
-                    train_config['num_episodes'] = num_episodes
-                    train_config['seed'] = seed if seed is not None else None
-
-                    # Add MPI config if not None else None
-                    train_config['use_mpi'] = use_mpi if use_mpi is not None else None
-                    train_config['num_workers'] = num_workers if num_workers is not None else None
-                    train_config['num_agents'] = num_agents if num_agents is not None else None
+                    # train_config = {}
+                    # Build train config
+                    # train_config = utils.build_train_config(agent, sweep_config, num_sweeps)
                     
-                    # Update additional settings for HER agent
-                    train_config['num_epochs'] = num_epochs if num_epochs is not None else None
-                    train_config['num_cycles'] = num_cycles if num_cycles is not None else None
-                    train_config['num_updates'] = num_updates if num_updates is not None else 1
                 
                     # Save the updated configuration to a train config file
-                    os.makedirs('sweep', exist_ok=True)
-                    train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
-                    with open(train_config_path, 'w') as f:
-                        json.dump(train_config, f)
+                    # os.makedirs('sweep', exist_ok=True)
+                    # train_config_path = os.path.join(os.getcwd(), 'sweep/train_config.json')
+                    # with open(train_config_path, 'w') as f:
+                    #     json.dump(train_config, f)
 
                     # Save the sweep config and set the sweep config path
                     sweep_config_path = os.path.join(os.getcwd(), 'sweep/sweep_config.json')
                     with open(sweep_config_path, 'w') as f:
                         json.dump(sweep_config, f)
+                    print('saved sweep config')
 
                     # Construct and run the MPI command
+                    # command = [
+                    #     'mpiexec', '-np', str(num_workers), 'python', 'init_sweep.py',
+                    #     '--sweep_config', sweep_config_path
+                    #     # '--train_config', train_config_path
+                    # ]
+
+                    # Construct and run the sweep.py script
+                    print('constructing terminal command...')
                     command = [
-                        'mpiexec', '-np', str(num_workers), 'python', 'init_sweep.py',
+                        'python', 'sweep.py',
                         '--sweep_config', sweep_config_path,
-                        '--train_config', train_config_path
+                        '--num_sweeps', str(num_sweeps),
                     ]
+                    print('command constructed')
 
                     subprocess.Popen(command)
                     
@@ -3421,11 +3422,18 @@ def register_callbacks(app, shared_data):
     @app.callback(
         Output('hidden-div-fetch-process', 'children'),
         Input({'type':'start', 'page':'/hyperparameter-search'}, 'n_clicks'),
+        State({'type':'agent-store', 'page':'/hyperparameter-search'}, 'data'),
         State({'type': 'projects-dropdown', 'page': '/hyperparameter-search'}, 'value'),
         State('sweep-name', 'value'),
     )
-    def start_data_fetch_processes(n_clicks, project, sweep_name):
+    def start_data_fetch_processes(n_clicks, sweep_config, project, sweep_name):
         if n_clicks > 0:
+            # Check if sweep config loaded and use project and sweep name from there if so
+            if sweep_config is not None:
+                project = sweep_config['project']
+                sweep_name = sweep_config['name']
+                print(f'project = {project}')
+                print(f'sweep_name = {sweep_name}')
             # Create and start the fetch_data_process
             # print('start data fetch process called')
             fetch_data_thread = threading.Thread(target=fetch_data_process, args=(project, sweep_name, shared_data))
