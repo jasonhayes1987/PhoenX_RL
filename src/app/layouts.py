@@ -156,65 +156,14 @@ def hyperparameter_search(page):
             html.Div(id={'type':'gym-params', 'page':page}),
             html.Div(id={'type': 'env-description', 'page': page}),
             html.Img(id={'type': 'env-gif', 'page': page}, style={'width': '300px'}),
-            html.H6('Search Method'),
-            dcc.RadioItems(
-                id='search-type',
-                options=[
-                    {'label': 'Random Search', 'value': 'random'},
-                    {'label': 'Grid Search', 'value': 'grid'},
-                    {'label': 'Bayesian Search', 'value': 'bayes'},
-                ],
-                value='bayes',
-            ),
+            utils.create_sweep_options(),
+            # dcc.Input(
+            #     id='num-episodes',
+            #     type='number',
+            #     placeholder='Episodes per Sweep',
+            # ),
             html.Div(
-                [
-                    html.H6('Set Goal', style={'textAlign': 'left'}),
-                    html.Div(
-                        [
-                            html.Div(
-                                [
-                                    dcc.RadioItems(
-                                        id='goal-type',
-                                        options=[
-                                            {'label': 'Maximize', 'value': 'maximize'},
-                                            {'label': 'Minimize', 'value': 'minimize'},
-                                        ],
-                                    ),
-                                ],
-                                style={'display': 'flex'}
-                            ),
-                            html.Div(
-                                [
-                                    dcc.RadioItems(
-                                        id='goal-metric',
-                                        options=[
-                                            {'label': 'Episode Reward', 'value': 'episode_reward'},
-                                            {'label': 'Value Loss', 'value': 'value_loss'},
-                                            {'label': 'Policy Loss', 'value': 'policy_loss'},
-                                        ],
-                                    ),
-                                ],
-                                style={'display': 'flex'}
-                            ),
-                        ],
-                        style={'display': 'flex'}
-                    ),
-                ]
-            ),
-            dcc.Input(
-                id='sweep-name',
-                type='text',
-                placeholder='Sweep Name',
-            ),
-            dcc.Input(
-                id='num-sweeps',
-                type='number',
-                placeholder='Number of Sweeps',
-            ),
-            dcc.Input(
-                id='num-episodes',
-                type='number',
-                placeholder='Episodes per Sweep',
+                id='agent-sweep-options',
             ),
             html.Div(
                 id='her-options-hyperparam',
@@ -310,11 +259,8 @@ def hyperparameter_search(page):
                     {'label': 'TD3', 'value': 'TD3'},
                     {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
                     {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
-                   
-                ],    
-                value=[],
-                multi=True,
-                placeholder="Select Agent(s)",
+                ],
+                placeholder="Select Agent",
             ),
             html.Div(
                 id='agent-hyperparameters-inputs',
@@ -337,6 +283,9 @@ def hyperparameter_search(page):
         },
         hidden=True,
         children=[
+            dcc.Store(id={'type':'agent-store', 'page':page}),
+            utils.upload_component(page),
+            html.Div(id={'type':'output-agent-load', 'page':page}),
             row,
             dbc.Button("Start Sweep",
                 id={
@@ -394,6 +343,14 @@ def hyperparameter_search(page):
                 id='start-matrix-process-interval',
                 interval=10*1000,
                 n_intervals=0,
+            ),
+            dcc.Interval(
+                id={
+                    'type':'interval-component',
+                    'page':page
+                },
+                interval=1*1000,  # in milliseconds
+                n_intervals=0
             ),
             html.Div(id='hidden-div-fetch-process', style={'display': 'none'}),
             html.Div(id='hidden-div-matrix-process', style={'display': 'none'}),

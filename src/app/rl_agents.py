@@ -21,11 +21,10 @@ import cv2
 import rl_callbacks
 from rl_callbacks import WandbCallback
 import models
-from models import select_policy_model
+from models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, CriticModel
 import cnn_models
 import wandb
 import wandb_support
-from wandb_support import get_wandb_config_value
 import helper
 from helper import Buffer, ReplayBuffer, SharedReplayBuffer, Normalizer, SharedNormalizer, calculate_gae
 import dash_callbacks
@@ -5266,20 +5265,22 @@ class PPO(Agent):
     def sweep_train(
         cls,
         config, # wandb.config,
-        train_config,
+        # train_config,
         env_spec,
         callbacks,
         run_number,
         # comm=None,
     ):
         """Builds and trains agents from sweep configs"""
+        # Import necessary functions directly from wandb_support
+        from wandb_support import get_wandb_config_value, get_wandb_config_optimizer_params
 
         logger.debug(f"init_sweep fired")
         try:
             # Instantiate env from env_spec
             env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
             
-            logger.debug(f"train config: {train_config}")
+            # logger.debug(f"train config: {train_config}")
             logger.debug(f"env spec id: {env.spec.id}")
             logger.debug(f"callbacks: {callbacks}")
             logger.debug(f"run number: {run_number}")
@@ -5287,7 +5288,11 @@ class PPO(Agent):
             model_type = list(config.keys())[0]
             logger.debug(f"model type: {model_type}")
 
-            # actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels = wandb_support.build_layers(config)
+            # Get device
+            device = get_wandb_config_value(config, model_type, 'device')
+
+            # Format policy and value layers, and kernels
+            policy_layers, value_layers, kernels = wandb_support.build_layers(config)
             # logger.debug(f"layers built")
             
             # Policy
@@ -5295,7 +5300,7 @@ class PPO(Agent):
             policy_learning_rate_const = get_wandb_config_value(config, model_type, 'policy_learning_rate_constant')
             policy_learning_rate_exp = get_wandb_config_value(config, model_type, 'policy_learning_rate_exponent')
             policy_learning_rate = policy_learning_rate_const * (10 ** policy_learning_rate_exp)
-            logger.debug(f"policy learning rate set to {actor_learning_rate}")
+            logger.debug(f"policy learning rate set to {policy_learning_rate}")
             # Distribution
             distribution = get_wandb_config_value(config, model_type, 'distribution')
             # Optimizer
@@ -5305,17 +5310,29 @@ class PPO(Agent):
             policy_optimizer_params = get_wandb_config_optimizer_params(config, model_type, 'policy_optimizer')
             logger.debug(f"policy optimizer params set to {policy_optimizer_params}")
             # Get correct policy model for env action space
-            policy = select_policy_model(env)
-            # Create policy model
-            policy_model = policy(env = env,
-                                  dense_layers = actor_layers,
-                                  output_layer_kernel=kernels[f'actor_output_kernel'],
-                                  optimizer = actor_optimizer,
-                                  optimizer_params = actor_optimizer_params,
-                                  learning_rate = actor_learning_rate,
-                                  distribution = distribution,
-                                  device=device,
-                                 )
+            if isinstance(env.action_space, gym.spaces.Discrete):
+                policy_model = StochasticDiscretePolicy(
+                    env = env,
+                    dense_layers = policy_layers,
+                    output_layer_kernel = kernels[f'policy_output_kernel'],
+                    optimizer = policy_optimizer,
+                    optimizer_params = policy_optimizer_params,
+                    learning_rate = policy_learning_rate,
+                    device = device,
+                )
+            # Check if the action space is continuous
+            elif isinstance(env.action_space, gym.spaces.Box):
+                policy_model = StochasticContinuousPolicy(
+                    env = env,
+                    dense_layers = policy_layers,
+                    output_layer_kernel = kernels[f'policy_output_kernel'],
+                    optimizer = policy_optimizer,
+                    optimizer_params = policy_optimizer_params,
+                    learning_rate = policy_learning_rate,
+                    distribution = distribution,
+                    device = device,
+                )
+            logger.debug(f"policy model built: {policy_model.get_config()}")
             
             # Value Func
             # Learning Rate
@@ -5325,159 +5342,106 @@ class PPO(Agent):
             logger.debug(f"value learning rate set to {critic_learning_rate}")
             # Optimizer
             value_optimizer = get_wandb_config_value(config, model_type, 'value_optimizer')
-            logger.debug(f"critic optimizer set to {value_optimizer}")
+            logger.debug(f"value optimizer set to {value_optimizer}")
             value_optimizer_params = get_wandb_config_optimizer_params(config, model_type, 'value_optimizer')
-            if critic_optimizer == "Adam":
-                critic_optimizer_params['weight_decay'] = \
-                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
-            
-            elif critic_optimizer == "Adagrad":
-                critic_optimizer_params['weight_decay'] = \
-                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
-                critic_optimizer_params['lr_decay'] = \
-                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_lr_decay']
-            
-            elif critic_optimizer == "RMSprop" or critic_optimizer == "SGD":
-                critic_optimizer_params['weight_decay'] = \
-                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_weight_decay']
-                critic_optimizer_params['momentum'] = \
-                    config[model_type][f"{model_type}_critic_optimizer_{critic_optimizer}_options"][f'{critic_optimizer}_momentum']
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} critic optimizer params set")
-            else:
-                logger.debug(f"critic optimizer params set")
+            logger.debug(f"value optimizer params set to {value_optimizer_params}")
 
-            critic_normalize_layers = config[model_type][f"{model_type}_critic_normalize_layers"]
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} critic normalize layers set")
-            else:
-                logger.debug(f"critic normalize layers set")
-            # Set device
-            device = config[model_type][f"{model_type}_device"]
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} device set")
-            else:
-                logger.debug(f"device set")
             # Check if CNN layers and if so, build CNN model
-            if actor_cnn_layers:
-                actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
-            else:
-                actor_cnn_model = None
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
-            else:
-                logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
-
-            if critic_cnn_layers:
-                critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
-            else:
-                critic_cnn_model = None
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
-            else:
-                logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
-            # # Get actor clamp value
-            # clamp_output = config[model_type][f"{model_type}_actor_clamp_output"]
-            # if comm is not None:
-            #     logger.debug(f"{comm.Get_name()}; Rank {rank} clamp output set: {clamp_output}")
+            # if actor_cnn_layers:
+            #     actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
             # else:
-            #     logger.debug(f"clamp output set: {clamp_output}")
-            actor_model = models.ActorModel(env = env,
-                                            cnn_model = actor_cnn_model,
-                                            dense_layers = actor_layers,
-                                            output_layer_kernel=kernels[f'actor_output_kernel'],
-                                            optimizer = actor_optimizer,
-                                            optimizer_params = actor_optimizer_params,
-                                            learning_rate = actor_learning_rate,
-                                            normalize_layers = actor_normalize_layers,
-                                            # clamp_output=clamp_output,
-                                            device=device,
-            )
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} actor model built: {actor_model.get_config()}")
-            else:
-                logger.debug(f"actor model built: {actor_model.get_config()}")
-            critic_model = models.CriticModel(env = env,
-                                            cnn_model = critic_cnn_model,
-                                            state_layers = critic_state_layers,
-                                            merged_layers = critic_merged_layers,
-                                            output_layer_kernel=kernels[f'critic_output_kernel'],
-                                            optimizer = critic_optimizer,
-                                            optimizer_params = critic_optimizer_params,
-                                            learning_rate = critic_learning_rate,
-                                            normalize_layers = critic_normalize_layers,
-                                            device=device,
-            )
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} critic model built: {critic_model.get_config()}")
-            else:
-                logger.debug(f"critic model built: {critic_model.get_config()}")
-            # get normalizer clip value
-            normalizer_clip = config[model_type][f"{model_type}_normalizer_clip"]
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} normalizer clip set: {normalizer_clip}")
-            else:
-                logger.debug(f"normalizer clip set: {normalizer_clip}")
-            # get action epsilon
-            action_epsilon = config[model_type][f"{model_type}_epsilon_greedy"]
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} action epsilon set: {action_epsilon}")
-            else:
-                logger.debug(f"action epsilon set: {action_epsilon}")
-            # Replay buffer size
-            replay_buffer_size = config[model_type][f"{model_type}_replay_buffer_size"]
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} replay buffer size set: {replay_buffer_size}")
-            else:
-                logger.debug(f"replay buffer size set: {replay_buffer_size}")
-            # Save dir
-            save_dir = config[model_type][f"{model_type}_save_dir"]
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} save dir set: {save_dir}")
-            else:
-                logger.debug(f"save dir set: {save_dir}")
+            #     actor_cnn_model = None
+            # if comm is not None:
+            #     logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
+            # else:
+            #     logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
 
-            # create replay buffer
-            replay_buffer = ReplayBuffer(env, replay_buffer_size, device=device)
-
-            # create TD3 agent
-            td3_agent= cls(
+            # if critic_cnn_layers:
+            #     critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
+            # else:
+            #     critic_cnn_model = None
+            # if comm is not None:
+            #     logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
+            # else:
+            #     logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
+            value_model = ValueModel(
                 env = env,
-                actor_model = actor_model,
-                critic_model = critic_model,
+                dense_layers = value_layers,
+                output_layer_kernel=kernels[f'value_output_kernel'],
+                optimizer = value_optimizer,
+                optimizer_params = value_optimizer_params,
+                learning_rate = critic_learning_rate,
+                device=device,
+            )
+            logger.debug(f"value model built: {value_model.get_config()}")
+
+            # GAE coefficient
+            gae_coeff = get_wandb_config_value(config, model_type, 'advantage')
+            logger.debug(f"gae coeff set to {gae_coeff}")
+            # Policy clip
+            policy_clip = get_wandb_config_value(config, model_type, 'policy_clip')
+            logger.debug(f"policy clip set to {policy_clip}")
+            # Entropy coefficient
+            entropy_coeff = get_wandb_config_value(config, model_type, 'entropy')
+            logger.debug(f"entropy coeff set to {entropy_coeff}")
+            # Normalize advantages
+            normalize_advantages = get_wandb_config_value(config, model_type, 'normalize_advantage')
+            logger.debug(f"normalize advantage set to {normalize_advantages}")
+            # Normalize values
+            normalize_values = get_wandb_config_value(config, model_type, 'normalize_value')
+            logger.debug(f"normalize values set to {normalize_values}")
+            # Normalize values clip value
+            normalize_val_clip = get_wandb_config_value(config, model_type, 'normalize_values_clip')
+            if normalize_val_clip == 'infinity':
+                normalize_val_clip = np.inf
+            logger.debug(f"normalize values clip set to {normalize_val_clip}")
+            # Policy gradient clip
+            policy_grad_clip = get_wandb_config_value(config, model_type, 'policy_grad_clip')
+            # Change value of policy_grad_clip to np.inf if == 'infinity'
+            if policy_grad_clip == "infinity":
+                policy_grad_clip = np.inf
+            logger.debug(f"policy grad clip set to {policy_grad_clip}")
+
+            # Save dir
+            save_dir = get_wandb_config_value(config, model_type, 'policy_grad_clip')
+            logger.debug(f"save dir set: {save_dir}")
+
+
+            # create PPO agent
+            ppo_agent= cls(
+                env = env,
+                policy_model = policy_model,
+                value_model = value_model,
+                distribution = distribution,
                 discount = config[model_type][f"{model_type}_discount"],
-                tau = config[model_type][f"{model_type}_tau"],
-                action_epsilon = action_epsilon,
-                replay_buffer = replay_buffer,
-                batch_size = config[model_type][f"{model_type}_batch_size"],
-                noise = helper.Noise.create_instance(config[model_type][f"{model_type}_noise"], shape=env.action_space.shape, **config[model_type][f"{model_type}_noise_{config[model_type][f'{model_type}_noise']}"], device=device),
-                target_noise_stddev = config[model_type][f"{model_type}_target_action_stddev"],
-                target_noise_clip = config[model_type][f"{model_type}_target_action_clip"],
-                actor_update_delay = config[model_type][f"{model_type}_actor_update_delay"],
-                warmup = config[model_type][f"{model_type}_warmup"],
+                gae_coefficient = gae_coeff,
+                policy_clip = policy_clip,
+                entropy_coefficient = entropy_coeff,
+                normalize_advantages = normalize_advantages,
+                normalize_values = normalize_values,
+                value_normalizer_clip = normalize_val_clip,
+                policy_grad_clip = policy_grad_clip,
                 callbacks = callbacks,
-                comm = comm,
                 device = device,
             )
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} TD3 agent built: {td3_agent.get_config()}")
-            else:
-                logger.debug(f"TD3 agent built: {td3_agent.get_config()}")
-            
-            if comm is not None:
-                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier called")
-            else:
-                logger.debug(f"train barrier called")
+            logger.debug(f"PPO agent built: {ppo_agent.get_config()}")
 
-            if comm is not None:
-                comm.Barrier()
-                logger.debug(f"{comm.Get_name()}; Rank {rank} train barrier passed")
+            timesteps = get_wandb_config_value(config, model_type, 'num_timesteps')
+            traj_length = get_wandb_config_value(config, model_type, 'trajectory_length')
+            batch_size = get_wandb_config_value(config, model_type, 'batch_size')
+            learning_epochs = get_wandb_config_value(config, model_type, 'learning_epochs')
+            num_envs = get_wandb_config_value(config, model_type, 'num_envs')
+            seed = get_wandb_config_value(config, model_type, 'seed')
 
-            td3_agent.train(
-                    num_episodes=train_config['num_episodes'],
-                    render=False,
-                    render_freq=0,
-                    )
+            ppo_agent.train(
+                timesteps = timesteps,
+                trajectory_length = traj_length,
+                batch_size = batch_size,
+                learning_epochs = learning_epochs,
+                num_envs = num_envs,
+                seed = seed,
+                render_freq = 0,
+            )
 
         except Exception as e:
             logger.error(f"An error occurred: {e}", exc_info=True)
@@ -6203,8 +6167,8 @@ def get_agent_class_from_type(agent_type: str):
 
     raise ValueError(f"Unknown agent type: {agent_type}")
 
-def init_sweep(sweep_config, train_config, comm=None):
-    rank = MPI.COMM_WORLD.Get_rank()
+def init_sweep(sweep_config, comm=None):
+    # rank = MPI.COMM_WORLD.Get_rank()
     if comm is not None:
         logger.debug(f"Rank {rank} comm detected")
         rank = comm.Get_rank()
@@ -6290,7 +6254,7 @@ def init_sweep(sweep_config, train_config, comm=None):
 
             agent = get_agent_class_from_type(model_type)
             logger.debug(f"{comm.Get_name()}; Rank {rank} agent class found. Calling sweep_train")
-            agent.sweep_train(wandb_config, train_config, env_spec, callbacks, run_number, comm)
+            agent.sweep_train(wandb_config, env_spec, callbacks, run_number, comm)
         
         else:
             print('else fired')
@@ -6339,7 +6303,7 @@ def init_sweep(sweep_config, train_config, comm=None):
             logger.debug(f"callbacks created")
             agent = get_agent_class_from_type(model_type)
             logger.debug(f"agent class found. Calling sweep_train")
-            agent.sweep_train(wandb_config, train_config, env_spec, callbacks, run_number)
+            agent.sweep_train(wandb_config, env_spec, callbacks, run_number)
 
     except Exception as e:
         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
