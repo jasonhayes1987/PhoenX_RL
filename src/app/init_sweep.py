@@ -68,7 +68,7 @@ def main(sweep_config, train_config):
             try:
                 wandb.agent(
                     sweep_id,
-                    function=lambda: init_sweep(sweep_config, train_config, comm),
+                    function=lambda: init_sweep(sweep_config, comm),
                     count=train_config['num_sweeps'],
                     project=sweep_config["project"],
                 )
