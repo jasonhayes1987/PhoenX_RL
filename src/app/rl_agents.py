@@ -5058,7 +5058,7 @@ class PPO(Agent):
                 self.save_dir = save_dir + "/ppo/"
         elif save_dir is not None and "/ppo/" in save_dir:
                 self.save_dir = save_dir
-        
+
 
         # self.lambda_param = 0.5
         if self.loss == 'hybrid':
@@ -5066,14 +5066,14 @@ class PPO(Agent):
             self.lambda_param = T.nn.Parameter(T.tensor(self.lambda_))
             # # Add lambda param to policy optimizer
             self.policy_model.optimizer.add_param_group({'params': [self.lambda_param]})
-        
+
         # Set callbacks
         try:
             self.callbacks = callbacks
             if callbacks:
                 for callback in self.callbacks:
                     self._config = callback._config(self)
-                    if isinstance(callback, WandbCallback):  
+                    if isinstance(callback, WandbCallback):
                         self._wandb = True
 
             else:
@@ -5101,9 +5101,9 @@ class PPO(Agent):
             # Create a list of different seeds for each environment
             if seed is None:
                 seed = np.random.randint(0, 10000)
-            
+
             # seeds = [seed + i for i in range(num_envs)]
-            
+
             # Function to seed the environment correctly and store the seed
             def make_env(env_id, render_mode=None):
                 def _init():
@@ -5136,7 +5136,7 @@ class PPO(Agent):
         except Exception as e:
             logger.error(f"Error in PPO._initialize_env: {e}", exc_info=True)
             raise
-            
+
 
     def render(self, frames, episode, context:str=None):
         """renders movie to save dir
@@ -5168,60 +5168,117 @@ class PPO(Agent):
         video.release()
 
 
-    def calculate_advantages_and_returns(self, all_rewards, all_states, all_next_states, all_dones):
+    # def calculate_advantages_and_returns(self, all_rewards, all_states, all_next_states, all_dones):
 
+    #     all_advantages = []
+    #     all_returns = []
+    #     all_values = []
+
+    #     for t in range(self.num_envs):
+    #         # for states, rewards, next_states, dones in zip(all_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_rewards[self.trajectory_length*t:self.trajectory_length*(t+1)], all_next_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_dones[self.trajectory_length*t:self.trajectory_length*(t+1)]):
+    #         with T.no_grad():
+    #             states = all_states[self.trajectory_length*t:self.trajectory_length*(t+1)]
+    #             rewards = all_rewards[self.trajectory_length*t:self.trajectory_length*(t+1)]
+    #             next_states = all_next_states[self.trajectory_length*t:self.trajectory_length*(t+1)]
+    #             dones = all_dones[self.trajectory_length*t:self.trajectory_length*(t+1)]
+    #             # print(f'states:{states.shape}')
+    #             # print(f'rewards:{rewards.shape}')
+    #             # print(f'next_states:{next_states.shape}')
+    #             # print(f'dones:{dones.shape}')
+    #             # Compute values for states using the value function
+    #             values = self.value_model(states)
+    #             next_values = self.value_model(next_states)
+
+    #             if self.normalize_values:
+    #                 self.normalizer.update_local_stats(values)
+    #                 self.normalizer.update_global_stats()
+    #                 values = self.normalizer.denormalize(values)
+    #                 next_values = self.normalizer.denormalize(next_values)
+    #             deltas = rewards + self.discount * next_values - values
+    #             # print(f'deltas:{deltas}')
+    #             deltas = deltas.flatten()
+    #             dones = dones.flatten()
+
+    #             advantages = calculate_gae(rewards, values, next_values, dones, self.discount, self.gae_coefficient)
+    #             returns = advantages + values
+
+    #             # print(f'pre normalized returns:{returns}')
+    #             if self.normalize_values:
+    #                 returns = self.normalizer.normalize(returns)
+    #                 # print(f'post normalized returns:{returns}')
+    #             # print(f'advantages shape:{advantages.shape}')
+    #             # print(f'advantages mean:{advantages.mean()}, std:{advantages.std()+1e-4}')
+
+    #             # Normalize advantages
+    #             if self.normalize_advantages:
+    #                 advantages = (advantages - advantages.mean()) / (advantages.std()+1e-4)
+
+    #             # Append to the lists
+    #             all_values.append(values)
+    #             all_advantages.append(advantages)
+    #             all_returns.append(returns)
+
+    #     # Log to wandb
+    #     self._train_episode_config["values"] = T.cat(all_values, dim=0).cpu().numpy().flatten().mean()
+    #     self._train_episode_config["advantages"] = T.cat(all_advantages, dim=0).cpu().numpy().flatten().mean()
+    #     self._train_episode_config["returns"] = T.cat(all_returns, dim=0).cpu().numpy().flatten().mean()
+
+    #     return all_advantages, all_returns
+
+    def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
+        # rewards: (num_steps, num_envs)
+        # states: (num_steps, num_envs, observation_space)
+        # next_states: (num_steps, num_envs, observation_space)
+        # dones: (num_steps, num_envs)
+
+        num_steps, num_envs = rewards.shape
         all_advantages = []
         all_returns = []
-        all_values = []
 
-        for t in range(self.num_envs):
-            # for states, rewards, next_states, dones in zip(all_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_rewards[self.trajectory_length*t:self.trajectory_length*(t+1)], all_next_states[self.trajectory_length*t:self.trajectory_length*(t+1)], all_dones[self.trajectory_length*t:self.trajectory_length*(t+1)]):
+        # Loop over each environment
+        for env_idx in range(num_envs):
             with T.no_grad():
-                states = all_states[self.trajectory_length*t:self.trajectory_length*(t+1)]
-                rewards = all_rewards[self.trajectory_length*t:self.trajectory_length*(t+1)]
-                next_states = all_next_states[self.trajectory_length*t:self.trajectory_length*(t+1)]
-                dones = all_dones[self.trajectory_length*t:self.trajectory_length*(t+1)]
-                # print(f'states:{states.shape}')
-                # print(f'rewards:{rewards.shape}')
-                # print(f'next_states:{next_states.shape}')
-                # print(f'dones:{dones.shape}')
-                # Compute values for states using the value function
-                values = self.value_model(states)
-                next_values = self.value_model(next_states)
+                rewards_env = rewards[:, env_idx]          # Shape: (num_steps,)
+                states_env = states[:, env_idx, :]         # Shape: (num_steps, observation_space)
+                next_states_env = next_states[:, env_idx, :]  # Shape: (num_steps, observation_space)
+                dones_env = dones[:, env_idx]              # Shape: (num_steps,)
+
+                values = self.value_model(states_env)          # Shape: (num_steps, 1)
+                next_values = self.value_model(next_states_env)  # Shape: (num_steps, 1)
 
                 if self.normalize_values:
                     self.normalizer.update_local_stats(values)
                     self.normalizer.update_global_stats()
                     values = self.normalizer.denormalize(values)
                     next_values = self.normalizer.denormalize(next_values)
-                deltas = rewards + self.discount * next_values - values
-                # print(f'deltas:{deltas}')
-                deltas = deltas.flatten()
-                dones = dones.flatten()
 
-                advantages = calculate_gae(rewards, values, next_values, dones, self.discount, self.gae_coefficient)
+                # Calculate advantages using GAE
+                advantages = calculate_gae(
+                    rewards_env, values, next_values, dones_env, self.discount, self.gae_coefficient
+                )
+                advantages = advantages.reshape(-1, 1)
+                # print(f'gae advantages shape:{advantages.shape}')
+                # print(f'gae values shape:{values.shape}')
                 returns = advantages + values
+                # print(f'gae returns shape:{returns.shape}')
 
-                # print(f'pre normalized returns:{returns}')
                 if self.normalize_values:
                     returns = self.normalizer.normalize(returns)
-                    # print(f'post normalized returns:{returns}')
-                # print(f'advantages shape:{advantages.shape}')
-                # print(f'advantages mean:{advantages.mean()}, std:{advantages.std()+1e-4}')
-                
-                # Normalize advantages
+
                 if self.normalize_advantages:
-                    advantages = (advantages - advantages.mean()) / (advantages.std()+1e-4)
-                
-                # Append to the lists
-                all_values.append(values)
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
+
                 all_advantages.append(advantages)
                 all_returns.append(returns)
 
+        # Stack the results along the environment dimension
+        all_advantages = T.stack(all_advantages, dim=1)  # Shape: (num_steps, num_envs, 1)
+        all_returns = T.stack(all_returns, dim=1)        # Shape: (num_steps, num_envs, 1)
+
         # Log to wandb
-        self._train_episode_config["values"] = T.cat(all_values, dim=0).cpu().numpy().flatten().mean()
-        self._train_episode_config["advantages"] = T.cat(all_advantages, dim=0).cpu().numpy().flatten().mean()
-        self._train_episode_config["returns"] = T.cat(all_returns, dim=0).cpu().numpy().flatten().mean()
+        self._train_episode_config["values"] = values.mean().item()
+        self._train_episode_config["advantages"] = all_advantages.mean().item()
+        self._train_episode_config["returns"] = all_returns.mean().item()
 
         return all_advantages, all_returns
 
@@ -5279,7 +5336,7 @@ class PPO(Agent):
         try:
             # Instantiate env from env_spec
             env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
-            
+
             # logger.debug(f"train config: {train_config}")
             logger.debug(f"env spec id: {env.spec.id}")
             logger.debug(f"callbacks: {callbacks}")
@@ -5294,7 +5351,7 @@ class PPO(Agent):
             # Format policy and value layers, and kernels
             policy_layers, value_layers, kernels = wandb_support.build_layers(config)
             # logger.debug(f"layers built")
-            
+
             # Policy
             # Learning Rate
             policy_learning_rate_const = get_wandb_config_value(config, model_type, 'policy_learning_rate_constant')
@@ -5333,7 +5390,7 @@ class PPO(Agent):
                     device = device,
                 )
             logger.debug(f"policy model built: {policy_model.get_config()}")
-            
+
             # Value Func
             # Learning Rate
             value_learning_rate_const = get_wandb_config_value(config, model_type, "value_learning_rate_constant")
@@ -5388,7 +5445,7 @@ class PPO(Agent):
             normalize_advantages = get_wandb_config_value(config, model_type, 'normalize_advantage')
             logger.debug(f"normalize advantage set to {normalize_advantages}")
             # Normalize values
-            normalize_values = get_wandb_config_value(config, model_type, 'normalize_value')
+            normalize_values = get_wandb_config_value(config, model_type, 'normalize_values')
             logger.debug(f"normalize values set to {normalize_values}")
             # Normalize values clip value
             normalize_val_clip = get_wandb_config_value(config, model_type, 'normalize_values_clip')
@@ -5468,9 +5525,6 @@ class PPO(Agent):
             self.save_dir = save_dir
             print(f'new save dir: {self.save_dir}')
 
-        #DEBUG
-        print(f'discount:{self.discount}')
-
 
         if seed is None:
             seed = np.random.randint(100)
@@ -5499,7 +5553,7 @@ class PPO(Agent):
                     # logger.debug(f'TD3.train on train begin callback complete')
                 else:
                     callback.on_train_begin(logs=self._config)
-        
+
         try:
             # instantiate new vec environment
             env = self._initialize_env(0, num_envs, seed)
@@ -5527,6 +5581,7 @@ class PPO(Agent):
         all_dones = []
         # score_history = []
         episode_scores = [[] for _ in range(num_envs)]  # Track scores for each env
+        # episode_scores = []  # Track scores for each env
         policy_loss_history = []
         value_loss_history = []
         entropy_history = []
@@ -5569,6 +5624,8 @@ class PPO(Agent):
             #     acts = actions
 
             next_states, rewards, terms, truncs, _ = env.step(acts)
+            #DEBUG
+            # print(f'terms:{terms}, truncs:{truncs}')
             # Update scores of each episode
             scores += rewards
             # print(f'rewards:{rewards.mean()}')
@@ -5586,7 +5643,7 @@ class PPO(Agent):
                 else:
                     dones.append(False)
                     # print(f'append false')
-            
+
             # Add frame of first env to frames array if rendering
             # if render_freq > 0:
             #     # Capture the frame
@@ -5594,7 +5651,7 @@ class PPO(Agent):
             #     # print(f'frame:{frame}')
             #     frames.append(frame)
 
-            
+
             episodes += dones
             # set episode rendered to false if episode number has changed
             if prev_episode != episodes[0]:
@@ -5619,16 +5676,19 @@ class PPO(Agent):
                 # Switch models back to train mode after rendering
                 self.policy_model.train()
                 self.value_model.train()
-            
+
             prev_episode = episodes[0]
-            
-            env_scores = np.array([env_score[-1] for env_score in episode_scores])
+
+            env_scores = np.array([
+                env_score[-1] if len(env_score) > 0 else np.nan
+                for env_score in episode_scores
+            ])
 
             if self._step % self.trajectory_length == 0:
                 print(f'learning timestep: {self._step}')
                 trajectory = (all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones)
-                policy_loss, value_loss, entropy, kl, time, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
-                self._train_episode_config[f"avg_env_scores"] = env_scores.mean()
+                policy_loss, value_loss, entropy, kl, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
+                self._train_episode_config[f"avg_env_scores"] = np.nanmean(env_scores)
                 self._train_episode_config["actor_loss"] = policy_loss
                 self._train_episode_config["critic_loss"] = value_loss
                 self._train_episode_config["entropy"] = entropy
@@ -5636,9 +5696,12 @@ class PPO(Agent):
                 self._train_episode_config["lambda"] = lambda_value
                 self._train_episode_config["param1"] = param1.mean()
                 self._train_episode_config["param2"] = param2.mean()
-                
+
                 # check if best reward
-                avg_score = np.array([env_score[-avg_num:] if len(episode_scores) > avg_num else env_score for env_score in episode_scores]).mean()
+                avg_score = np.mean([
+                    np.mean(env_score[-avg_num:]) if len(env_score) >= avg_num else np.mean(env_score)
+                    for env_score in episode_scores
+                ])
                 if avg_score > best_reward:
                     best_reward = avg_score
                     self._train_episode_config["best"] = True
@@ -5651,7 +5714,7 @@ class PPO(Agent):
                 value_loss_history.append(value_loss)
                 entropy_history.append(entropy)
                 kl_history.append(kl)
-                time_history.append(time)
+                # time_history.append(time)
                 lambda_values.append(lambda_value)
                 param_history.append((param1, param2))
                 all_states = []
@@ -5668,7 +5731,7 @@ class PPO(Agent):
             states = next_states
 
             if self._step % 1000 == 0:
-                print(f'episode: {episodes}; total steps: {self._step}; avg scores/{avg_num} episodes: {avg_scores}; avg total score: {avg_scores.mean()}')
+                print(f'episode: {episodes}; total steps: {self._step}; episodes scores: {env_scores}; avg score: {env_scores.mean()}')
 
             if self.callbacks:
                 for callback in self.callbacks:
@@ -5684,75 +5747,148 @@ class PPO(Agent):
                 'value loss': value_loss_history,
                 'entropy': entropy_history,
                 'kl': kl_history,
-                'time': time_history,
+                # 'time': time_history,
                 'lambda': lambda_values,
                 'params': param_history,
                 }
 
+    # def learn(self, trajectory, batch_size, learning_epochs):
+    #     # Unpack trajectory
+    #     all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones = trajectory
+    #     # Flatten the lists of numpy arrays across the num_envs dimension
+    #     states = np.concatenate(all_states, axis=0)
+    #     actions = np.concatenate(all_actions, axis=0)
+    #     log_probs = np.concatenate(all_log_probs, axis=0)
+    #     rewards = np.concatenate(all_rewards, axis=0)
+    #     next_states = np.concatenate(all_next_states, axis=0)
+    #     dones = np.concatenate(all_dones, axis=0)
+
+    #     # Convert to Tensors
+    #     states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
+    #     actions = T.tensor(actions, dtype=T.float32, device=self.policy_model.device)
+    #     log_probs = T.tensor(log_probs, dtype=T.float32, device=self.policy_model.device)
+    #     rewards = T.tensor(rewards, dtype=T.float32, device=self.value_model.device).unsqueeze(1)
+    #     next_states = T.tensor(next_states, dtype=T.float32, device=self.policy_model.device)
+    #     dones = T.tensor(dones, dtype=T.int, device=self.policy_model.device)
+
+
+    #     # Calculate advantages and returns
+    #     advantages, returns = self.calculate_advantages_and_returns(rewards, states, next_states, dones)
+
+    #     # advantages = T.tensor(advantages, dtype=T.float32, device=self.policy.device)
+    #     advantages = T.cat(advantages, dim=0)
+    #     advantages = advantages.to(self.policy_model.device, dtype=T.float32)
+    #     returns = T.cat(returns, dim=0)
+    #     returns = returns.to(self.policy_model.device, dtype=T.float32)
+    #     # returns = T.tensor(returns, dtype=T.float32, device=self.value_function.device)
+    #     # advantages = advantages.reshape(-1, 1)
+    #     # returns = returns.reshape(-1, 1)
+    #     # print(f'advantages shape:{advantages.shape}')
+    #     # print(f'returns shape:{returns.shape}')
+    #     # kl_div_loss_fn = T.nn.KLDivLoss(reduction="batchmean", log_target=True)
+
+    #     # Set previous distribution to none (used for KL divergence calculation)
+    #     prev_dist = None
+
+    #     num_batches = len(states) // batch_size
+    #     print(f'num batches:{num_batches}')
+
+    #     # Loop over learning_epochs epochs to train the policy and value functions
+    #     for epoch in range(learning_epochs):
+    #         times = []
+    #         start_time = time.time()
+    #         # Sample mini batch from trajectory
+    #         indices = T.randperm(len(states))
+    #         batches = [indices[i * batch_size:(i + 1) * batch_size] for i in range(num_batches)]
+    #         for batch in batches:
+    #             states_batch = states[batch]
+    #             actions_batch = actions[batch]
+    #             log_probs_batch = log_probs[batch]
+    #             rewards_batch = rewards[batch]
+    #             next_states_batch = next_states[batch]
+    #             dones_batch = dones[batch]
+    #             advantages_batch = advantages[batch]
+    #             returns_batch = returns[batch]
+
     def learn(self, trajectory, batch_size, learning_epochs):
         # Unpack trajectory
         all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones = trajectory
-        # Flatten the lists of numpy arrays across the num_envs dimension
-        states = np.concatenate(all_states, axis=0)
-        actions = np.concatenate(all_actions, axis=0)
-        log_probs = np.concatenate(all_log_probs, axis=0)
-        rewards = np.concatenate(all_rewards, axis=0)
-        next_states = np.concatenate(all_next_states, axis=0)
-        dones = np.concatenate(all_dones, axis=0)
 
-        # Convert to Tensors
-        states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
-        actions = T.tensor(actions, dtype=T.float32, device=self.policy_model.device)
-        log_probs = T.tensor(log_probs, dtype=T.float32, device=self.policy_model.device)
-        rewards = T.tensor(rewards, dtype=T.float32, device=self.value_model.device).unsqueeze(1)
-        next_states = T.tensor(next_states, dtype=T.float32, device=self.policy_model.device)
-        dones = T.tensor(dones, dtype=T.int, device=self.policy_model.device)
+        # Convert lists to tensors without flattening
+        # This results in tensors of shape (num_steps, num_envs, ...)
+        states = T.stack([T.tensor(s, dtype=T.float32, device=self.policy_model.device) for s in all_states])
+        actions = T.stack([T.tensor(a, dtype=T.float32, device=self.policy_model.device) for a in all_actions])
+        log_probs = T.stack([T.tensor(lp, dtype=T.float32, device=self.policy_model.device) for lp in all_log_probs])
+        rewards = T.stack([T.tensor(r, dtype=T.float32, device=self.value_model.device) for r in all_rewards])
+        next_states = T.stack([T.tensor(ns, dtype=T.float32, device=self.policy_model.device) for ns in all_next_states])
+        dones = T.stack([T.tensor(d, dtype=T.int, device=self.policy_model.device) for d in all_dones])
 
+        # DEBUG
+        # print(f'states shape:{states.shape}')
+        # print(f'actions shape:{actions.shape}')
+        # print(f'log_probs shape:{log_probs.shape}')
+        # print(f'rewards shape:{rewards.shape}')
+        # print(f'next_states shape:{next_states.shape}')
+        # print(f'dones shape:{dones.shape}')
+
+        # Now, states.shape = (num_steps, num_envs, observation_space)
+        # Similarly for other variables
 
         # Calculate advantages and returns
         advantages, returns = self.calculate_advantages_and_returns(rewards, states, next_states, dones)
-        
-        # advantages = T.tensor(advantages, dtype=T.float32, device=self.policy.device)
-        advantages = T.cat(advantages, dim=0)
-        advantages = advantages.to(self.policy_model.device, dtype=T.float32)
-        returns = T.cat(returns, dim=0)
-        returns = returns.to(self.policy_model.device, dtype=T.float32)
-        # returns = T.tensor(returns, dtype=T.float32, device=self.value_function.device)
-        # advantages = advantages.reshape(-1, 1)
-        # returns = returns.reshape(-1, 1)
+        #DEBUG
         # print(f'advantages shape:{advantages.shape}')
         # print(f'returns shape:{returns.shape}')
-        # kl_div_loss_fn = T.nn.KLDivLoss(reduction="batchmean", log_target=True)
+
+        # Proceed with the rest of the learning process
+        # Flatten the tensors along the time and environment dimensions for batching
+        num_steps, num_envs = rewards.shape
+        total_samples = num_steps * num_envs
+
+        # Reshape tensors for batching
+        states = states.reshape(total_samples, -1)       # Shape: (total_samples, observation_space)
+        actions = actions.reshape(total_samples, -1)     # Shape: (total_samples, action_space)
+        log_probs = log_probs.reshape(total_samples, -1) # Shape: (total_samples, action_dim)
+        advantages = advantages.reshape(total_samples, 1) # Shape: (total_samples, 1)
+        returns = returns.reshape(total_samples, 1)      # Shape: (total_samples, 1)
+        #DEBUG
+        # print(f'flatenned states shape:{states.shape}')
+        # print(f'flatenned actions shape:{actions.shape}')
+        # print(f'flatenned log_probs shape:{log_probs.shape}')
+        # print(f'flatenned advantages shape:{advantages.shape}')
+        # print(f'flatenned returns shape:{returns.shape}')
 
         # Set previous distribution to none (used for KL divergence calculation)
         prev_dist = None
 
-        num_batches = len(states) // batch_size
-        print(f'num batches:{num_batches}')
+        # Create random indices for shuffling
+        indices = T.randperm(total_samples)
+        num_batches = total_samples // batch_size
 
-        # Loop over learning_epochs epochs to train the policy and value functions
+        # Training loop
         for epoch in range(learning_epochs):
-            times = []
-            start_time = time.time()
-            # Sample mini batch from trajectory
-            indices = T.randperm(len(states))
-            batches = [indices[i * batch_size:(i + 1) * batch_size] for i in range(num_batches)]
-            for batch in batches:
-                states_batch = states[batch]
-                actions_batch = actions[batch]
-                log_probs_batch = log_probs[batch]
-                rewards_batch = rewards[batch]
-                next_states_batch = next_states[batch]
-                dones_batch = dones[batch]
-                advantages_batch = advantages[batch]
-                returns_batch = returns[batch]
+            for batch_num in range(num_batches):
+                batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
+                states_batch = states[batch_indices]
+                actions_batch = actions[batch_indices]
+                log_probs_batch = log_probs[batch_indices]
+                advantages_batch = advantages[batch_indices]
+                returns_batch = returns[batch_indices]
+                #DEBUG
+                # print(f'states batch shape:{states_batch.shape}')
+                # print(f'actions batch shape:{actions_batch.shape}')
+                # print(f'log_probs batch shape:{log_probs_batch.shape}')
+                # print(f'advantages batch shape:{advantages_batch.shape}')
+                # print(f'returns batch shape:{returns_batch.shape}')
+
+                # Calculate the policy loss
 
                 dist, param1, param2 = self.policy_model(states_batch)
                 # print(f'dist mean:{dist.loc}')
                 # print(f'dist var:{dist.scale}')
                 # print(f'param 1:{param1}')
                 # print(f'param 2:{param2}')
-                dist_time = time.time()
+                # dist_time = time.time()
                 # Create prev_dist by recreating the distribution from the previous step's parameters
                 if prev_dist is None:
                     prev_dist = dist
@@ -5763,13 +5899,13 @@ class PPO(Agent):
                         param1_prev = prev_dist.concentration1.clone().detach()
                         param2_prev = prev_dist.concentration0.clone().detach()
                         prev_dist = Beta(param1_prev, param2_prev)
-                    elif self.distribution == 'Normal':
+                    elif self.distribution == 'normal':
                         param1_prev = prev_dist.loc.clone().detach()
                         param2_prev = prev_dist.scale.clone().detach()
                         prev_dist = Normal(param1_prev, param2_prev)
                     else:
                         raise ValueError(f'Unknown distribution: {self.distribution}')
-                dist_delta = time.time() - dist_time
+                # dist_delta = time.time() - dist_time
                 # print(f'dist_delta: {dist_delta}')
 
                 # Calculate new log probabilities of actions
@@ -5795,13 +5931,13 @@ class PPO(Agent):
                 # Calculate the KL Divergence
                 kl = kl_divergence(prev_dist, dist).sum(dim=-1, keepdim=True)
 
-                if self.loss == 'Clipped':
+                if self.loss == 'clipped':
                     lambda_value = 1.0
                     surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
                     # Clipped policy loss
                     clipped_loss = (-(T.min(surr1, surr2)) - self.entropy_coefficient * entropy).mean()
                     policy_loss = clipped_loss
-                elif self.loss == 'KL':
+                elif self.loss == 'kl':
                     lambda_value = 0.0
                     # probs_old = T.exp(log_probs_batch)
                     # kl_div = probs_old * (log_probs_batch - new_log_probs)
@@ -5812,7 +5948,7 @@ class PPO(Agent):
                     # kl_loss = -(surr1 - self.kl_coefficient * kl_div.sum(dim=-1, keepdim=True)).mean()
                     kl_loss = -(surr1 - self.kl_coefficient * kl).mean()
                     policy_loss = kl_loss
-                elif self.loss == 'Hybrid':
+                elif self.loss == 'hybrid':
                     # Run lambda param through sigmoid to clamp between 0 and 1
                     lambda_value = T.sigmoid(self.lambda_param)
                     surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
@@ -5840,8 +5976,8 @@ class PPO(Agent):
                 self.value_model.optimizer.zero_grad()
                 value_loss.backward()
                 self.value_model.optimizer.step()
-                epoch_time = time.time() - start_time
-                times.append((epoch_time, dist_delta))
+                # epoch_time = time.time() - start_time
+                # times.append((epoch_time, dist_delta))
 
                 # set dist as previous dist
                 prev_dist = dist
@@ -5854,7 +5990,7 @@ class PPO(Agent):
         if self.loss == 'hybrid':
             print(f'Lambda: {lambda_value}')
 
-        return policy_loss, value_loss, entropy.mean(), kl.mean(), times, lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
+        return policy_loss, value_loss, entropy.mean(), kl.mean(), lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
 
     def test(self, num_episodes, num_envs:int=1, seed=None, render_freq:int=0, training=False):
         """
@@ -5879,7 +6015,7 @@ class PPO(Agent):
         # Set render freq to 0 if None is passed
         if render_freq == None:
             render_freq = 0
-        
+
 
         print(f'seed value:{seed}')
         # Set seeds
@@ -5903,7 +6039,7 @@ class PPO(Agent):
                     self._config['seed'] = seed
                     self._config['num_envs'] = num_envs
                 callback.on_test_begin(logs=self._config)
-        
+
         # episode_scores = [[] for _ in range(num_envs)]  # Track scores for each env
         # reset step counter
         self._step = 0
@@ -5932,7 +6068,7 @@ class PPO(Agent):
 
                 for i, (term, trunc) in enumerate(zip(terms, truncs)):
                     if term or trunc:
-                        # dones.append(True)
+                        dones.append(True)
                         done = True
                         # print(f'append true')
                     # else:
@@ -6005,7 +6141,7 @@ class PPO(Agent):
                     callback.on_test_epoch_end(epoch=self._step, logs=self._test_episode_config)
 
             # Reset score for this environment
-            scores = 0  
+            scores = 0
         if self.callbacks:
             for callback in self.callbacks:
                 callback.on_test_end(logs=self._test_episode_config)
@@ -6157,6 +6293,7 @@ def get_agent_class_from_type(agent_type: str):
              "HER_DDPG": "HER",
              "HER": "HER",
              "TD3": "TD3",
+             "PPO": "PPO",
             }
 
     # Use globals() to get a reference to the class
