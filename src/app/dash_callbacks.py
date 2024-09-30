@@ -41,6 +41,7 @@ from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueMo
 import cnn_models
 import rl_agents
 import wandb_support
+# from sweep import run_agent
 
 
 # Create a queue to store the formatted data
@@ -84,11 +85,13 @@ def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_t
         print(f"Error in update_heatmap_process: {str(e)}")
         # time.sleep(5)
 
-def run_agent(sweep_id, sweep_config, train_config):
+def run_agent(sweep_id, sweep_config, num_sweeps):
+    from rl_agents import init_sweep
+    print('run agent fired...')
     wandb.agent(
         sweep_id,
-        function=lambda: wandb_support._run_sweep(sweep_config, train_config),
-        count=train_config['num_sweeps'],
+        function=lambda: init_sweep(sweep_config),
+        count=num_sweeps,
         project=sweep_config["project"],
     )
 
@@ -3200,12 +3203,12 @@ def register_callbacks(app, shared_data):
         prevent_initial_call=True
     )
     def update_ppo_loss_options(loss_type):
-        if loss_type == 'KL':
+        if loss_type == 'kl':
             kl_block = {'display': 'block'}
             ep_block = {'display': 'none'}
             lm_block = {'display': 'none'}
             return ep_block, kl_block, lm_block
-        elif loss_type == 'Clipped':
+        elif loss_type == 'clipped':
             kl_block = {'display': 'none'}
             ep_block = {'display': 'block'}
             lm_block = {'display': 'none'}
@@ -3220,7 +3223,7 @@ def register_callbacks(app, shared_data):
         Input({'type':'norm-values', 'model': 'none', 'agent': MATCH}, 'value'),
         prevent_initial_call=True
     )
-    def update_ppo_loss_options(norm_values):
+    def update_norm_clip_options(norm_values):
         if norm_values:
             norm_block = {'display': 'block'}
             return norm_block
@@ -3331,15 +3334,32 @@ def register_callbacks(app, shared_data):
                     # ]
 
                     # Construct and run the sweep.py script
-                    print('constructing terminal command...')
-                    command = [
-                        'python', 'sweep.py',
-                        '--sweep_config', sweep_config_path,
-                        '--num_sweeps', str(num_sweeps),
-                    ]
-                    print('command constructed')
+                    # print('constructing terminal command...')
+                    # command = [
+                    #     'python', 'sweep.py',
+                    #     '--sweep_config', sweep_config_path,
+                    #     '--num_sweeps', str(num_sweeps),
+                    # ]
+                    # print('command constructed')
 
-                    subprocess.Popen(command)
+                    # subprocess.Popen(command)
+                    sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
+
+                    # num_sweep_agents = train_config['num_agents'] if train_config['num_agents'] is not None else 1
+                    # print(f'num sweep agents:{num_sweep_agents}')
+
+                    # if num_sweep_agents > 1:
+                    #     processes = []
+                    #     for agent in range(num_sweep_agents):
+                    #         p = multiprocessing.Process(target=run_agent, args=(sweep_id, sweep_config, train_config))
+                    #         p.start()
+                    #         processes.append(p)
+
+                    #     for p in processes:
+                    #         p.join()
+                    
+                    # else:
+                    run_agent(sweep_id, sweep_config, num_sweeps)
                     
 
 
@@ -3432,8 +3452,6 @@ def register_callbacks(app, shared_data):
             if sweep_config is not None:
                 project = sweep_config['project']
                 sweep_name = sweep_config['name']
-                print(f'project = {project}')
-                print(f'sweep_name = {sweep_name}')
             # Create and start the fetch_data_process
             # print('start data fetch process called')
             fetch_data_thread = threading.Thread(target=fetch_data_process, args=(project, sweep_name, shared_data))

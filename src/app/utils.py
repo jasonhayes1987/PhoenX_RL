@@ -1884,7 +1884,7 @@ def create_ppo_loss_type_input(agent_type):
                     'model':'none',
                     'agent':agent_type,
                 },
-                options=[{'label': i, 'value': i} for i in ["KL", "Clipped", "Hybrid"]],
+                options=[{'label': i, 'value': i.lower()} for i in ["KL", "Clipped", "Hybrid"]],
                 placeholder="select loss type"
             ),
             html.Div(
@@ -2029,7 +2029,7 @@ def create_distribution_input(agent_type):
                 'model':'none',
                 'agent':agent_type,
                 },
-                options=[{'label': i, 'value': i} for i in ["Beta", "Normal"]],
+                options=[{'label': i.capitalize(), 'value': i} for i in ["beta", "normal"]],
                 placeholder="select distribution"
             ),
         ]

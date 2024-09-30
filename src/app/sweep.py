@@ -51,6 +51,14 @@ def main(sweep_config, num_sweeps):
         # config_file_path = 'sweep/train_config.json'
         # with open(config_file_path, 'r') as file:
         #     train_config = json.load(file)
+        # Set extended timeout settings
+        # Configure W&B settings
+        # settings = {
+        #     'timeout':120,          # Increase the timeout (in seconds)
+        #     'retry_timedelta':300,  # Set retry delay time
+        #     'max_retries':5         # Number of retry attempts
+        # }
+
         print('attempting to create sweep id...')
         sweep_id = wandb.sweep(sweep=sweep_config, project=sweep_config["project"])
         print('sweep id created')
