@@ -396,7 +396,7 @@ class StochasticContinuousPolicy(Model):
             # beta = F.softplus(param2) + 1.0
             dist = Beta(alpha, beta)
             return dist, alpha, beta
-        elif self.distribution == 'Normal':
+        elif self.distribution == 'normal':
             mu = param1
             sigma = F.softplus(param2)
             dist = Normal(mu, sigma)
