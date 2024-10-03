@@ -5024,6 +5024,7 @@ class PPO(Agent):
                  normalize_values: bool = False,
                  value_normalizer_clip: float = np.inf,
                  policy_grad_clip:float = np.inf,
+                 reward_clip:float = np.inf,
                  lambda_:float = None,
                  callbacks: List = [],
                  save_dir = 'models',
@@ -5046,6 +5047,7 @@ class PPO(Agent):
         if self.normalize_values:
             self.normalizer = Normalizer((1), clip_range=self.value_norm_clip, device=device)
         self.policy_grad_clip = policy_grad_clip
+        self.reward_clip = reward_clip
         self.lambda_ = lambda_
         self.callbacks = callbacks
         self.device = device
@@ -5225,62 +5227,104 @@ class PPO(Agent):
 
     #     return all_advantages, all_returns
 
-    def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
-        # rewards: (num_steps, num_envs)
-        # states: (num_steps, num_envs, observation_space)
-        # next_states: (num_steps, num_envs, observation_space)
-        # dones: (num_steps, num_envs)
+    # def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
+    #     # rewards: (num_steps, num_envs)
+    #     # states: (num_steps, num_envs, observation_space)
+    #     # next_states: (num_steps, num_envs, observation_space)
+    #     # dones: (num_steps, num_envs)
 
+    #     num_steps, num_envs = rewards.shape
+    #     all_advantages = []
+    #     all_returns = []
+
+    #     # Loop over each environment
+    #     for env_idx in range(num_envs):
+    #         with T.no_grad():
+    #             rewards_env = rewards[:, env_idx]          # Shape: (num_steps,)
+    #             states_env = states[:, env_idx, :]         # Shape: (num_steps, observation_space)
+    #             next_states_env = next_states[:, env_idx, :]  # Shape: (num_steps, observation_space)
+    #             dones_env = dones[:, env_idx]              # Shape: (num_steps,)
+
+    #             values = self.value_model(states_env)          # Shape: (num_steps, 1)
+    #             next_values = self.value_model(next_states_env)  # Shape: (num_steps, 1)
+
+    #             # if self.normalize_values:
+    #             #     self.normalizer.update_local_stats(values)
+    #             #     self.normalizer.update_global_stats()
+    #             #     values = self.normalizer.denormalize(values)
+    #             #     next_values = self.normalizer.denormalize(next_values)
+
+    #             # Calculate advantages using GAE
+    #             advantages = calculate_gae(
+    #                 rewards_env, values, next_values, dones_env, self.discount, self.gae_coefficient
+    #             )
+    #             advantages = advantages.reshape(-1, 1)
+    #             # print(f'gae advantages shape:{advantages.shape}')
+    #             # print(f'gae values shape:{values.shape}')
+    #             returns = advantages + values
+    #             # print(f'gae returns shape:{returns.shape}')
+
+    #             if self.normalize_values:
+    #                 self.normalizer.update_local_stats(returns)  # Accumulate returns stats
+    #                 self.normalizer.update_global_stats()        # Update global mean/var for returns
+    #                 returns = self.normalizer.normalize(returns)  # Normalize the returns
+
+    #             if self.normalize_advantages:
+    #                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    #             all_advantages.append(advantages)
+    #             all_returns.append(returns)
+
+    #     # Stack the results along the environment dimension
+    #     all_advantages = T.stack(all_advantages, dim=1)  # Shape: (num_steps, num_envs, 1)
+    #     all_returns = T.stack(all_returns, dim=1)        # Shape: (num_steps, num_envs, 1)
+
+    #     # Log to wandb
+    #     self._train_episode_config["values"] = values.mean().item()
+    #     self._train_episode_config["advantages"] = all_advantages.mean().item()
+    #     self._train_episode_config["returns"] = all_returns.mean().item()
+
+    #     return all_advantages, all_returns
+        
+    def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
         num_steps, num_envs = rewards.shape
         all_advantages = []
         all_returns = []
 
-        # Loop over each environment
         for env_idx in range(num_envs):
             with T.no_grad():
-                rewards_env = rewards[:, env_idx]          # Shape: (num_steps,)
-                states_env = states[:, env_idx, :]         # Shape: (num_steps, observation_space)
-                next_states_env = next_states[:, env_idx, :]  # Shape: (num_steps, observation_space)
-                dones_env = dones[:, env_idx]              # Shape: (num_steps,)
+                rewards_env = rewards[:, env_idx]
+                states_env = states[:, env_idx, :]
+                next_states_env = next_states[:, env_idx, :]
+                dones_env = dones[:, env_idx]
 
-                values = self.value_model(states_env)          # Shape: (num_steps, 1)
-                next_values = self.value_model(next_states_env)  # Shape: (num_steps, 1)
+                values = self.value_model(states_env).squeeze(-1)
+                next_values = self.value_model(next_states_env).squeeze(-1)
 
-                if self.normalize_values:
-                    self.normalizer.update_local_stats(values)
-                    self.normalizer.update_global_stats()
-                    values = self.normalizer.denormalize(values)
-                    next_values = self.normalizer.denormalize(next_values)
-
-                # Calculate advantages using GAE
-                advantages = calculate_gae(
-                    rewards_env, values, next_values, dones_env, self.discount, self.gae_coefficient
-                )
-                advantages = advantages.reshape(-1, 1)
-                # print(f'gae advantages shape:{advantages.shape}')
-                # print(f'gae values shape:{values.shape}')
-                returns = advantages + values
-                # print(f'gae returns shape:{returns.shape}')
-
-                if self.normalize_values:
-                    returns = self.normalizer.normalize(returns)
+                advantages = T.zeros_like(rewards_env)
+                returns = T.zeros_like(rewards_env)
+                gae = 0
+                for t in reversed(range(len(rewards_env))):
+                    delta = rewards_env[t] + self.discount * next_values[t] * (1 - dones_env[t]) - values[t]
+                    gae = delta + self.discount * self.gae_coefficient * (1 - dones_env[t]) * gae
+                    advantages[t] = gae
+                    returns[t] = gae + values[t]
 
                 if self.normalize_advantages:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                all_advantages.append(advantages)
-                all_returns.append(returns)
+                all_advantages.append(advantages.unsqueeze(-1))
+                all_returns.append(returns.unsqueeze(-1))
 
-        # Stack the results along the environment dimension
-        all_advantages = T.stack(all_advantages, dim=1)  # Shape: (num_steps, num_envs, 1)
-        all_returns = T.stack(all_returns, dim=1)        # Shape: (num_steps, num_envs, 1)
+        all_advantages = T.stack(all_advantages, dim=1)
+        all_returns = T.stack(all_returns, dim=1)
 
-        # Log to wandb
         self._train_episode_config["values"] = values.mean().item()
         self._train_episode_config["advantages"] = all_advantages.mean().item()
         self._train_episode_config["returns"] = all_returns.mean().item()
 
         return all_advantages, all_returns
+
 
     def get_action(self, states):
         # Run states through each Policy to get distribution params
@@ -5311,10 +5355,10 @@ class PPO(Agent):
         # return a
 
     def clip_reward(self, reward):
-        if reward > 1.0:
-            return 1.0
-        elif reward < -1.0:
-            return -1.0
+        if reward > self.reward_clip:
+            return self.reward_clip
+        elif reward < -self.reward_clip:
+            return -self.reward_clip
         else:
             return reward
 
@@ -5731,7 +5775,7 @@ class PPO(Agent):
             states = next_states
 
             if self._step % 1000 == 0:
-                print(f'episode: {episodes}; total steps: {self._step}; episodes scores: {env_scores}; avg score: {env_scores.mean()}')
+                print(f'episode: {episodes}; total steps: {self._step}; episodes scores: {env_scores}; avg score: {np.nanmean(env_scores)}')
 
             if self.callbacks:
                 for callback in self.callbacks:
@@ -5921,44 +5965,38 @@ class PPO(Agent):
                 # print(f'prob ratio:{prob_ratio}')
                 # Calculate the surrogate loss
                 # print(f'advantages batch:{advantages_batch}')
-                surr1 = prob_ratio * advantages_batch
-                # print(f'surr1 shape:{surr1.shape}')
 
                 # Calculate the entropy of the distribution
-                entropy = dist.entropy().sum(axis=-1, keepdims=True)
+                entropy = dist.entropy().sum(axis=-1, keepdims=True).mean()
                 # print(f'full entropy:{dist.entropy()}')
 
                 # Calculate the KL Divergence
-                kl = kl_divergence(prev_dist, dist).sum(dim=-1, keepdim=True)
+                kl = kl_divergence(prev_dist, dist).sum(dim=-1, keepdim=True).mean()
+
+                surr1 = (prob_ratio * advantages_batch)
+                # print(f'surr1 shape:{surr1.shape}')
+                surr2 = (T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch)
+                # Clipped policy loss
+                surrogate_loss = -T.min(surr1, surr2).mean()
 
                 if self.loss == 'clipped':
                     lambda_value = 1.0
-                    surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
-                    # Clipped policy loss
-                    clipped_loss = (-(T.min(surr1, surr2)) - self.entropy_coefficient * entropy).mean()
-                    policy_loss = clipped_loss
+                    entropy_penalty = -self.entropy_coefficient * entropy
+                    policy_loss = surrogate_loss + entropy_penalty
                 elif self.loss == 'kl':
                     lambda_value = 0.0
-                    # probs_old = T.exp(log_probs_batch)
-                    # kl_div = probs_old * (log_probs_batch - new_log_probs)
-                    # print(f'KL div mean: {kl_div.mean()}')
-                    # print(f'kl_div shape:{kl_div.shape}')
-                    # print(f'kl_div:{kl_div}')
-                    # print(f'kl mean:{kl.mean()}')
-                    # kl_loss = -(surr1 - self.kl_coefficient * kl_div.sum(dim=-1, keepdim=True)).mean()
-                    kl_loss = -(surr1 - self.kl_coefficient * kl).mean()
-                    policy_loss = kl_loss
+                    log_diff = new_log_probs - log_probs_batch
+                    kl_penalty = -log_diff.mean()
+                    kl_penalty *= self.kl_coefficient
+                    policy_loss = surrogate_loss + kl_penalty
                 elif self.loss == 'hybrid':
                     # Run lambda param through sigmoid to clamp between 0 and 1
                     lambda_value = T.sigmoid(self.lambda_param)
-                    surr2 = T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch
-                    # Clipped policy loss
-                    clipped_loss = (-(T.min(surr1, surr2)) - self.entropy_coefficient * entropy).mean()
-                    # probs_old = T.exp(log_probs_batch)
-                    # kl_div = probs_old * (log_probs_batch - new_log_probs)
-                    # print(f'KL div mean: {kl_div.mean()}')
-                    kl_loss = (-surr1 + self.kl_coefficient * kl.mean()).mean()
-                    policy_loss = lambda_value * clipped_loss + (1-lambda_value) * kl_loss
+                    entropy_penalty = -self.entropy_coefficient * entropy
+                    log_diff = new_log_probs - log_probs_batch
+                    kl_penalty = -log_diff.mean()
+                    kl_penalty *= self.kl_coefficient
+                    policy_loss = surrogate_loss + entropy_penalty + kl_penalty
                 else:
                     raise ValueError(f'Unknown loss: {self.loss}')
 
