@@ -5149,15 +5149,22 @@ class PPO(Agent):
             context (str, optional): "train" or "test" separate into "train" and "test" directories under save_dir. Defaults to None.
         """
         # frames = np.array(frames)
-        # print(f'frames shape:{np.array(frames).shape}')
+        print('rendering episode...')
         if not isinstance(frames, np.ndarray):
             frames = np.array(frames)
         if context == 'train':
             video_path = os.path.join(self.save_dir, f"renders/train/episode_{episode}.mp4")
         elif context == 'test':
+            print('context set to test')
             video_path = os.path.join(self.save_dir, f"renders/test/episode_{episode}.mp4")
+            print(f'video path:{video_path}')
         else:
             video_path = os.path.join(self.save_dir, f"renders/episode_{episode}.mp4")
+
+        # Ensure the directory exists
+        directory = os.path.dirname(video_path)
+        if not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
 
         num_frames, height, width, layers = frames.shape
         video = cv2.VideoWriter(Path(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 30, (width, height))
@@ -5166,8 +5173,9 @@ class PPO(Agent):
             # print(f'frame shape:{frame.shape}')
             # Convert RGB to BGR for OpenCV
             video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-
+        
         video.release()
+        print('episode rendered')
 
 
     # def calculate_advantages_and_returns(self, all_rewards, all_states, all_next_states, all_dones):
@@ -5338,7 +5346,10 @@ class PPO(Agent):
                 #DEBUG
                 # print(f'state shape in get_action:{state.shape}')
                 # print(f'get action state:{state}')
-                dist, _, _ = self.policy_model(state)
+                if self.distribution == 'categorical':
+                    dist, logits = self.policy_model(state)
+                else:
+                    dist, _, _ = self.policy_model(state)
                 action = dist.sample()
                 log_prob = dist.log_prob(action)
                 actions.append(action.detach().cpu().numpy().flatten())
@@ -5634,7 +5645,7 @@ class PPO(Agent):
         lambda_values = []
         param_history = []
         frames = []  # List to store frames for the video
-        episodes = np.zeros(self.num_envs) # Tracks current episode for each env
+        self.episodes = np.zeros(self.num_envs) # Tracks current episode for each env
         episode_lengths = np.zeros(self.num_envs) # Tracks step count for each env
         scores = np.zeros(self.num_envs) # Tracks current score for each env
         states, _ = env.reset()
@@ -5642,7 +5653,7 @@ class PPO(Agent):
         # set an episode rendered flag to track if an episode has yet to be rendered
         episode_rendered = False
         # track the previous episode number of the first env for rendering
-        prev_episode = episodes[0]
+        prev_episode = self.episodes[0]
 
         while self._step < timesteps:
             self._step += 1 # Increment step count by 1
@@ -5696,13 +5707,13 @@ class PPO(Agent):
             #     frames.append(frame)
 
 
-            episodes += dones
+            self.episodes += dones
             # set episode rendered to false if episode number has changed
-            if prev_episode != episodes[0]:
+            if prev_episode != self.episodes[0]:
                 episode_rendered = False
             # print(f'dones:{dones}')
             # print(f'episodes:{episodes}')
-            self._train_episode_config['episode'] = episodes[0]
+            self._train_episode_config['episode'] = self.episodes[0]
             all_states.append(states)
             all_actions.append(actions)
             all_log_probs.append(log_probs)
@@ -5712,8 +5723,8 @@ class PPO(Agent):
             all_dones.append(dones)
 
             # render episode if first env shows done and first env episode num % render_freq == 0
-            if render_freq > 0 and episodes[0] % render_freq == 0 and episode_rendered == False:
-                print(f"Rendering episode {episodes[0]} during training...")
+            if render_freq > 0 and self.episodes[0] % render_freq == 0 and episode_rendered == False:
+                print(f"Rendering episode {self.episodes[0]} during training...")
                 # Call the test function to render an episode
                 self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
                 episode_rendered = True
@@ -5721,7 +5732,7 @@ class PPO(Agent):
                 self.policy_model.train()
                 self.value_model.train()
 
-            prev_episode = episodes[0]
+            prev_episode = self.episodes[0]
 
             env_scores = np.array([
                 env_score[-1] if len(env_score) > 0 else np.nan
@@ -5731,15 +5742,21 @@ class PPO(Agent):
             if self._step % self.trajectory_length == 0:
                 print(f'learning timestep: {self._step}')
                 trajectory = (all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones)
-                policy_loss, value_loss, entropy, kl, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
+                if self.distribution == 'categorical':
+                    policy_loss, value_loss, entropy, kl, lambda_value, logits = self.learn(trajectory, batch_size, learning_epochs)
+                else:
+                    policy_loss, value_loss, entropy, kl, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
                 self._train_episode_config[f"avg_env_scores"] = np.nanmean(env_scores)
                 self._train_episode_config["actor_loss"] = policy_loss
                 self._train_episode_config["critic_loss"] = value_loss
                 self._train_episode_config["entropy"] = entropy
                 self._train_episode_config["kl_divergence"] = kl
                 self._train_episode_config["lambda"] = lambda_value
-                self._train_episode_config["param1"] = param1.mean()
-                self._train_episode_config["param2"] = param2.mean()
+                if self.distribution == 'categorical':
+                    self._train_episode_config["logits"] = logits.mean()
+                else:
+                    self._train_episode_config["param1"] = param1.mean()
+                    self._train_episode_config["param2"] = param2.mean()
 
                 # check if best reward
                 avg_score = np.mean([
@@ -5760,7 +5777,10 @@ class PPO(Agent):
                 kl_history.append(kl)
                 # time_history.append(time)
                 lambda_values.append(lambda_value)
-                param_history.append((param1, param2))
+                if self.distribution == 'categorical':
+                    param_history.append(logits)
+                else:
+                    param_history.append((param1, param2))
                 all_states = []
                 all_actions = []
                 all_log_probs = []
@@ -5775,7 +5795,7 @@ class PPO(Agent):
             states = next_states
 
             if self._step % 1000 == 0:
-                print(f'episode: {episodes}; total steps: {self._step}; episodes scores: {env_scores}; avg score: {np.nanmean(env_scores)}')
+                print(f'episode: {self.episodes}; total steps: {self._step}; episodes scores: {env_scores}; avg score: {np.nanmean(env_scores)}')
 
             if self.callbacks:
                 for callback in self.callbacks:
@@ -5927,7 +5947,10 @@ class PPO(Agent):
 
                 # Calculate the policy loss
 
-                dist, param1, param2 = self.policy_model(states_batch)
+                if self.distribution == 'categorical':
+                    dist, logits = self.policy_model(states_batch)
+                else:
+                    dist, param1, param2 = self.policy_model(states_batch)
                 # print(f'dist mean:{dist.loc}')
                 # print(f'dist var:{dist.scale}')
                 # print(f'param 1:{param1}')
@@ -5947,6 +5970,9 @@ class PPO(Agent):
                         param1_prev = prev_dist.loc.clone().detach()
                         param2_prev = prev_dist.scale.clone().detach()
                         prev_dist = Normal(param1_prev, param2_prev)
+                    elif self.distribution == 'categorical':
+                        param_prev = prev_dist.logits.clone().detach()
+                        prev_dist = Categorical(logits=param_prev)
                     else:
                         raise ValueError(f'Unknown distribution: {self.distribution}')
                 # dist_delta = time.time() - dist_time
@@ -6028,7 +6054,10 @@ class PPO(Agent):
         if self.loss == 'hybrid':
             print(f'Lambda: {lambda_value}')
 
-        return policy_loss, value_loss, entropy.mean(), kl.mean(), lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
+        if self.distribution == 'categorical':
+            return policy_loss, value_loss, entropy.mean(), kl.mean(), lambda_value, logits.detach().cpu().flatten()
+        else:
+            return policy_loss, value_loss, entropy.mean(), kl.mean(), lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
 
     def test(self, num_episodes, num_envs:int=1, seed=None, render_freq:int=0, training=False):
         """
@@ -6069,7 +6098,7 @@ class PPO(Agent):
         # if not training:
         # self.env = self._initialize_env(render_freq)
         env = self._initialize_env(render_freq, num_envs)
-        if self.callbacks:
+        if self.callbacks and not training:
             for callback in self.callbacks:
                 self._config = callback._config(self)
                 if isinstance(callback, WandbCallback):
@@ -6080,24 +6109,29 @@ class PPO(Agent):
 
         # episode_scores = [[] for _ in range(num_envs)]  # Track scores for each env
         # reset step counter
-        self._step = 0
-        scores_list = []
+        step = 0
+        all_scores = []
+        all_log_probs = []
 
         for episode in range(num_episodes):
-            if self.callbacks:
+            if self.callbacks and not training:
                 for callback in self.callbacks:
-                    callback.on_test_epoch_begin(epoch=self._step, logs=None)
+                    callback.on_test_epoch_begin(epoch=step, logs=None)
             done = False
             states, _ = env.reset()
             scores = 0
+            log_probs = []
             frames = []  # List to store frames for the video
 
             while not done:
 
                 # Get action and log probability from the current policy
-                actions, log_probs = self.get_action(states)
+                actions, log_prob = self.get_action(states)
                 acts = [self.action_adapter(action) if self.distribution == 'beta' else action for action in actions]
                 acts = np.reshape(acts, env.action_space.shape)
+
+                #  log prob to log probs list
+                log_probs.append(log_prob)
 
                 # Step the environment
                 next_states, rewards, terms, truncs, _ = env.step(acts)
@@ -6106,7 +6140,6 @@ class PPO(Agent):
 
                 for i, (term, trunc) in enumerate(zip(terms, truncs)):
                     if term or trunc:
-                        dones.append(True)
                         done = True
                         # print(f'append true')
                     # else:
@@ -6118,79 +6151,53 @@ class PPO(Agent):
                     # print(f'frame:{frame}')
                     frames.append(frame)
 
-                # Calculate the distribution and entropy (uses only first env in env vector for calculation)
-                # dist, param1, param2 = self.policy_model(T.tensor(states[0], dtype=T.float32, device=self.policy_model.device).flatten())
-                # entropy = dist.entropy().mean().item()  # Mean entropy over actions
-
-                # Update KL divergence
-                # if prev_dist is not None:
-                #     kl = kl_divergence(prev_dist, dist).mean().item()  # Mean KL divergence over actions
-                # else:
-                #     kl = 0  # No KL divergence for the first step in the episode
-
-                # Update the previous distribution to the current one
-                # if self.distribution == 'Beta':
-                #     param1_prev = dist.concentration1.clone().detach()
-                #     param2_prev = dist.concentration0.clone().detach()
-                #     prev_dist = Beta(param1_prev, param2_prev)
-                # elif self.distribution == 'Normal':
-                #     param1_prev = dist.loc.clone().detach()
-                #     param2_prev = dist.scale.clone().detach()
-                #     prev_dist = Normal(param1_prev, param2_prev)
-
                 # Increment step count
-                self._step += 1
+                step += 1
 
                 # Move to the next state
                 states = next_states
 
                 # Add metrics to test step config to log
                 self._test_step_config['step_reward'] = rewards[0]
-                if self.callbacks:
+                if self.callbacks and not training:
                     for callback in self.callbacks:
-                        callback.on_test_step_end(step=self._step, logs=self._test_step_config)
+                        callback.on_test_step_end(step=step, logs=self._test_step_config)
 
             # Save the video if the episode number is divisible by render_freq
             if (render_freq > 0) and ((episode + 1) % render_freq == 0):
                 if training:
                     print(f'episode number sent to renderer:{self.episodes[0]}')
-                    self.render(frames, self.episodes[0])
+                    self.render(frames, self.episodes[0], 'train')
                 else:
-                    self.render(frames, episode)
-
-                # # print(f"frames[0]:{frames[0]}")
-                # height, width, layers = frames[0].shape
-                # video = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (width, height))
-
-                # for frame in frames:
-                #     # print(f'frame shape:{frame.shape}')
-                #     # Convert RGB to BGR for OpenCV
-                #     video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-
-                # video.release()
+                    self.render(frames, episode+1, 'test')
 
             # Append the results for the episode
-            scores_list.append(scores)  # Store score at end of episode
+            all_scores.append(scores)  # Store score at end of episode
             self._test_episode_config["episode_reward"] = scores[0]
 
+            # Append log probs for the episode to all_log_probs list
+            all_log_probs.append(log_probs)
+
             # Log to callbacks
-            if self.callbacks:
+            if self.callbacks and not training:
                 for callback in self.callbacks:
-                    callback.on_test_epoch_end(epoch=self._step, logs=self._test_episode_config)
+                    callback.on_test_epoch_end(epoch=step, logs=self._test_episode_config)
+
+            print(f'Episode {episode+1}/{num_episodes} - Score: {all_scores[-1]}')
 
             # Reset score for this environment
             scores = 0
-        if self.callbacks:
+        
+        if self.callbacks and not training:
             for callback in self.callbacks:
                 callback.on_test_end(logs=self._test_episode_config)
-
-            print(f'Episode {episode+1}/{num_episodes} - Score: {scores_list[-1]}')
 
         # close the environment
         env.close()
 
         return {
-            'scores': scores,
+            'scores': all_scores,
+            'log probs': all_log_probs,
             # 'entropy': entropy_list,
             # 'kl_divergence': kl_list
         }
@@ -6213,6 +6220,7 @@ class PPO(Agent):
                 "normalize_values": self.normalize_values,
                 "normalizer_clip": self.value_norm_clip,
                 "grad_clip":self.policy_grad_clip,
+                "reward_clip":self.reward_clip,
                 "lambda_": self.lambda_,
                 "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
                 "save_dir": self.save_dir,
@@ -6281,6 +6289,7 @@ class PPO(Agent):
             normalize_values = config["normalize_values"],
             value_normalizer_clip = config["normalizer_clip"],
             policy_grad_clip = config["grad_clip"],
+            reward_clip = config['reward_clip'],
             lambda_ = config["lambda_"],
             callbacks=callbacks,
             save_dir=config["save_dir"],
