@@ -163,12 +163,17 @@ class Model(nn.Module):
 
 
 class StochasticDiscretePolicy(Model):
-    """Policy model for predicting probability distribution of actions.
+    """Policy model for predicting a probability distribution of a continuous action space.
 
     Attributes:
       env: OpenAI gym environment.
-      hidden_layers: List of hidden layer sizes and activations.
+      dense_layers: List of Tuples containing dense layer sizes, activations, and kernel initializers.
+      output_layer_kernel: Dict of kernel initializer:params for the output layer.
       optimizer: Optimizer for training.
+      optimizer_params: Dict of Parameter:value for the optimizer.
+      learning_rate: Learning rate for the optimizer.
+      distribution: Distribution returned by the policy ('beta' or 'normal').
+      device: Device to run the model on.
 
     """
 
@@ -180,7 +185,8 @@ class StochasticDiscretePolicy(Model):
         optimizer: str = "Adam",
         optimizer_params:dict={},
         learning_rate: float = 0.001,
-        device: str = None,
+        distribution: str = 'categorical',
+        device: str = None
     ):
         super().__init__()
         self.env = env
@@ -189,69 +195,88 @@ class StochasticDiscretePolicy(Model):
         self.optimizer_class = optimizer
         self.optimizer_params = optimizer_params
         self.learning_rate = learning_rate
-        # self.optimizer.learning_rate = self.learning_rate
-
+        self.distribution = distribution
         # # Set the device
         if device == None:
             device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
+        # Create a ModuleDict for dense layers and output layer
         self.dense_layers = nn.ModuleDict()
         self.output_layer = nn.ModuleDict()
 
-        # set initial input size
-        input_size = np.prod(env.observation_space.shape)
 
-        # build model
+        # set initial input size
+        input_size = np.prod(env.observation_space.shape[-1])
+
+        # build dense layers
         for i, (units, activation, _) in enumerate(self.layer_config):
             self.dense_layers[f'policy_dense_{i}'] = nn.Linear(input_size, units)
-            
+
             if activation == 'relu':
                 self.dense_layers[f'policy_activation_{i}'] = nn.ReLU()
             elif activation == 'tanh':
                 self.dense_layers[f'policy_activation_{i}'] = nn.Tanh()
-            
+
             # update input size to be output size of previous layer
             input_size = units
 
+        # build output layer (need 2x action space to generate an alpha and beta term for each)
+        self.output_layer['policy_dense_output'] = nn.Linear(input_size, self.env.action_space.n)
+
         # initialize dense layer weights
         self._init_weights(self.dense_layers, self.layer_config)
-
-        # add output layers to dict
-        self.output_layer['policy_dense_output'] = nn.Linear(input_size, env.action_space.n)
-        # self.dense_layers['policy_activation'] = nn.Softmax(dim=-1)
-        
-        # initialize weights of policy_output layer
-        # nn.init.kaiming_normal_(self.dense_layers['policy_output'].weight)
-        # nn.init.zeros_(self.dense_layers['policy_output'].bias)
         self._init_weights(self.output_layer, self.output_config)
 
         # Initialize optimizer
         self.optimizer = self._init_optimizer()
-        
         # Move the model to the specified device
-        self.to(self.device) 
+        self.to(self.device)
 
     def forward(self, x):
         """Forward Propogation."""
         x = x.to(self.device)
+        #DEBUG
+        # print(f'x input to forward:{x.shape}')
+        # print(f'x:{x}')
+
         for layer in self.dense_layers.values():
             x = layer(x)
 
-        for layer in self.output_layer.values():
-            x = layer(x)
-        
-        return x
+        x = self.output_layer['policy_dense_output'](x)
+        # # print(f'policy output shape: {x.shape}')
+
+        # Split x into param1 and param2
+        # param1, param2 = T.split(x, self.env.action_space.shape[-1], dim=-1)
+
+        if self.distribution == 'categorical':
+            # alpha = F.softmax(x)
+            # alpha = F.softplus(param1) + 1.0
+            # beta = F.softplus(param2) + 1.0
+            dist = Categorical(logits=x)
+            return dist, x
+        # elif self.distribution == 'normal':
+        #     mu = param1
+        #     sigma = F.softplus(param2)
+        #     dist = Normal(mu, sigma)
+        #     return dist, mu, sigma
+        else:
+            raise ValueError(f'Distribution {self.distribution} not supported.')
 
     def get_config(self):
         """Get model config."""
 
         config = {
-            'env': self.env.spec.id,
+            # 'env': self.env.spec.id,
+            "env": self.env.spec.to_json(),
             'num_layers': len(self.dense_layers),
             'dense_layers': self.layer_config,
+            'output_layer_kernel': self.output_config,
             'optimizer': self.optimizer_class,
+            'optimizer_params': self.optimizer_params,
             'learning_rate': self.learning_rate,
+            'distribution': self.distribution,
+            'device': self.device,
         }
 
         return config
