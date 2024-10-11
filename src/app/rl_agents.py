@@ -11,12 +11,15 @@ from typing import Union
 # import datetime
 # import inspect
 # import threading
-from mpi4py import MPI
+# from mpi4py import MPI
 # import logging
 from logging_config import logger
 import copy
 from encoder import CustomJSONEncoder, serialize_env_spec
 import cv2
+from moviepy.editor import ImageSequenceClip
+from umap import UMAP
+import plotly.express as px
 
 import rl_callbacks
 from rl_callbacks import WandbCallback
@@ -39,6 +42,7 @@ import torch.distributed as dist
 import gymnasium as gym
 import gymnasium_robotics as gym_robo
 import numpy as np
+import pandas as pd
 import random
 import torch.profiler
 
@@ -5107,9 +5111,9 @@ class PPO(Agent):
             # seeds = [seed + i for i in range(num_envs)]
 
             # Function to seed the environment correctly and store the seed
-            def make_env(env_id, render_mode=None):
+            def make_env(env_spec, render_mode=None):
                 def _init():
-                    env = gym.make(env_id, render_mode=render_mode)
+                    env = gym.make(env_spec, render_mode=render_mode)
                     # env.reset(seed=seed)
                     # Store the seed in the environment for future reference
                     # env.seed_value = seed
@@ -5121,7 +5125,7 @@ class PPO(Agent):
             # Initialize vectorized environments with different seeds
             if render_freq > 0:
                 env_vec = gym.vector.SyncVectorEnv([
-                    make_env(self.env.spec.id, render_mode="rgb_array")
+                    make_env(self.env.spec, render_mode="rgb_array")
                     for _ in range(num_envs)
                 ])
                 _, _ = env_vec.reset(seed=seed)
@@ -5129,7 +5133,7 @@ class PPO(Agent):
                 return env_vec
             else:
                 env_vec = gym.vector.SyncVectorEnv([
-                    make_env(self.env.spec.id)
+                    make_env(self.env.spec)
                     for _ in range(num_envs)
                 ])
                 _,_ = env_vec.reset(seed=seed)
@@ -5141,14 +5145,6 @@ class PPO(Agent):
 
 
     def render(self, frames, episode, context:str=None):
-        """renders movie to save dir
-
-        Args:
-            frames (np.array): array of frames
-            episode (int): episode number
-            context (str, optional): "train" or "test" separate into "train" and "test" directories under save_dir. Defaults to None.
-        """
-        # frames = np.array(frames)
         print('rendering episode...')
         if not isinstance(frames, np.ndarray):
             frames = np.array(frames)
@@ -5166,15 +5162,9 @@ class PPO(Agent):
         if not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
 
-        num_frames, height, width, layers = frames.shape
-        video = cv2.VideoWriter(Path(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 30, (width, height))
-
-        for frame in frames:
-            # print(f'frame shape:{frame.shape}')
-            # Convert RGB to BGR for OpenCV
-            video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        
-        video.release()
+        fps = 30
+        clip = ImageSequenceClip(list(frames), fps=fps)
+        clip.write_videofile(video_path, codec='libx264')
         print('episode rendered')
 
 
@@ -5298,6 +5288,7 @@ class PPO(Agent):
         num_steps, num_envs = rewards.shape
         all_advantages = []
         all_returns = []
+        all_values = []
 
         for env_idx in range(num_envs):
             with T.no_grad():
@@ -5315,55 +5306,102 @@ class PPO(Agent):
                 for t in reversed(range(len(rewards_env))):
                     delta = rewards_env[t] + self.discount * next_values[t] * (1 - dones_env[t]) - values[t]
                     gae = delta + self.discount * self.gae_coefficient * (1 - dones_env[t]) * gae
+                    # gae = T.tensor(gae, dtype=T.float32, device=self.value_model.device)
+                    # print(f'rewards env shape:{rewards_env.shape}')
+                    # print(f'values shape:{values.shape}')
+                    # print(f'next values shape:{next_values.shape}')
+                    # print(f'dones env shape:{dones_env.shape}')
+                    # print(f'gae shape:{gae.shape}')
+                    # print(f'advantages shape:{advantages.shape}')
                     advantages[t] = gae
                     returns[t] = gae + values[t]
+                    # print(f'advantages[t]:{advantages[t]}')
+                    # print(f'returns[t]:{returns[t]}')
 
                 if self.normalize_advantages:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
                 all_advantages.append(advantages.unsqueeze(-1))
                 all_returns.append(returns.unsqueeze(-1))
+                all_values.append(values.unsqueeze(-1))
 
         all_advantages = T.stack(all_advantages, dim=1)
         all_returns = T.stack(all_returns, dim=1)
+        all_values = T.stack(all_values, dim=1)
 
         self._train_episode_config["values"] = values.mean().item()
         self._train_episode_config["advantages"] = all_advantages.mean().item()
         self._train_episode_config["returns"] = all_returns.mean().item()
 
-        return all_advantages, all_returns
+        return all_advantages, all_returns, all_values
 
+
+    # def get_action(self, states):
+    #     # Run states through each Policy to get distribution params
+    #     actions = []
+    #     log_probs = []
+    #     # print(f'states sent to get action: {states.shape}')
+    #     for state in states:
+    #         with T.no_grad():
+    #             # make sure state is a tensor and on correct device
+    #             state = T.tensor(state, dtype=T.float32, device=self.policy_model.device).unsqueeze(0)
+    #             #DEBUG
+    #             # print(f'state shape in get_action:{state.shape}')
+    #             # print(f'get action state:{state}')
+    #             if self.distribution == 'categorical':
+    #                 dist, logits = self.policy_model(state)
+    #             else:
+    #                 dist, _, _ = self.policy_model(state)
+    #             action = dist.sample()
+    #             log_prob = dist.log_prob(action)
+    #             actions.append(action.detach().cpu().numpy().flatten())
+    #             log_probs.append(log_prob.detach().cpu().numpy().flatten())
+
+    #     return np.array(actions), np.array(log_probs)
 
     def get_action(self, states):
-        # Run states through each Policy to get distribution params
-        actions = []
-        log_probs = []
-        # print(f'states sent to get action: {states}')
-        for state in states:
-            with T.no_grad():
-                # make sure state is a tensor and on correct device
-                state = T.tensor(state, dtype=T.float32, device=self.policy_model.device)
-                #DEBUG
-                # print(f'state shape in get_action:{state.shape}')
-                # print(f'get action state:{state}')
-                if self.distribution == 'categorical':
-                    dist, logits = self.policy_model(state)
-                else:
-                    dist, _, _ = self.policy_model(state)
-                action = dist.sample()
-                log_prob = dist.log_prob(action)
-                actions.append(action.detach().cpu().numpy().flatten())
-                log_probs.append(log_prob.detach().cpu().numpy().flatten())
+        with T.no_grad():
+            states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
+            # print(f'states shape:{states.shape}')
+            # if len(states.shape) == 4:
+            #     print('states len == 4 fired...')
+            #     states = states.permute(0, 3, 1, 2)
+            # print(f'new states shape:{states.shape}')
+            if self.distribution == 'categorical':
+                dist, logits = self.policy_model(states)
+            else:
+                dist, _, _ = self.policy_model(states)
+            actions = dist.sample()
+            log_probs = dist.log_prob(actions)
+            actions = actions.detach().cpu().numpy()
+            log_probs = log_probs.detach().cpu().numpy()
+        return actions, log_probs
 
-        return np.array(actions), np.array(log_probs)
-
-    def action_adapter(self, action):
-        # print(f'action adpater action:{action}')
-        # print(f'action adpater action shape:{action.shape}')
-        return 2 * (action.reshape(1,-1) -0.5 * self.env.action_space.high[0])
-        # print(f'action adpater a:{a}')
-        # print(f'action adpater a shape:{a.shape}')
-        # return a
+    def action_adapter(self, actions, env):
+        if isinstance(env.single_action_space, gym.spaces.Box):
+            action_space_low = env.single_action_space.low  # Array of lows per dimension
+            action_space_high = env.single_action_space.high  # Array of highs per dimension
+            # Ensure actions are in [0, 1]
+            actions = np.clip(actions, 0, 1)
+            # Map from [0, 1] to [action_space_low, action_space_high]
+            adapted_actions = action_space_low + (action_space_high - action_space_low) * actions
+            return adapted_actions
+        elif isinstance(env.single_action_space, gym.spaces.Discrete):
+            n = env.single_action_space.n
+            # Map actions from [0, 1] to [0, n-1]
+            adapted_actions = (actions * n).astype(int)
+            adapted_actions = np.clip(adapted_actions, 0, n - 1)
+            return adapted_actions
+        else:
+            raise NotImplementedError(f"Unsupported action space type: {type(env.single_action_space)}")
+    
+    # def action_adapter(self, action):
+    #     # print(f'action adpater action:{action}')
+    #     # print(f'action adpater action shape:{action.shape}')
+    #     return 2 * (action.reshape(1,-1) -0.5 * self.env.action_space.high[0])
+    #     # print(f'action adpater a:{a}')
+    #     # print(f'action adpater a shape:{a.shape}')
+    #     # return a
 
     def clip_reward(self, reward):
         if reward > self.reward_clip:
@@ -5612,6 +5650,8 @@ class PPO(Agent):
         try:
             # instantiate new vec environment
             env = self._initialize_env(0, num_envs, seed)
+            # for e in env.envs:
+            #     print(e.spec)
             # logger.debug(f'initiating environment with render {render}')
         except Exception as e:
             logger.error(f"Error in PPO.train agent._initialize_env process: {e}", exc_info=True)
@@ -5660,8 +5700,20 @@ class PPO(Agent):
             episode_lengths += 1 # increment the step count of each episode of each env by 1
             dones = []
             actions, log_probs = self.get_action(states)
-            acts = [self.action_adapter(action) if self.distribution == 'beta' else action for action in actions]
-            acts = np.reshape(acts, env.action_space.shape)
+            # print(f'actions:{actions}')
+            if self.distribution == 'beta':
+                acts = self.action_adapter(actions, env)
+            else:
+                acts = actions
+            # acts = [self.action_adapter(action) if self.distribution == 'beta' else action for action in actions]
+            # acts = np.reshape(acts, env.action_space.shape)
+            acts = acts.astype(np.float32)
+            acts = np.clip(acts, env.single_action_space.low, env.single_action_space.high)
+            # print(f'acts reshape:{acts.shape}')
+            # print(f'acts:{acts}')
+            acts = acts.tolist()
+            acts = [[float(a) for a in act] for act in acts]
+            # print(f'actions after adapter:{acts}')
 
             #DEBUG
             # print(f'reshaped acts shape:{acts.shape}')
@@ -5678,6 +5730,9 @@ class PPO(Agent):
             # else:
             #     acts = actions
 
+            #DEBUG
+            # for e in env.envs:
+            #     print(f'continuous:{e.spec}')
             next_states, rewards, terms, truncs, _ = env.step(acts)
             #DEBUG
             # print(f'terms:{terms}, truncs:{truncs}')
@@ -5727,6 +5782,13 @@ class PPO(Agent):
                 print(f"Rendering episode {self.episodes[0]} during training...")
                 # Call the test function to render an episode
                 self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
+                # Add render to wandb log
+                video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.episodes[0]}.mp4")
+                # Log the video to wandb
+                if self.callbacks:
+                    for callback in self.callbacks:
+                        if isinstance(callback, WandbCallback):
+                            wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")})
                 episode_rendered = True
                 # Switch models back to train mode after rendering
                 self.policy_model.train()
@@ -5743,15 +5805,15 @@ class PPO(Agent):
                 print(f'learning timestep: {self._step}')
                 trajectory = (all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones)
                 if self.distribution == 'categorical':
-                    policy_loss, value_loss, entropy, kl, lambda_value, logits = self.learn(trajectory, batch_size, learning_epochs)
+                    policy_loss, value_loss, entropy, kl, logits = self.learn(trajectory, batch_size, learning_epochs)
                 else:
-                    policy_loss, value_loss, entropy, kl, lambda_value, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
+                    policy_loss, value_loss, entropy, kl, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
                 self._train_episode_config[f"avg_env_scores"] = np.nanmean(env_scores)
                 self._train_episode_config["actor_loss"] = policy_loss
                 self._train_episode_config["critic_loss"] = value_loss
                 self._train_episode_config["entropy"] = entropy
                 self._train_episode_config["kl_divergence"] = kl
-                self._train_episode_config["lambda"] = lambda_value
+                # self._train_episode_config["lambda"] = lambda_value
                 if self.distribution == 'categorical':
                     self._train_episode_config["logits"] = logits.mean()
                 else:
@@ -5776,7 +5838,7 @@ class PPO(Agent):
                 entropy_history.append(entropy)
                 kl_history.append(kl)
                 # time_history.append(time)
-                lambda_values.append(lambda_value)
+                # lambda_values.append(lambda_value)
                 if self.distribution == 'categorical':
                     param_history.append(logits)
                 else:
@@ -5899,7 +5961,7 @@ class PPO(Agent):
         # Similarly for other variables
 
         # Calculate advantages and returns
-        advantages, returns = self.calculate_advantages_and_returns(rewards, states, next_states, dones)
+        advantages, returns, all_values = self.calculate_advantages_and_returns(rewards, states, next_states, dones)
         #DEBUG
         # print(f'advantages shape:{advantages.shape}')
         # print(f'returns shape:{returns.shape}')
@@ -5909,8 +5971,14 @@ class PPO(Agent):
         num_steps, num_envs = rewards.shape
         total_samples = num_steps * num_envs
 
+        # Reshape observations
+        obs_shape = states.shape[2:]  # Get observation shape
+        states = states.reshape(total_samples, *obs_shape)
+        next_states = next_states.reshape(total_samples, *obs_shape)
+
         # Reshape tensors for batching
-        states = states.reshape(total_samples, -1)       # Shape: (total_samples, observation_space)
+        all_values = all_values.reshape(total_samples, -1) # Shape: (total_samples, 1)
+        # states = states.reshape(total_samples, -1)       # Shape: (total_samples, observation_space)
         actions = actions.reshape(total_samples, -1)     # Shape: (total_samples, action_space)
         log_probs = log_probs.reshape(total_samples, -1) # Shape: (total_samples, action_dim)
         advantages = advantages.reshape(total_samples, 1) # Shape: (total_samples, 1)
@@ -6004,27 +6072,32 @@ class PPO(Agent):
                 surr2 = (T.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantages_batch)
                 # Clipped policy loss
                 surrogate_loss = -T.min(surr1, surr2).mean()
+                entropy_penalty = -self.entropy_coefficient * entropy
+                log_diff = new_log_probs - log_probs_batch
+                kl_penalty = -log_diff.mean()
+                kl_penalty *= self.kl_coefficient
+                policy_loss = surrogate_loss + entropy_penalty + kl_penalty
 
-                if self.loss == 'clipped':
-                    lambda_value = 1.0
-                    entropy_penalty = -self.entropy_coefficient * entropy
-                    policy_loss = surrogate_loss + entropy_penalty
-                elif self.loss == 'kl':
-                    lambda_value = 0.0
-                    log_diff = new_log_probs - log_probs_batch
-                    kl_penalty = -log_diff.mean()
-                    kl_penalty *= self.kl_coefficient
-                    policy_loss = surrogate_loss + kl_penalty
-                elif self.loss == 'hybrid':
-                    # Run lambda param through sigmoid to clamp between 0 and 1
-                    lambda_value = T.sigmoid(self.lambda_param)
-                    entropy_penalty = -self.entropy_coefficient * entropy
-                    log_diff = new_log_probs - log_probs_batch
-                    kl_penalty = -log_diff.mean()
-                    kl_penalty *= self.kl_coefficient
-                    policy_loss = surrogate_loss + entropy_penalty + kl_penalty
-                else:
-                    raise ValueError(f'Unknown loss: {self.loss}')
+                # if self.loss == 'clipped':
+                #     lambda_value = 1.0
+                #     entropy_penalty = -self.entropy_coefficient * entropy
+                #     policy_loss = surrogate_loss + entropy_penalty
+                # elif self.loss == 'kl':
+                #     lambda_value = 0.0
+                #     log_diff = new_log_probs - log_probs_batch
+                #     kl_penalty = -log_diff.mean()
+                #     kl_penalty *= self.kl_coefficient
+                #     policy_loss = surrogate_loss + kl_penalty
+                # elif self.loss == 'hybrid':
+                #     # Run lambda param through sigmoid to clamp between 0 and 1
+                #     lambda_value = T.sigmoid(self.lambda_param)
+                #     entropy_penalty = -self.entropy_coefficient * entropy
+                #     log_diff = new_log_probs - log_probs_batch
+                #     kl_penalty = -log_diff.mean()
+                #     kl_penalty *= self.kl_coefficient
+                #     policy_loss = surrogate_loss + entropy_penalty + kl_penalty
+                # else:
+                #     raise ValueError(f'Unknown loss: {self.loss}')
 
                 # Update the policy
                 self.policy_model.optimizer.zero_grad()
@@ -6046,18 +6119,68 @@ class PPO(Agent):
                 # set dist as previous dist
                 prev_dist = dist
 
+        # if self.callbacks:
+        #     for callback in self.callbacks:
+        #         if isinstance(callback, WandbCallback):
+        #             # Reduce states to 3D embeddings
+        #             reducer = UMAP(n_components=3, random_state=42)
+        #             embeddings = reducer.fit_transform(states.cpu().numpy())  # Shape: (num_samples, 3)
+        #             # Compute the magnitude of the actions
+        #             action_magnitude = np.linalg.norm(actions.cpu().numpy(), axis=1)
+        #             df = pd.DataFrame({
+        #                 'embedding_x': embeddings[:, 0],
+        #                 'embedding_y': embeddings[:, 1],
+        #                 'embedding_z': embeddings[:, 2],
+        #                 'value': all_values.cpu().numpy().flatten(),
+        #                 'action_magnitude': action_magnitude,
+        #                 # If you want to include specific action components:
+        #                 # 'action_component_0': actions[:, 0],
+        #                 # 'action_component_1': actions[:, 1],
+        #                 # ...
+        #             })
+
+        #             # Create a 3D scatter plot colored by value estimates
+        #             fig_value = px.scatter_3d(
+        #                 df,
+        #                 x='embedding_x',
+        #                 y='embedding_y',
+        #                 z='embedding_z',
+        #                 color='value',
+        #                 title='State Embeddings Colored by Value Function',
+        #                 labels={'embedding_x': 'Embedding X', 'embedding_y': 'Embedding Y', 'embedding_z': 'Embedding Z', 'value': 'Value Estimate'},
+        #                 opacity=0.7
+        #             )
+                    
+        #             # Create a 3D scatter plot colored by action magnitude
+        #             fig_action = px.scatter_3d(
+        #                 df,
+        #                 x='embedding_x',
+        #                 y='embedding_y',
+        #                 z='embedding_z',
+        #                 color='action_magnitude',
+        #                 title='State Embeddings Colored by Action Magnitude',
+        #                 labels={'embedding_x': 'Embedding X', 'embedding_y': 'Embedding Y', 'embedding_z': 'Embedding Z', 'action_magnitude': 'Action Magnitude'},
+        #                 opacity=0.7
+        #             )
+
+        #             # Log the 3D plots
+        #             wandb.log({
+        #                 "Value Function Embeddings 3D": fig_value,
+        #                 "Policy Embeddings 3D": fig_action
+        #             })
+
         print(f'Policy Loss: {policy_loss.sum()}')
         print(f'Value Loss: {value_loss}')
         print(f'Entropy: {entropy.mean()}')
         print(f'KL Divergence: {kl.mean()}')
         # print(f'kl div:{kl_div.mean()}')
-        if self.loss == 'hybrid':
-            print(f'Lambda: {lambda_value}')
+        # if self.loss == 'hybrid':
+        #     print(f'Lambda: {lambda_value}')
 
         if self.distribution == 'categorical':
-            return policy_loss, value_loss, entropy.mean(), kl.mean(), lambda_value, logits.detach().cpu().flatten()
+            return policy_loss, value_loss, entropy.mean(), kl.mean(), logits.detach().cpu().flatten()
         else:
-            return policy_loss, value_loss, entropy.mean(), kl.mean(), lambda_value, param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
+            return policy_loss, value_loss, entropy.mean(), kl.mean(), param1.detach().cpu().flatten(), param2.detach().cpu().flatten()
 
     def test(self, num_episodes, num_envs:int=1, seed=None, render_freq:int=0, training=False):
         """
@@ -6099,6 +6222,7 @@ class PPO(Agent):
         # self.env = self._initialize_env(render_freq)
         env = self._initialize_env(render_freq, num_envs)
         if self.callbacks and not training:
+            print('test begin callback if statement fired')
             for callback in self.callbacks:
                 self._config = callback._config(self)
                 if isinstance(callback, WandbCallback):
@@ -6127,8 +6251,16 @@ class PPO(Agent):
 
                 # Get action and log probability from the current policy
                 actions, log_prob = self.get_action(states)
-                acts = [self.action_adapter(action) if self.distribution == 'beta' else action for action in actions]
-                acts = np.reshape(acts, env.action_space.shape)
+                # acts = [self.action_adapter(action, env) if self.distribution == 'beta' else action for action in actions]
+                # acts = np.reshape(acts, env.action_space.shape)
+                if self.distribution == 'beta':
+                    acts = self.action_adapter(actions, env)
+                else:
+                    acts = actions
+                acts = acts.astype(np.float32)
+                acts = np.clip(acts, env.single_action_space.low, env.single_action_space.high)
+                acts = acts.tolist()
+                acts = [[float(a) for a in act] for act in acts]
 
                 #  log prob to log probs list
                 log_probs.append(log_prob)
@@ -6275,7 +6407,7 @@ class PPO(Agent):
 
         # return PPO agent
         agent = cls(
-            gym.make_vec(env_spec),
+            gym.make(env_spec),
             policy_model = policy_model,
             value_model = value_model,
             distribution = config["distribution"],
