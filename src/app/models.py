@@ -3,7 +3,7 @@
 # imports
 import json
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from pathlib import Path
 # import time
 
@@ -22,120 +22,141 @@ from logging_config import logger
 
 class Model(nn.Module):
     """Base class for all RL models."""
-    def __init__(self):
-        super().__init__()
-        # Set the device
-        device = T.device("cuda" if T.cuda.is_available() else "cpu")
+    def __init__(self, env, layer_config, optimizer: str = "Adam", optimizer_params: dict = {}, learning_rate: float = 0.001, device=None):
+        super(Model, self).__init__()
+        self.env = env
+        self.layer_config = layer_config
+        self.layers = nn.ModuleDict()
+        self.optimizer_class = optimizer
+        self.optimizer_params = optimizer_params
+        self.learning_rate = learning_rate
+        if device is None:
+            device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
-    def _init_weights(self, module_dict, layer_config):
-        config_index = 0
-        #DEBUG
-        # print(f'layer config: {layer_config}')
-        # print(f'layer config type: {type(layer_config)}')
+        # Set initial input size based on environment observation space
+        # For CNNs, this will be 3D (channels, height, width)
+        if len(env.observation_space.shape) == 3:  # For CNNs with images
+            input_height, input_width, input_channels = env.observation_space.shape  # (channels, height, width)
+            input_size = (input_channels, input_height, input_width)
+        else:  # For dense layers, using flat observation vector
+            input_size = np.prod(env.observation_space.shape[-1])
 
-        for layer_name, layer in module_dict.items():
-            if 'dense' in layer_name:
-                if isinstance(layer_config, list):
-                    _, _, init_config = layer_config[config_index]
-                elif isinstance(layer_config, dict) or isinstance(layer_config, str):
-                    init_config=layer_config
+        # Build the layers dynamically based on config
+        for i, layer_info in enumerate(self.layer_config):
+            layer_type = layer_info['type']
+            layer_params = layer_info.get('params', {})
 
-                ##DEBUG
-                # print(f'{layer_name} using {init_config} for {layer}')
-                
-                if isinstance(init_config, dict):
-                    if 'default' in init_config:
-                        pass
+            # Build the layer
+            self.layers[f'{layer_type}_{i}'] = self._build_layer(layer_type, layer_params, input_size)
 
-                    if 'variance scaling' in init_config:
-                        torch_utils.VarianceScaling_(layer.weight, **init_config['variance scaling'])
-                    
-                    elif 'xavier uniform' in init_config:
-                        nn.init.xavier_uniform_(layer.weight, **init_config['xavier uniform'])
+            # Update input size for the next layer based on the layer type
+            if layer_type == 'cnn':
+                kernel_size = layer_params.get('kernel_size', (3, 3))
+                stride = layer_params.get('stride', 1)
+                padding = layer_params.get('padding', 0)
 
-                    elif 'xavier normal' in init_config:
-                        nn.init.xavier_normal_(layer.weight, **init_config['xavier normal'])
+                # Update height and width based on CNN formula
+                input_height = (input_height - kernel_size[0] + 2 * padding) // stride + 1
+                input_width = (input_width - kernel_size[1] + 2 * padding) // stride + 1
 
-                    elif 'kaiming uniform' in init_config:
-                        nn.init.kaiming_uniform_(layer.weight, **init_config['kaiming uniform'])
-                    
-                    elif 'kaiming normal' in init_config:
-                        nn.init.kaiming_normal_(layer.weight, **init_config['kaiming normal'])
+                # Update the number of channels to out_channels
+                input_channels = layer_params['out_channels']
+                input_size = (input_channels, input_height, input_width)
 
-                    elif 'truncated normal' in init_config:
-                        nn.init.trunc_normal_(layer.weight, **init_config['truncated normal'])
-                        nn.init.trunc_normal_(layer.bias, **init_config['truncated normal'])
+            elif layer_type == 'pool':
+                pool_size = layer_params.get('kernel_size', (2, 2))
+                pool_stride = layer_params.get('stride', pool_size)
 
-                    elif 'uniform' in init_config:
-                        nn.init.uniform_(layer.weight, **init_config['uniform'])
-                        nn.init.uniform_(layer.bias, **init_config['uniform'])
+                # Update height and width after pooling
+                input_height = (input_height - pool_size[0]) // pool_stride[0] + 1
+                input_width = (input_width - pool_size[1]) // pool_stride[1] + 1
+                input_size = (input_channels, input_height, input_width)
 
-                    elif 'normal' in init_config:
-                        nn.init.normal_(layer.weight, **init_config['normal'])
-                        nn.init.normal_(layer.bias, **init_config['normal'])
+            elif layer_type == 'flatten':
+                # Flatten the 3D output (channels, height, width) into a 1D vector
+                input_size = input_channels * input_height * input_width
 
-                    elif 'constant' in init_config:
-                        nn.init.constant_(layer.weight, **init_config['constant'])
-                        nn.init.constant_(layer.bias, **init_config['constant'])
+            elif layer_type == 'dense':
+                input_size = layer_params['units']  # Units become the input size for the next layer
 
-                    elif 'ones' in init_config:
-                        nn.init.ones_(layer.weight)
-                        nn.init.ones_(layer.bias)
+        # Move the model to the correct device
+        self.to(self.device)
 
-                    elif 'zeros' in init_config:
-                        nn.init.zeros_(layer.weight)
-                        nn.init.zeros_(layer.bias)
-                
-                elif isinstance(init_config, str):
-                    if init_config == 'default':
-                        pass
+        return input_size
 
-                    if init_config == 'variance scaling':
-                        torch_utils.VarianceScaling_(layer.weight)
+    def _build_layer(self, layer_type, params, input_size):
+        if layer_type == 'dense':
+            return nn.Linear(input_size, params['units'])
+        elif layer_type == 'cnn':
+            params['in_channels'] = input_size[0]  # Set input channels (e.g., 3 for RGB images)
+            return nn.Conv2d(**params)
+        elif layer_type == 'pool':
+            return nn.MaxPool2d(**params)
+        elif layer_type == 'dropout':
+            return nn.Dropout(**params)
+        elif layer_type == 'batchnorm':
+            params['num_features'] = input_size[0]  # For CNN, num_features = in_channels
+            return nn.BatchNorm2d(**params)
+        elif layer_type == 'flatten':  # Adding flatten layer
+            return nn.Flatten()
+        elif layer_type == 'relu':
+            return nn.ReLU()
+        elif layer_type == 'tanh':
+            return nn.Tanh()
+        else:
+            raise ValueError(f"Unsupported layer type: {layer_type}")
 
-                    elif init_config == 'xavier uniform':
-                        nn.init.xavier_normal_(layer.weight)
+    def _init_weights(self, layer_config, layers):
+        # Loop through each layer config and corresponding layer
+        for config, (layer_name, layer) in zip(layer_config, layers.items()):
+            # Check if the layer is one that supports weight initialization
+            if config['type'] in ['dense', 'transformer']:
+                init_config = config['params'].get('kernel', 'default')  # Get kernel init or 'default'
 
-                    elif init_config == 'xavier normal':
-                        nn.init.xavier_normal_(layer.weight)
-
-                    elif init_config == 'kaiming uniform':
-                        nn.init.kaiming_uniform_(layer.weight)
-
-                    elif init_config == 'kaiming normal':
-                        nn.init.kaiming_normal_(layer.weight)
-                    
-                    elif init_config == 'truncated normal':
-                        nn.init.trunc_normal_(layer.weight)
-                        nn.init.trunc_normal_(layer.bias)
-
-                    elif init_config == 'uniform':
-                        nn.init.uniform_(layer.weight)
-                        nn.init.uniform_(layer.bias)
-
-                    elif init_config == 'normal':
-                        nn.init.normal_(layer.weight)
-                        nn.init.normal_(layer.bias)
-
-                    elif init_config == 'ones':
-                        nn.init.ones_(layer.weight)
-                        nn.init.ones_(layer.bias)
-
-                    elif init_config == 'zeros':
-                        nn.init.zeros_(layer.weight)
-                        nn.init.zeros_(layer.bias)
-                
+                # Apply the specified initialization scheme
+                if init_config == 'kaiming uniform':
+                    nn.init.kaiming_uniform_(layer.weight, **config['params']['kernel params'])
+                elif init_config == 'kaiming normal':
+                    nn.init.kaiming_normal_(layer.weight)
+                elif init_config == 'xavier uniform':
+                    nn.init.xavier_uniform_(layer.weight)
+                elif init_config == 'xavier normal':
+                    nn.init.xavier_normal_(layer.weight)
+                elif init_config == 'truncated normal':
+                    nn.init.trunc_normal_(layer.weight, **config['params']['kernel params'])
+                    nn.init.trunc_normal_(layer.bias, **config['params']['kernel params'])
+                elif init_config == 'uniform':
+                    nn.init.uniform_(layer.weight, **config['params']['kernel params'])
+                    nn.init.uniform_(layer.bias, **config['params']['kernel params'])
+                elif init_config == 'normal':
+                    nn.init.normal_(layer.weight, **config['params']['kernel params'])
+                    nn.init.normal_(layer.bias, **config['params']['kernel params'])
+                elif init_config == 'constant':
+                    nn.init.constant_(layer.weight, **config['params']['kernel params'])
+                    nn.init.constant_(layer.bias, **config['params']['kernel params'])
+                elif init_config == 'ones':
+                    nn.init.ones_(layer.weight, **config['params']['kernel params'])
+                    nn.init.ones_(layer.bias, **config['params']['kernel params'])
+                elif init_config == 'zeros':
+                    nn.init.zeros_(layer.weight, **config['params']['kernel params'])
+                    nn.init.zeros_(layer.bias, **config['params']['kernel params'])
+                elif init_config == 'variance scaling':
+                    torch_utils.VarianceScaling_(layer.weight)
+                elif init_config == 'default':
+                    # Use PyTorch's default initialization (skip)
+                    pass
                 else:
-                    raise ValueError(f"Invalid init_config {init_config} index {config_index}")
-                
-                config_index += 1
+                    raise ValueError(f"Unsupported initialization: {init_config}")
 
+                # Optionally initialize the bias (if it exists)
+                # if layer.bias is not None:
+                #     nn.init.zeros_(layer.bias)
 
     def _init_optimizer(self):
         if self.optimizer_class == 'Adam':
             return optim.Adam(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
-        elif self.optimizer_class =='SGD':
+        elif self.optimizer_class == 'SGD':
             return optim.SGD(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
         elif self.optimizer_class == 'RMSprop':
             return optim.RMSprop(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
@@ -144,9 +165,10 @@ class Model(nn.Module):
         else:
             raise NotImplementedError
 
-
-    def forward(self):
-        pass
+    def forward(self, x):
+        for layer in self.layers.values():
+            x = layer(x)
+        return x
 
 
     def get_config(self):
@@ -180,57 +202,31 @@ class StochasticDiscretePolicy(Model):
     def __init__(
         self,
         env: gym.Env,
-        dense_layers: List[Tuple[int, str, str]] = None,
-        output_layer_kernel: dict = {"default":{}},
+        layer_config: List[Dict],
+        output_layer_kernel: dict = {"default": {}},
         optimizer: str = "Adam",
-        optimizer_params:dict={},
+        optimizer_params: dict = {},
         learning_rate: float = 0.001,
-        distribution: str = 'categorical',
+        distribution: str = 'beta',
         device: str = None
     ):
-        super().__init__()
-        self.env = env
-        self.layer_config = dense_layers
+        input_size = super().__init__(env, layer_config, optimizer, optimizer_params, learning_rate, device)
         self.output_config = output_layer_kernel
-        self.optimizer_class = optimizer
-        self.optimizer_params = optimizer_params
-        self.learning_rate = learning_rate
         self.distribution = distribution
-        # # Set the device
-        if device == None:
-            device = T.device("cuda" if T.cuda.is_available() else "cpu")
-        self.device = device
 
-        # Create a ModuleDict for dense layers and output layer
-        self.dense_layers = nn.ModuleDict()
-        self.output_layer = nn.ModuleDict()
+        # Create the output layer
+        # input_size = np.prod(env.observation_space.shape[-1])
+        self.output_layer = nn.ModuleDict({
+            'policy_dense_output': nn.Linear(input_size, 2 * env.action_space.shape[-1])
+        })
 
-
-        # set initial input size
-        input_size = np.prod(env.observation_space.shape[-1])
-
-        # build dense layers
-        for i, (units, activation, _) in enumerate(self.layer_config):
-            self.dense_layers[f'policy_dense_{i}'] = nn.Linear(input_size, units)
-
-            if activation == 'relu':
-                self.dense_layers[f'policy_activation_{i}'] = nn.ReLU()
-            elif activation == 'tanh':
-                self.dense_layers[f'policy_activation_{i}'] = nn.Tanh()
-
-            # update input size to be output size of previous layer
-            input_size = units
-
-        # build output layer (need 2x action space to generate an alpha and beta term for each)
-        self.output_layer['policy_dense_output'] = nn.Linear(input_size, self.env.action_space.n)
-
-        # initialize dense layer weights
-        self._init_weights(self.dense_layers, self.layer_config)
-        self._init_weights(self.output_layer, self.output_config)
+        # Initialize weights
+        self._init_weights(self.layer_config, self.layers)
+        self._init_weights(self.output_config, self.output_layer)
 
         # Initialize optimizer
         self.optimizer = self._init_optimizer()
-        # Move the model to the specified device
+
         self.to(self.device)
 
     def forward(self, x):
@@ -240,7 +236,7 @@ class StochasticDiscretePolicy(Model):
         # print(f'x input to forward:{x.shape}')
         # print(f'x:{x}')
 
-        for layer in self.dense_layers.values():
+        for layer in self.layers.values():
             x = layer(x)
 
         x = self.output_layer['policy_dense_output'](x)
@@ -269,8 +265,8 @@ class StochasticDiscretePolicy(Model):
         config = {
             # 'env': self.env.spec.id,
             "env": self.env.spec.to_json(),
-            'num_layers': len(self.dense_layers),
-            'dense_layers': self.layer_config,
+            'num_layers': len(self.layers),
+            'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
             'optimizer': self.optimizer_class,
             'optimizer_params': self.optimizer_params,
@@ -312,7 +308,7 @@ class StochasticDiscretePolicy(Model):
         env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
 
         model = cls(env = gym.make_vec(env_spec),
-                    dense_layers = config.get("dense_layers"),
+                    layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
                     distribution = config.get("distribution", "Beta"),
                     optimizer = config.get("optimizer", "Adam"),
@@ -328,97 +324,53 @@ class StochasticDiscretePolicy(Model):
         return model
 
 class StochasticContinuousPolicy(Model):
-    """Policy model for predicting a probability distribution of a continuous action space.
-
-    Attributes:
-      env: OpenAI gym environment.
-      dense_layers: List of Tuples containing dense layer sizes, activations, and kernel initializers.
-      output_layer_kernel: Dict of kernel initializer:params for the output layer.
-      optimizer: Optimizer for training.
-      optimizer_params: Dict of Parameter:value for the optimizer.
-      learning_rate: Learning rate for the optimizer.
-      distribution: Distribution returned by the policy ('beta' or 'normal').
-      device: Device to run the model on.
-
-    """
+    """Policy model for predicting a probability distribution of a continuous action space."""
 
     def __init__(
         self,
         env: gym.Env,
-        dense_layers: List[Tuple[int, str, str]] = None,
-        output_layer_kernel: dict = {"default":{}},
+        layer_config: List[Dict],
+        output_layer_kernel: dict = {"default": {}},
         optimizer: str = "Adam",
-        optimizer_params:dict={},
+        optimizer_params: dict = {},
         learning_rate: float = 0.001,
         distribution: str = 'beta',
         device: str = None
     ):
-        super().__init__()
-        self.env = env
-        self.layer_config = dense_layers
+        input_size = super().__init__(env, layer_config, optimizer, optimizer_params, learning_rate, device)
         self.output_config = output_layer_kernel
-        self.optimizer_class = optimizer
-        self.optimizer_params = optimizer_params
-        self.learning_rate = learning_rate
         self.distribution = distribution
-        # # Set the device
-        if device == None:
-            device = T.device("cuda" if T.cuda.is_available() else "cpu")
-        self.device = device
 
-        # Create a ModuleDict for dense layers and output layer
-        self.dense_layers = nn.ModuleDict()
-        self.output_layer = nn.ModuleDict()
+        # Create the output layer
+        # input_size = np.prod(env.observation_space.shape[-1])
+        self.output_layer = nn.ModuleDict({
+            'policy_dense_output': nn.Linear(input_size, 2 * env.action_space.shape[-1])
+        })
 
-
-        # set initial input size
-        input_size = np.prod(env.observation_space.shape[-1])
-
-        # build dense layers
-        for i, (units, activation, _) in enumerate(self.layer_config):
-            self.dense_layers[f'policy_dense_{i}'] = nn.Linear(input_size, units)
-
-            if activation == 'relu':
-                self.dense_layers[f'policy_activation_{i}'] = nn.ReLU()
-            elif activation == 'tanh':
-                self.dense_layers[f'policy_activation_{i}'] = nn.Tanh()
-
-            # update input size to be output size of previous layer
-            input_size = units
-
-        # build output layer (need 2x action space to generate an alpha and beta term for each)
-        self.output_layer['policy_dense_output'] = nn.Linear(input_size, 2 * self.env.action_space.shape[-1])
-
-        # initialize dense layer weights
-        self._init_weights(self.dense_layers, self.layer_config)
-        self._init_weights(self.output_layer, self.output_config)
+        # Initialize weights
+        self._init_weights(self.layer_config, self.layers)
+        self._init_weights(self.output_config, self.output_layer)
 
         # Initialize optimizer
         self.optimizer = self._init_optimizer()
-        # Move the model to the specified device
+
         self.to(self.device)
 
     def forward(self, x):
-        """Forward Propogation."""
+        if len(x.shape) == 4:
+            x = x.permute(0, 3, 1, 2)
         x = x.to(self.device)
-        #DEBUG
-        # print(f'x input to forward:{x.shape}')
-        # print(f'x:{x}')
-
-        for layer in self.dense_layers.values():
+        for layer in self.layers.values():
             x = layer(x)
-
+            # print(f'x shape for layer {layer}: {x.shape}')
         x = self.output_layer['policy_dense_output'](x)
-        # # print(f'policy output shape: {x.shape}')
 
-        # Split x into param1 and param2
+        # Split x into param1 and param2 for beta distribution
         param1, param2 = T.split(x, self.env.action_space.shape[-1], dim=-1)
 
         if self.distribution == 'beta':
             alpha = F.relu(param1) + 1.0
             beta = F.relu(param2) + 1.0
-            # alpha = F.softplus(param1) + 1.0
-            # beta = F.softplus(param2) + 1.0
             dist = Beta(alpha, beta)
             return dist, alpha, beta
         elif self.distribution == 'normal':
@@ -427,7 +379,7 @@ class StochasticContinuousPolicy(Model):
             dist = Normal(mu, sigma)
             return dist, mu, sigma
         else:
-            raise ValueError(f'Distribution {self.distribution} not supported.')
+            raise ValueError(f"Distribution {self.distribution} not supported.")
 
     def get_config(self):
         """Get model config."""
@@ -435,8 +387,8 @@ class StochasticContinuousPolicy(Model):
         config = {
             # 'env': self.env.spec.id,
             "env": self.env.spec.to_json(),
-            'num_layers': len(self.dense_layers),
-            'dense_layers': self.layer_config,
+            'num_layers': len(self.layers),
+            'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
             'optimizer': self.optimizer_class,
             'optimizer_params': self.optimizer_params,
@@ -478,7 +430,7 @@ class StochasticContinuousPolicy(Model):
         env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
 
         model = cls(env = gym.make_vec(env_spec),
-                    dense_layers = config.get("dense_layers"),
+                    layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
                     distribution = config.get("distribution", "Beta"),
                     optimizer = config.get("optimizer", "Adam"),
@@ -511,60 +463,37 @@ class ValueModel(Model):
     def __init__(
         self,
         env: gym.Env,
-        dense_layers: List[Tuple[int, str, dict]] = [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})],
+        layer_config: List[Dict],
         output_layer_kernel: dict = {"default":{}},
         optimizer: str = 'Adam',
         optimizer_params:dict={},
         learning_rate: float = 0.001,
-        device: str = 'cpu'
+        device = None
     ):
-        super().__init__()
-        self.env = env
-        self.layer_config = dense_layers
+        input_size = super().__init__(env, layer_config, optimizer, optimizer_params, learning_rate, device)
         self.output_config = output_layer_kernel
-        self.optimizer_class = optimizer
-        self.optimizer_params = optimizer_params
-        self.learning_rate = learning_rate
-        self.device = device
 
-        self.dense_layers = nn.ModuleDict()
-        self.output_layer = nn.ModuleDict()
+        # Create the output layer
+        # input_size = np.prod(env.observation_space.shape[-1])
+        self.output_layer = nn.ModuleDict({
+            'value_dense_output': nn.Linear(input_size, 1)
+        })
 
-        # set initial input size
-        input_size = np.prod(env.observation_space.shape[-1])
-
-        # build model
-        for i, (units, activation, _) in enumerate(self.layer_config):
-            self.dense_layers[f'value_dense_{i}'] = nn.Linear(input_size, units)
-
-            if activation == 'relu':
-                self.dense_layers[f'value_activation_{i}'] = nn.ReLU()
-            elif activation == 'tanh':
-                self.dense_layers[f'value_activation_{i}'] = nn.Tanh()
-
-            # update input size to be output size of previous layer
-            input_size = units
-
-        # initialize dense layer weights
-        self._init_weights(self.dense_layers, self.layer_config)
-
-        # add output layers to dict
-        # self.output_layer = nn.Linear(input_size, 1)
-        self.output_layer['value_dense_output'] = nn.Linear(input_size, 1)
-
-        # initialize weights of policy_output layer
-        self._init_weights(self.output_layer, self.output_config)
+        # Initialize weights
+        self._init_weights(self.layer_config, self.layers)
+        self._init_weights(self.output_config, self.output_layer)
 
         # Initialize optimizer
         self.optimizer = self._init_optimizer()
 
-        # Move the model to the specified device
         self.to(self.device)
 
     def forward(self, x):
         """Forward Propogation."""
+        if len(x.shape) == 4:
+            x = x.permute(0, 3, 1, 2)
         x = x.to(self.device)
-        for layer in self.dense_layers.values():
+        for layer in self.layers.values():
             x = layer(x)
 
         x = self.output_layer['value_dense_output'](x)
@@ -578,8 +507,8 @@ class ValueModel(Model):
         config = {
             # 'env': self.env.spec.id,
             "env": self.env.spec.to_json(),
-            'num_layers': len(self.dense_layers),
-            'dense_layers': self.layer_config,
+            'num_layers': len(self.layers),
+            'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
             'optimizer': self.optimizer_class,
             'optimizer_params': self.optimizer_params,
@@ -622,12 +551,12 @@ class ValueModel(Model):
         env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
 
         model = cls(env = gym.make_vec(env_spec),
-                    dense_layers = config.get("dense_layers", [(256,"relu",{"default":{}}),(128,"relu",{"default":{}})]),
-                    output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
-                    optimizer = config.get("optimizer", "Adam"),
-                    optimizer_params = config.get("optimizer_params", {}),
-                    learning_rate = config.get("learning_rate", 0.001),
-                    device = config.get("device", "cpu")
+                    layer_config = config.get("layer_config"),
+                    output_layer_kernel = config.get("output_layer_kernel"),
+                    optimizer = config.get("optimizer"),
+                    optimizer_params = config.get("optimizer_params"),
+                    learning_rate = config.get("learning_rate"),
+                    device = config.get("device")
                     )
 
         # Load weights if True
@@ -778,7 +707,7 @@ class ActorModel(Model):
             'env': self.env.spec.id,
             'cnn_model': self.cnn_model.get_config() if self.cnn_model is not None else None,
             'num_layers': len(self.dense_layers),
-            'dense_layers': self.layer_config,
+            'layer_config': self.layer_config,
             'output_layer_kernel':self.output_config,
             'goal_shape': self.goal_shape,
             'optimizer': self.optimizer.__class__.__name__,
