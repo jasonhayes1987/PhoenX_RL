@@ -76,10 +76,10 @@ WORKDIR /app
 COPY src/ /app/
 
 # Verify CUDA installation with nvcc
-RUN nvcc --version
+# RUN nvcc --version
 
 # Verify CUDA availability in PyTorch
-RUN python -c "import torch; print(f'CUDA version: {torch.version.cuda}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Number of CUDA devices: {torch.cuda.device_count()}')"
+# RUN python -c "import torch; print(f'CUDA version: {torch.version.cuda}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Number of CUDA devices: {torch.cuda.device_count()}')"
 
 # (Optional) Set the entry point to your application
 # CMD ["conda", "run", "-n", "rl_env", "python", "your_script.py"]
