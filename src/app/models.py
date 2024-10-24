@@ -380,6 +380,26 @@ class StochasticContinuousPolicy(Model):
             return dist, mu, sigma
         else:
             raise ValueError(f"Distribution {self.distribution} not supported.")
+        
+    # def log_probs(self, probs, actions):
+    #     try:
+    #         if self.distribution == 'beta':
+    #             dist = T.distributions.beta.Beta(probs)
+    #         elif self.distribution == 'normal':
+    #             dist = T.distributions.normal.Normal(probs)
+    #         return dist.log_probs(actions)
+    #     except ValueError as e:
+    #         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
+
+    # def entropy(self, probs):
+    #     e = (probs * T.log(probs)).sum(dim=-1)
+    #     return e
+    
+    # def kl(self, old_probs, new_probs):
+    #     old_probs, new_probs = old_probs.squeeze(), new_probs.squeeze()
+    #     kl = (old_probs * (T.log(old_probs + 1e-10) - T.log(new_probs + 1e-10))).sum(-1)
+    #     return kl
+
 
     def get_config(self):
         """Get model config."""
