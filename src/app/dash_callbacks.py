@@ -130,6 +130,118 @@ def register_callbacks(app, shared_data):
         else:
             return "Select a model type to configure its parameters."
         
+
+    # Callback to add a new layer dropdown
+    @app.callback(
+        Output("layer-dropdowns", "children"),
+        [Input("add-layer-btn", "n_clicks")],
+        [State("layer-dropdowns", "children")]
+    )
+    def add_layer_dropdown(n_clicks, children):
+
+        # Initialize `children` as an empty list if it's None
+        if children is None:
+            children = []
+        # Adds a new layer dropdown each time the button is clicked
+        if n_clicks > 0:
+            new_dropdown = html.Div(id=f"layer-container-{n_clicks}",
+                children=[
+                    html.Label(f'Layer {n_clicks}', style={'text-decoration': 'underline'}),
+                    dcc.Dropdown(
+                        id={'type': 'layer-type-dropdown', 'index': n_clicks},
+                        options=[
+                            {"label": "Linear", "value": "linear"},
+                            {"label": "Conv2D", "value": "conv2d"},
+                            {"label": "MaxPool2D", "value": "maxpool2d"},
+                            {"label": "Dropout", "value": "dropout"},
+                            {"label": "BatchNorm2D", "value": "batchnorm2d"},
+                            {"label": "Flatten", "value": "flatten"},
+                            {"label": "ReLU", "value": "relu"},
+                            {"label": "Tanh", "value": "tanh"},
+                            {"label": "TransformerEncoderLayer", "value": "transformer_encoder_layer"}
+                        ],
+                        placeholder="Select Layer Type",
+                        clearable=False
+                    ),
+                    html.Div(id={'type': 'layer-params', 'index': n_clicks})
+                ],
+                style={'margin-top': '10px', 'margin-left': '20px'}
+            )
+            children.append(new_dropdown)
+        return children
+        
+    # Callback to display parameters based on layer type selection
+    @app.callback(
+        Output({'type': 'layer-params', 'index': ALL}, 'children'),
+        Input({'type': 'layer-type-dropdown', 'index': ALL}, 'value'),
+        State({'type': 'layer-type-dropdown', 'index': ALL}, 'id')
+    )
+    def display_layer_parameters(selected_layers, dropdown_ids):
+        children = []
+        
+        for i, layer_type in enumerate(selected_layers):
+            params = []
+            if layer_type == "linear":
+                params = [
+                    dcc.Input(id={'type': 'num-units', 'index': i}, type='number', placeholder='Number of Units'),
+                    dcc.Dropdown(id={'type': 'kernel-init', 'index': i}, options=[{"label": x, "value": x} for x in 
+                        ["kaiming uniform", "kaiming normal", "xavier uniform", "xavier normal", "truncated normal", 
+                        "uniform", "normal", "constant", "ones", "zeros", "variance scaling", "default"]],
+                        placeholder="Kernel Initialization"),
+                    html.Div(id={'type': 'kernel-params', 'index': i}),
+                    dcc.Dropdown(id={'type': 'bias', 'index': i}, options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
+                        placeholder="Bias")
+                ]
+            elif layer_type == "conv2d":
+                params = [
+                    dcc.Input(id={'type': 'out-channels', 'index': i}, type='number', placeholder='Out Channels'),
+                    dcc.Input(id={'type': 'kernel-size', 'index': i}, type='number', placeholder='Kernel Size'),
+                    dcc.Input(id={'type': 'stride', 'index': i}, type='number', placeholder='Stride'),
+                    dcc.Dropdown(
+                        id={'type': 'padding-dropdown', 'index': i},
+                        options=[{"label": "Valid", "value": "valid"}, 
+                                {"label": "Same", "value": "same"}, 
+                                {"label": "Custom", "value": "custom"}], 
+                        placeholder="Padding"
+                    ),
+                    html.Div(
+                        dcc.Input(id={'type': 'custom-padding', 'index': i}, type='number', placeholder='Custom Padding'),
+                        style={'display': 'none'}
+                    ),
+                    dcc.Dropdown(id={'type': 'bias', 'index': i}, options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
+                                placeholder="Bias")
+                ]
+            elif layer_type == "batchnorm2d":
+                params = [dcc.Input(id={'type': 'num-features', 'index': i}, type='number', placeholder='Num Features')]
+            elif layer_type == "maxpool2d":
+                params = [
+                    dcc.Input(id={'type': 'kernel-size', 'index': i}, type='number', placeholder='Kernel Size'),
+                    dcc.Input(id={'type': 'stride', 'index': i}, type='number', placeholder='Stride')
+                ]
+            elif layer_type == "dropout":
+                params = [dcc.Input(id={'type': 'dropout-prob', 'index': i}, type='number', placeholder='Dropout Probability', min=0.1, max=0.9, step=0.1)]
+            elif layer_type == "transformer_encoder_layer":
+                params = [
+                    dcc.Input(id={'type': 'd-model', 'index': i}, type='number', placeholder='Model Dimension (d_model)'),
+                    dcc.Input(id={'type': 'nhead', 'index': i}, type='number', placeholder='Number of Attention Heads (nhead)'),
+                    dcc.Input(id={'type': 'dim-feedforward', 'index': i}, type='number', placeholder='Feedforward Dimension (dim_feedforward)'),
+                    dcc.Input(id={'type': 'dropout', 'index': i}, type='number', placeholder='Dropout', min=0, max=1, step=0.1)
+                ]
+            
+            # Wrap parameters with indentation style
+            children.append(html.Div(params, style={'margin-top': '10px', 'margin-left': '20px'}))
+        
+        return children
+
+    # Callback to toggle visibility of custom padding input for Conv2D layers
+    @app.callback(
+        Output({'type': 'custom-padding', 'index': ALL}, 'style'),
+        Input({'type': 'padding-dropdown', 'index': ALL}, 'value')
+    )
+    def toggle_custom_padding(selected_padding):
+        # Show custom padding input only if 'custom' is selected
+        styles = [{'display': 'block' if padding == 'custom' else 'none'} for padding in selected_padding]
+        return styles
     
     @app.callback(
         Output({'type':'optimizer-options', 'model':MATCH, 'agent':MATCH}, 'children'),
@@ -143,278 +255,278 @@ def register_callbacks(app, shared_data):
         return utils.create_optimizer_params_input(agent_type, model_type, optimizer)
 
         
-    @app.callback(
-    Output({'type': 'units-per-layer', 'model': MATCH, 'agent': MATCH}, 'children'),
-    Input({'type': 'dense-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
-    State({'type': 'dense-layers', 'model': MATCH, 'agent': MATCH}, 'id'),
-)
-    def update_units_per_layer_inputs(num_layers, id):
-        if num_layers is not None:
-            model_type = id['model']
-            agent_type = id['agent']
-            inputs = []
-            for i in range(1, num_layers + 1):
-                input_id = {
-                    'type': 'layer-units',
-                    'model': model_type,
-                    'agent': agent_type,
-                    'index': i,
-                }
-                inputs.append(html.Div([
-                    html.Label(f'Neurons in Hidden Layer {i}', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id=input_id,
-                        type='number',
-                        min=1,
-                        max=1024,
-                        step=1,
-                        value=512,
-                    ),
-                ]))
+#     @app.callback(
+#     Output({'type': 'units-per-layer', 'model': MATCH, 'agent': MATCH}, 'children'),
+#     Input({'type': 'dense-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
+#     State({'type': 'dense-layers', 'model': MATCH, 'agent': MATCH}, 'id'),
+# )
+#     def update_units_per_layer_inputs(num_layers, id):
+#         if num_layers is not None:
+#             model_type = id['model']
+#             agent_type = id['agent']
+#             inputs = []
+#             for i in range(1, num_layers + 1):
+#                 input_id = {
+#                     'type': 'layer-units',
+#                     'model': model_type,
+#                     'agent': agent_type,
+#                     'index': i,
+#                 }
+#                 inputs.append(html.Div([
+#                     html.Label(f'Neurons in Hidden Layer {i}', style={'text-decoration': 'underline'}),
+#                     dcc.Input(
+#                         id=input_id,
+#                         type='number',
+#                         min=1,
+#                         max=1024,
+#                         step=1,
+#                         value=512,
+#                     ),
+#                 ]))
 
-            return inputs
+#             return inputs
         
         
-    @app.callback(
-    Output({'type': 'layer-types', 'model': MATCH, 'agent': MATCH}, 'children'),
-    Input({'type': 'conv-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
-    State({'type': 'conv-layers', 'model': MATCH, 'agent': MATCH}, 'id'),
-)
-    def update_cnn_layer_type_inputs(num_layers, id):
-        if num_layers is not None:
-            model_type = id['model']
-            agent_type = id['agent']
+#     @app.callback(
+#     Output({'type': 'layer-types', 'model': MATCH, 'agent': MATCH}, 'children'),
+#     Input({'type': 'conv-layers', 'model': MATCH, 'agent': MATCH}, 'value'),
+#     State({'type': 'conv-layers', 'model': MATCH, 'agent': MATCH}, 'id'),
+# )
+#     def update_cnn_layer_type_inputs(num_layers, id):
+#         if num_layers is not None:
+#             model_type = id['model']
+#             agent_type = id['agent']
 
-            layer_types = []
-            for i in range(1, num_layers + 1):
-                input_id = {
-                    'type': 'cnn-layer-type',
-                    'model': model_type,
-                    'agent': agent_type,
-                    'index': i,
-                }
-                layer_types.append(html.Div([
-                    html.Label(f'Layer Type for Conv Layer {i}', style={'text-decoration': 'underline'}),
-                    dcc.Dropdown(
-                        id=input_id,
-                        options=[
-                            {'label': 'Conv2D', 'value': 'conv'},
-                            {'label': 'MaxPool2D', 'value': 'pool'},
-                            {'label': 'Dropout', 'value': 'dropout'},
-                            {'label': 'BatchNorm2D', 'value': 'batchnorm'},
-                            {'label': 'Relu', 'value':'relu'},
-                            {'label': 'Tanh', 'value': 'tanh'},
-                        ]
-                    ),
-                    html.Div(
-                        id={
-                            'type': 'cnn-layer-type-parameters',
-                            'model': model_type,
-                            'agent': agent_type,
-                            'index': i,
-                        },
-                    )
-                    ])
-                )
+#             layer_types = []
+#             for i in range(1, num_layers + 1):
+#                 input_id = {
+#                     'type': 'cnn-layer-type',
+#                     'model': model_type,
+#                     'agent': agent_type,
+#                     'index': i,
+#                 }
+#                 layer_types.append(html.Div([
+#                     html.Label(f'Layer Type for Conv Layer {i}', style={'text-decoration': 'underline'}),
+#                     dcc.Dropdown(
+#                         id=input_id,
+#                         options=[
+#                             {'label': 'Conv2D', 'value': 'conv'},
+#                             {'label': 'MaxPool2D', 'value': 'pool'},
+#                             {'label': 'Dropout', 'value': 'dropout'},
+#                             {'label': 'BatchNorm2D', 'value': 'batchnorm'},
+#                             {'label': 'Relu', 'value':'relu'},
+#                             {'label': 'Tanh', 'value': 'tanh'},
+#                         ]
+#                     ),
+#                     html.Div(
+#                         id={
+#                             'type': 'cnn-layer-type-parameters',
+#                             'model': model_type,
+#                             'agent': agent_type,
+#                             'index': i,
+#                         },
+#                     )
+#                     ])
+#                 )
 
-            return layer_types
+#             return layer_types
         
     
-    @app.callback(
-    Output({'type': 'conv-padding-custom-container', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'style'),
-    Input({'type': 'conv-padding', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value')
-    )
-    def show_hide_custom_padding(padding_value):
-        if padding_value == 'custom':
-            return {'display': 'block'}
-        else:
-            return {'display': 'none'}
+    # @app.callback(
+    # Output({'type': 'conv-padding-custom-container', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'style'),
+    # Input({'type': 'conv-padding', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value')
+    # )
+    # def show_hide_custom_padding(padding_value):
+    #     if padding_value == 'custom':
+    #         return {'display': 'block'}
+    #     else:
+    #         return {'display': 'none'}
         
     
-    @app.callback(
-    Output({'type': 'conv-padding-custom-container-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'style'),
-    Input({'type': 'conv-padding-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value')
-    )
-    def show_hide_custom_padding_hyperparams(padding_value):
-        if padding_value == 'custom':
-            return {'display': 'block'}
-        else:
-            return {'display': 'none'}
+    # @app.callback(
+    # Output({'type': 'conv-padding-custom-container-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'style'),
+    # Input({'type': 'conv-padding-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value')
+    # )
+    # def show_hide_custom_padding_hyperparams(padding_value):
+    #     if padding_value == 'custom':
+    #         return {'display': 'block'}
+    #     else:
+    #         return {'display': 'none'}
         
         
-    @app.callback(
-    Output({'type': 'cnn-layer-type-parameters', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'children'),
-    Input({'type': 'cnn-layer-type', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value'),
-    State({'type': 'cnn-layer-type', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'id'),
-    )
-    def update_layer_type_params(layer_type, id):
-        if layer_type is not None:
-            model_type = id['model']
-            agent = id['agent']
-            index = id['index']
+    # @app.callback(
+    # Output({'type': 'cnn-layer-type-parameters', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'children'),
+    # Input({'type': 'cnn-layer-type', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value'),
+    # State({'type': 'cnn-layer-type', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'id'),
+    # )
+    # def update_layer_type_params(layer_type, id):
+    #     if layer_type is not None:
+    #         model_type = id['model']
+    #         agent = id['agent']
+    #         index = id['index']
 
-            # loop over layer types to create the appropriate parameters
-            if layer_type == 'conv':
-                return html.Div([
-                    html.Label(f'Filters in Conv Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type': 'conv-filters',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        type='number',
-                        min=1,
-                        max=1024,
-                        step=1,
-                        value=32,
-                    ),
-                    html.Label(f'Kernel Size in Conv Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type': 'conv-kernel-size',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        type='number',
-                        min=1,
-                        max=10,
-                        step=1,
-                        value=3,
-                    ),
-                    html.Label(f'Kernel Stride in Conv Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type': 'conv-stride',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        type='number',
-                        min=1,
-                        max=10,
-                        step=1,
-                        value=3,
-                    ),
-                    html.Label(f'Input Padding in Conv Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.RadioItems(
-                        id={
-                            'type': 'conv-padding',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        options=[
-                            {'label': 'Same', 'value': 'same'},
-                            {'label': 'Valid', 'value': 'valid'},
-                            {'label': 'Custom', 'value': 'custom'},
-                        ],
-                        value='same',  # Default value
-                    ),
-                    html.Div(
-                        [
-                            html.Label('Custom Padding (pixels)', style={'text-decoration': 'underline'}),
-                            dcc.Input(
-                                id={
-                                    'type': 'conv-padding-custom',
-                                    'model': model_type,
-                                    'agent': agent,
-                                    'index': index,
-                                },
-                                type='number',
-                                min=0,
-                                max=10,
-                                step=1,
-                                value=1,
-                            ),
-                        ],
-                        id={
-                            'type': 'conv-padding-custom-container',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        style={'display': 'none'},  # Hide initially
-                    ),
-                    dcc.Checklist(
-                        id={
-                            'type': 'conv-use-bias',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        options=[
-                            {'label': 'Use Bias', 'value': True},
-                        ]
-                    )
-                ])
-            if layer_type == 'pool':
-                return html.Div([
-                    html.Label(f'Kernel Size of Pooling Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type': 'pool-kernel-size',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        type='number',
-                        min=1,
-                        max=10,
-                        step=1,
-                        value=3,
-                    ),
-                    html.Label(f'Kernel Stride in Pooling Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type': 'pool-stride',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        type='number',
-                        min=1,
-                        max=10,
-                        step=1,
-                        value=3,
-                    ),
-                ])
-            if layer_type == 'batchnorm':
-                return html.Div([
-                    html.Label(f'Number of Features for BatchNorm Layer {index} (set to number of input channels)', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type': 'batch-features',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        type='number',
-                        min=1,
-                        max=1024,
-                        step=1,
-                        value=32,
-                    ),
-                ])
-            if layer_type == 'dropout':
-                return html.Div([
-                    html.Label(f'Probability of Zero-ed Element for Dropout Layer {index}', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type': 'dropout-prob',
-                            'model': model_type,
-                            'agent': agent,
-                            'index': index,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.1,
-                        value=0.5,
-                    ),
-                ])
+    #         # loop over layer types to create the appropriate parameters
+    #         if layer_type == 'conv':
+    #             return html.Div([
+    #                 html.Label(f'Filters in Conv Layer {index}', style={'text-decoration': 'underline'}),
+    #                 dcc.Input(
+    #                     id={
+    #                         'type': 'conv-filters',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     type='number',
+    #                     min=1,
+    #                     max=1024,
+    #                     step=1,
+    #                     value=32,
+    #                 ),
+    #                 html.Label(f'Kernel Size in Conv Layer {index}', style={'text-decoration': 'underline'}),
+    #                 dcc.Input(
+    #                     id={
+    #                         'type': 'conv-kernel-size',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     type='number',
+    #                     min=1,
+    #                     max=10,
+    #                     step=1,
+    #                     value=3,
+    #                 ),
+    #                 html.Label(f'Kernel Stride in Conv Layer {index}', style={'text-decoration': 'underline'}),
+    #                 dcc.Input(
+    #                     id={
+    #                         'type': 'conv-stride',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     type='number',
+    #                     min=1,
+    #                     max=10,
+    #                     step=1,
+    #                     value=3,
+    #                 ),
+    #                 html.Label(f'Input Padding in Conv Layer {index}', style={'text-decoration': 'underline'}),
+    #                 dcc.RadioItems(
+    #                     id={
+    #                         'type': 'conv-padding',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     options=[
+    #                         {'label': 'Same', 'value': 'same'},
+    #                         {'label': 'Valid', 'value': 'valid'},
+    #                         {'label': 'Custom', 'value': 'custom'},
+    #                     ],
+    #                     value='same',  # Default value
+    #                 ),
+    #                 html.Div(
+    #                     [
+    #                         html.Label('Custom Padding (pixels)', style={'text-decoration': 'underline'}),
+    #                         dcc.Input(
+    #                             id={
+    #                                 'type': 'conv-padding-custom',
+    #                                 'model': model_type,
+    #                                 'agent': agent,
+    #                                 'index': index,
+    #                             },
+    #                             type='number',
+    #                             min=0,
+    #                             max=10,
+    #                             step=1,
+    #                             value=1,
+    #                         ),
+    #                     ],
+    #                     id={
+    #                         'type': 'conv-padding-custom-container',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     style={'display': 'none'},  # Hide initially
+    #                 ),
+    #                 dcc.Checklist(
+    #                     id={
+    #                         'type': 'conv-use-bias',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     options=[
+    #                         {'label': 'Use Bias', 'value': True},
+    #                     ]
+    #                 )
+    #             ])
+    #         if layer_type == 'pool':
+    #             return html.Div([
+    #                 html.Label(f'Kernel Size of Pooling Layer {index}', style={'text-decoration': 'underline'}),
+    #                 dcc.Input(
+    #                     id={
+    #                         'type': 'pool-kernel-size',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     type='number',
+    #                     min=1,
+    #                     max=10,
+    #                     step=1,
+    #                     value=3,
+    #                 ),
+    #                 html.Label(f'Kernel Stride in Pooling Layer {index}', style={'text-decoration': 'underline'}),
+    #                 dcc.Input(
+    #                     id={
+    #                         'type': 'pool-stride',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     type='number',
+    #                     min=1,
+    #                     max=10,
+    #                     step=1,
+    #                     value=3,
+    #                 ),
+    #             ])
+    #         if layer_type == 'batchnorm':
+    #             return html.Div([
+    #                 html.Label(f'Number of Features for BatchNorm Layer {index} (set to number of input channels)', style={'text-decoration': 'underline'}),
+    #                 dcc.Input(
+    #                     id={
+    #                         'type': 'batch-features',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     type='number',
+    #                     min=1,
+    #                     max=1024,
+    #                     step=1,
+    #                     value=32,
+    #                 ),
+    #             ])
+    #         if layer_type == 'dropout':
+    #             return html.Div([
+    #                 html.Label(f'Probability of Zero-ed Element for Dropout Layer {index}', style={'text-decoration': 'underline'}),
+    #                 dcc.Input(
+    #                     id={
+    #                         'type': 'dropout-prob',
+    #                         'model': model_type,
+    #                         'agent': agent,
+    #                         'index': index,
+    #                     },
+    #                     type='number',
+    #                     min=0.0,
+    #                     max=1.0,
+    #                     step=0.1,
+    #                     value=0.5,
+    #                 ),
+    #             ])
     
     
     @app.callback(
@@ -579,16 +691,86 @@ def register_callbacks(app, shared_data):
                 ])
             return inputs
         
-    # Callback that updates the placeholder div based on the selected kernel initializer
+    # # Callback that updates the placeholder div based on the selected kernel initializer
+    # @app.callback(
+    #     Output({'type': 'kernel-initializer-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+    #     Input({'type': 'kernel-function', 'model': MATCH, 'agent': MATCH}, 'value'),
+    #     State({'type': 'kernel-function', 'model': MATCH, 'agent': MATCH}, 'id'),
+    #     prevent_initial_call=True
+    # )
+    # def update_kernel_initializer_options(selected_initializer, initializer_id):
+    #     # Use the utility function to get the initializer inputs
+    #     return utils.get_kernel_initializer_inputs(selected_initializer, initializer_id)
+        
+    # Callback to display kernel initializer parameters based on the selected kernel type
     @app.callback(
-        Output({'type': 'kernel-initializer-options', 'model': MATCH, 'agent': MATCH}, 'children'),
-        Input({'type': 'kernel-function', 'model': MATCH, 'agent': MATCH}, 'value'),
-        State({'type': 'kernel-function', 'model': MATCH, 'agent': MATCH}, 'id'),
-        prevent_initial_call=True
+        Output({'type': 'kernel-params', 'index': ALL}, 'children'),
+        Input({'type': 'kernel-init', 'index': ALL}, 'value'),
+        State({'type': 'kernel-init', 'index': ALL}, 'id')
     )
-    def update_kernel_initializer_options(selected_initializer, initializer_id):
-        # Use the utility function to get the initializer inputs
-        return utils.get_kernel_initializer_inputs(selected_initializer, initializer_id)
+    def display_kernel_parameters(selected_kernels, dropdown_ids):
+        children = []
+        for kernel in selected_kernels:
+            params = []
+            if kernel in ["kaiming normal", "kaiming uniform"]:
+                params = [
+                    dcc.Dropdown(
+                        id='mode',
+                        options=[
+                            {"label": "fan in", "value": "fan in"},
+                            {"label": "fan out", "value": "fan out"}
+                        ],
+                        placeholder="Mode"
+                    )
+                ]
+            elif kernel in ["xavier normal", "xavier uniform"]:
+                params = [
+                    dcc.Input(id='gain', type='number', placeholder='Gain', min=1.0, max=3.0, step=0.1)
+                ]
+            elif kernel == "truncated normal":
+                params = [
+                    dcc.Input(id='mean', type='number', placeholder='Mean', min=0.01, max=0.99, step=0.01),
+                    dcc.Input(id='std-dev', type='number', placeholder='Standard Deviation', min=0.1, max=3.0, step=0.1)
+                ]
+            elif kernel == "uniform":
+                params = [
+                    dcc.Input(id='min', type='number', placeholder='Minimum', min=0.01, max=1.0, step=0.01),
+                    dcc.Input(id='max', type='number', placeholder='Maximum', min=0.01, max=1.0, step=0.01)
+                ]
+            elif kernel == "normal":
+                params = [
+                    dcc.Input(id='mean', type='number', placeholder='Mean', min=0.01, max=0.99, step=0.01),
+                    dcc.Input(id='std-dev', type='number', placeholder='Standard Deviation', min=0.1, max=3.0, step=0.1)
+                ]
+            elif kernel == "constant":
+                params = [
+                    dcc.Input(id='value', type='number', placeholder='Value', min=0.01, max=1.0, step=0.01)
+                ]
+            elif kernel == "variance scaling":
+                params = [
+                    dcc.Input(id='scale', type='number', placeholder='Scale', min=1.0, max=5.0, step=0.1),
+                    dcc.Dropdown(
+                        id='mode',
+                        options=[
+                            {"label": "fan in", "value": "fan in"},
+                            {"label": "fan out", "value": "fan out"},
+                            {"label": "fan avg", "value": "fan avg"}
+                        ],
+                        placeholder="Mode"
+                    ),
+                    dcc.Dropdown(
+                        id='distribution',
+                        options=[
+                            {"label": "truncated normal", "value": "truncated normal"},
+                            {"label": "uniform", "value": "uniform"}
+                        ],
+                        placeholder="Distribution"
+                    )
+                ]
+
+            children.append(html.Div(params, style={'margin-top': '10px', 'margin-bottom': '10px', 'margin-left': '20px'}))
+        
+        return children
     
     @app.callback(
         Output({'type': 'goal-strategy-options', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -783,6 +965,7 @@ def register_callbacks(app, shared_data):
             )
 
             policy_layers = models.build_layers(
+
                 utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
@@ -832,7 +1015,7 @@ def register_callbacks(app, shared_data):
 
                     policy_model = model(
                         env=env,
-                        dense_layers=policy_layers,
+                        layer_config=policy_layers,
                         output_layer_kernel=policy_output_kernel,
                         optimizer=policy_optimizer,
                         optimizer_params=policy_opt_params,
@@ -845,7 +1028,7 @@ def register_callbacks(app, shared_data):
                     model = StochasticDiscretePolicy
                     policy_model = model(
                         env=env,
-                        dense_layers=policy_layers,
+                        layer_config=policy_layers,
                         output_layer_kernel=policy_output_kernel,
                         optimizer=policy_optimizer,
                         optimizer_params=policy_opt_params,
@@ -856,7 +1039,7 @@ def register_callbacks(app, shared_data):
                 model = StochasticDiscretePolicy
                 policy_model = model(
                     env=env,
-                    dense_layers=policy_layers,
+                    layer_config=policy_layers,
                     output_layer_kernel=policy_output_kernel,
                     optimizer=policy_optimizer,
                     optimizer_params=policy_opt_params,
@@ -916,7 +1099,7 @@ def register_callbacks(app, shared_data):
             
             value_model = ValueModel(
                 env=env,
-                dense_layers=value_layers,
+                layer_config=value_layers,
                 output_layer_kernel=value_output_kernel,
                 optimizer=value_optimizer,
                 optimizer_params=value_opt_params,
@@ -992,7 +1175,7 @@ def register_callbacks(app, shared_data):
                 entropy_coeff = utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
-                        id_type='entropy-value',
+                        id_type='entropy-coeff',
                         model_type='none',
                         agent_type=agent_type_dropdown_value,
                     )
@@ -1008,7 +1191,7 @@ def register_callbacks(app, shared_data):
                 kl_coeff = utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
-                        id_type='kl-value',
+                        id_type='kl-coeff',
                         model_type='none',
                         agent_type=agent_type_dropdown_value,
                     )

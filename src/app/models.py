@@ -1064,7 +1064,7 @@ class CriticModel(Model):
         return model
 
 
-def build_layers(units_per_layer: List[int], activation: str, initializer: str):
+def build_layers(types: List[str], units_per_layer: List[int], activation: str, initializer: str):
     """formats config into policy and value layers"""
     # get policy layers
     layers = []

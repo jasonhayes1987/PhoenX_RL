@@ -1845,8 +1845,8 @@ def create_policy_grad_clip_input(agent_type):
                         },
                         type='number',
                         min=0.1,
-                        max=10.0,
-                        value=0.5,
+                        max=50.0,
+                        value=40.0,
                         step=0.1,
                     )
                 ],
@@ -1866,100 +1866,121 @@ def create_entropy_coeff_input(agent_type):
                     'agent':agent_type
                 },
                 type='number',
-                min=0.01,
-                max=0.99,
-                step=0.01,
-                value=0.99,
+                min=0.001,
+                max=0.990,
+                step=0.001,
+                value=0.001,
             )
         ]
     )
 
-def create_ppo_loss_type_input(agent_type):
+def create_kl_coeff_input(agent_type):
     return html.Div(
         [
-            html.Label('Loss Type', style={'text-decoration': 'underline'}),
-            dcc.Dropdown(
+            html.Label('KL Coefficient', style={'text-decoration': 'underline'}),
+            dcc.Input(
                 id={
-                    'type':'loss-type',
+                    'type':'kl-coeff',
                     'model':'none',
-                    'agent':agent_type,
+                    'agent':agent_type
                 },
-                options=[{'label': i, 'value': i.lower()} for i in ["KL", "Clipped", "Hybrid"]],
-                placeholder="select loss type"
-            ),
-            html.Div(
-                id={
-                    'type':'entropy-block',
-                    'model':'none',
-                    'agent':agent_type,
-                },
-                children = [
-                    html.Label('Entropy Coefficient', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                    id={
-                        'type':'entropy-value',
-                        'model':'none',
-                        'agent':agent_type,
-                    },
-                    type='number',
-                    # placeholder="Clamp Value",
-                    min=0.001,
-                    max=1.00,
-                    step=0.001,
-                    # value=0.01,
-                    ),
-                ],
-                style={'display': 'none'},
-            ),
-            html.Div(
-                id={
-                    'type':'kl-block',
-                    'model':'none',
-                    'agent':agent_type,
-                },
-                children = [
-                    html.Label('KL Coefficient', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                    id={
-                        'type':'kl-value',
-                        'model':'none',
-                        'agent':agent_type,
-                    },
-                    type='number',
-                    # placeholder="Clamp Value",
-                    min=0.01,
-                    max=5.00,
-                    step=0.01,
-                    ),
-                ],
-                style={'display': 'none'},
-            ),
-            html.Div(
-                id={
-                    'type':'lambda-block',
-                    'model':'none',
-                    'agent':agent_type,
-                },
-                children = [
-                    html.Label('Lambda Coefficient', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                    id={
-                        'type':'lambda-value',
-                        'model':'none',
-                        'agent':agent_type,
-                    },
-                    type='number',
-                    # placeholder="Clamp Value",
-                    min=0.00,
-                    max=1.00,
-                    step=0.01,
-                    # value=0.00,
-                    ),
-                ],
-                style={'display': 'none'},
-            ),
+                type='number',
+                min=0.01,
+                max=10.00,
+                step=0.01,
+                value=3.00,
+            )
         ]
     )
+
+# def create_ppo_loss_type_input(agent_type):
+#     return html.Div(
+#         [
+#             html.Label('Loss Type', style={'text-decoration': 'underline'}),
+#             dcc.Dropdown(
+#                 id={
+#                     'type':'loss-type',
+#                     'model':'none',
+#                     'agent':agent_type,
+#                 },
+#                 options=[{'label': i, 'value': i.lower()} for i in ["KL", "Clipped", "Hybrid"]],
+#                 placeholder="select loss type"
+#             ),
+#             html.Div(
+#                 id={
+#                     'type':'entropy-block',
+#                     'model':'none',
+#                     'agent':agent_type,
+#                 },
+#                 children = [
+#                     html.Label('Entropy Coefficient', style={'text-decoration': 'underline'}),
+#                     dcc.Input(
+#                     id={
+#                         'type':'entropy-value',
+#                         'model':'none',
+#                         'agent':agent_type,
+#                     },
+#                     type='number',
+#                     # placeholder="Clamp Value",
+#                     min=0.001,
+#                     max=1.00,
+#                     step=0.001,
+#                     # value=0.01,
+#                     ),
+#                 ],
+#                 style={'display': 'none'},
+#             ),
+#             html.Div(
+#                 id={
+#                     'type':'kl-block',
+#                     'model':'none',
+#                     'agent':agent_type,
+#                 },
+#                 children = [
+#                     html.Label('KL Coefficient', style={'text-decoration': 'underline'}),
+#                     dcc.Input(
+#                     id={
+#                         'type':'kl-value',
+#                         'model':'none',
+#                         'agent':agent_type,
+#                     },
+#                     type='number',
+#                     # placeholder="Clamp Value",
+#                     min=0.01,
+#                     max=5.00,
+#                     step=0.01,
+#                     ),
+#                 ],
+#                 style={'display': 'none'},
+#             ),
+#             html.Div(
+#                 id={
+#                     'type':'lambda-block',
+#                     'model':'none',
+#                     'agent':agent_type,
+#                 },
+#                 children = [
+#                     html.Label('Lambda Coefficient', style={'text-decoration': 'underline'}),
+#                     dcc.Input(
+#                     id={
+#                         'type':'lambda-value',
+#                         'model':'none',
+#                         'agent':agent_type,
+#                     },
+#                     type='number',
+#                     # placeholder="Clamp Value",
+#                     min=0.00,
+#                     max=1.00,
+#                     step=0.01,
+#                     # value=0.00,
+#                     ),
+#                 ],
+#                 style={'display': 'none'},
+#             ),
+#         ]
+#     )
+
+
 
 def create_normalize_advantage_input(agent_type):
     return html.Div(
@@ -2656,6 +2677,12 @@ def create_trace_decay_input(agent_type, model_type):
             ),
         ]
     )
+
+def create_add_layer_button(agent_type, model_type):
+    return html.Div([
+        html.Div(id="layer-dropdowns"),
+        html.Button("Add Layer", id="add-layer-btn", n_clicks=0, style={'margin-top': '10px', 'margin-left': '20px'})
+    ])
     
 def create_policy_model_type_input(agent_type):
     return html.Div(
@@ -2679,9 +2706,10 @@ def create_policy_model_input(agent_type):
     return html.Div(
         [
             html.H3("Policy Model Configuration"),
-            create_dense_layers_input(agent_type, 'policy'),
-            html.Label("Hidden Layers Kernel Initializers"),
-            create_kernel_input(agent_type, 'policy-hidden'),
+            # create_dense_layers_input(agent_type, 'policy'),
+            # html.Label("Hidden Layers Kernel Initializers"),
+            # create_kernel_input(agent_type, 'policy-hidden'),
+            create_add_layer_button(agent_type, 'policy-hidden'),
             html.Label("Output Layer Kernel Initializer"),
             create_kernel_input(agent_type, 'policy-output'),
             create_activation_input(agent_type, 'policy'),
@@ -2860,11 +2888,11 @@ def create_ppo_parameter_inputs(agent_type):
         id=f'{agent_type}-inputs',
         children=[
             create_device_input(agent_type),
-            create_ppo_loss_type_input(agent_type),
             create_distribution_input(agent_type),
             create_discount_factor_input(agent_type),
             create_advantage_coeff_input(agent_type),
-            # create_entropy_coeff_input(agent_type),
+            create_entropy_coeff_input(agent_type),
+            create_kl_coeff_input(agent_type),
             create_normalize_advantage_input(agent_type),
             create_normalize_values_input(agent_type),
             # Actor Model Configuration

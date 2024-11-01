@@ -5022,7 +5022,6 @@ class PPO(Agent):
                  gae_coefficient: float = 0.95,
                  policy_clip: float = 0.2,
                  entropy_coefficient: float = 0.01,
-                 loss:str = 'clipped',
                  kl_coefficient: float = 0.01,
                  normalize_advantages: bool = True,
                  normalize_values: bool = False,
@@ -5043,7 +5042,6 @@ class PPO(Agent):
         self.gae_coefficient = gae_coefficient
         self.policy_clip = policy_clip
         self.entropy_coefficient = entropy_coefficient
-        self.loss = loss
         self.kl_coefficient = kl_coefficient
         self.normalize_advantages = normalize_advantages
         self.normalize_values = normalize_values
@@ -6107,27 +6105,6 @@ class PPO(Agent):
                 policy_loss = surrogate_loss + entropy_penalty + kl_penalty
                 # print(f'policy loss: {policy_loss}')
 
-                # if self.loss == 'clipped':
-                #     lambda_value = 1.0
-                #     entropy_penalty = -self.entropy_coefficient * entropy
-                #     policy_loss = surrogate_loss + entropy_penalty
-                # elif self.loss == 'kl':
-                #     lambda_value = 0.0
-                #     log_diff = new_log_probs - log_probs_batch
-                #     kl_penalty = -log_diff.mean()
-                #     kl_penalty *= self.kl_coefficient
-                #     policy_loss = surrogate_loss + kl_penalty
-                # elif self.loss == 'hybrid':
-                #     # Run lambda param through sigmoid to clamp between 0 and 1
-                #     lambda_value = T.sigmoid(self.lambda_param)
-                #     entropy_penalty = -self.entropy_coefficient * entropy
-                #     log_diff = new_log_probs - log_probs_batch
-                #     kl_penalty = -log_diff.mean()
-                #     kl_penalty *= self.kl_coefficient
-                #     policy_loss = surrogate_loss + entropy_penalty + kl_penalty
-                # else:
-                #     raise ValueError(f'Unknown loss: {self.loss}')
-
                 # Update the policy
                 self.policy_model.optimizer.zero_grad()
                 policy_loss.backward()
@@ -6375,7 +6352,6 @@ class PPO(Agent):
                 "gae_coefficient": self.gae_coefficient,
                 "policy_clip": self.policy_clip,
                 "entropy_coefficient": self.entropy_coefficient,
-                "loss": self.loss,
                 "kl_coefficient": self.kl_coefficient,
                 "normalize_advantages":self.normalize_advantages,
                 "normalize_values": self.normalize_values,
@@ -6444,7 +6420,6 @@ class PPO(Agent):
             gae_coefficient = config["gae_coefficient"],
             policy_clip = config["policy_clip"],
             entropy_coefficient = config["entropy_coefficient"],
-            loss = config["loss"],
             kl_coefficient = config["kl_coefficient"],
             normalize_advantages = config["normalize_advantages"],
             normalize_values = config["normalize_values"],
