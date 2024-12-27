@@ -1,6 +1,13 @@
 import torch as T
 import torch.nn as nn
+from torch import optim
+import numpy as np
 
+
+def set_seed(seed):
+    T.manual_seed(seed)
+    T.cuda.manual_seed(seed)
+    np.random.seed(seed)
 
 def VarianceScaling_(tensor: T.tensor, scale: float=1.0, mode: str='fan_in', distribution: str='normal'):
 
@@ -40,3 +47,30 @@ def VarianceScaling_(tensor: T.tensor, scale: float=1.0, mode: str='fan_in', dis
             tensor.mul_(scale)
     else:
         raise ValueError("Distribution {} not supported, please use 'normal', 'truncated_normal', or 'uniform'.".format(distribution))
+    
+def get_optimizer_by_name(name: str):
+    """Creates and returns an optimizer object by its string name.
+
+    Args:
+        name (str): The name of the optimizer.
+
+    Returns:
+        An instance of the requested optimizer.
+
+    Raises:
+        ValueError: If the optimizer name is not recognized.
+    """
+    opts = {
+        "Adam": optim.Adam,
+        "SGD": optim.SGD,
+        "RMSprop": optim.RMSprop,
+        "Adagrad": optim.Adagrad,
+        # Add more optimizers as needed
+    }
+
+    if name not in opts:
+        raise ValueError(
+            f'Optimizer "{name}" is not recognized. Available options: {list(opts.keys())}'
+        )
+
+    return opts[name]

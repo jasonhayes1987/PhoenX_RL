@@ -14,7 +14,7 @@ import gymnasium as gym
 import numpy as np
 import torch as T
 # from dash_callbacks import run_agent
-from wandb_support import get_next_run_number, build_layers
+from wandb_support import get_next_run_number, format_layers
 from rl_agents import init_sweep
 
 print('sweep.py called')

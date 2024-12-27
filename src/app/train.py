@@ -73,8 +73,8 @@ def train_agent(agent_config, train_config):
 
         if agent_type:
             agent = load_agent_from_config(agent_config, load_weights)
-            print('agent config loaded')
-            print(f'env:{agent.env.spec}')
+            # print('agent config loaded')
+            # print(f'env:{agent.env.spec}')
 
             if agent_type == 'HER':
 

@@ -12,35 +12,45 @@ import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
 from torch.distributions import Categorical, Beta, Normal
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, ExponentialLR
 
 import gymnasium as gym
+from gymnasium.envs.registration import EnvSpec
 import numpy as np
 import cnn_models
 import torch_utils
 from logging_config import logger
+from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 
 
 class Model(nn.Module):
     """Base class for all RL models."""
-    def __init__(self, env, layer_config, optimizer: str = "Adam", optimizer_params: dict = {}, learning_rate: float = 0.001, device=None):
+    def __init__(self,
+                 env:EnvWrapper,
+                 layer_config,
+                 optimizer_params: dict = {'type':'Adam', 'params':{'lr':0.001}},
+                 scheduler_params:dict = None,
+                 device=None):
         super(Model, self).__init__()
         self.env = env
         self.layer_config = layer_config
         self.layers = nn.ModuleDict()
-        self.optimizer_class = optimizer
         self.optimizer_params = optimizer_params
-        self.learning_rate = learning_rate
+        self.scheduler_params = scheduler_params
         if device is None:
             device = T.device("cuda" if T.cuda.is_available() else "cpu")
         self.device = device
 
         # Set initial input size based on environment observation space
+        self.obs_space = self.env.observation_space
+        if isinstance(self.env, GymnasiumWrapper):
+            self.obs_space = self.env.single_observation_space
         # For CNNs, this will be 3D (channels, height, width)
-        if len(env.observation_space.shape) == 3:  # For CNNs with images
-            input_height, input_width, input_channels = env.observation_space.shape  # (channels, height, width)
+        if len(self.obs_space.shape) == 3:  # For CNNs with images
+            input_height, input_width, input_channels = self.obs_space.shape  # (channels, height, width)
             input_size = (input_channels, input_height, input_width)
         else:  # For dense layers, using flat observation vector
-            input_size = np.prod(env.observation_space.shape[-1])
+            input_size = np.prod(self.obs_space.shape[-1])
 
         # Build the layers dynamically based on config
         for i, layer_info in enumerate(self.layer_config):
@@ -79,6 +89,14 @@ class Model(nn.Module):
 
             elif layer_type == 'dense':
                 input_size = layer_params['units']  # Units become the input size for the next layer
+        # add module to model
+        self.add_module('layers', self.layers)
+        # Init optimizer and scheduler
+        self.optimizer = self._init_optimizer()
+        if self.scheduler_params:
+            self.scheduler = self._init_scheduler(scheduler_params)
+        else:
+            self.scheduler = None
 
         # Move the model to the correct device
         self.to(self.device)
@@ -109,21 +127,28 @@ class Model(nn.Module):
 
     def _init_weights(self, layer_config, layers):
         # Loop through each layer config and corresponding layer
+        #DEBUG
+        # print(f'layer config:{layer_config}')
+        # print(f'layers:{layers}')
         for config, (layer_name, layer) in zip(layer_config, layers.items()):
             # Check if the layer is one that supports weight initialization
+            
+            #DEBUG
+            # print(config, type(config))
+            # print(f"config type:{config['type']}")
             if config['type'] in ['dense', 'transformer']:
                 init_config = config['params'].get('kernel', 'default')  # Get kernel init or 'default'
 
                 # Apply the specified initialization scheme
-                if init_config == 'kaiming uniform':
+                if init_config == 'kaiming_uniform':
                     nn.init.kaiming_uniform_(layer.weight, **config['params']['kernel params'])
-                elif init_config == 'kaiming normal':
+                elif init_config == 'kaiming_normal':
                     nn.init.kaiming_normal_(layer.weight)
-                elif init_config == 'xavier uniform':
+                elif init_config == 'xavier_uniform':
                     nn.init.xavier_uniform_(layer.weight)
-                elif init_config == 'xavier normal':
+                elif init_config == 'xavier_normal':
                     nn.init.xavier_normal_(layer.weight)
-                elif init_config == 'truncated normal':
+                elif init_config == 'truncated_normal':
                     nn.init.trunc_normal_(layer.weight, **config['params']['kernel params'])
                     nn.init.trunc_normal_(layer.bias, **config['params']['kernel params'])
                 elif init_config == 'uniform':
@@ -141,7 +166,7 @@ class Model(nn.Module):
                 elif init_config == 'zeros':
                     nn.init.zeros_(layer.weight, **config['params']['kernel params'])
                     nn.init.zeros_(layer.bias, **config['params']['kernel params'])
-                elif init_config == 'variance scaling':
+                elif init_config == 'variance_scaling':
                     torch_utils.VarianceScaling_(layer.weight)
                 elif init_config == 'default':
                     # Use PyTorch's default initialization (skip)
@@ -154,16 +179,35 @@ class Model(nn.Module):
                 #     nn.init.zeros_(layer.bias)
 
     def _init_optimizer(self):
-        if self.optimizer_class == 'Adam':
-            return optim.Adam(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
-        elif self.optimizer_class == 'SGD':
-            return optim.SGD(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
-        elif self.optimizer_class == 'RMSprop':
-            return optim.RMSprop(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
-        elif self.optimizer_class == 'Adagrad':
-            return optim.Adagrad(self.parameters(), lr=self.learning_rate, **self.optimizer_params)
+        #DEBUG
+        print(f'self._init_optimizer fired...')
+        print(f'optimizer params: {self.optimizer_params}')
+        print(f'Number of parameters: {len(list(self.parameters()))}')
+        if self.optimizer_params['type'] == 'Adam':
+            return optim.Adam(self.parameters(), **self.optimizer_params['params'])
+        elif self.optimizer_params['type'] == 'SGD':
+            return optim.SGD(self.parameters(), **self.optimizer_params['params'])
+        elif self.optimizer_params['type'] == 'RMSprop':
+            return optim.RMSprop(self.parameters(), **self.optimizer_params['params'])
+        elif self.optimizer_params['type'] == 'Adagrad':
+            return optim.Adagrad(self.parameters(), **self.optimizer_params['params'])
         else:
             raise NotImplementedError
+    
+    def _init_scheduler(self, scheduler):
+        scheduler_type = scheduler.get('type', '').lower()
+        scheduler_params = scheduler.get('params', {})
+        
+        if scheduler_type == 'cosineannealinglr':
+            return optim.lr_scheduler.CosineAnnealingLR(self.optimizer, **scheduler_params)
+        if scheduler_type == 'steplr':
+            return optim.lr_scheduler.StepLR(self.optimizer, **scheduler_params)
+        if scheduler_type == 'exponentiallr':
+            return optim.lr_scheduler.ExponentialLR(self.optimizer, **scheduler_params)
+        else:
+            raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
+        
+
 
     def forward(self, x):
         for layer in self.layers.values():
@@ -185,39 +229,42 @@ class Model(nn.Module):
 
 
 class StochasticDiscretePolicy(Model):
-    """Policy model for predicting a probability distribution of a continuous action space.
+    """Policy model for predicting a probability distribution of a discrete action space.
 
     Attributes:
       env: OpenAI gym environment.
-      dense_layers: List of Tuples containing dense layer sizes, activations, and kernel initializers.
+      layer_config: List of Dicts containing layer type, units, kernel initializers, and kernel params.
       output_layer_kernel: Dict of kernel initializer:params for the output layer.
       optimizer: Optimizer for training.
       optimizer_params: Dict of Parameter:value for the optimizer.
       learning_rate: Learning rate for the optimizer.
-      distribution: Distribution returned by the policy ('beta' or 'normal').
+      distribution: Distribution returned by the policy ('categorical').
       device: Device to run the model on.
 
     """
 
     def __init__(
         self,
-        env: gym.Env,
+        env: EnvWrapper,
         layer_config: List[Dict],
         output_layer_kernel: dict = {"default": {}},
-        optimizer: str = "Adam",
-        optimizer_params: dict = {},
-        learning_rate: float = 0.001,
-        distribution: str = 'beta',
-        device: str = None
+        optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
+        scheduler_params:dict = None,
+        distribution: str = 'categorical',
+        device: str = 'cuda'
     ):
-        input_size = super().__init__(env, layer_config, optimizer, optimizer_params, learning_rate, device)
+        input_size = super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
         self.output_config = output_layer_kernel
         self.distribution = distribution
 
+        # Get the action space of the environment
+        self.act_space = self.env.action_space
+        if isinstance(self.env, GymnasiumWrapper):
+            self.act_space = self.env.single_action_space
+
         # Create the output layer
-        # input_size = np.prod(env.observation_space.shape[-1])
         self.output_layer = nn.ModuleDict({
-            'policy_dense_output': nn.Linear(input_size, 2 * env.action_space.shape[-1])
+            'policy_dense_output': nn.Linear(input_size, self.act_space.n)
         })
 
         # Initialize weights
@@ -232,30 +279,15 @@ class StochasticDiscretePolicy(Model):
     def forward(self, x):
         """Forward Propogation."""
         x = x.to(self.device)
-        #DEBUG
-        # print(f'x input to forward:{x.shape}')
-        # print(f'x:{x}')
 
         for layer in self.layers.values():
             x = layer(x)
 
         x = self.output_layer['policy_dense_output'](x)
-        # # print(f'policy output shape: {x.shape}')
-
-        # Split x into param1 and param2
-        # param1, param2 = T.split(x, self.env.action_space.shape[-1], dim=-1)
 
         if self.distribution == 'categorical':
-            # alpha = F.softmax(x)
-            # alpha = F.softplus(param1) + 1.0
-            # beta = F.softplus(param2) + 1.0
             dist = Categorical(logits=x)
             return dist, x
-        # elif self.distribution == 'normal':
-        #     mu = param1
-        #     sigma = F.softplus(param2)
-        #     dist = Normal(mu, sigma)
-        #     return dist, mu, sigma
         else:
             raise ValueError(f'Distribution {self.distribution} not supported.')
 
@@ -263,14 +295,12 @@ class StochasticDiscretePolicy(Model):
         """Get model config."""
 
         config = {
-            # 'env': self.env.spec.id,
-            "env": self.env.spec.to_json(),
+            "env": self.env.to_json(),
             'num_layers': len(self.layers),
             'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
-            'optimizer': self.optimizer_class,
             'optimizer_params': self.optimizer_params,
-            'learning_rate': self.learning_rate,
+            'scheduler_params': self.scheduler_params,
             'distribution': self.distribution,
             'device': self.device,
         }
@@ -303,17 +333,21 @@ class StochasticDiscretePolicy(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
         
-        # create EnvSpec from config
-        # env_spec_json = json.dumps(config["env"])
-        env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
+        # Determine which wrapper to use
+        # Convert json to dict first
+        wrapper_dict = json.loads(config['env'])
+        wrapper_type = wrapper_dict.get("type")
+        if wrapper_type == 'GymnasiumWrapper':
+            env = GymnasiumWrapper(wrapper_dict.get("env"))
+        else:
+            raise ValueError(f"Unsupported wrapper type: {wrapper_type}")
 
-        model = cls(env = gym.make_vec(env_spec),
+        model = cls(env = env,
                     layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
-                    distribution = config.get("distribution", "Beta"),
-                    optimizer = config.get("optimizer", "Adam"),
                     optimizer_params = config.get("optimizer_params", {}),
-                    learning_rate = config.get("learning_rate", 0.001),
+                    scheduler_params = config.get("scheduler_params", None),
+                    distribution = config.get("distribution", "categorical"),
                     device = config.get("device", "cpu")
                     )
 
@@ -324,35 +358,50 @@ class StochasticDiscretePolicy(Model):
         return model
 
 class StochasticContinuousPolicy(Model):
-    """Policy model for predicting a probability distribution of a continuous action space."""
+    """Policy model for predicting a probability distribution of a continuous action space.
+
+    Attributes:
+      env: OpenAI gym environment.
+      layer_config: List of Dicts containing layer type, units, kernel initializers, and kernel params.
+      output_layer_kernel: Dict of kernel initializer:params for the output layer.
+      optimizer: Optimizer for training.
+      optimizer_params: Dict of Parameter:value for the optimizer.
+      learning_rate: Learning rate for the optimizer.
+      distribution: Distribution returned by the policy ('beta' or 'normal').
+      device: Device to run the model on.
+
+    """
 
     def __init__(
         self,
-        env: gym.Env,
+        env:EnvWrapper,
         layer_config: List[Dict],
         output_layer_kernel: dict = {"default": {}},
-        optimizer: str = "Adam",
-        optimizer_params: dict = {},
-        learning_rate: float = 0.001,
+        optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
+        scheduler_params:dict = None,
         distribution: str = 'beta',
-        device: str = None
+        device: str = 'cuda'
     ):
-        input_size = super().__init__(env, layer_config, optimizer, optimizer_params, learning_rate, device)
+        input_size = super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
         self.output_config = output_layer_kernel
         self.distribution = distribution
-
+        
+        # Get the action space of the environment
+        self.act_space = self.env.action_space
+        if isinstance(self.env, GymnasiumWrapper):
+            self.act_space = self.env.single_action_space
         # Create the output layer
         # input_size = np.prod(env.observation_space.shape[-1])
         self.output_layer = nn.ModuleDict({
-            'policy_dense_output': nn.Linear(input_size, 2 * env.action_space.shape[-1])
+            'policy_dense_output': nn.Linear(input_size, 2 * self.act_space.shape[-1])
         })
 
         # Initialize weights
         self._init_weights(self.layer_config, self.layers)
         self._init_weights(self.output_config, self.output_layer)
 
-        # Initialize optimizer
-        self.optimizer = self._init_optimizer()
+        # Initialize optimizer # Done in Parent
+        # self.optimizer = self._init_optimizer()
 
         self.to(self.device)
 
@@ -366,7 +415,7 @@ class StochasticContinuousPolicy(Model):
         x = self.output_layer['policy_dense_output'](x)
 
         # Split x into param1 and param2 for beta distribution
-        param1, param2 = T.split(x, self.env.action_space.shape[-1], dim=-1)
+        param1, param2 = T.split(x, self.act_space.shape[-1], dim=-1)
 
         if self.distribution == 'beta':
             alpha = F.relu(param1) + 1.0
@@ -380,39 +429,18 @@ class StochasticContinuousPolicy(Model):
             return dist, mu, sigma
         else:
             raise ValueError(f"Distribution {self.distribution} not supported.")
-        
-    # def log_probs(self, probs, actions):
-    #     try:
-    #         if self.distribution == 'beta':
-    #             dist = T.distributions.beta.Beta(probs)
-    #         elif self.distribution == 'normal':
-    #             dist = T.distributions.normal.Normal(probs)
-    #         return dist.log_probs(actions)
-    #     except ValueError as e:
-    #         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
-
-    # def entropy(self, probs):
-    #     e = (probs * T.log(probs)).sum(dim=-1)
-    #     return e
-    
-    # def kl(self, old_probs, new_probs):
-    #     old_probs, new_probs = old_probs.squeeze(), new_probs.squeeze()
-    #     kl = (old_probs * (T.log(old_probs + 1e-10) - T.log(new_probs + 1e-10))).sum(-1)
-    #     return kl
-
 
     def get_config(self):
         """Get model config."""
 
         config = {
             # 'env': self.env.spec.id,
-            "env": self.env.spec.to_json(),
+            "env": self.env.to_json(),
             'num_layers': len(self.layers),
             'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
-            'optimizer': self.optimizer_class,
             'optimizer_params': self.optimizer_params,
-            'learning_rate': self.learning_rate,
+            'scheduler_params': self.scheduler_params,
             'distribution': self.distribution,
             'device': self.device,
         }
@@ -445,17 +473,21 @@ class StochasticContinuousPolicy(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
         
-        # create EnvSpec from config
-        # env_spec_json = json.dumps(config["env"])
-        env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
+        # Determine which wrapper to use
+        # Convert json to dict first
+        wrapper_dict = json.loads(config['env'])
+        wrapper_type = wrapper_dict.get("type")
+        if wrapper_type == 'GymnasiumWrapper':
+            env = GymnasiumWrapper(wrapper_dict.get("env"))
+        else:
+            raise ValueError(f"Unsupported wrapper type: {wrapper_type}")
 
-        model = cls(env = gym.make_vec(env_spec),
+        model = cls(env = env,
                     layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
-                    distribution = config.get("distribution", "Beta"),
-                    optimizer = config.get("optimizer", "Adam"),
                     optimizer_params = config.get("optimizer_params", {}),
-                    learning_rate = config.get("learning_rate", 0.001),
+                    scheduler_params = config.get("scheduler_params", None),
+                    distribution = config.get("distribution", "beta"),
                     device = config.get("device", "cpu")
                     )
 
@@ -471,26 +503,24 @@ class ValueModel(Model):
 
     Attributes:
       env: OpenAI gym environment.
-      dense_layers: List of Tuples containing dense layer sizes, activations, and kernel initializers.
+      layer_config: List of Tuples containing dense layer sizes, activations, and kernel initializers.
       output_layer_kernel: Dict of kernel initializer:params for the output layer.
-      optimizer: Optimizer for training.
-      optimizer_params: Dict of Parameter:value for the optimizer.
-      learning_rate: Learning rate for the optimizer.
+      optimizer_params: Dict of type and parameters for the optimizer. See default value
+      scheduler_params: Dict of type and params for torch learning rate schedulers
       device: Device to run the model on.
 
     """
 
     def __init__(
         self,
-        env: gym.Env,
+        env: EnvWrapper,
         layer_config: List[Dict],
         output_layer_kernel: dict = {"default":{}},
-        optimizer: str = 'Adam',
-        optimizer_params:dict={},
-        learning_rate: float = 0.001,
-        device = None
+        optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
+        scheduler_params = None,
+        device = 'cuda'
     ):
-        input_size = super().__init__(env, layer_config, optimizer, optimizer_params, learning_rate, device)
+        input_size = super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
         self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -503,8 +533,8 @@ class ValueModel(Model):
         self._init_weights(self.layer_config, self.layers)
         self._init_weights(self.output_config, self.output_layer)
 
-        # Initialize optimizer
-        self.optimizer = self._init_optimizer()
+        # Initialize optimizer # Done in Parent
+        # self.optimizer = self._init_optimizer()
 
         self.to(self.device)
 
@@ -526,13 +556,12 @@ class ValueModel(Model):
 
         config = {
             # 'env': self.env.spec.id,
-            "env": self.env.spec.to_json(),
+            "env": self.env.to_json(),
             'num_layers': len(self.layers),
             'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
-            'optimizer': self.optimizer_class,
             'optimizer_params': self.optimizer_params,
-            'learning_rate': self.learning_rate,
+            'scheduler_params': self.scheduler_params,
             'device': self.device,
         }
 
@@ -566,16 +595,20 @@ class ValueModel(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
         
-        # create EnvSpec from config
-        # env_spec_json = json.dumps(config["env"])
-        env_spec = gym.envs.registration.EnvSpec.from_json(config["env"])
+        # Determine which wrapper to use
+        # Convert json to dict first
+        wrapper_dict = json.loads(config['env'])
+        wrapper_type = wrapper_dict.get("type")
+        if wrapper_type == 'GymnasiumWrapper':
+            env = GymnasiumWrapper(wrapper_dict.get("env"))
+        else:
+            raise ValueError(f"Unsupported wrapper type: {wrapper_type}")
 
-        model = cls(env = gym.make_vec(env_spec),
+        model = cls(env = env,
                     layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel"),
-                    optimizer = config.get("optimizer"),
                     optimizer_params = config.get("optimizer_params"),
-                    learning_rate = config.get("learning_rate"),
+                    scheduler_params = config.get("scheduler_params", None),
                     device = config.get("device")
                     )
 
@@ -1064,12 +1097,20 @@ class CriticModel(Model):
         return model
 
 
-def build_layers(types: List[str], units_per_layer: List[int], activation: str, initializer: str):
+def build_layers(types: List[str], units_per_layer: List[int], initializers: List[str], kernel_params:List[dict]):
     """formats config into policy and value layers"""
     # get policy layers
     layers = []
-    for units in units_per_layer:
-        layers.append((units, activation, initializer))
+    for type, units, kernel, k_param in zip(types, units_per_layer, initializers, kernel_params):
+        layers.append({
+            'type':type, 
+            'params':{
+                'units': units,
+                'kernel': kernel,
+                'kernel params': k_param
+            }
+        })
+        
     return layers
 
 def select_policy_model(env):

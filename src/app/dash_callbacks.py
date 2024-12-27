@@ -33,9 +33,8 @@ import wandb
 import pandas as pd
 
 import layouts
-import helper
 import gym_helper
-import utils
+import dash_utils
 import models
 from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueModel, CriticModel, ActorModel
 import cnn_models
@@ -119,6 +118,27 @@ def register_callbacks(app, shared_data):
         # Add additional conditions for other pages
         else:
             return '404'
+
+    @app.callback(
+        [Output({'type': 'env-dropdown', 'page': MATCH}, 'style'),
+        Output({'type': 'env-dropdown', 'page': MATCH}, 'options'),
+        Output({'type': 'env-dropdown', 'page': MATCH}, 'placeholder')],
+        Input({'type': 'library-select', 'page': MATCH}, 'value')
+    )
+    def update_env_dropdown(selected_library):
+        if selected_library is None:
+            return {'display': 'none'}, [], "Select Environment"
+        
+        if selected_library == 'gymnasium':
+            # List of Gymnasium environments
+            gym_envs = dash_utils.get_all_gym_envs()
+            return {'display': 'block'}, gym_envs, "Select Gymnasium Environment"
+        elif selected_library == 'isaacsim':
+            # Placeholder for IsaacSim environments
+            isaac_envs = ['IsaacAnt', 'IsaacHumanoid']  # Replace with actual IsaacSim envs
+            return {'display': 'block'}, [{'label': env, 'value': env} for env in isaac_envs], "Select IsaacSim Environment"
+        
+        return {'display': 'none'}, [], "Select Environment"
     
     @app.callback(
         Output('agent-parameters-inputs', 'children'),
@@ -126,117 +146,370 @@ def register_callbacks(app, shared_data):
     )
     def update_agent_parameters_inputs(agent_type):
         if agent_type:
-            return utils.create_agent_parameter_inputs(agent_type)
+            return dash_utils.create_agent_parameter_inputs(agent_type)
         else:
             return "Select a model type to configure its parameters."
         
 
     # Callback to add a new layer dropdown
     @app.callback(
-        Output("layer-dropdowns", "children"),
-        [Input("add-layer-btn", "n_clicks")],
-        [State("layer-dropdowns", "children")]
+        Output({"type": "layer-dropdowns", "model": MATCH, "agent": MATCH}, "children"),
+        [Input({"type": "add-layer-btn", "model": MATCH, "agent": MATCH}, "n_clicks")],
+        [State({"type": "layer-dropdowns", "model": MATCH, "agent": MATCH}, "children"),
+        State({"type": "add-layer-btn", "model": MATCH, "agent": MATCH}, "id"),
+        State("agent-params-store", "data")]
     )
-    def add_layer_dropdown(n_clicks, children):
-
-        # Initialize `children` as an empty list if it's None
+    def add_layer_dropdown(n_clicks, children, btn_id, agent_params_store):
         if children is None:
             children = []
-        # Adds a new layer dropdown each time the button is clicked
+
         if n_clicks > 0:
-            new_dropdown = html.Div(id=f"layer-container-{n_clicks}",
+            # Use `btn_id` to infer the `model` and `agent` dynamically
+            model = btn_id["model"]
+            agent = btn_id["agent"]
+
+            dropdown_id = {
+                'type': 'layer-type-dropdown',
+                'model': model,
+                'agent': agent,
+                'index': n_clicks
+            }
+
+            stored_value = agent_params_store.get(dash_utils.get_key(dropdown_id), None)
+
+            new_dropdown = html.Div(
+                id={
+                    "type": f"layer-container-{n_clicks}",
+                    "model": model,
+                    "agent": agent,
+                },
                 children=[
                     html.Label(f'Layer {n_clicks}', style={'text-decoration': 'underline'}),
                     dcc.Dropdown(
-                        id={'type': 'layer-type-dropdown', 'index': n_clicks},
+                        id=dropdown_id,
                         options=[
-                            {"label": "Linear", "value": "linear"},
+                            {"label": "TransformerEncoderLayer", "value": "transformer_encoder_layer"},
+                            {"label": "Dense", "value": "dense"},
                             {"label": "Conv2D", "value": "conv2d"},
                             {"label": "MaxPool2D", "value": "maxpool2d"},
                             {"label": "Dropout", "value": "dropout"},
                             {"label": "BatchNorm2D", "value": "batchnorm2d"},
                             {"label": "Flatten", "value": "flatten"},
                             {"label": "ReLU", "value": "relu"},
-                            {"label": "Tanh", "value": "tanh"},
-                            {"label": "TransformerEncoderLayer", "value": "transformer_encoder_layer"}
+                            {"label": "Tanh", "value": "tanh"}
                         ],
                         placeholder="Select Layer Type",
-                        clearable=False
+                        clearable=False,
+                        value=stored_value
                     ),
-                    html.Div(id={'type': 'layer-params', 'index': n_clicks})
+                    html.Div(
+                        id={
+                            'type': 'layer-params',
+                            'model': model,
+                            'agent': agent,
+                            'index': n_clicks
+                        }
+                    )
                 ],
                 style={'margin-top': '10px', 'margin-left': '20px'}
             )
             children.append(new_dropdown)
+
         return children
         
     # Callback to display parameters based on layer type selection
     @app.callback(
-        Output({'type': 'layer-params', 'index': ALL}, 'children'),
-        Input({'type': 'layer-type-dropdown', 'index': ALL}, 'value'),
-        State({'type': 'layer-type-dropdown', 'index': ALL}, 'id')
+        Output({'type': 'layer-params', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'children'),
+        Input({'type': 'layer-type-dropdown', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value'),
+        [State({'type': 'layer-type-dropdown', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'id'),
+         State("agent-params-store", "data")
+        ],
+        prevent_initial_call=True,
     )
-    def display_layer_parameters(selected_layers, dropdown_ids):
+    def display_layer_parameters(layer_type, ids, agent_params_store):
         children = []
+        params = []
         
-        for i, layer_type in enumerate(selected_layers):
-            params = []
-            if layer_type == "linear":
-                params = [
-                    dcc.Input(id={'type': 'num-units', 'index': i}, type='number', placeholder='Number of Units'),
-                    dcc.Dropdown(id={'type': 'kernel-init', 'index': i}, options=[{"label": x, "value": x} for x in 
-                        ["kaiming uniform", "kaiming normal", "xavier uniform", "xavier normal", "truncated normal", 
-                        "uniform", "normal", "constant", "ones", "zeros", "variance scaling", "default"]],
-                        placeholder="Kernel Initialization"),
-                    html.Div(id={'type': 'kernel-params', 'index': i}),
-                    dcc.Dropdown(id={'type': 'bias', 'index': i}, options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
-                        placeholder="Bias")
-                ]
-            elif layer_type == "conv2d":
-                params = [
-                    dcc.Input(id={'type': 'out-channels', 'index': i}, type='number', placeholder='Out Channels'),
-                    dcc.Input(id={'type': 'kernel-size', 'index': i}, type='number', placeholder='Kernel Size'),
-                    dcc.Input(id={'type': 'stride', 'index': i}, type='number', placeholder='Stride'),
-                    dcc.Dropdown(
-                        id={'type': 'padding-dropdown', 'index': i},
-                        options=[{"label": "Valid", "value": "valid"}, 
-                                {"label": "Same", "value": "same"}, 
-                                {"label": "Custom", "value": "custom"}], 
-                        placeholder="Padding"
+        # Generate the key for the `agent_params_store`
+        # layer_key = "_".join(f"{k}:{v}" for k, v in ids.items())
+
+        if layer_type == "dense":
+            params = [
+                dcc.Input(
+                    id={
+                        'type': 'num-units',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Number of Units',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "num-units"), None)
+                ),
+                dash_utils.create_kernel_input(ids['agent'], ids['model'], ids['index'], agent_params_store),
+                dcc.Dropdown(
+                    id={
+                        'type': 'bias',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
+                    placeholder="Bias",
+                    value=agent_params_store.get(dash_utils.get_key(ids, "bias"), None)
+                )
+            ]
+        elif layer_type == "conv2d":
+            params = [
+                dcc.Input(
+                    id={
+                        'type': 'out-channels',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Out Channels',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "out-channels"), None)
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'kernel-size',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Kernel Size',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "kernel-size"), None)
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'stride',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Stride',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "stride"), None)
+                ),
+                dcc.Dropdown(
+                    id={
+                        'type': 'padding-dropdown',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']},
+
+                    options=[{"label": "Valid", "value": "valid"}, 
+                            {"label": "Same", "value": "same"}, 
+                            {"label": "Custom", "value": "custom"}
+                    ], 
+                    placeholder="Padding",
+                    value=agent_params_store.get(dash_utils.get_key(ids, "padding-dropdown"), None)
+                ),
+                html.Div(
+                    dcc.Input(
+                        id={
+                            'type': 'custom-padding',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index']
+                        },
+                        type='number',
+                        placeholder='Custom Padding',
+                        value=agent_params_store.get(dash_utils.get_key(ids, "custom-padding"), None)
                     ),
-                    html.Div(
-                        dcc.Input(id={'type': 'custom-padding', 'index': i}, type='number', placeholder='Custom Padding'),
-                        style={'display': 'none'}
-                    ),
-                    dcc.Dropdown(id={'type': 'bias', 'index': i}, options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
-                                placeholder="Bias")
-                ]
-            elif layer_type == "batchnorm2d":
-                params = [dcc.Input(id={'type': 'num-features', 'index': i}, type='number', placeholder='Num Features')]
-            elif layer_type == "maxpool2d":
-                params = [
-                    dcc.Input(id={'type': 'kernel-size', 'index': i}, type='number', placeholder='Kernel Size'),
-                    dcc.Input(id={'type': 'stride', 'index': i}, type='number', placeholder='Stride')
-                ]
-            elif layer_type == "dropout":
-                params = [dcc.Input(id={'type': 'dropout-prob', 'index': i}, type='number', placeholder='Dropout Probability', min=0.1, max=0.9, step=0.1)]
-            elif layer_type == "transformer_encoder_layer":
-                params = [
-                    dcc.Input(id={'type': 'd-model', 'index': i}, type='number', placeholder='Model Dimension (d_model)'),
-                    dcc.Input(id={'type': 'nhead', 'index': i}, type='number', placeholder='Number of Attention Heads (nhead)'),
-                    dcc.Input(id={'type': 'dim-feedforward', 'index': i}, type='number', placeholder='Feedforward Dimension (dim_feedforward)'),
-                    dcc.Input(id={'type': 'dropout', 'index': i}, type='number', placeholder='Dropout', min=0, max=1, step=0.1)
-                ]
-            
-            # Wrap parameters with indentation style
-            children.append(html.Div(params, style={'margin-top': '10px', 'margin-left': '20px'}))
+                    style={'display': 'none'}
+                ),
+                dcc.Dropdown(
+                    id={
+                        'type': 'bias',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
+                    placeholder="Bias",
+                    value=agent_params_store.get(dash_utils.get_key(ids, "bias"), None)
+                )
+            ]
+        elif layer_type == "batchnorm2d":
+            params = [
+                dcc.Input(
+                    id={
+                        'type': 'num-features',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Num Features',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "num-features"), None)
+                )
+            ]
+        
+        elif layer_type == "maxpool2d":
+            params = [
+                dcc.Input(
+                    id={
+                        'type': 'kernel-size',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Kernel Size',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "kernel-size"), None)
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'stride',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Stride',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "stride"), None)
+                )
+            ]
+        
+        elif layer_type == "dropout":
+            params = [
+                dcc.Input(
+                    id={
+                        'type': 'dropout-prob',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Dropout Probability',
+                    min=0.1,
+                    max=0.9,
+                    step=0.1,
+                    value=agent_params_store.get(dash_utils.get_key(ids, "dropout-prob"), None)
+                )
+            ]
+        
+        elif layer_type == "transformer_encoder_layer":
+            params = [
+                dcc.Input(
+                    id={
+                        'type': 'd-model',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Model Dimension (d_model)',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "d-model"), None)
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'nhead',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Number of Attention Heads (nhead)',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "nhead"), None)
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'dim-feedforward',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    }, 
+                    type='number',
+                    placeholder='Feedforward Dimension (dim_feedforward)',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "dim-feedforward"), None)
+                ),
+                dcc.Input(
+                    id={
+                        'type': 'dropout',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Dropout',
+                    min=0,
+                    max=1,
+                    step=0.1,
+                    value=agent_params_store.get(dash_utils.get_key(ids, "dropout"), None)
+                )
+            ]
+        
+        # Wrap parameters with indentation style
+        children.append(html.Div(params, style={'margin-top': '10px', 'margin-left': '20px'}))
         
         return children
+        # return html.Div(params, style={'margin-top': '10px', 'margin-left': '20px'})
+    
+    # # Callback to store values when dropdown or input changes
+    # @app.callback(
+    #     Output({'type': 'layer-values-store', 'model': MATCH, 'agent': MATCH}, "data"),
+    #     [Input({'type': ALL, 'model': MATCH, 'agent': MATCH, 'index': ALL}, "value")],
+    #     [State({'type': 'layer-values-store', 'model': MATCH, 'agent': MATCH}, "data"),
+    #     State({'type': ALL, 'model': MATCH, 'agent': MATCH, 'index': ALL}, "id")]
+    # )
+    # def store_layer_values(values, stored_values, ids):
+    #     # Initialize stored_values if it's None
+    #     # stored_values = stored_values[0]
+
+    #     # Loop through ids and values together
+    #     for id_dict, value in zip(ids, values):
+    #         if value is not None:
+    #             # Create a unique key using the 'id' dictionary directly
+    #             key = "-".join(f"{k}:{v}" for k, v in id_dict.items())
+    #             stored_values[key] = value
+    #     #DEBUG
+    #     print(f'layer value store:{stored_values}')
+
+    #     return stored_values
+
+    @app.callback(
+        Output("agent-params-store", 'data'),
+        [
+            Input({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
+            Input({'type': ALL, 'model': ALL, 'agent': ALL}, 'value')
+        ],
+        [
+            State("agent-params-store", 'data'),
+            State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
+            State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id')
+        ]
+    )
+    def update_agent_params(indexed_values, non_indexed_values, store, indexed_ids, non_indexed_ids):
+        # Initialize the store if it's None
+        store = store or {}
+
+        # Update the store with indexed components
+        for value, id_dict in zip(indexed_values, indexed_ids):
+            if value is not None:
+                # Convert the id_dict into a JSON-serializable string using underscores
+                key = "_".join(f"{k}:{v}" for k, v in id_dict.items())
+                store[key] = value
+
+        # Update the store with non-indexed components
+        for value, id_dict in zip(non_indexed_values, non_indexed_ids):
+            if value is not None:
+                # Convert the id_dict into a JSON-serializable string using underscores
+                key = "_".join(f"{k}:{v}" for k, v in id_dict.items())
+                store[key] = value
+
+        # DEBUG
+        print(f"Updated agent params store: {store}")
+        return store
 
     # Callback to toggle visibility of custom padding input for Conv2D layers
     @app.callback(
-        Output({'type': 'custom-padding', 'index': ALL}, 'style'),
-        Input({'type': 'padding-dropdown', 'index': ALL}, 'value')
+        Output({'type': 'custom-padding', 'model': ALL, 'agent': ALL, 'index': ALL}, 'style'),
+        Input({'type': 'padding-dropdown', 'model': ALL, 'agent': ALL, 'index': ALL}, 'value')
     )
     def toggle_custom_padding(selected_padding):
         # Show custom padding input only if 'custom' is selected
@@ -252,7 +525,7 @@ def register_callbacks(app, shared_data):
     def update_agent_optimizer_params(optimizer, optimizer_id):
         agent_type = optimizer_id['agent']
         model_type = optimizer_id['model']
-        return utils.create_optimizer_params_input(agent_type, model_type, optimizer)
+        return dash_utils.create_optimizer_params_input(agent_type, model_type, optimizer)
 
         
 #     @app.callback(
@@ -704,73 +977,220 @@ def register_callbacks(app, shared_data):
         
     # Callback to display kernel initializer parameters based on the selected kernel type
     @app.callback(
-        Output({'type': 'kernel-params', 'index': ALL}, 'children'),
-        Input({'type': 'kernel-init', 'index': ALL}, 'value'),
-        State({'type': 'kernel-init', 'index': ALL}, 'id')
+        Output({'type': 'kernel-params', 'model': ALL, 'agent': ALL, 'index': ALL}, 'children'),
+        Input({'type': 'kernel-init', 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
+        [State({'type': 'kernel-init', 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
+         State("agent-params-store", "data")]
     )
-    def display_kernel_parameters(selected_kernels, dropdown_ids):
+    def display_kernel_parameters(selected_kernels, dropdown_ids, agent_params):
         children = []
-        for kernel in selected_kernels:
+        for (kernel, ids) in zip(selected_kernels, dropdown_ids):
             params = []
             if kernel in ["kaiming normal", "kaiming uniform"]:
                 params = [
                     dcc.Dropdown(
-                        id='mode',
+                        id={
+                            'type': 'mode',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
                         options=[
-                            {"label": "fan in", "value": "fan in"},
-                            {"label": "fan out", "value": "fan out"}
+                            {"label": "fan in", "value": "fan_in"},
+                            {"label": "fan out", "value": "fan_out"}
                         ],
-                        placeholder="Mode"
+                        placeholder="Mode",
+                        value=agent_params.get(dash_utils.get_key(ids, 'mode'), None)
                     )
                 ]
             elif kernel in ["xavier normal", "xavier uniform"]:
                 params = [
-                    dcc.Input(id='gain', type='number', placeholder='Gain', min=1.0, max=3.0, step=0.1)
+                    dcc.Input(
+                        id={
+                            'type': 'gain',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Gain',
+                        min=1.0,
+                        max=3.0,
+                        step=0.1,
+                        value=agent_params.get(dash_utils.get_key(ids, 'gain'), None)
+                    )
                 ]
             elif kernel == "truncated normal":
                 params = [
-                    dcc.Input(id='mean', type='number', placeholder='Mean', min=0.01, max=0.99, step=0.01),
-                    dcc.Input(id='std-dev', type='number', placeholder='Standard Deviation', min=0.1, max=3.0, step=0.1)
+                    dcc.Input(
+                        id={
+                            'type': 'mean',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Mean',
+                        min=0.01,
+                        max=0.99,
+                        step=0.01,
+                        value=agent_params.get(dash_utils.get_key(ids, 'mean'), None)
+                    ),
+                    dcc.Input(
+                        id={
+                            'type': 'std-dev',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Standard Deviation',
+                        min=0.1,
+                        max=3.0,
+                        step=0.1,
+                        value=agent_params.get(dash_utils.get_key(ids, 'std-dev'), None)
+                    )
                 ]
             elif kernel == "uniform":
                 params = [
-                    dcc.Input(id='min', type='number', placeholder='Minimum', min=0.01, max=1.0, step=0.01),
-                    dcc.Input(id='max', type='number', placeholder='Maximum', min=0.01, max=1.0, step=0.01)
+                    dcc.Input(
+                        id={
+                            'type': 'min',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Minimum',
+                        min=0.01,
+                        max=1.0,
+                        step=0.01,
+                        value=agent_params.get(dash_utils.get_key(ids, 'min'), None)
+                    ),
+                    dcc.Input(
+                        id={
+                            'type': 'max',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Maximum',
+                        min=0.01,
+                        max=1.0,
+                        step=0.01,
+                        value=agent_params.get(dash_utils.get_key(ids, 'max'), None)
+                    )
                 ]
             elif kernel == "normal":
                 params = [
-                    dcc.Input(id='mean', type='number', placeholder='Mean', min=0.01, max=0.99, step=0.01),
-                    dcc.Input(id='std-dev', type='number', placeholder='Standard Deviation', min=0.1, max=3.0, step=0.1)
+                    dcc.Input(
+                        id={
+                            'type': 'mean',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        }, 
+                        type='number',
+                        placeholder='Mean',
+                        min=0.01,
+                        max=0.99,
+                        step=0.01,
+                        value=agent_params.get(dash_utils.get_key(ids, 'mean'), None)
+                    ),
+                    dcc.Input(
+                        id={
+                            'type': 'std-dev',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Standard Deviation',
+                        min=0.1,
+                        max=3.0,
+                        step=0.1,
+                        value=agent_params.get(dash_utils.get_key(ids, 'std-dev'), None)
+                    )
                 ]
             elif kernel == "constant":
                 params = [
-                    dcc.Input(id='value', type='number', placeholder='Value', min=0.01, max=1.0, step=0.01)
+                    dcc.Input(
+                        id={
+                            'type': 'value',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Value',
+                        min=0.01,
+                        max=1.0,
+                        step=0.01,
+                        value=agent_params.get(dash_utils.get_key(ids, 'value'), None)
+                    )
                 ]
             elif kernel == "variance scaling":
                 params = [
-                    dcc.Input(id='scale', type='number', placeholder='Scale', min=1.0, max=5.0, step=0.1),
-                    dcc.Dropdown(
-                        id='mode',
-                        options=[
-                            {"label": "fan in", "value": "fan in"},
-                            {"label": "fan out", "value": "fan out"},
-                            {"label": "fan avg", "value": "fan avg"}
-                        ],
-                        placeholder="Mode"
+                    dcc.Input(
+                        id={
+                            'type': 'scale',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        type='number',
+                        placeholder='Scale',
+                        min=1.0,
+                        max=5.0,
+                        step=0.1,
+                        value=agent_params.get(dash_utils.get_key(ids, 'scale'), None)
                     ),
                     dcc.Dropdown(
-                        id='distribution',
+                        id={
+                            'type': 'mode',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
                         options=[
-                            {"label": "truncated normal", "value": "truncated normal"},
+                            {"label": "fan in", "value": "fan_in"},
+                            {"label": "fan out", "value": "fan_out"},
+                            {"label": "fan avg", "value": "fan_avg"}
+                        ],
+                        placeholder="Mode",
+                        value=agent_params.get(dash_utils.get_key(ids, 'mode'), None)
+                    ),
+                    dcc.Dropdown(
+                        id={
+                            'type': 'distribution',
+                            'model': ids['model'],
+                            'agent': ids['agent'],
+                            'index': ids['index'],
+                        },
+                        options=[
+                            {"label": "truncated normal", "value": "truncated_normal"},
                             {"label": "uniform", "value": "uniform"}
                         ],
-                        placeholder="Distribution"
+                        placeholder="Distribution",
+                        value=agent_params.get(dash_utils.get_key(ids, 'distribution'), None)
                     )
                 ]
 
             children.append(html.Div(params, style={'margin-top': '10px', 'margin-bottom': '10px', 'margin-left': '20px'}))
         
         return children
+    
+    @app.callback(
+        Output({'type': 'learning-rate-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'learning-rate-scheduler', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'learning-rate-scheduler', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_learning_rate_scheduler_options(lr_scheduler, lr_scheduler_id):
+        agent_type = lr_scheduler_id['agent']
+        model_type = lr_scheduler_id['model']
+        return dash_utils.update_learning_rate_scheduler_options(agent_type, model_type, lr_scheduler)
     
     @app.callback(
         Output({'type': 'goal-strategy-options', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -780,7 +1200,7 @@ def register_callbacks(app, shared_data):
     )
     def update_goal_strategy_options(strategy, strategy_id):
         agent_type = strategy_id['agent']
-        return utils.update_goal_strategy_options(agent_type, strategy)
+        return dash_utils.update_goal_strategy_options(agent_type, strategy)
     
     @app.callback(
         Output({'type': 'goal-strategy-options-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -792,7 +1212,7 @@ def register_callbacks(app, shared_data):
         agent_type = strategy_id['agent']
         options = []
         for strat in strategy:
-            options.append(utils.update_goal_strategy_hyperparam_options(agent_type, strat))
+            options.append(dash_utils.update_goal_strategy_hyperparam_options(agent_type, strat))
         
         return options
     
@@ -806,7 +1226,7 @@ def register_callbacks(app, shared_data):
         if normalize == 'True':
             agent_type = normalize_id['agent']
             if agent_type == 'DDPG':
-                return utils.create_input_normalizer_options_input(agent_type)
+                return dash_utils.create_input_normalizer_options_input(agent_type)
         return html.Div()
     
     @app.callback(
@@ -821,7 +1241,7 @@ def register_callbacks(app, shared_data):
                 agent_type = normalize_id['agent']
                 model_type = normalize_id['model']
                 # if agent_type == 'DDPG':
-                return utils.create_input_normalizer_options_hyperparam_input(agent_type, model_type)
+                return dash_utils.create_input_normalizer_options_hyperparam_input(agent_type, model_type)
         return html.Div()
     
 
@@ -837,7 +1257,7 @@ def register_callbacks(app, shared_data):
                 agent_type = normalize_id['agent']
                 model_type = normalize_id['model']
                 # if agent_type == 'DDPG':
-                return utils.create_value_normalizer_options_hyperparam_input(agent_type, model_type)
+                return dash_utils.create_value_normalizer_options_hyperparam_input(agent_type, model_type)
         return html.Div()
 
     
@@ -870,156 +1290,60 @@ def register_callbacks(app, shared_data):
     @app.callback(
         Output('build-agent-status', 'children'),
         [Input('build-agent-button', 'n_clicks')],
-        [State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
-        State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
-        State({'type':'agent-type-dropdown', 'page':'/build-agent'}, 'value'),
-        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
-        State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
-        State({'type':'projects-dropdown', 'page': '/build-agent'}, 'value'),
-        State({'type':'callback', 'page':'/build-agent'}, 'value'),
-        State({'type': 'env-dropdown', 'page': '/build-agent'}, 'value')],
+        [State({'type':'agent-type-dropdown', 'page':'/build-agent'}, 'value'),
+         State({'type':'projects-dropdown', 'page': '/build-agent'}, 'value'),
+         State({'type':'callback', 'page':'/build-agent'}, 'value'),
+         State({'type':'library-select', 'page':'/build-agent'}, 'value'),
+         State({'type': 'env-dropdown', 'page': '/build-agent'}, 'value'),
+         State('agent-params-store', 'data'),
+         State({'type': 'add-layer-btn', 'model': ALL, 'agent': ALL, 'index': ALL}, 'n_clicks')
+        ],
         prevent_initial_call=True,
 )
-    def build_agent_model(n_clicks, all_values, all_ids, agent_type_dropdown_value, layer_index_values, layer_index_ids, project, callbacks, env_selection):
+    def build_agent_model(n_clicks, agent_type_dropdown_value, project, callbacks, env_library, env_selection, agent_params, layer_clicks):
         if n_clicks is None or n_clicks < 1:
             raise PreventUpdate
+        
+        env = dash_utils.instantiate_envwrapper_obj(env_library, env_selection)
+        device = agent_params.get(dash_utils.get_key({'type':'device', 'model':'none', 'agent':agent_type_dropdown_value}))
+        save_dir = agent_params.get(dash_utils.get_key({'type':'save-dir', 'model':'none', 'agent':agent_type_dropdown_value}))
+        #DEBUG
+        print(f'env:{env}')
+        print(f'device:{device}')
+        print(f'save dir:{save_dir}')
 
-        # Set environment parameter
-        env = gym.make(env_selection)
-        print(f'env spec: {env.spec}')
-
-        # Get device
-        device = utils.get_specific_value(
-            all_values=all_values,
-            all_ids=all_ids,
-            id_type='device',
-            model_type='none',
-            agent_type=agent_type_dropdown_value,
-        )
-
-        save_dir = utils.get_specific_value(
-            all_values=all_values,
-            all_ids=all_ids,
-            id_type='save-dir',
-            model_type='none',
-            agent_type=agent_type_dropdown_value,
-            )
-
-        # set params if agent is reinforce or actor critic
+        # set params if agent is reinforce/actor critic/PPO
         if agent_type_dropdown_value in ["Reinforce", "ActorCritic", "PPO"]:
-            # set defualt gym environment in order to build policy and value models and save
-            # env = gym.make("CartPole-v1")
 
-            policy_learning_rate_constant = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='learning-rate-const',
-                model_type='policy',
-                agent_type=agent_type_dropdown_value,
-            )
+            policy_learning_rate_scheduler = dash_utils.get_lr_scheduler('policy', agent_type_dropdown_value, agent_params)
+            #DEBUG
+            print(f'policy learning rate scheduler:{policy_learning_rate_scheduler}')
+            policy_optimizer = dash_utils.get_optimizer('policy', agent_type_dropdown_value, agent_params)
+            #DEBUG
+            print(f'policy optimizer:{policy_optimizer}')
+            policy_layers = dash_utils.format_layers('policy', agent_type_dropdown_value, agent_params)
+            #DEBUG
+            print(f'policy layers:{policy_layers}')
+            policy_output_kernel = dash_utils.format_output_kernel_initializer_config('policy', agent_type_dropdown_value, agent_params)
+            #DEBUG
+            print(f'policy output kernel:{policy_output_kernel}')
 
-            policy_learning_rate=policy_learning_rate_constant * 10**utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='learning-rate-exp',
-                model_type='policy',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            value_learning_rate_constant = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='learning-rate-const',
-                model_type='value',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            value_func_learning_rate=value_learning_rate_constant * 10**utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='learning-rate-exp',
-                model_type='value',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            policy_optimizer = utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='optimizer',
-                model_type='policy',
-                agent_type=agent_type_dropdown_value,
-            )
-            
-            policy_opt_params = utils.get_optimizer_params(
-                agent_type=agent_type_dropdown_value,
-                model_type='policy',
-                all_values=all_values,
-                all_ids=all_ids
-            )
-            
-            policy_hidden_kernel = utils.format_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='policy-hidden',
-                agent_type=agent_type_dropdown_value
-            )
-
-            policy_layers = models.build_layers(
-
-                utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='policy',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='policy',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                policy_hidden_kernel,
-            )
-
-            policy_output_kernel = utils.format_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='policy-output',
-                agent_type=agent_type_dropdown_value
-            )
-
-            ##DEBUG
-            # print("Policy layers:", policy_layers)
             if agent_type_dropdown_value == "PPO":
-                policy_type = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='policy-type',
-                    model_type='policy',
-                    agent_type=agent_type_dropdown_value,
-                )
+                policy_type = agent_params.get(dash_utils.get_key({'type':'policy-type', 'model':'policy', 'agent':agent_type_dropdown_value}))
+                #DEBUG
+                print(f'policy type:{policy_type}')
 
                 if policy_type == 'StochasticContinuousPolicy':
                     model = StochasticContinuousPolicy
-                    dist = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='distribution',
-                    model_type='none',
-                    agent_type=agent_type_dropdown_value,
-                    )
-
+                    dist = agent_params.get(dash_utils.get_key({'type':'distribution', 'model':'none', 'agent':agent_type_dropdown_value}))
+                    #DEBUG
+                    print(f'policy dist:{dist}')
                     policy_model = model(
                         env=env,
                         layer_config=policy_layers,
                         output_layer_kernel=policy_output_kernel,
-                        optimizer=policy_optimizer,
-                        optimizer_params=policy_opt_params,
-                        learning_rate=policy_learning_rate,
+                        optimizer_params=policy_optimizer,
+                        scheduler_params = policy_learning_rate_scheduler,
                         distribution=dist,
                         device=device,
                     )
@@ -1030,90 +1354,53 @@ def register_callbacks(app, shared_data):
                         env=env,
                         layer_config=policy_layers,
                         output_layer_kernel=policy_output_kernel,
-                        optimizer=policy_optimizer,
-                        optimizer_params=policy_opt_params,
-                        learning_rate=policy_learning_rate,
+                        optimizer_params=policy_optimizer,
+                        scheduler_params = policy_learning_rate_scheduler,
+                        distribution=dist,
                         device=device,
                     )
             else:
                 model = StochasticDiscretePolicy
                 policy_model = model(
                     env=env,
-                    layer_config=policy_layers,
-                    output_layer_kernel=policy_output_kernel,
-                    optimizer=policy_optimizer,
-                    optimizer_params=policy_opt_params,
-                    learning_rate=policy_learning_rate,
-                    device=device,
+                        layer_config=policy_layers,
+                        output_layer_kernel=policy_output_kernel,
+                        optimizer_params=policy_optimizer,
+                        scheduler_params = policy_learning_rate_scheduler,
+                        distribution=dist,
+                        device=device,
                 )
 
-
-            value_optimizer = utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='optimizer',
-                    model_type='value',
-                    agent_type=agent_type_dropdown_value,
-                )
-            
-            value_opt_params = utils.get_optimizer_params(
-                agent_type=agent_type_dropdown_value,
-                model_type='value',
-                all_values=all_values,
-                all_ids=all_ids
-            )
-
-            value_hidden_kernel = utils.format_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='value-hidden',
-                agent_type=agent_type_dropdown_value
-            )
-            
-            value_layers = models.build_layers(
-                utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='value',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='value',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                value_hidden_kernel,
-            )
-
-            value_output_kernel = utils.format_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='value-output',
-                agent_type=agent_type_dropdown_value
-            )
+            value_learning_rate_scheduler = dash_utils.get_lr_scheduler('value', agent_type_dropdown_value, agent_params)
+            value_learning_rate_constant = agent_params.get(dash_utils.get_key({'type':'learning-rate-const', 'model':'value', 'agent':agent_type_dropdown_value}))
+            value_learning_rate_exp = agent_params.get(dash_utils.get_key({'type':'learning-rate-exp', 'model':'value', 'agent':agent_type_dropdown_value}))
+            value_learning_rate = value_learning_rate_constant * 10**value_learning_rate_exp
+            value_learning_rate_scheduler = dash_utils.get_lr_scheduler('value', agent_type_dropdown_value, agent_params)
+            value_optimizer = dash_utils.get_optimizer('value', agent_type_dropdown_value, agent_params)
+            value_layers = dash_utils.format_layers('value', agent_type_dropdown_value, agent_params)
+            value_output_kernel = dash_utils.format_output_kernel_initializer_config('value', agent_type_dropdown_value, agent_params)
+            #DEBUG
+            print(f'value learning rate scheduler:{value_learning_rate_scheduler}')
+            print(f'value learning rate const:{value_learning_rate_constant}')
+            print(f'value learning rate exp:{value_learning_rate_exp}')
+            print(f'value learning rate:{value_learning_rate}')
+            print(f'value learning rate scheduler:{value_learning_rate_scheduler}')
+            print(f'value optimizer:{value_optimizer}')
+            print(f'value layers:{value_layers}')
+            print(f'value output kernel:{value_output_kernel}')
             
             value_model = ValueModel(
                 env=env,
                 layer_config=value_layers,
                 output_layer_kernel=value_output_kernel,
-                optimizer=value_optimizer,
-                optimizer_params=value_opt_params,
-                learning_rate=value_func_learning_rate,
+                optimizer_params=value_optimizer,
+                scheduler_params=value_learning_rate_scheduler,
                 device=device,
             )
 
-            discount=utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='discount',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
+            discount = agent_params.get(dash_utils.get_key({'type':'discount', 'model':'none', 'agent':agent_type_dropdown_value}))
+            #DEBUG
+            print(f'discount:{discount}')
             
             if agent_type_dropdown_value == "Reinforce":
 
@@ -1122,20 +1409,20 @@ def register_callbacks(app, shared_data):
                     policy_model=policy_model,
                     value_model=value_model,
                     discount=discount,
-                    callbacks=utils.get_callbacks(callbacks, project),
+                    callbacks=dash_utils.get_callbacks(callbacks, project),
                     save_dir=os.path.join(os.getcwd(), save_dir),
                 )
 
             elif agent_type_dropdown_value == "ActorCritic":
 
-                policy_trace_decay=utils.get_specific_value(
+                policy_trace_decay=dash_utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
                         id_type='trace-decay',
                         model_type='policy',
                         agent_type=agent_type_dropdown_value,
                     )
-                value_trace_decay=utils.get_specific_value(
+                value_trace_decay=dash_utils.get_specific_value(
                         all_values=all_values,
                         all_ids=all_ids,
                         id_type='trace-decay',
@@ -1150,128 +1437,48 @@ def register_callbacks(app, shared_data):
                     discount=discount,
                     policy_trace_decay=policy_trace_decay,
                     value_trace_decay=value_trace_decay,
-                    callbacks=utils.get_callbacks(callbacks, project),
+                    callbacks=dash_utils.get_callbacks(callbacks, project),
                     save_dir=os.path.join(os.getcwd(), save_dir),
                 )
 
             elif agent_type_dropdown_value == "PPO":
                 
-                gae_coeff = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='advantage-coeff',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                policy_clip = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='policy-clip',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                entropy_coeff = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='entropy-coeff',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                loss = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='loss-type',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                kl_coeff = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='kl-coeff',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                normalize_advs = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='norm-adv',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )[0]
-
-                normalize_values = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='norm-values',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                if normalize_values is not True:
-                    normalize_values = False
-
-                
-                val_norm_clip = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='norm-clip',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                
-                clip_policy_grad = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='clip-policy-grad',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                
-                if clip_policy_grad:
-
-                    policy_grad_clip = utils.get_specific_value(
-                            all_values=all_values,
-                            all_ids=all_ids,
-                            id_type='policy-grad-clip',
-                            model_type='none',
-                            agent_type=agent_type_dropdown_value,
-                        )
-                    
-                else:
-                    policy_grad_clip = np.inf
-               
-                
-                lambda_ = utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='lambda-value',
-                        model_type='none',
-                        agent_type=agent_type_dropdown_value,
-                    )
+                gae_coeff = agent_params.get(dash_utils.get_key({'type':'advantage-coeff', 'model':'none', 'agent':'PPO'}))
+                policy_clip = agent_params.get(dash_utils.get_key({'type':'policy-clip', 'model':'policy', 'agent':'PPO'}))
+                entropy_coeff = agent_params.get(dash_utils.get_key({'type':'entropy-coeff', 'model':'none', 'agent':'PPO'}))
+                kl_coeff = agent_params.get(dash_utils.get_key({'type':'kl-coeff', 'model':'none', 'agent':'PPO'}))
+                normalize_advs = agent_params.get(dash_utils.get_key({'type':'norm-adv', 'model':'none', 'agent':'PPO'}), False)
+                normalize_values = agent_params.get(dash_utils.get_key({'type':'norm-values', 'model':'none', 'agent':'PPO'}), False)
+                val_norm_clip = agent_params.get(dash_utils.get_key({'type':'norm-clip', 'model':'none', 'agent':'PPO'}), np.inf)
+                # clip_policy_grad = agent_params.get(utils.get_key({'type':'policy-grad-clip', 'model':'none', 'agent':'PPO'}), False)
+                # if clip_policy_grad:
+                policy_grad_clip = agent_params.get(dash_utils.get_key({'type':'policy-grad-clip', 'model':'policy', 'agent':'PPO'}), np.inf)
+                reward_clip = agent_params.get(dash_utils.get_key({'type':'reward-clip', 'model':'none', 'agent':'PPO'}), np.inf)
+                #DEBUG
+                print(f'gae coeff:{gae_coeff}')
+                print(f'policy clip:{policy_clip}')
+                print(f'entropy coeff:{entropy_coeff}')
+                print(f'normalize advs:{normalize_advs}')
+                print(f'normalize values:{normalize_values}')
+                print(f'val norm clip:{val_norm_clip}')
+                print(f'policy grad clip:{policy_grad_clip}')
+                print(f'reward clip:{reward_clip}')
                 
                 agent = rl_agents.PPO(
                     env=env,
                     policy_model=policy_model,
                     value_model=value_model,
-                    distribution=dist,
                     discount=discount,
                     gae_coefficient=gae_coeff,
                     policy_clip=policy_clip,
                     entropy_coefficient=entropy_coeff,
-                    loss=loss,
                     kl_coefficient=kl_coeff,
                     normalize_advantages=normalize_advs,
                     normalize_values=normalize_values,
                     value_normalizer_clip=val_norm_clip,
                     policy_grad_clip=policy_grad_clip,
-                    lambda_=lambda_,
-                    callbacks = utils.get_callbacks(callbacks, project),
+                    reward_clip=reward_clip,
+                    callbacks = dash_utils.get_callbacks(callbacks, project),
                     save_dir = os.path.join(os.getcwd(), save_dir),
                     device=device,
 
@@ -1292,7 +1499,7 @@ def register_callbacks(app, shared_data):
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=10**utils.get_specific_value(
+            actor_learning_rate=10**dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1300,7 +1507,7 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
 
-            actor_optimizer = utils.get_specific_value(
+            actor_optimizer = dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='optimizer',
@@ -1308,21 +1515,21 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            actor_opt_params = utils.get_optimizer_params(
+            actor_opt_params = dash_utils.get_optimizer_params(
                 agent_type=agent_type_dropdown_value,
                 model_type='actor',
                 all_values=all_values,
                 all_ids=all_ids
             )
 
-            actor_hidden_kernel = utils.format_kernel_initializer_config(
+            actor_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor-hidden',
+                model_type='actor-hidden',
                 agent_type=agent_type_dropdown_value
             )
 
-            actor_conv_layers = utils.format_cnn_layers(
+            actor_conv_layers = dash_utils.format_cnn_layers(
                 all_values,
                 all_ids,
                 layer_index_values,
@@ -1338,7 +1545,7 @@ def register_callbacks(app, shared_data):
 
 
             actor_dense_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -1347,7 +1554,7 @@ def register_callbacks(app, shared_data):
                     value_model='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -1357,14 +1564,14 @@ def register_callbacks(app, shared_data):
                 actor_hidden_kernel,
             )
 
-            actor_output_kernel = utils.format_kernel_initializer_config(
+            actor_output_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor-output',
+                model_type='actor-output',
                 agent_type=agent_type_dropdown_value
             )
 
-            actor_normalize_layers = utils.get_specific_value(
+            actor_normalize_layers = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='normalize-layers',
@@ -1394,7 +1601,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=10**utils.get_specific_value(
+            critic_learning_rate=10**dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1402,7 +1609,7 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            critic_optimizer = utils.get_specific_value(
+            critic_optimizer = dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='optimizer',
@@ -1410,22 +1617,22 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            critic_opt_params = utils.get_optimizer_params(
+            critic_opt_params = dash_utils.get_optimizer_params(
                 agent_type=agent_type_dropdown_value,
                 model_type='critic',
                 all_values=all_values,
                 all_ids=all_ids
             )
 
-            critic_hidden_kernel = utils.format_kernel_initializer_config(
+            critic_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='critic-hidden',
+                model_type='critic-hidden',
                 agent_type=agent_type_dropdown_value
             )
             
             critic_state_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -1434,7 +1641,7 @@ def register_callbacks(app, shared_data):
                     value_model='critic-state',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -1444,7 +1651,7 @@ def register_callbacks(app, shared_data):
                 critic_hidden_kernel,
             )
            
-            critic_conv_layers = utils.format_cnn_layers(
+            critic_conv_layers = dash_utils.format_cnn_layers(
                 all_values,
                 all_ids,
                 layer_index_values,
@@ -1459,7 +1666,7 @@ def register_callbacks(app, shared_data):
                 critic_cnn = None
 
             critic_merged_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -1468,7 +1675,7 @@ def register_callbacks(app, shared_data):
                     value_model='critic-merged',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -1478,14 +1685,14 @@ def register_callbacks(app, shared_data):
                 critic_hidden_kernel,
             )
 
-            critic_output_kernel = utils.format_kernel_initializer_config(
+            critic_output_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='critic-output',
+                model_type='critic-output',
                 agent_type=agent_type_dropdown_value
             )
            
-            critic_normalize_layers = utils.get_specific_value(
+            critic_normalize_layers = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='normalize-layers',
@@ -1517,7 +1724,7 @@ def register_callbacks(app, shared_data):
 
             # Set DDPG params
 
-            discount = utils.get_specific_value(
+            discount = dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'discount',
@@ -1525,7 +1732,7 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            tau=utils.get_specific_value(
+            tau=dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'tau',
@@ -1533,7 +1740,7 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            epsilon = utils.get_specific_value(
+            epsilon = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'epsilon-greedy',
@@ -1541,7 +1748,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
             
-            batch_size = utils.get_specific_value(
+            batch_size = dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'batch-size',
@@ -1549,14 +1756,14 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            noise=utils.create_noise_object(
+            noise=dash_utils.create_noise_object(
                     env = env,
                     all_values = all_values,
                     all_ids = all_ids,
                     agent_type = agent_type_dropdown_value,
                 )
             
-            normalize_inputs = utils.get_specific_value(
+            normalize_inputs = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'normalize-input',
@@ -1564,7 +1771,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            clip_value = utils.get_specific_value(
+            clip_value = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'clip-value',
@@ -1572,7 +1779,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            warmup = utils.get_specific_value(
+            warmup = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'warmup',
@@ -1593,7 +1800,7 @@ def register_callbacks(app, shared_data):
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
                 warmup = warmup,
-                callbacks = utils.get_callbacks(callbacks, project),
+                callbacks = dash_utils.get_callbacks(callbacks, project),
                 save_dir = os.path.join(os.getcwd(), save_dir),
                 device=device,
             )
@@ -1613,7 +1820,7 @@ def register_callbacks(app, shared_data):
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=10**utils.get_specific_value(
+            actor_learning_rate=10**dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1621,7 +1828,7 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
 
-            actor_optimizer = utils.get_specific_value(
+            actor_optimizer = dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='optimizer',
@@ -1629,21 +1836,21 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            actor_opt_params = utils.get_optimizer_params(
+            actor_opt_params = dash_utils.get_optimizer_params(
                 agent_type=agent_type_dropdown_value,
                 model_type='actor',
                 all_values=all_values,
                 all_ids=all_ids
             )
 
-            actor_hidden_kernel = utils.format_kernel_initializer_config(
+            actor_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor-hidden',
+                model_type='actor-hidden',
                 agent_type=agent_type_dropdown_value
             )
 
-            actor_conv_layers = utils.format_cnn_layers(
+            actor_conv_layers = dash_utils.format_cnn_layers(
                 all_values,
                 all_ids,
                 layer_index_values,
@@ -1659,7 +1866,7 @@ def register_callbacks(app, shared_data):
 
 
             actor_dense_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -1668,7 +1875,7 @@ def register_callbacks(app, shared_data):
                     value_model='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -1678,14 +1885,14 @@ def register_callbacks(app, shared_data):
                 actor_hidden_kernel,
             )
 
-            actor_output_kernel = utils.format_kernel_initializer_config(
+            actor_output_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='actor-output',
+                model_type='actor-output',
                 agent_type=agent_type_dropdown_value
             )
 
-            actor_normalize_layers = utils.get_specific_value(
+            actor_normalize_layers = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='normalize-layers',
@@ -1715,7 +1922,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=10**utils.get_specific_value(
+            critic_learning_rate=10**dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1723,7 +1930,7 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            critic_optimizer = utils.get_specific_value(
+            critic_optimizer = dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='optimizer',
@@ -1731,22 +1938,22 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            critic_opt_params = utils.get_optimizer_params(
+            critic_opt_params = dash_utils.get_optimizer_params(
                 agent_type=agent_type_dropdown_value,
                 model_type='critic',
                 all_values=all_values,
                 all_ids=all_ids
             )
 
-            critic_hidden_kernel = utils.format_kernel_initializer_config(
+            critic_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
-                value_model='critic-hidden',
+                model_type='critic-hidden',
                 agent_type=agent_type_dropdown_value
             )
             
             critic_state_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -1755,7 +1962,7 @@ def register_callbacks(app, shared_data):
                     value_model='critic-state',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -1765,7 +1972,7 @@ def register_callbacks(app, shared_data):
                 critic_hidden_kernel,
             )
            
-            critic_conv_layers = utils.format_cnn_layers(
+            critic_conv_layers = dash_utils.format_cnn_layers(
                 all_values,
                 all_ids,
                 layer_index_values,
@@ -1780,7 +1987,7 @@ def register_callbacks(app, shared_data):
                 critic_cnn = None
 
             critic_merged_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -1789,7 +1996,7 @@ def register_callbacks(app, shared_data):
                     value_model='critic-merged',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -1799,14 +2006,14 @@ def register_callbacks(app, shared_data):
                 critic_hidden_kernel,
             )
 
-            critic_output_kernel = utils.format_kernel_initializer_config(
+            critic_output_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='critic-output',
                 agent_type=agent_type_dropdown_value
             )
            
-            critic_normalize_layers = utils.get_specific_value(
+            critic_normalize_layers = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='normalize-layers',
@@ -1838,7 +2045,7 @@ def register_callbacks(app, shared_data):
 
             # Set DDPG params
 
-            discount = utils.get_specific_value(
+            discount = dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'discount',
@@ -1846,7 +2053,7 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            tau=utils.get_specific_value(
+            tau=dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'tau',
@@ -1854,7 +2061,7 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            epsilon = utils.get_specific_value(
+            epsilon = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'epsilon-greedy',
@@ -1862,7 +2069,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
             
-            batch_size = utils.get_specific_value(
+            batch_size = dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'batch-size',
@@ -1870,14 +2077,14 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            noise=utils.create_noise_object(
+            noise=dash_utils.create_noise_object(
                     env = env,
                     all_values = all_values,
                     all_ids = all_ids,
                     agent_type = agent_type_dropdown_value,
                 )
             
-            target_noise_stddev = utils.get_specific_value(
+            target_noise_stddev = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'target-noise-stddev',
@@ -1885,7 +2092,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            target_noise_clip = utils.get_specific_value(
+            target_noise_clip = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'target-noise-clip',
@@ -1893,7 +2100,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            actor_update_delay = utils.get_specific_value(
+            actor_update_delay = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'actor-update-delay',
@@ -1901,7 +2108,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
             
-            normalize_inputs = utils.get_specific_value(
+            normalize_inputs = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'normalize-input',
@@ -1909,7 +2116,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            clip_value = utils.get_specific_value(
+            clip_value = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'clip-value',
@@ -1917,7 +2124,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            warmup = utils.get_specific_value(
+            warmup = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'warmup',
@@ -1942,7 +2149,7 @@ def register_callbacks(app, shared_data):
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
                 warmup = warmup,
-                callbacks = utils.get_callbacks(callbacks, project),
+                callbacks = dash_utils.get_callbacks(callbacks, project),
                 save_dir = os.path.join(os.getcwd(), save_dir),
                 device=device,
             )
@@ -1972,7 +2179,7 @@ def register_callbacks(app, shared_data):
 
             # Set actor params
             # Set actor learning rate
-            actor_learning_rate=10**utils.get_specific_value(
+            actor_learning_rate=10**dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -1980,7 +2187,7 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
 
-            actor_optimizer = utils.get_specific_value(
+            actor_optimizer = dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='optimizer',
@@ -1988,28 +2195,28 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            actor_opt_params = utils.get_optimizer_params(
+            actor_opt_params = dash_utils.get_optimizer_params(
                 agent_type=agent_type_dropdown_value,
                 model_type='actor',
                 all_values=all_values,
                 all_ids=all_ids
             )
 
-            actor_hidden_kernel = utils.format_kernel_initializer_config(
+            actor_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='actor-hidden',
                 agent_type=agent_type_dropdown_value
             )
 
-            actor_output_kernel = utils.format_kernel_initializer_config(
+            actor_output_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='actor-output',
                 agent_type=agent_type_dropdown_value
             )
 
-            actor_conv_layers = utils.format_cnn_layers(
+            actor_conv_layers = dash_utils.format_cnn_layers(
                 all_values,
                 all_ids,
                 layer_index_values,
@@ -2025,7 +2232,7 @@ def register_callbacks(app, shared_data):
 
 
             actor_dense_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -2034,7 +2241,7 @@ def register_callbacks(app, shared_data):
                     value_model='actor',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -2044,7 +2251,7 @@ def register_callbacks(app, shared_data):
                 actor_hidden_kernel,
             )
 
-            actor_normalize_layers = utils.get_specific_value(
+            actor_normalize_layers = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='normalize-layers',
@@ -2078,7 +2285,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate=10**utils.get_specific_value(
+            critic_learning_rate=10**dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='learning-rate',
@@ -2086,7 +2293,7 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            critic_optimizer = utils.get_specific_value(
+            critic_optimizer = dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='optimizer',
@@ -2094,21 +2301,21 @@ def register_callbacks(app, shared_data):
                     agent_type=agent_type_dropdown_value,
                 )
             
-            critic_opt_params = utils.get_optimizer_params(
+            critic_opt_params = dash_utils.get_optimizer_params(
                 agent_type=agent_type_dropdown_value,
                 model_type='critic',
                 all_values=all_values,
                 all_ids=all_ids
             )
 
-            critic_hidden_kernel = utils.format_kernel_initializer_config(
+            critic_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='critic-hidden',
                 agent_type=agent_type_dropdown_value
             )
 
-            critic_output_kernel = utils.format_kernel_initializer_config(
+            critic_output_kernel = dash_utils.format_output_kernel_initializer_config(
                 all_values=all_values,
                 all_ids=all_ids,
                 value_model='critic-output',
@@ -2116,7 +2323,7 @@ def register_callbacks(app, shared_data):
             )
             
             critic_state_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -2125,7 +2332,7 @@ def register_callbacks(app, shared_data):
                     value_model='critic-state',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -2135,7 +2342,7 @@ def register_callbacks(app, shared_data):
                 critic_hidden_kernel,
             )
            
-            critic_conv_layers = utils.format_cnn_layers(
+            critic_conv_layers = dash_utils.format_cnn_layers(
                 all_values,
                 all_ids,
                 layer_index_values,
@@ -2150,7 +2357,7 @@ def register_callbacks(app, shared_data):
                 critic_cnn = None
 
             critic_merged_layers = models.build_layers(
-                utils.format_layers(
+                dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
                     layer_units_values=layer_index_values,
@@ -2159,7 +2366,7 @@ def register_callbacks(app, shared_data):
                     value_model='critic-merged',
                     agent_type=agent_type_dropdown_value,
                 ),
-                utils.get_specific_value(
+                dash_utils.get_specific_value(
                     all_values=all_values,
                     all_ids=all_ids,
                     id_type='activation-function',
@@ -2169,7 +2376,7 @@ def register_callbacks(app, shared_data):
                 critic_hidden_kernel,
             )
            
-            critic_normalize_layers = utils.get_specific_value(
+            critic_normalize_layers = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='normalize-layers',
@@ -2202,7 +2409,7 @@ def register_callbacks(app, shared_data):
 
             # Set DDPG params
 
-            discount = utils.get_specific_value(
+            discount = dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'discount',
@@ -2210,7 +2417,7 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            tau=utils.get_specific_value(
+            tau=dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'tau',
@@ -2218,7 +2425,7 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            epsilon = utils.get_specific_value(
+            epsilon = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'epsilon-greedy',
@@ -2226,7 +2433,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
             
-            batch_size = utils.get_specific_value(
+            batch_size = dash_utils.get_specific_value(
                     all_values = all_values,
                     all_ids = all_ids,
                     id_type = 'batch-size',
@@ -2234,14 +2441,14 @@ def register_callbacks(app, shared_data):
                     agent_type = agent_type_dropdown_value,
                 )
             
-            noise=utils.create_noise_object(
+            noise=dash_utils.create_noise_object(
                     env = env,
                     all_values = all_values,
                     all_ids = all_ids,
                     agent_type = agent_type_dropdown_value,
                 )
             
-            normalize_inputs = utils.get_specific_value(
+            normalize_inputs = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'normalize-input',
@@ -2249,7 +2456,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            clip_value = utils.get_specific_value(
+            clip_value = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'clip-value',
@@ -2269,13 +2476,13 @@ def register_callbacks(app, shared_data):
                 noise = noise,
                 normalize_inputs = normalize_inputs,
                 normalizer_clip = clip_value,
-                callbacks = utils.get_callbacks(callbacks, project),
+                callbacks = dash_utils.get_callbacks(callbacks, project),
                 # save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
                 device = device
             )
 
             # set HER specific hyperparams
-            strategy = utils.get_specific_value(
+            strategy = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='goal-strategy',
@@ -2283,7 +2490,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
-            num_goals = utils.get_specific_value(
+            num_goals = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='future-goals',
@@ -2291,7 +2498,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
-            tolerance = utils.get_specific_value(
+            tolerance = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='goal-tolerance',
@@ -2299,7 +2506,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value,
             )
 
-            normalizer_clip = utils.get_specific_value(
+            normalizer_clip = dash_utils.get_specific_value(
                 all_values = all_values,
                 all_ids = all_ids,
                 id_type = 'clip-value',
@@ -2307,7 +2514,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
 
-            save_dir = utils.get_specific_value(
+            save_dir = dash_utils.get_specific_value(
                 all_values=all_values,
                 all_ids=all_ids,
                 id_type='save-dir',
@@ -2353,11 +2560,10 @@ def register_callbacks(app, shared_data):
 )
     def show_wandb_login(callbacks):
         if callbacks is not None:
-            # page = callback_id['page']
             # Flatten the list if it's a list of lists, which can happen with ALL
             flattened_values = [item for sublist in callbacks for item in (sublist if isinstance(sublist, list) else [sublist])]
             if 'Weights & Biases' in flattened_values:
-                return utils.generate_wandb_login('/build-agent')
+                return dash_utils.generate_wandb_login('/build-agent')
             else:
                 return html.Div()
         
@@ -2406,7 +2612,7 @@ def register_callbacks(app, shared_data):
     def show_project_selection(wandb_login, page):
         
         if wandb_login:
-            return utils.generate_wandb_project_dropdown(page)
+            return dash_utils.generate_wandb_project_dropdown(page)
     
     @app.callback(
         [Output({'type':'env-description', 'page':MATCH}, 'children'),
@@ -2418,10 +2624,10 @@ def register_callbacks(app, shared_data):
     )
     def update_env_info(env_name, id):
         if env_name:
-            description, gif_url = utils.get_env_data(env_name)
+            description, gif_url = dash_utils.get_env_data(env_name)
             gym_params = {}
             if id['page'] != "/build-agent":
-                gym_params = utils.generate_gym_extra_params_container(env_name)
+                gym_params = dash_utils.generate_gym_extra_params_container(env_name)
             return description, gif_url, gym_params
         return "", "", gym_params  # Default empty state
 
@@ -2468,17 +2674,17 @@ def register_callbacks(app, shared_data):
                 
                 # Create an empty dict for train_config.json
                 train_config = {}
-                render = True if render_option == 'RENDER' else False
+                # render = True if render_option == 'RENDER' else False
                 # use_mpi = agent_data.get('use_mpi', False)
                 
                 # clear the renders in the train folder
-                if render:
+                if render_option:
                     if os.path.exists(save_dir + '/renders/training'):
-                        utils.delete_renders(save_dir + '/renders/training')
+                        dash_utils.delete_renders(save_dir + '/renders/training')
 
                 # Update the configuration with render settings
                 train_config['num_envs'] = num_envs
-                train_config['render'] = render
+                train_config['render'] = render_option
                 train_config['render_freq'] = render_freq if render_freq is not None else 0
                 train_config['load_weights'] = load_weights
                 train_config['seed'] = seed
@@ -2553,7 +2759,7 @@ def register_callbacks(app, shared_data):
                 if agent_type == "HER":
                     agent_type = agent_data['agent']['agent_type']
                 if os.path.exists(agent_data['save_dir'] + '/renders'):
-                    utils.delete_renders(agent_data['save_dir'] + '/renders')
+                    dash_utils.delete_renders(agent_data['save_dir'] + '/renders')
 
                 # Create empty dict for test_config.json
                 test_config = {}
@@ -2769,7 +2975,7 @@ def register_callbacks(app, shared_data):
     @app.callback(
     Output({'type': 'clamp-value', 'model':MATCH, 'agent':MATCH}, 'style'),
     Input({'type':'clamp-output', 'model':MATCH, 'agent':MATCH}, 'value'),
-    prevent_initial_call = True,
+    # prevent_initial_call = True,
     )
     def update_clamp_options(clamp_output):
 
@@ -2783,41 +2989,36 @@ def register_callbacks(app, shared_data):
     @app.callback(
     Output({'type': 'policy-grad-clip-block', 'model':MATCH, 'agent':MATCH}, 'style'),
     Input({'type':'clip-policy-grad', 'model':MATCH, 'agent':MATCH}, 'value'),
-    prevent_initial_call = True,
+    # prevent_initial_call = True,
     )
     def update_policy_grad_clip_options(clip_grad):
 
         if clip_grad:
-            clip_options_style = {'display': 'block'}
+            clip_options_style = {'display': 'block', 'margin-left': '20px'}
         else:
-            clip_options_style = {'display': 'none'}
+            clip_options_style = {'display': 'none', 'margin-left': '20px'}
         
         return clip_options_style
     
-    # @app.callback(
-    # Output({'type': 'ddpg-workers', 'page': '/train-agent'}, 'style'),
-    # Input({'type':'ddpg-mpi', 'page': '/train-agent'}, 'value'),
-    # prevent_initial_call = True,
-    # )
-    # def update_ddpg_workers_option(use_mpi):
-
-    #     if use_mpi:
-    #         workers_style = {'display': 'block'}
-    #     else:
-    #         workers_style = {'display': 'none'}
-        
-    #     return workers_style
-    
-
     @app.callback(
-    Output({'type':'render-freq', 'page':MATCH}, 'disabled'),  
+    Output({'type':'render-block', 'page':MATCH}, 'style'),  
     Input({'type':'render-option', 'page':MATCH}, 'value'),
-    prevent_initial_call = True,
+    # prevent_initial_call = True,
     )
     def toggle_render_freq(render_option):
-        if 'RENDER' in render_option:
-            return False
-        return True
+        if render_option:
+            return {'display': 'block', 'margin-left': '10px'}
+        return {'display': 'none'}
+    
+    @app.callback(
+    Output({'type':'clip-rewards-block', 'model':MATCH, 'agent':MATCH}, 'style'),  
+    Input({'type':'clip-rewards', 'model':MATCH, 'agent':MATCH}, 'value'),
+    # prevent_initial_call = True,
+    )
+    def toggle_reward_clip(clip_reward_option):
+        if clip_reward_option:
+            return {'display': 'block', 'margin-left': '10px'}
+        return {'display': 'none'}
     
 
     @app.callback(
@@ -2968,7 +3169,7 @@ def register_callbacks(app, shared_data):
 
         # Initial load or automatic update triggered by the interval component
         if 'interval-component' in triggered_id and start_clicks > 0:
-            video_filenames = utils.get_video_files(interval_id['page'], agent_data)
+            video_filenames = dash_utils.get_video_files(interval_id['page'], agent_data)
             if video_filenames:
                 data['video_list'] = video_filenames
                 # Optionally reset current video to 0 or keep it as is
@@ -2976,7 +3177,7 @@ def register_callbacks(app, shared_data):
                 # video_files = data['video_list']
                 current_video = data.get('current_video', 0)
                 current_filename = video_filenames[current_video]
-                video_item = utils.generate_video_items([current_filename], carousel_id['page'], agent_data)[0]
+                video_item = dash_utils.generate_video_items([current_filename], carousel_id['page'], agent_data)[0]
                 
                 #DEBUG
                 # print(f'data: {data}')
@@ -3003,7 +3204,7 @@ def register_callbacks(app, shared_data):
 
             video_files = data['video_list']
             current_filename = video_files[current_video]
-            video_item = utils.generate_video_items([current_filename], carousel_id['page'], agent_data)[0]
+            video_item = dash_utils.generate_video_items([current_filename], carousel_id['page'], agent_data)[0]
 
             return data, video_item, current_filename
 
@@ -3069,24 +3270,24 @@ def register_callbacks(app, shared_data):
         tabs = []
         # for agent_type in selected_agent_types:
         if agent_type == 'Reinforce':
-            tabs.append(utils.create_reinforce_hyperparam_input(agent_type))
+            tabs.append(dash_utils.create_reinforce_hyperparam_input(agent_type))
         
         elif agent_type == 'ActorCritic':
-            tabs.append(utils.create_actor_critic_hyperparam_input(agent_type))
+            tabs.append(dash_utils.create_actor_critic_hyperparam_input(agent_type))
         
         elif agent_type == 'DDPG':
-            tabs.append(utils.create_ddpg_hyperparam_input(agent_type))
+            tabs.append(dash_utils.create_ddpg_hyperparam_input(agent_type))
 
         elif agent_type == 'TD3':
-            tabs.append(utils.create_td3_hyperparam_input(agent_type))
+            tabs.append(dash_utils.create_td3_hyperparam_input(agent_type))
 
         elif agent_type == 'HER_DDPG':
-            tabs.append(utils.create_her_ddpg_hyperparam_input(agent_type))
+            tabs.append(dash_utils.create_her_ddpg_hyperparam_input(agent_type))
 
         elif agent_type == 'PPO':
-            tabs.append(utils.create_ppo_hyperparam_input(agent_type))
+            tabs.append(dash_utils.create_ppo_hyperparam_input(agent_type))
         
-        options = utils.create_agent_sweep_options(agent_type)
+        options = dash_utils.create_agent_sweep_options(agent_type)
         return tabs, options
     
 
@@ -3306,22 +3507,37 @@ def register_callbacks(app, shared_data):
     
 
     @app.callback(
-        Output({'type': 'hyperparam-units-per-layer', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Output({'type': 'hidden-layers-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
         Input({'type': 'hidden-layers-slider', 'model': MATCH, 'agent': MATCH}, 'value'),
         State({'type': 'hidden-layers-slider', 'model': MATCH, 'agent': MATCH}, 'id'),
     )
-    def update_hyperparam_units_per_layer_inputs(num_layers, id):
+    def update_hidden_layers_hyperparam_inputs(num_layers, id):
         if num_layers is not None:
             model_type = id['model']
             agent_type = id['agent']
-            inputs = []
-            for i in range(1, num_layers[1] + 1):
-                inputs.append(
-                    utils.generate_hidden_units_per_layer_hyperparam_component(agent_type, model_type, i)
-                )
 
-            return inputs
-        
+            return dbc.Tabs(dash_utils.generate_layer_hyperparam_component(agent_type, model_type, num_layers[-1]))
+
+    @app.callback(
+        Output({'type': 'layer-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'children'),
+        Input({'type': 'layer-type-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value'),
+        State({'type': 'layer-type-hyperparam', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'id'),
+    )
+    def update_layer_hyperparam_inputs(layer_types, id):
+        if layer_types is not None:
+            model_type = id['model']
+            agent_type = id['agent']
+            layer_num = id['index']
+            tabs = dash_utils.generate_layer_hyperparam_tab(agent_type, model_type, layer_num, layer_types)
+            # inputs = []
+            # for layer_type in layer_types:
+            #     if layer_type == 'dense':
+            #         inputs.append(
+            #             utils.generate_layer_hyperparam_tab(agent_type, model_type, layer_num)
+            #         )
+
+            # return [item for sublist in tabs for item in (sublist if isinstance(sublist, list) else [sublist])]
+            return tabs
 
     @app.callback(
         Output({'type': 'cnn-layer-types-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -3335,7 +3551,7 @@ def register_callbacks(app, shared_data):
             layer_types = []
             for i in range(1, num_layers[1] + 1):
                 layer_types.append(
-                    utils.generate_cnn_layer_type_hyperparam_component(agent_type, model_type, i)
+                    dash_utils.generate_cnn_layer_type_hyperparam_component(agent_type, model_type, i)
                 )
 
             return layer_types
@@ -3355,23 +3571,24 @@ def register_callbacks(app, shared_data):
                 agent = layer_id['agent']
                 index = layer_id['index']
 
-                layer_params.append(utils.generate_cnn_layer_parameters_hyperparam_component(layer_type, agent, model, index))
+                layer_params.append(dash_utils.generate_cnn_layer_parameters_hyperparam_component(layer_type, agent, model, index))
             
         return layer_params
 
  
     @app.callback(
-        Output({'type': 'kernel-options-tabs', 'model': MATCH, 'agent': MATCH}, 'children'),
-        Output({'type': 'kernel-options-header' , 'model': MATCH, 'agent': MATCH}, 'hidden'),
-        Input({'type': 'kernel-function-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
-        State({'type': 'kernel-function-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+        Output({'type': 'kernel-options-tabs', 'model':MATCH, 'agent':MATCH, 'index':MATCH}, 'children'),
+        Output({'type': 'kernel-options-header' , 'model':MATCH, 'agent':MATCH, 'index':MATCH}, 'hidden'),
+        Input({'type': 'kernel-function-hyperparam', 'model':MATCH, 'agent':MATCH, 'index':MATCH}, 'value'),
+        State({'type': 'kernel-function-hyperparam', 'model':MATCH, 'agent':MATCH, 'index':MATCH}, 'id'),
         prevent_initial_call=True
     )
     def update_kernel_hyperparam_options(kernel_functions, id):
         model_type = id['model']
         agent_type = id['agent']
+        layer_num = id['index']
 
-        tabs = utils.generate_kernel_options_hyperparam_component(agent_type, model_type, kernel_functions)
+        tabs = dash_utils.generate_kernel_options_hyperparam_component(agent_type, model_type, layer_num, kernel_functions)
 
         # Hide header if no kernel options
         hide_header = True if not kernel_functions else False
@@ -3408,7 +3625,20 @@ def register_callbacks(app, shared_data):
     )
     def update_norm_clip_options(norm_values):
         if norm_values:
-            norm_block = {'display': 'block'}
+            norm_block = {'margin-left': '10px', 'display': 'block'}
+            return norm_block
+        
+        norm_block = {'display': 'none'}
+        return norm_block
+    
+    @app.callback(
+        Output({'type': 'norm-clip-hyperparam-block', 'model': MATCH, 'agent': MATCH},'style'),
+        Input({'type':'normalize-values-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+        prevent_initial_call=True
+    )
+    def update_norm_clip_hyperparam_options(norm_values):
+        if any(norm_values):
+            norm_block = {'margin-left': '10px', 'display': 'block'}
             return norm_block
         
         norm_block = {'display': 'none'}
@@ -3435,12 +3665,24 @@ def register_callbacks(app, shared_data):
         model_type = id['model']
         agent_type = id['agent']
 
-        tabs = utils.generate_noise_options_hyperparams_component(agent_type, model_type, noise_functions)
+        tabs = dash_utils.generate_noise_options_hyperparams_component(agent_type, model_type, noise_functions)
 
         # Hide header if no kernel options
         hide_header = True if not noise_functions else False
 
         return tabs, hide_header
+
+    @app.callback(
+        Output({'type': 'learning-rate-scheduler-tabs-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'learning-rate-scheduler-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'learning-rate-scheduler-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+    )
+    def update_scheduler_tabs_hyperparam(lr_schedulers, lr_schedulers_id):
+        agent_type = lr_schedulers_id['agent']
+        model_type = lr_schedulers_id['model']
+        #DEBUG
+        print(f'agent:{agent_type}, model:{model_type}')
+        return dash_utils.update_learning_rate_scheduler_hyperparam_options(agent_type, model_type, lr_schedulers)
 
     @app.callback(
         Output({'type':'hidden-div-hyperparam', 'page':'/hyperparameter-search'}, 'children'),
@@ -3467,7 +3709,7 @@ def register_callbacks(app, shared_data):
         try:
             if num_clicks > 0:
                 # extract any additional gym env params
-                params = utils.extract_gym_params(env_params)
+                params = dash_utils.extract_gym_params(env_params)
                 print('gym params extracted')
                 # Check if wandb config is uploaded and if so, use it
                 if agent_data:
@@ -3475,7 +3717,7 @@ def register_callbacks(app, shared_data):
                     sweep_config = agent_data
                     print('uploaded sweep config set')
                 else:
-                    sweep_config = utils.create_wandb_config(
+                    sweep_config = dash_utils.create_wandb_config(
                         method,
                         project,
                         sweep_name,
@@ -3608,7 +3850,7 @@ def register_callbacks(app, shared_data):
         Input({'type':'heatmap-data-store', 'page':'/hyperparameter-search'}, 'data')
     )
     def update_heatmap_container(data):
-        heatmap, bar_chart = utils.update_heatmap(data)
+        heatmap, bar_chart = dash_utils.update_heatmap(data)
         if heatmap is None:
             return dash.no_update
         return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
@@ -3752,7 +3994,7 @@ def register_callbacks(app, shared_data):
             logger.debug(f'update_co_occurrence_graphs: matrix data: {data["matrix_data"]}')
             data['bin_ranges'] = bin_ranges
             logger.debug(f'update_co_occurrence_graphs: bin_ranges: {data["bin_ranges"]}')
-            heatmap, bar_chart = utils.update_heatmap(data)
+            heatmap, bar_chart = dash_utils.update_heatmap(data)
             
             return dcc.Graph(figure=heatmap), dcc.Graph(figure=bar_chart)
         except Exception as e:
@@ -3779,10 +4021,10 @@ def register_callbacks(app, shared_data):
     )
     def download_wandb_config(num_clicks, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, all_values, all_ids, all_indexed_values, all_indexed_ids):
         # extract any additional gym env params
-        params = utils.extract_gym_params(env_params)
+        params = dash_utils.extract_gym_params(env_params)
 
         if num_clicks > 0:
-            wandb_config = utils.create_wandb_config(
+            wandb_config = dash_utils.create_wandb_config(
                 method,
                 project,
                 sweep_name,

@@ -8,7 +8,7 @@ import dash_bootstrap_components as dbc
 
 import layouts
 import dash_callbacks
-import utils
+import dash_utils
 import gymnasium as gym
 import gymnasium_robotics as gym_robo
 
