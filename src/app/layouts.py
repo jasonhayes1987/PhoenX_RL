@@ -5,7 +5,7 @@ import plotly.graph_objs as go
 import plotly.offline as pyo
 import plotly.tools as tls
 
-import utils
+import dash_utils
 
 # Placeholder for page content functions
 def home(page):
@@ -14,36 +14,55 @@ def home(page):
 def build_agent(page):
     return html.Div([
         dbc.Container([
+            dcc.Store(id="agent-params-store", data={}),
             html.H1("Build Agent", style={'textAlign': 'center'}),
-            utils.env_dropdown_component(page),
-            html.Div(id={'type':'gym-params', 'page':page}), # will be empty since just building agent
-            html.Div(id={'type':'env-description', 'page':page}),
-            html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
-            dcc.Dropdown(
-                id={
-                    'type': 'agent-type-dropdown',
-                    'page': page
-                },
-                options=[
-                    {'label': 'Reinforce', 'value': 'Reinforce'},
-                    {'label': 'Actor Critic', 'value': 'ActorCritic'},
-                    {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
-                    {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
-                    {'label': 'TD3', 'value': 'TD3'},
-                    {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
-                ],
-                placeholder="Select Agent Type",
-            ),
-            html.Div(id='agent-parameters-inputs'),
-            html.Div(id='callback-selection'),
-            html.Div(id={
-                'type': 'wandb-login-container',
-                'page': page,
-            }),
-            html.Div(id={'type':'project-selection-container', 'page':page}),
-            html.Div(id='save-directory-selection'),
-            dbc.Button("Build Model", id='build-agent-button', n_clicks=0),
-            html.Div(id='build-agent-status')
+            # Define tabs
+            dbc.Tabs([
+                # Tab 1: Environment
+                dbc.Tab(label="Environment", children=[
+                    dash_utils.env_dropdown_component(page),
+                    html.Div(id={'type': 'gym-params', 'page': page}),  # empty for building agent
+                    html.Div(id={'type': 'env-description', 'page': page}),
+                    html.Img(id={'type': 'env-gif', 'page': page}, style={'width': '300px'})
+                ]),
+
+                # Tab 2: Agent
+                dbc.Tab(label="Agent", children=[
+                    dcc.Dropdown(
+                        id={
+                            'type': 'agent-type-dropdown',
+                            'page': page
+                        },
+                        options=[
+                            {'label': 'Reinforce', 'value': 'Reinforce'},
+                            {'label': 'Actor Critic', 'value': 'ActorCritic'},
+                            {'label': 'Deep Deterministic Policy Gradient', 'value': 'DDPG'},
+                            {'label': 'Hindsight Experience Replay (DDPG)', 'value': 'HER_DDPG'},
+                            {'label': 'TD3', 'value': 'TD3'},
+                            {'label': 'Proximal Policy Optimization', 'value': 'PPO'},
+                        ],
+                        placeholder="Select Agent Type",
+                    ),
+                    html.Div(id='agent-parameters-inputs'),
+                ]),
+
+                # Tab 3: WANDB
+                dbc.Tab(label="WANDB", children=[
+                    html.Div(id='callback-selection'),
+                    html.Div(id={
+                        'type': 'wandb-login-container',
+                        'page': page
+                    }),
+                    html.Div(id={'type': 'project-selection-container', 'page': page}),
+                ]),
+
+                # Tab 4: Build
+                dbc.Tab(label="Build", children=[
+                    html.Div(id='save-directory-selection'),
+                    dbc.Button("Build Model", id='build-agent-button', n_clicks=0),
+                    html.Div(id='build-agent-status')
+                ]),
+            ])
         ])
     ])
 
@@ -52,13 +71,13 @@ def train_agent(page):
     return dbc.Container([
         html.H1("Train Agent", style={'textAlign': 'center'}),
         dcc.Store(id={'type':'agent-store', 'page':page}),
-        utils.upload_component(page),
+        dash_utils.upload_component(page),
         html.Div(id={'type':'output-agent-load', 'page':page}),
-        utils.env_dropdown_component(page),
+        dash_utils.env_dropdown_component(page),
         html.Div(id={'type':'env-description', 'page':page}),
         html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
         html.Div(id={'type':'gym-params', 'page':page}),
-        utils.run_agent_settings_component(page),
+        dash_utils.run_agent_settings_component(page),
         dbc.Button("Start",
             id={
                 'type': 'start',
@@ -91,7 +110,7 @@ def train_agent(page):
             },
         ),
         html.Div(id={'type':'status', 'page':page}),
-        utils.video_carousel_component(page),  # Initially empty list of video paths
+        dash_utils.video_carousel_component(page),  # Initially empty list of video paths
         dcc.Interval(
             id={
                 'type':'interval-component',
@@ -107,13 +126,13 @@ def test_agent(page):
     return dbc.Container([
         html.H1("Test Agent", style={'textAlign': 'center'}),
         dcc.Store(id={'type':'agent-store', 'page':page}),
-        utils.upload_component(page),
+        dash_utils.upload_component(page),
         html.Div(id={'type':'output-agent-load', 'page':page}),
-        utils.env_dropdown_component(page),
+        dash_utils.env_dropdown_component(page),
         html.Div(id={'type':'env-description', 'page':page}),
         html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
         html.Div(id={'type':'gym-params', 'page':page}),
-        utils.run_agent_settings_component(page),
+        dash_utils.run_agent_settings_component(page),
         dbc.Button("Start",
             id={
                 'type': 'start',
@@ -133,7 +152,7 @@ def test_agent(page):
             },
         ),
         html.Div(id={'type':'status', 'page':page}),
-        utils.video_carousel_component(page),  # Initially empty list of video paths
+        dash_utils.video_carousel_component(page),  # Initially empty list of video paths
         dcc.Interval(
             id={
                 'type':'interval-component',
@@ -149,14 +168,14 @@ def hyperparameter_search(page):
     right_column = dbc.Col(
         [
             html.H3('Wandb Project'),
-            utils.generate_wandb_project_dropdown(page),
+            dash_utils.generate_wandb_project_dropdown(page),
             html.Hr(),
             html.H3("Search Configuration"),
-            utils.env_dropdown_component(page),
+            dash_utils.env_dropdown_component(page),
             html.Div(id={'type':'gym-params', 'page':page}),
             html.Div(id={'type': 'env-description', 'page': page}),
             html.Img(id={'type': 'env-gif', 'page': page}, style={'width': '300px'}),
-            utils.create_sweep_options(),
+            dash_utils.create_sweep_options(),
             # dcc.Input(
             #     id='num-episodes',
             #     type='number',
@@ -234,7 +253,7 @@ def hyperparameter_search(page):
                     ),
                 ],
             ),
-            utils.generate_seed_component(page),
+            dash_utils.generate_seed_component(page),
             html.Hr(),
             dbc.Button("Download WandB Config", id="download-wandb-config-button", color="primary", className="mr-2"),
             dcc.Download(id="download-wandb-config"),
@@ -284,7 +303,7 @@ def hyperparameter_search(page):
         hidden=True,
         children=[
             dcc.Store(id={'type':'agent-store', 'page':page}),
-            utils.upload_component(page),
+            dash_utils.upload_component(page),
             html.Div(id={'type':'output-agent-load', 'page':page}),
             row,
             dbc.Button("Start Sweep",
@@ -325,7 +344,7 @@ def hyperparameter_search(page):
                 n_intervals=0
             ),
             
-            utils.render_heatmap(page),
+            dash_utils.render_heatmap(page),
             dcc.Store(id={'type':'heatmap-data-store', 'page':page},
                   data={'formatted_data':None, 'matrix_data':None, 'bin_ranges':None}),
             dcc.Interval(
@@ -364,7 +383,7 @@ def hyperparameter_search(page):
                     html.H1("Hyperparameter Search", style={'textAlign': 'center'}),
                     html.Div(
                         [  
-                            utils.generate_wandb_login(page),
+                            dash_utils.generate_wandb_login(page),
                         ],
                         style={'textAlign': 'center'},
                     ),
@@ -378,8 +397,8 @@ def hyperparameter_search(page):
 def co_occurrence_analysis(page):
     return html.Div([
         html.H1("Co-Occurrence Analysis", style={'textAlign': 'center'}),
-        utils.generate_wandb_project_dropdown(page),
-        utils.generate_sweeps_dropdown(page),
+        dash_utils.generate_wandb_project_dropdown(page),
+        dash_utils.generate_sweeps_dropdown(page),
         html.Button('Get Data', id={'type':'sweep-data-button', 'page':page}, n_clicks=0),
         html.Div(id={'type':'output-data-upload', 'page':page}),
         dcc.Dropdown(
@@ -388,7 +407,7 @@ def co_occurrence_analysis(page):
             multi=True,
             placeholder="Select Hyperparameters",
         ),
-        utils.render_heatmap(page),
+        dash_utils.render_heatmap(page),
         dcc.Store(id={'type':'heatmap-data-store', 'page':page},
                   data={'formatted_data':None, 'matrix_data':None, 'bin_ranges':None}),
     ])
