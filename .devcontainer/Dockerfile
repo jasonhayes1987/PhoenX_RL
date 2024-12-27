@@ -1,5 +1,5 @@
 # Use the CUDA 12.4.1 devel base image
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.2-cudnn-devel-ubuntu22.04
 
 # Install necessary system packages
 RUN apt-get update && apt-get install -y \
@@ -53,7 +53,7 @@ ENV CONDA_DEFAULT_ENV=rl_env
 SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 
 # Install PyTorch with CUDA support
-RUN conda install -y pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch-nightly -c nvidia
+RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
 # Install MuJoCo
 RUN mkdir -p /root/.mujoco && \
