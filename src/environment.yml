@@ -5,6 +5,8 @@ channels:
 dependencies:
   - python=3.10
   - pip
+  - pylint
+  - pytest
   - numpy
   - pandas
   - numba
@@ -42,9 +44,11 @@ dependencies:
   - pip:
     - expecttest!=0.2.0
     - optree>=0.9.1
+    - ale-py
+    - autorom
     # - dash-bootstrap-components
     - wandb
     - types-dataclasses
-    - gymnasium[all]==1.0.0a2
+    - gymnasium[all]==1.0.0
     - gymnasium-robotics
     - decorator==4.0.2

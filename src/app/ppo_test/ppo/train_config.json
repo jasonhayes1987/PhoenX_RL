@@ -1,1 +1,0 @@
-{"num_envs": 10, "render": false, "render_freq": 0, "load_weights": [true], "seed": null, "run_number": null, "num_runs": null, "save_dir": "/workspaces/RL_Agents/pytorch/src/app/ppo_test/ppo/", "timesteps": 10000, "trajectory_length": 2000, "batch_size": 64, "learning_epochs": 10}

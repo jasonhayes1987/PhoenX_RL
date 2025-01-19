@@ -1,27 +1,19 @@
 """Adds support for W&B integration to the rl_agents package."""
 
-# imports
+
 import json
 from pathlib import Path
 import os
-import ast
 import subprocess
-# import logging
-from logging_config import logger
-import time
-
-import numpy as np
 import random
-# import tensorflow as tf
-# from tensorflow.keras.callbacks import Callback
+from logging_config import logger
+import numpy as np
 import torch as T
+import pandas as pd
 import gymnasium as gym
 import wandb
-import pandas as pd
 from scipy.stats import zscore
 import plotly.graph_objs as go
-import plotly.offline as pyo
-import plotly.tools as tls
 
 import rl_agents
 import utils
@@ -35,37 +27,31 @@ def save_model_artifact(file_path: str, project_name: str, model_is_best: bool =
         project_name (str): The name of the project.
         model_is_best (bool): Whether the model is the best model so far.
     """
+    artifact = wandb.Artifact(f"{project_name}-{wandb.run.name}", type="model")
+    artifact.add_dir(f"{file_path}", name="model")
 
-    # Create a Model Version
-    art = wandb.Artifact(f"{project_name}-{wandb.run.name}", type="model")
-    # Add the serialized files
-    art.add_dir(f"{file_path}", name="model")
-    # art.add_file(f"{file_path}/obj_config.json", name="obj_config.json")
-    # art.add_dir(f"{file_path}/policy_model", name="policy_model")
-    # art.add_dir(f"{file_path}/value_model", name="value_model")
-    # checks if there is a wandb config and if there is, log it as an artifact
     if os.path.exists(f"{file_path}/wandb_config.json"):
-        art.add_file(f"{file_path}/wandb_config.json", name="wandb_config.json")
+        artifact.add_file(f"{file_path}/wandb_config.json", name="wandb_config.json")
+
+    aliases = ["latest"]
     if model_is_best:
-        # If the model is the best model so far,
-        #  add "best" to the aliases
-        wandb.log_artifact(art, aliases=["latest", "best"])
-    else:
-        wandb.log_artifact(art)
-    # Link the Model Version to the Collection
-    wandb.run.link_artifact(art, target_path=project_name)
+        aliases.append("best")
+
+    wandb.log_artifact(artifact, aliases=aliases)
+    wandb.run.link_artifact(artifact, target_path=project_name)
 
 
 def load_model_from_artifact(artifact, load_weights: bool = True):
-    """Loads the model from the specified artifact.
+    """
+    Load a model from a W&B artifact.
 
     Args:
-        artifact (wandb.Artifact): The artifact to load the model from.
+        artifact (wandb.Artifact): The artifact containing the model.
+        load_weights (bool): Whether to load weights.
 
     Returns:
-        rl_agents.Agent: The agent object.
+        rl_agents.Agent: Loaded RL agent object.
     """
-
     # Download the artifact files to a directory
     artifact_dir = Path(artifact.download())
 
@@ -82,47 +68,26 @@ def format_layers(sweep_config):
         tuple: The policy layers and value layers.
     """
     agent = sweep_config['model_type']
-    if agent in ["Reinforce", "ActorCritic", "PPO"]:
-        # Create empty dict to store model layer configs
-        model_config = {}
-        # Create kernel initializer params
-        for model in ['policy', 'value']:
-            # Create empty dict to store model hidden layer config list
-            model_config[model] = {'hidden':[]}
-            # Create empty list to store layer config for model
-            layer_config = []
-
-            for layer_idx in range(1, sweep_config[f"{agent}_{model}_num_layers"]+1):
-                # Create empty dict to store layer config
-                layer = {}
-                # Get layer type
-                layer['type'] = sweep_config[f"{agent}_{model}_{layer_idx}_layer_types"]
-
-                # Add layer params according to layer type
-                if layer['type'] == 'dense':
-                    params = format_dense_layer(sweep_config, agent, model, layer_idx)
-                    # Add params dict to layer
-                    layer['params'] = params
-                
-                # Append layer to layer_config
-                layer_config.append(layer)
-            
-            model_config[model]['hidden'] = layer_config
-
-            # Create output layer config
-            output_layer = {'type':'dense'}
-            # Create empty dict to store layer params
-            params = {}
-            # Get output layer kernel
-            params['kernel'] = sweep_config[f"{agent}_{model}_output_kernel"]
-            # Get output layer kernel params
-            params['kernel params'] = get_kernel_params(sweep_config, agent, model, 'output')
-            # Add params to output layer
-            output_layer['params'] = params
-            # Add output layer to model config dict
-            model_config[model]['output'] = [output_layer]
-
-        return model_config
+    model_config = {}
+    for model in ['policy', 'value']:
+        model_config[model] = {'hidden': []}
+        layer_config = []
+        for layer_idx in range(1, sweep_config[f"{agent}_{model}_num_layers"] + 1):
+            layer = {
+                'type': sweep_config[f"{agent}_{model}_{layer_idx}_layer_types"],
+                'params': format_dense_layer(sweep_config, agent, model, layer_idx)
+            }
+            layer_config.append(layer)
+        model_config[model]['hidden'] = layer_config
+        output_layer = {
+            'type': 'dense',
+            'params': {
+                'kernel': sweep_config[f"{agent}_{model}_output_kernel"],
+                'kernel params': get_kernel_params(sweep_config, agent, model, 'output')
+            }
+        }
+        model_config[model]['output'] = [output_layer]
+    return model_config
                     
         
         # # get policy layers
@@ -150,195 +115,195 @@ def format_layers(sweep_config):
 
         # return policy_layers, value_layers, kernels
     
-    elif agent in ["DDPG", "HER_DDPG", "TD3"]:
+    # elif agent in ["DDPG", "HER_DDPG", "TD3"]:
         
-        # Get actor CNN layers if present
-        actor_cnn_layers = []
-        # Set variable to keep track of last out channel param in conv layer loop to use for batchnorm layer features param
-        last_out_channels = 0
+    #     # Get actor CNN layers if present
+    #     actor_cnn_layers = []
+    #     # Set variable to keep track of last out channel param in conv layer loop to use for batchnorm layer features param
+    #     last_out_channels = 0
 
-        # Set number of cnn layers to loop over and to check if 0
-        num_layers = sweep_config[agent][f"{agent}_actor_num_cnn_layers"]
+    #     # Set number of cnn layers to loop over and to check if 0
+    #     num_layers = sweep_config[agent][f"{agent}_actor_num_cnn_layers"]
         
-        # Loop over num layers if not 0
-        if num_layers > 0:
-            for layer_num in range(1, num_layers + 1):
-                layer_type = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_types"]
-                if layer_type == 'conv':
-                    # get num filters
-                    out_channels = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_filters"]
-                    # update last out channel param
-                    last_out_channels = out_channels
+    #     # Loop over num layers if not 0
+    #     if num_layers > 0:
+    #         for layer_num in range(1, num_layers + 1):
+    #             layer_type = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_types"]
+    #             if layer_type == 'conv':
+    #                 # get num filters
+    #                 out_channels = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_filters"]
+    #                 # update last out channel param
+    #                 last_out_channels = out_channels
 
-                    # get kernel size
-                    kernel_size = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_kernel_size"]
-                    # get stride
-                    stride = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_strides"]
-                    # get padding
-                    padding = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_padding"]
-                    # get bias
-                    bias = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_bias"]
+    #                 # get kernel size
+    #                 kernel_size = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_kernel_size"]
+    #                 # get stride
+    #                 stride = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_strides"]
+    #                 # get padding
+    #                 padding = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_padding"]
+    #                 # get bias
+    #                 bias = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_conv_bias"]
 
-                    # append to actor_cnn_layers
-                    actor_cnn_layers.append({layer_type: {"out_channels": out_channels, "kernel_size": kernel_size, "stride": stride, "padding": padding, "bias": bias}})
+    #                 # append to actor_cnn_layers
+    #                 actor_cnn_layers.append({layer_type: {"out_channels": out_channels, "kernel_size": kernel_size, "stride": stride, "padding": padding, "bias": bias}})
 
-                elif layer_type == 'pool':
-                    # get pool size
-                    kernel_size = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_pool_kernel_size"]
-                    stride = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_pool_strides"]
+    #             elif layer_type == 'pool':
+    #                 # get pool size
+    #                 kernel_size = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_pool_kernel_size"]
+    #                 stride = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_pool_strides"]
 
-                    # append to actor_cnn_layers
-                    actor_cnn_layers.append({layer_type: {"kernel_size": kernel_size, "stride": stride}})
+    #                 # append to actor_cnn_layers
+    #                 actor_cnn_layers.append({layer_type: {"kernel_size": kernel_size, "stride": stride}})
 
-                elif layer_type == 'dropout':
-                    # get dropout rate
-                    rate = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_dropout_rate"]
+    #             elif layer_type == 'dropout':
+    #                 # get dropout rate
+    #                 rate = sweep_config[agent][f"actor_cnn_layer_{layer_num}_{agent}"][f"{agent}_actor_cnn_layer_{layer_num}_dropout_rate"]
 
-                    # append to actor_cnn_layers
-                    actor_cnn_layers.append({layer_type: {"p": rate}})
+    #                 # append to actor_cnn_layers
+    #                 actor_cnn_layers.append({layer_type: {"p": rate}})
 
-                elif layer_type == 'batchnorm':
-                    if last_out_channels == 0:
-                        raise ValueError("Batchnorm layer must come after a conv layer")
-                    else:
-                        num_features = last_out_channels
+    #             elif layer_type == 'batchnorm':
+    #                 if last_out_channels == 0:
+    #                     raise ValueError("Batchnorm layer must come after a conv layer")
+    #                 else:
+    #                     num_features = last_out_channels
                     
-                    # append to actor_cnn_layers
-                    actor_cnn_layers.append({layer_type: {"num_features": num_features}})
+    #                 # append to actor_cnn_layers
+    #                 actor_cnn_layers.append({layer_type: {"num_features": num_features}})
 
-        # Get critic CNN layers if present
-        critic_cnn_layers = []
-        # Set variable to keep track of last out channel param in conv layer loop to use for batchnorm layer features param
-        last_out_channels = 0
+    #     # Get critic CNN layers if present
+    #     critic_cnn_layers = []
+    #     # Set variable to keep track of last out channel param in conv layer loop to use for batchnorm layer features param
+    #     last_out_channels = 0
 
-        # Set number of cnn layers to loop over and to check if 0
-        num_layers = sweep_config[agent][f"{agent}_critic_num_cnn_layers"]
+    #     # Set number of cnn layers to loop over and to check if 0
+    #     num_layers = sweep_config[agent][f"{agent}_critic_num_cnn_layers"]
         
-        # Loop over num layers if not 0
-        if num_layers > 0:
-            for layer_num in range(1, num_layers + 1):
-                layer_type = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_types"]
-                if layer_type == 'conv':
-                    # get num filters
-                    out_channels = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_filters"]
-                    # update last out channel param
-                    last_out_channels = out_channels
+    #     # Loop over num layers if not 0
+    #     if num_layers > 0:
+    #         for layer_num in range(1, num_layers + 1):
+    #             layer_type = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_types"]
+    #             if layer_type == 'conv':
+    #                 # get num filters
+    #                 out_channels = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_filters"]
+    #                 # update last out channel param
+    #                 last_out_channels = out_channels
 
-                    # get kernel size
-                    kernel_size = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_kernel_size"]
-                    # get stride
-                    stride = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_strides"]
-                    # get padding
-                    padding = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_padding"]
-                    # get bias
-                    bias = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_bias"]
+    #                 # get kernel size
+    #                 kernel_size = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_kernel_size"]
+    #                 # get stride
+    #                 stride = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_strides"]
+    #                 # get padding
+    #                 padding = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_padding"]
+    #                 # get bias
+    #                 bias = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_conv_bias"]
 
-                    # append to critic_cnn_layers
-                    critic_cnn_layers.append({layer_type: {"out_channels": out_channels, "kernel_size": kernel_size, "stride": stride, "padding": padding, "bias": bias}})
+    #                 # append to critic_cnn_layers
+    #                 critic_cnn_layers.append({layer_type: {"out_channels": out_channels, "kernel_size": kernel_size, "stride": stride, "padding": padding, "bias": bias}})
 
-                elif layer_type == 'pool':
-                    # get pool size
-                    kernel_size = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_pool_kernel_size"]
-                    stride = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_pool_strides"]
+    #             elif layer_type == 'pool':
+    #                 # get pool size
+    #                 kernel_size = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_pool_kernel_size"]
+    #                 stride = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_pool_strides"]
 
-                    # append to critic_cnn_layers
-                    critic_cnn_layers.append({layer_type: {"kernel_size": kernel_size, "stride": stride}})
+    #                 # append to critic_cnn_layers
+    #                 critic_cnn_layers.append({layer_type: {"kernel_size": kernel_size, "stride": stride}})
 
-                elif layer_type == 'dropout':
-                    # get dropout rate
-                    rate = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_dropout_rate"]
+    #             elif layer_type == 'dropout':
+    #                 # get dropout rate
+    #                 rate = sweep_config[agent][f"critic_cnn_layer_{layer_num}_{agent}"][f"{agent}_critic_cnn_layer_{layer_num}_dropout_rate"]
 
-                    # append to critic_cnn_layers
-                    critic_cnn_layers.append({layer_type: {"p": rate}})
+    #                 # append to critic_cnn_layers
+    #                 critic_cnn_layers.append({layer_type: {"p": rate}})
 
-                elif layer_type == 'batchnorm':
-                    if last_out_channels == 0:
-                        raise ValueError("Batchnorm layer must come after a conv layer")
-                    else:
-                        num_features = last_out_channels
+    #             elif layer_type == 'batchnorm':
+    #                 if last_out_channels == 0:
+    #                     raise ValueError("Batchnorm layer must come after a conv layer")
+    #                 else:
+    #                     num_features = last_out_channels
                     
-                    # append to critic_cnn_layers
-                    critic_cnn_layers.append({layer_type: {"num_features": num_features}})
+    #                 # append to critic_cnn_layers
+    #                 critic_cnn_layers.append({layer_type: {"num_features": num_features}})
 
-        # Create empty dict to store kernel params
-        kernels = {}
-        # Create kernel initializer params
-        for model in ['actor', 'critic']:
-            for layer in ['hidden', 'output']:
-                kernel = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_initializer"]
-                params = {}
-                if kernel == "constant":
-                    params["val"] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_value"]
+    #     # Create empty dict to store kernel params
+    #     kernels = {}
+    #     # Create kernel initializer params
+    #     for model in ['actor', 'critic']:
+    #         for layer in ['hidden', 'output']:
+    #             kernel = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_initializer"]
+    #             params = {}
+    #             if kernel == "constant":
+    #                 params["val"] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_value"]
 
-                elif kernel == 'variance_scaling':
-                    params['scale'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_scale"]
-                    params['mode'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
-                    params['distribution'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_distribution"]
+    #             elif kernel == 'variance_scaling':
+    #                 params['scale'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_scale"]
+    #                 params['mode'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
+    #                 params['distribution'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_distribution"]
 
-                elif kernel == 'normal':
-                    params['mean'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
-                    params['std'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
+    #             elif kernel == 'normal':
+    #                 params['mean'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
+    #                 params['std'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
 
-                elif kernel == 'uniform':
-                    params['a'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_minval"]
-                    params['b'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_maxval"]
+    #             elif kernel == 'uniform':
+    #                 params['a'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_minval"]
+    #                 params['b'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_maxval"]
                 
-                elif kernel == 'truncated_normal':
-                    params['mean'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
-                    params['std'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
+    #             elif kernel == 'truncated_normal':
+    #                 params['mean'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mean"]
+    #                 params['std'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_stddev"]
 
-                elif kernel == "xavier_uniform":
-                    params['gain'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
+    #             elif kernel == "xavier_uniform":
+    #                 params['gain'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
 
-                elif kernel == "xavier_normal":
-                    params['gain'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
+    #             elif kernel == "xavier_normal":
+    #                 params['gain'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_gain"]
 
-                elif kernel == "kaiming_uniform":
-                    params['mode'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
+    #             elif kernel == "kaiming_uniform":
+    #                 params['mode'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
 
-                elif kernel == "kaiming_normal":
-                    params['mode'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
+    #             elif kernel == "kaiming_normal":
+    #                 params['mode'] = sweep_config[agent][f"{agent}_{model}_{layer}_kernel_{kernel}"][f"{kernel}_mode"]
 
-                # Create dict with kernel and params
-                kernels[f'{model}_{layer}_kernel'] = {kernel:params}
+    #             # Create dict with kernel and params
+    #             kernels[f'{model}_{layer}_kernel'] = {kernel:params}
 
-        #DEBUG
-        # print(f'kernels: {kernels}')
+    #     #DEBUG
+    #     # print(f'kernels: {kernels}')
 
         
         
-        # get actor hidden layers
-        actor_layers = []
-        for layer_num in range(1, sweep_config[agent][f"{agent}_actor_num_layers"] + 1):
-            actor_layers.append(
-                (
-                    sweep_config[agent][f"actor_units_layer_{layer_num}_{agent}"],
-                    sweep_config[agent][f"{agent}_actor_activation"],
-                    kernels['actor_hidden_kernel'],
-                )
-            )
-        # get critic state hidden layers
-        critic_state_layers = []
-        for layer_num in range(1, sweep_config[agent][f"{agent}_critic_state_num_layers"] + 1):
-            critic_state_layers.append(
-                (
-                    sweep_config[agent][f"critic_units_state_layer_{layer_num}_{agent}"],
-                    sweep_config[agent][f"{agent}_critic_activation"],
-                    kernels['critic_hidden_kernel'],
-                )
-            )
-        # get critic merged hidden layers
-        critic_merged_layers = []
-        for layer_num in range(1, sweep_config[agent][f"{agent}_critic_merged_num_layers"] + 1):
-            critic_merged_layers.append(
-                (
-                    sweep_config[agent][f"critic_units_merged_layer_{layer_num}_{agent}"],
-                    sweep_config[agent][f"{agent}_critic_activation"],
-                    kernels['critic_hidden_kernel'],
-                )
-            )
+    #     # get actor hidden layers
+    #     actor_layers = []
+    #     for layer_num in range(1, sweep_config[agent][f"{agent}_actor_num_layers"] + 1):
+    #         actor_layers.append(
+    #             (
+    #                 sweep_config[agent][f"actor_units_layer_{layer_num}_{agent}"],
+    #                 sweep_config[agent][f"{agent}_actor_activation"],
+    #                 kernels['actor_hidden_kernel'],
+    #             )
+    #         )
+    #     # get critic state hidden layers
+    #     critic_state_layers = []
+    #     for layer_num in range(1, sweep_config[agent][f"{agent}_critic_state_num_layers"] + 1):
+    #         critic_state_layers.append(
+    #             (
+    #                 sweep_config[agent][f"critic_units_state_layer_{layer_num}_{agent}"],
+    #                 sweep_config[agent][f"{agent}_critic_activation"],
+    #                 kernels['critic_hidden_kernel'],
+    #             )
+    #         )
+    #     # get critic merged hidden layers
+    #     critic_merged_layers = []
+    #     for layer_num in range(1, sweep_config[agent][f"{agent}_critic_merged_num_layers"] + 1):
+    #         critic_merged_layers.append(
+    #             (
+    #                 sweep_config[agent][f"critic_units_merged_layer_{layer_num}_{agent}"],
+    #                 sweep_config[agent][f"{agent}_critic_activation"],
+    #                 kernels['critic_hidden_kernel'],
+    #             )
+    #         )
 
-        return actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels
+    #     return actor_cnn_layers, critic_cnn_layers, actor_layers, critic_state_layers, critic_merged_layers, kernels
     
 def format_dense_layer(sweep_config, agent, model, layer):
     """Returns dense layer params from wandb config formatted
