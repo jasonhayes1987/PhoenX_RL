@@ -67,16 +67,6 @@ def car_racing_achieved_goal(env):
     """Returns the achieved goal for the CarRacing environment."""
     return np.array([env.get_wrapper_attr('tile_visited_count')])
 
-# def car_racing_reward(env, action, state_achieved_goal, next_state_achieved_goal, desired_goal):
-#     """Returns the reward for the CarRacing environment."""
-
-#     # if the state achieved goal is equivalent to the next states achieved goal,
-#     # no new track tiles were visited and therefore the reward is -0.1
-#     if state_achieved_goal == next_state_achieved_goal:
-#         return -0.1
-#     # else return reward based on desired goal
-#     return (1000/desired_goal) * (next_state_achieved_goal - state_achieved_goal)
-
 def car_racing_reward(env, action, state_achieved_goal, next_state_achieved_goal, desired_goal, tolerance):
     diff = desired_goal - next_state_achieved_goal
     # if diff <= tolerance:
@@ -93,16 +83,8 @@ def reacher_desired_goal(env):
 def reacher_achieved_goal(env):
     return env.get_wrapper_attr("_get_obs")()[8::]
 
-# def reacher_reward(env, action, state_achieved_goal, next_state_achieved_goal, desired_goal):
-#     fingertip_pos = env.get_wrapper_attr("get_body_com")("fingertip")
-#     distance = -np.linalg.norm(fingertip_pos - desired_goal)
-#     reward_ctrl = -np.square(action).sum()
-#     return distance + reward_ctrl
-
 def reacher_reward(env, action, state_achieved_goal, next_state_achieved_goal, desired_goal, tolerance):
     distance = np.linalg.norm(desired_goal - next_state_achieved_goal)
-    # if distance <= tolerance:
-        # print('within tolerance')
     if distance <= tolerance:
         return 0,1
     else:

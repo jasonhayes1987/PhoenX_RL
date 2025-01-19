@@ -64,10 +64,16 @@ RUN mkdir -p /root/.mujoco && \
     ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so
 
 # Set environment variables for MuJoCo
-ENV MUJOCO_GL=egl
-ENV PYOPENGL_PLATFORM=egl
-ENV LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}
-ENV MUJOCO_PATH=/root/.mujoco/mujoco-3.1.4
+ENV MUJOCO_GL="egl"
+ENV PYOPENGL_PLATFORM="egl"
+ENV LD_LIBRARY_PATH="/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}"
+ENV MUJOCO_PATH="/root/.mujoco/mujoco-3.1.4"
+
+# Add app directory to python path
+ENV PYTHONPATH="${PYTHONPATH}:/workspaces/RL_Agents/src/app"
+
+# Run accept license command for AutoROM do download all roms needed for Atari ale
+RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.10/site-packages/ale_py/roms
 
 # Set working directory
 WORKDIR /app

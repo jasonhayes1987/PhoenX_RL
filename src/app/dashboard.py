@@ -1,9 +1,10 @@
 import json
+import logging
 import multiprocessing
 import dash
 from dash import dcc, html, Input, Output, callback
 import dash_bootstrap_components as dbc
-# from celery import Celery
+import ale_py
 
 
 import layouts
@@ -14,7 +15,10 @@ import gymnasium_robotics as gym_robo
 
 
 
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP], suppress_callback_exceptions=True)
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.DARKLY], suppress_callback_exceptions=True)
+
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)  # Suppress INFO logs; show only errors
 
 navbar = html.Div(
     [
@@ -49,6 +53,8 @@ app.layout = dbc.Container(
 if __name__ == "__main__":
     # Register Gym Robotics envs
     gym_robo.register_robotics_envs()
+    # Register Ale Atari envs
+    gym.register_envs(ale_py)
     # Create a multiprocessing manager
     manager = multiprocessing.Manager()
     # Create a shared dictionary to store data between processes

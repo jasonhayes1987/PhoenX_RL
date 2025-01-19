@@ -1,1 +1,1 @@
-{"episode": 100000, "values": -1.6025469303131104, "advantages": -7.629394893626795e-09, "returns": -1.6582612991333008, "avg_env_scores": -69.2861059994727, "actor_loss": -0.19942784309387207, "critic_loss": 0.8903629779815674, "entropy": -5.131504058837891, "kl_divergence": 1.3042716979980469, "lambda": 1.0, "param1": 24.999526977539062, "param2": 28.425857543945312, "best": false}
+{"episode_reward": 179.0, "episode": 200, "best": 0}

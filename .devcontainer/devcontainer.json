@@ -8,7 +8,7 @@
       "args": {
         "USERNAME": "vscode",
         "BUILDKIT_INLINE_CACHE": "0",
-        "CUDA_VERSION": "12.4.1",
+        "CUDA_VERSION": "12.6.2",
         "CLANG_VERSION": ""
       }
     },

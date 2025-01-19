@@ -4,58 +4,71 @@ from torch import optim
 import numpy as np
 
 
-def set_seed(seed):
+def set_seed(seed: int):
+    """
+    Set the random seed for reproducibility in PyTorch and NumPy.
+
+    Args:
+        seed (int): The seed to set for all random number generators.
+    """
     T.manual_seed(seed)
     T.cuda.manual_seed(seed)
     np.random.seed(seed)
 
-def VarianceScaling_(tensor: T.tensor, scale: float=1.0, mode: str='fan_in', distribution: str='normal'):
+def VarianceScaling_(
+    tensor: T.Tensor, 
+    scale: float = 1.0, 
+    mode: str = 'fan_in', 
+    distribution: str = 'normal'
+):
+    """
+    Apply variance scaling initialization to a tensor.
 
-    ##DEBUG
-    print(f'scale: {scale}')
-    print(f'mode: {mode}')
-    print(f'distribution: {distribution}')
+    Args:
+        tensor (torch.Tensor): The tensor to initialize.
+        scale (float): Scaling factor for the initialization. Default is 1.0.
+        mode (str): Mode for scaling. Options are 'fan_in', 'fan_out', or 'fan_avg'. Default is 'fan_in'.
+        distribution (str): Distribution to use for initialization. Options are 'normal', 'truncated_normal', or 'uniform'. Default is 'normal'.
 
-    # dimensions = tensor.dim()
-    # if dimensions < 2:
-    #     raise ValueError("Fan in and fan out can not be computed for tensor with fewer than 2 dimensions")
-
+    Raises:
+        ValueError: If mode or distribution is not supported.
+    """
+    # Validate mode
+    if mode not in {'fan_in', 'fan_out', 'fan_avg'}:
+        raise ValueError(f"Mode '{mode}' is not supported. Use 'fan_in', 'fan_out', or 'fan_avg'.")
     
+    # Compute fan based on mode
     if mode == 'fan_in':
         fan = tensor.size(0)
     elif mode == 'fan_out':
         fan = tensor.size(1)
-    elif mode == 'fan_avg':
+    else:  # mode == 'fan_avg'
         fan = (tensor.size(0) + tensor.size(1)) / 2
-    else:
-        raise ValueError("Mode {} not supported, please use 'fan_in', 'fan_out', or 'fan_avg'.".format(mode))
 
-    val = 1.0 / T.sqrt(T.tensor(fan))
+    val = T.sqrt(T.tensor(scale / fan))
 
-    if distribution == 'normal' or distribution == 'truncated_normal':   
+    # Apply initialization based on distribution
+    with T.no_grad():
         if distribution == 'normal':
-            with T.no_grad():
-                nn.init.normal_(tensor, 0, val)
-                tensor.mul_(scale)
+            nn.init.normal_(tensor, mean=0.0, std=val)
         elif distribution == 'truncated_normal':
-            with T.no_grad():
-                nn.init.trunc_normal_(tensor, mean=0.0, std=val, a=-2.0, b=2.0)
-                tensor.mul_(scale)
-    elif distribution == 'uniform':
-        with T.no_grad():
-            tensor.uniform_(-val, val)
-            tensor.mul_(scale)
-    else:
-        raise ValueError("Distribution {} not supported, please use 'normal', 'truncated_normal', or 'uniform'.".format(distribution))
+            nn.init.trunc_normal_(tensor, mean=0.0, std=val.item(), a=-2.0 * val.item(), b=2.0 * val.item())
+        elif distribution == 'uniform':
+            nn.init.uniform_(tensor, -val.item(), val.item())
+        else:
+            raise ValueError(
+                f"Distribution '{distribution}' is not supported. Use 'normal', 'truncated_normal', or 'uniform'."
+            )
     
 def get_optimizer_by_name(name: str):
-    """Creates and returns an optimizer object by its string name.
+    """
+    Retrieve an optimizer class by name.
 
     Args:
-        name (str): The name of the optimizer.
+        name (str): Name of the optimizer (e.g., 'Adam', 'SGD').
 
     Returns:
-        An instance of the requested optimizer.
+        Optimizer class: The PyTorch optimizer class corresponding to the name.
 
     Raises:
         ValueError: If the optimizer name is not recognized.
@@ -65,7 +78,6 @@ def get_optimizer_by_name(name: str):
         "SGD": optim.SGD,
         "RMSprop": optim.RMSprop,
         "Adagrad": optim.Adagrad,
-        # Add more optimizers as needed
     }
 
     if name not in opts:
