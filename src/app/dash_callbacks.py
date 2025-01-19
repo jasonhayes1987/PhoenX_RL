@@ -11,7 +11,7 @@ import json
 from logging_config import logger
 import base64
 import dash
-from dash import html, dcc, dash_table
+from dash import html, dcc, dash_table, ctx
 from dash.dependencies import Input, Output, State, MATCH, ALL
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
@@ -35,12 +35,15 @@ import pandas as pd
 import layouts
 import gym_helper
 import dash_utils
-import models
-from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueModel, CriticModel, ActorModel
-import cnn_models
-import rl_agents
+# from dash_utils import create_wrappers_list, instantiate_envwrapper_obj
+# import models
+# from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueModel, CriticModel, ActorModel
+from models import *
+# import rl_agents
+from rl_agents import *
 import wandb_support
-# from sweep import run_agent
+from schedulers import ScheduleWrapper
+from adaptive_kl import AdaptiveKL
 
 
 # Create a queue to store the formatted data
@@ -85,7 +88,7 @@ def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_t
         # time.sleep(5)
 
 def run_agent(sweep_id, sweep_config, num_sweeps):
-    from rl_agents import init_sweep
+    # from rl_agents import init_sweep
     print('run agent fired...')
     wandb.agent(
         sweep_id,
@@ -150,6 +153,109 @@ def register_callbacks(app, shared_data):
         else:
             return "Select a model type to configure its parameters."
         
+    @app.callback(
+        Output({"type":"wrapper-tabs", "page":MATCH}, "children"),
+        Input({"type":"gym_wrappers_dropdown", "page":MATCH}, "value")
+    )
+    def build_wrapper_tabs(selected_wrappers):
+        """
+        Create a dcc.Tab for each selected wrapper IF it is in WRAPPER_REGISTRY.
+        For wrappers not in the registry, we skip creating a tab (no extra params).
+        """
+        #DEBUG
+        print('build_wrapper_tabs called')
+        if not selected_wrappers:
+            return []
+
+        tabs = []
+        for wrapper_name in selected_wrappers:
+            # Check if it’s in the registry
+            if wrapper_name in dash_utils.WRAPPER_REGISTRY:
+                default_params = dash_utils.WRAPPER_REGISTRY[wrapper_name]["default_params"]
+
+                param_components = []
+                for param_key, param_val in default_params.items():
+                    label_text = param_key.replace("_", " ").capitalize()
+
+                    input_id = {
+                        "type": "wrapper-param",
+                        "wrapper": wrapper_name,
+                        "param": param_key
+                    }
+
+                    # Decide how to represent the input
+                    if isinstance(param_val, bool):
+                        input_comp = dcc.Dropdown(
+                            id=input_id,
+                            options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
+                            value=param_val,
+                            clearable=False,
+                            style={"width": "100px"}
+                        )
+                    elif isinstance(param_val, int) or isinstance(param_val, float):
+                        input_comp = dcc.Input(
+                            id=input_id,
+                            type="number",
+                            value=param_val
+                        )
+                    else:
+                        # Fallback is text
+                        input_comp = dcc.Input(
+                            id=input_id,
+                            type="text",
+                            value=str(param_val)
+                        )
+
+                    param_components.append(
+                        html.Div([
+                            html.Label(label_text),
+                            input_comp
+                        ], style={"marginBottom": "10px"})
+                    )
+
+                tabs.append(
+                    dcc.Tab(
+                        label=wrapper_name,
+                        children=html.Div(
+                            children=param_components,
+                            style={"marginLeft": "20px"}
+                            )
+                    )
+                )
+
+        return tabs
+
+    @app.callback(
+        Output({"type":"wrappers_params_store", "page":MATCH}, "data"),
+        Input({"type": "wrapper-param", "wrapper": ALL, "param": ALL}, "value"),
+        State({"type":"wrappers_params_store", "page":MATCH}, "data"),
+        prevent_initial_call=True
+    )
+    def update_wrapper_params(all_values, current_store):
+        """
+        When any param input changes in a registry wrapper tab,
+        store that new value in wrappers_params_store.
+        """
+        #DEBUG
+        print('update_wrapper_params called')
+        triggered_id = ctx.triggered_id
+        if not triggered_id:
+            raise PreventUpdate
+
+        # triggered_id has structure:
+        # { "type": "wrapper-param", "wrapper": "<wrapper_name>", "param": "<param_key>" }
+        w_name = triggered_id["wrapper"]
+        p_name = triggered_id["param"]
+
+        store_data = dict(current_store) if current_store else {}
+        if w_name not in store_data:
+            store_data[w_name] = {}
+
+        # all_values is typically a list of a single item
+        new_val = all_values[0]  
+        store_data[w_name][p_name] = new_val
+
+        return store_data
 
     # Callback to add a new layer dropdown
     @app.callback(
@@ -504,6 +610,29 @@ def register_callbacks(app, shared_data):
 
         # DEBUG
         print(f"Updated agent params store: {store}")
+        return store
+    
+    @app.callback(
+        Output({"type":"run-params-store", "page":MATCH}, 'data'),
+        Input({'type':ALL, 'page':MATCH}, 'value'),
+        [
+            State({"type":"run-params-store", "page":MATCH}, 'data'),
+            State({'type':ALL, 'page':MATCH}, 'id')
+        ]
+    )
+    def update_run_params(values, store, ids):
+        # Initialize the store if it's None
+        store = store or {}
+
+        # Update the store with non-indexed components
+        for value, id_dict in zip(values, ids):
+            if value is not None:
+                # Convert the id_dict into a JSON-serializable string using underscores
+                key = "_".join(f"{k}:{v}" for k, v in id_dict.items())
+                store[key] = value
+
+        # DEBUG
+        print(f"Updated run params store: {store}")
         return store
 
     # Callback to toggle visibility of custom padding input for Conv2D layers
@@ -986,7 +1115,7 @@ def register_callbacks(app, shared_data):
         children = []
         for (kernel, ids) in zip(selected_kernels, dropdown_ids):
             params = []
-            if kernel in ["kaiming normal", "kaiming uniform"]:
+            if kernel in ["kaiming_normal", "kaiming_uniform"]:
                 params = [
                     dcc.Dropdown(
                         id={
@@ -1003,7 +1132,7 @@ def register_callbacks(app, shared_data):
                         value=agent_params.get(dash_utils.get_key(ids, 'mode'), None)
                     )
                 ]
-            elif kernel in ["xavier normal", "xavier uniform"]:
+            elif kernel in ["xavier_normal", "xavier_uniform"]:
                 params = [
                     dcc.Input(
                         id={
@@ -1020,7 +1149,7 @@ def register_callbacks(app, shared_data):
                         value=agent_params.get(dash_utils.get_key(ids, 'gain'), None)
                     )
                 ]
-            elif kernel == "truncated normal":
+            elif kernel == "truncated_normal":
                 params = [
                     dcc.Input(
                         id={
@@ -1130,7 +1259,7 @@ def register_callbacks(app, shared_data):
                         value=agent_params.get(dash_utils.get_key(ids, 'value'), None)
                     )
                 ]
-            elif kernel == "variance scaling":
+            elif kernel == "variance_scaling":
                 params = [
                     dcc.Input(
                         id={
@@ -1182,15 +1311,59 @@ def register_callbacks(app, shared_data):
         return children
     
     @app.callback(
-        Output({'type': 'learning-rate-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
-        Input({'type': 'learning-rate-scheduler', 'model': MATCH, 'agent': MATCH}, 'value'),
-        State({'type': 'learning-rate-scheduler', 'model': MATCH, 'agent': MATCH}, 'id'),
+        Output({'type': 'lr-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'lr-scheduler', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'lr-scheduler', 'model': MATCH, 'agent': MATCH}, 'id'),
         prevent_initial_call=True
     )
     def update_learning_rate_scheduler_options(lr_scheduler, lr_scheduler_id):
         agent_type = lr_scheduler_id['agent']
         model_type = lr_scheduler_id['model']
-        return dash_utils.update_learning_rate_scheduler_options(agent_type, model_type, lr_scheduler)
+        return dash_utils.update_lr_scheduler_options(agent_type, model_type, lr_scheduler)
+
+    @app.callback(
+        Output({'type': 'entropy-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'entropy-scheduler', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'entropy-scheduler', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_entropy_scheduler_options(entropy_scheduler, entropy_scheduler_id):
+        agent_type = entropy_scheduler_id['agent']
+        model_type = entropy_scheduler_id['model']
+        return dash_utils.update_entropy_scheduler_options(agent_type, model_type, entropy_scheduler)
+    
+    @app.callback(
+        Output({'type': 'surrogate-clip-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'surrogate-clip-scheduler', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'surrogate-clip-scheduler', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_surrogate_loss_clip_scheduler_options(surrogate_clip_scheduler, surrogate_clip_scheduler_id):
+        agent_type = surrogate_clip_scheduler_id['agent']
+        model_type = surrogate_clip_scheduler_id['model']
+        return dash_utils.update_surrogate_loss_clip_scheduler_options(agent_type, model_type, surrogate_clip_scheduler)
+    
+    # @app.callback(
+    #     Output({'type': 'value-clip-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+    #     Input({'type': 'value-clip-scheduler', 'model': MATCH, 'agent': MATCH}, 'value'),
+    #     State({'type': 'value-clip-scheduler', 'model': MATCH, 'agent': MATCH}, 'id'),
+    #     prevent_initial_call=True
+    # )
+    # def update_value_clip_scheduler_options(value_clip_scheduler, value_clip_scheduler_id):
+    #     agent_type = value_clip_scheduler_id['agent']
+    #     model_type = value_clip_scheduler_id['model']
+    #     return dash_utils.update_value_clip_scheduler_options(agent_type, model_type, value_clip_scheduler)
+    
+    @app.callback(
+        Output({'type': 'adaptive-kl-block', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'adaptive-kl', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'adaptive-kl', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_adaptive_kl_options(use_adaptive_kl, adaptive_kl):
+        agent_type = adaptive_kl['agent']
+        if use_adaptive_kl:
+            return dash_utils.create_adaptive_kl_options(agent_type)
     
     @app.callback(
         Output({'type': 'goal-strategy-options', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -1296,54 +1469,41 @@ def register_callbacks(app, shared_data):
          State({'type':'library-select', 'page':'/build-agent'}, 'value'),
          State({'type': 'env-dropdown', 'page': '/build-agent'}, 'value'),
          State('agent-params-store', 'data'),
+         State({"type":"gym_wrappers_dropdown", "page":'/build-agent'}, "value"),
+         State({"type":"wrappers_params_store", "page":'/build-agent'}, "data"),
          State({'type': 'add-layer-btn', 'model': ALL, 'agent': ALL, 'index': ALL}, 'n_clicks')
         ],
         prevent_initial_call=True,
 )
-    def build_agent_model(n_clicks, agent_type_dropdown_value, project, callbacks, env_library, env_selection, agent_params, layer_clicks):
+    def build_agent_model(n_clicks, agent_type_dropdown_value, project, callbacks, env_library, env_selection, agent_params, wrappers, wrapper_params, layer_clicks):
         if n_clicks is None or n_clicks < 1:
             raise PreventUpdate
         
-        env = dash_utils.instantiate_envwrapper_obj(env_library, env_selection)
+        wrappers_list = dash_utils.create_wrappers_list(wrappers, wrapper_params)
+        env = dash_utils.instantiate_envwrapper_obj(env_library, env_selection, wrappers_list)
         device = agent_params.get(dash_utils.get_key({'type':'device', 'model':'none', 'agent':agent_type_dropdown_value}))
         save_dir = agent_params.get(dash_utils.get_key({'type':'save-dir', 'model':'none', 'agent':agent_type_dropdown_value}))
-        #DEBUG
-        print(f'env:{env}')
-        print(f'device:{device}')
-        print(f'save dir:{save_dir}')
 
         # set params if agent is reinforce/actor critic/PPO
         if agent_type_dropdown_value in ["Reinforce", "ActorCritic", "PPO"]:
 
-            policy_learning_rate_scheduler = dash_utils.get_lr_scheduler('policy', agent_type_dropdown_value, agent_params)
-            #DEBUG
-            print(f'policy learning rate scheduler:{policy_learning_rate_scheduler}')
+            policy_learning_rate_schedule = dash_utils.get_lr_scheduler('policy', agent_type_dropdown_value, agent_params)
             policy_optimizer = dash_utils.get_optimizer('policy', agent_type_dropdown_value, agent_params)
-            #DEBUG
-            print(f'policy optimizer:{policy_optimizer}')
             policy_layers = dash_utils.format_layers('policy', agent_type_dropdown_value, agent_params)
-            #DEBUG
-            print(f'policy layers:{policy_layers}')
             policy_output_kernel = dash_utils.format_output_kernel_initializer_config('policy', agent_type_dropdown_value, agent_params)
-            #DEBUG
-            print(f'policy output kernel:{policy_output_kernel}')
 
             if agent_type_dropdown_value == "PPO":
                 policy_type = agent_params.get(dash_utils.get_key({'type':'policy-type', 'model':'policy', 'agent':agent_type_dropdown_value}))
-                #DEBUG
-                print(f'policy type:{policy_type}')
+                dist = agent_params.get(dash_utils.get_key({'type':'distribution', 'model':'none', 'agent':agent_type_dropdown_value}))
 
                 if policy_type == 'StochasticContinuousPolicy':
                     model = StochasticContinuousPolicy
-                    dist = agent_params.get(dash_utils.get_key({'type':'distribution', 'model':'none', 'agent':agent_type_dropdown_value}))
-                    #DEBUG
-                    print(f'policy dist:{dist}')
                     policy_model = model(
                         env=env,
                         layer_config=policy_layers,
                         output_layer_kernel=policy_output_kernel,
                         optimizer_params=policy_optimizer,
-                        scheduler_params = policy_learning_rate_scheduler,
+                        scheduler_params = policy_learning_rate_schedule,
                         distribution=dist,
                         device=device,
                     )
@@ -1355,7 +1515,7 @@ def register_callbacks(app, shared_data):
                         layer_config=policy_layers,
                         output_layer_kernel=policy_output_kernel,
                         optimizer_params=policy_optimizer,
-                        scheduler_params = policy_learning_rate_scheduler,
+                        scheduler_params = policy_learning_rate_schedule,
                         distribution=dist,
                         device=device,
                     )
@@ -1366,71 +1526,59 @@ def register_callbacks(app, shared_data):
                         layer_config=policy_layers,
                         output_layer_kernel=policy_output_kernel,
                         optimizer_params=policy_optimizer,
-                        scheduler_params = policy_learning_rate_scheduler,
-                        distribution=dist,
+                        scheduler_params = policy_learning_rate_schedule,
+                        distribution="categorical",
                         device=device,
                 )
 
-            value_learning_rate_scheduler = dash_utils.get_lr_scheduler('value', agent_type_dropdown_value, agent_params)
-            value_learning_rate_constant = agent_params.get(dash_utils.get_key({'type':'learning-rate-const', 'model':'value', 'agent':agent_type_dropdown_value}))
-            value_learning_rate_exp = agent_params.get(dash_utils.get_key({'type':'learning-rate-exp', 'model':'value', 'agent':agent_type_dropdown_value}))
-            value_learning_rate = value_learning_rate_constant * 10**value_learning_rate_exp
-            value_learning_rate_scheduler = dash_utils.get_lr_scheduler('value', agent_type_dropdown_value, agent_params)
+            value_learning_rate_schedule = dash_utils.get_lr_scheduler('value', agent_type_dropdown_value, agent_params)
             value_optimizer = dash_utils.get_optimizer('value', agent_type_dropdown_value, agent_params)
             value_layers = dash_utils.format_layers('value', agent_type_dropdown_value, agent_params)
             value_output_kernel = dash_utils.format_output_kernel_initializer_config('value', agent_type_dropdown_value, agent_params)
-            #DEBUG
-            print(f'value learning rate scheduler:{value_learning_rate_scheduler}')
-            print(f'value learning rate const:{value_learning_rate_constant}')
-            print(f'value learning rate exp:{value_learning_rate_exp}')
-            print(f'value learning rate:{value_learning_rate}')
-            print(f'value learning rate scheduler:{value_learning_rate_scheduler}')
-            print(f'value optimizer:{value_optimizer}')
-            print(f'value layers:{value_layers}')
-            print(f'value output kernel:{value_output_kernel}')
             
             value_model = ValueModel(
                 env=env,
                 layer_config=value_layers,
                 output_layer_kernel=value_output_kernel,
                 optimizer_params=value_optimizer,
-                scheduler_params=value_learning_rate_scheduler,
+                scheduler_params=value_learning_rate_schedule,
                 device=device,
             )
 
             discount = agent_params.get(dash_utils.get_key({'type':'discount', 'model':'none', 'agent':agent_type_dropdown_value}))
-            #DEBUG
-            print(f'discount:{discount}')
             
             if agent_type_dropdown_value == "Reinforce":
 
-                agent = rl_agents.Reinforce(
+                agent = Reinforce(
                     env=env,
                     policy_model=policy_model,
                     value_model=value_model,
                     discount=discount,
                     callbacks=dash_utils.get_callbacks(callbacks, project),
                     save_dir=os.path.join(os.getcwd(), save_dir),
+                    device=device
                 )
 
             elif agent_type_dropdown_value == "ActorCritic":
 
-                policy_trace_decay=dash_utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='trace-decay',
-                        model_type='policy',
-                        agent_type=agent_type_dropdown_value,
-                    )
-                value_trace_decay=dash_utils.get_specific_value(
-                        all_values=all_values,
-                        all_ids=all_ids,
-                        id_type='trace-decay',
-                        model_type='value',
-                        agent_type=agent_type_dropdown_value,
-                    )
+                # policy_trace_decay=dash_utils.get_specific_value(
+                #         all_values=all_values,
+                #         all_ids=all_ids,
+                #         id_type='trace-decay',
+                #         model_type='policy',
+                #         agent_type=agent_type_dropdown_value,
+                #     )
+                policy_trace_decay = agent_params.get(dash_utils.get_key({'type':'trace-decay', 'model':'policy', 'agent':agent_type_dropdown_value}))
+                # value_trace_decay=dash_utils.get_specific_value(
+                #         all_values=all_values,
+                #         all_ids=all_ids,
+                #         id_type='trace-decay',
+                #         model_type='value',
+                #         agent_type=agent_type_dropdown_value,
+                #     )
+                value_trace_decay = agent_params.get(dash_utils.get_key({'type':'trace-decay', 'model':'value', 'agent':agent_type_dropdown_value}))
 
-                agent = rl_agents.ActorCritic(
+                agent = ActorCritic(
                     env=env,
                     policy_model=policy_model,
                     value_model=value_model,
@@ -1444,39 +1592,44 @@ def register_callbacks(app, shared_data):
             elif agent_type_dropdown_value == "PPO":
                 
                 gae_coeff = agent_params.get(dash_utils.get_key({'type':'advantage-coeff', 'model':'none', 'agent':'PPO'}))
-                policy_clip = agent_params.get(dash_utils.get_key({'type':'policy-clip', 'model':'policy', 'agent':'PPO'}))
+                policy_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'policy', 'agent':'PPO'}))
+                policy_clip_schedule = ScheduleWrapper(dash_utils.get_surrogate_loss_clip_scheduler('policy', agent_type_dropdown_value, agent_params))
+                value_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'value', 'agent':'PPO'}))
+                value_clip_schedule = ScheduleWrapper(dash_utils.get_surrogate_loss_clip_scheduler('value', agent_type_dropdown_value, agent_params))
                 entropy_coeff = agent_params.get(dash_utils.get_key({'type':'entropy-coeff', 'model':'none', 'agent':'PPO'}))
+                entropy_schedule = ScheduleWrapper(dash_utils.get_entropy_scheduler('none', agent_type_dropdown_value, agent_params))
                 kl_coeff = agent_params.get(dash_utils.get_key({'type':'kl-coeff', 'model':'none', 'agent':'PPO'}))
+                kl_adapter = AdaptiveKL(**dash_utils.get_kl_adapter('none', agent_type_dropdown_value, agent_params))
+                #DEBUG
+                print(f'kl_adapter config:{kl_adapter.get_config()}')
                 normalize_advs = agent_params.get(dash_utils.get_key({'type':'norm-adv', 'model':'none', 'agent':'PPO'}), False)
                 normalize_values = agent_params.get(dash_utils.get_key({'type':'norm-values', 'model':'none', 'agent':'PPO'}), False)
                 val_norm_clip = agent_params.get(dash_utils.get_key({'type':'norm-clip', 'model':'none', 'agent':'PPO'}), np.inf)
                 # clip_policy_grad = agent_params.get(utils.get_key({'type':'policy-grad-clip', 'model':'none', 'agent':'PPO'}), False)
                 # if clip_policy_grad:
-                policy_grad_clip = agent_params.get(dash_utils.get_key({'type':'policy-grad-clip', 'model':'policy', 'agent':'PPO'}), np.inf)
+                policy_grad_clip = agent_params.get(dash_utils.get_key({'type':'grad-clip', 'model':'policy', 'agent':'PPO'}), np.inf)
+                value_grad_clip = agent_params.get(dash_utils.get_key({'type':'grad-clip', 'model':'value', 'agent':'PPO'}), np.inf)
                 reward_clip = agent_params.get(dash_utils.get_key({'type':'reward-clip', 'model':'none', 'agent':'PPO'}), np.inf)
-                #DEBUG
-                print(f'gae coeff:{gae_coeff}')
-                print(f'policy clip:{policy_clip}')
-                print(f'entropy coeff:{entropy_coeff}')
-                print(f'normalize advs:{normalize_advs}')
-                print(f'normalize values:{normalize_values}')
-                print(f'val norm clip:{val_norm_clip}')
-                print(f'policy grad clip:{policy_grad_clip}')
-                print(f'reward clip:{reward_clip}')
                 
-                agent = rl_agents.PPO(
+                agent = PPO(
                     env=env,
                     policy_model=policy_model,
                     value_model=value_model,
                     discount=discount,
                     gae_coefficient=gae_coeff,
                     policy_clip=policy_clip,
+                    policy_clip_schedule=policy_clip_schedule,
+                    value_clip=value_clip,
+                    value_clip_schedule=value_clip_schedule,
                     entropy_coefficient=entropy_coeff,
+                    entropy_schedule=entropy_schedule,
                     kl_coefficient=kl_coeff,
+                    kl_adapter=kl_adapter,
                     normalize_advantages=normalize_advs,
                     normalize_values=normalize_values,
                     value_normalizer_clip=val_norm_clip,
                     policy_grad_clip=policy_grad_clip,
+                    value_grad_clip=value_grad_clip,
                     reward_clip=reward_clip,
                     callbacks = dash_utils.get_callbacks(callbacks, project),
                     save_dir = os.path.join(os.getcwd(), save_dir),
@@ -1485,309 +1638,55 @@ def register_callbacks(app, shared_data):
                 )
 
         elif agent_type_dropdown_value == "DDPG":
-            # set defualt gym environment in order to build policy and value models and save
-            # env = gym.make("Pendulum-v1")
 
-            # # Get device
-            # device = utils.get_specific_value(
-            #     all_values=all_values,
-            #     all_ids=all_ids,
-            #     id_type='device',
-            #     model_type='none',
-            #     agent_type=agent_type_dropdown_value,
-            # )
-
-            # Set actor params
-            # Set actor learning rate
-            actor_learning_rate=10**dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='learning-rate',
-                    model_type='actor',
-                    agent_type=agent_type_dropdown_value,
-                )
-
-            actor_optimizer = dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='optimizer',
-                    model_type='actor',
-                    agent_type=agent_type_dropdown_value,
-                )
-            
-            actor_opt_params = dash_utils.get_optimizer_params(
-                agent_type=agent_type_dropdown_value,
-                model_type='actor',
-                all_values=all_values,
-                all_ids=all_ids
-            )
-
-            actor_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                model_type='actor-hidden',
-                agent_type=agent_type_dropdown_value
-            )
-
-            actor_conv_layers = dash_utils.format_cnn_layers(
-                all_values,
-                all_ids,
-                layer_index_values,
-                layer_index_ids,
-                'actor',
-                agent_type_dropdown_value
-            )
-
-            if actor_conv_layers:
-                actor_cnn = cnn_models.CNN(actor_conv_layers, env)
-            else:
-                actor_cnn = None
-
-
-            actor_dense_layers = models.build_layers(
-                dash_utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='actor',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='actor',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                actor_hidden_kernel,
-            )
-
-            actor_output_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                model_type='actor-output',
-                agent_type=agent_type_dropdown_value
-            )
-
-            actor_normalize_layers = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='normalize-layers',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
+            actor_learning_rate_schedule = dash_utils.get_lr_scheduler('actor', agent_type_dropdown_value, agent_params)
+            actor_optimizer = dash_utils.get_optimizer('actor', agent_type_dropdown_value, agent_params)
+            actor_layers = dash_utils.format_layers('actor', agent_type_dropdown_value, agent_params)
+            actor_output_kernel = dash_utils.format_output_kernel_initializer_config('actor', agent_type_dropdown_value, agent_params)
 
             # Create actor model
             actor_model = ActorModel(
                 env=env,
-                cnn_model=actor_cnn,
-                dense_layers=actor_dense_layers,
+                layer_config=actor_layers,
                 output_layer_kernel=actor_output_kernel,
-                optimizer=actor_optimizer,
-                optimizer_params=actor_opt_params,
-                learning_rate=actor_learning_rate,
-                normalize_layers=actor_normalize_layers,
+                optimizer_params=actor_optimizer,
+                scheduler_params=actor_learning_rate_schedule,
                 device=device,
             )
-            
-            #DEBUG
-            # print(f'actor cnn model: {actor_cnn}')
-            # print(f'actor dense layers: {actor_dense_layers}')
-            # print(f'actor optimizer: {actor_optimizer}')
-            # print(f'actor learning rate: {actor_learning_rate}')
-            # print(f'actor model: {actor_model}')
             
             # Set critic params
 
-            critic_learning_rate=10**dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='learning-rate',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                )
-            
-            critic_optimizer = dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='optimizer',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                )
-            
-            critic_opt_params = dash_utils.get_optimizer_params(
-                agent_type=agent_type_dropdown_value,
-                model_type='critic',
-                all_values=all_values,
-                all_ids=all_ids
-            )
-
-            critic_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                model_type='critic-hidden',
-                agent_type=agent_type_dropdown_value
-            )
-            
-            critic_state_layers = models.build_layers(
-                dash_utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='critic-state',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                critic_hidden_kernel,
-            )
-           
-            critic_conv_layers = dash_utils.format_cnn_layers(
-                all_values,
-                all_ids,
-                layer_index_values,
-                layer_index_ids,
-                'critic',
-                agent_type_dropdown_value
-            )
-
-            if critic_conv_layers:
-                critic_cnn = cnn_models.CNN(critic_conv_layers, env)
-            else:
-                critic_cnn = None
-
-            critic_merged_layers = models.build_layers(
-                dash_utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='critic-merged',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                critic_hidden_kernel,
-            )
-
-            critic_output_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                model_type='critic-output',
-                agent_type=agent_type_dropdown_value
-            )
-           
-            critic_normalize_layers = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='normalize-layers',
-                model_type='critic',
-                agent_type=agent_type_dropdown_value,
-            )
+            critic_learning_rate_schedule = dash_utils.get_lr_scheduler('critic', agent_type_dropdown_value, agent_params)
+            critic_optimizer = dash_utils.get_optimizer('critic', agent_type_dropdown_value, agent_params)
+            critic_state_layers = dash_utils.format_layers('critic-state', agent_type_dropdown_value, agent_params)
+            critic_merged_layers = dash_utils.format_layers('critic-merged', agent_type_dropdown_value, agent_params)
+            critic_output_kernel = dash_utils.format_output_kernel_initializer_config('critic', agent_type_dropdown_value, agent_params)
            
             critic_model = CriticModel(
                 env=env,
-                cnn_model=critic_cnn,
                 state_layers=critic_state_layers,
                 merged_layers=critic_merged_layers,
                 output_layer_kernel=critic_output_kernel,
-                learning_rate=critic_learning_rate,
-                optimizer=critic_optimizer,
-                optimizer_params=critic_opt_params,
-                normalize_layers=critic_normalize_layers,
+                optimizer_params=critic_optimizer,
+                scheduler_params=critic_learning_rate_schedule,
                 device=device,
             )
 
-            #DEBUG
-            # print(f'critic cnn model: {critic_cnn}')
-            # print(f'critic state layers: {critic_state_layers}')
-            # print(f'critic merged layers: {critic_merged_layers}')
-            # print(f'critic optimizer: {critic_optimizer}')
-            # print(f'critic learning rate: {critic_learning_rate}')
-            # print(f'critic model: {critic_model}')
-
-
             # Set DDPG params
+            discount = agent_params.get(dash_utils.get_key({'type':'discount', 'model':'none', 'agent':agent_type_dropdown_value}))
+            tau = agent_params.get(dash_utils.get_key({'type':'tau', 'model':'none', 'agent':agent_type_dropdown_value}))
+            epsilon = agent_params.get(dash_utils.get_key({'type':'epsilon-greedy', 'model':'none', 'agent':agent_type_dropdown_value}))
+            batch_size = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
+            noise = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
+            noise = dash_utils.create_noise_object(env, model_type='none', agent_type=agent_type_dropdown_value, agent_params=agent_params)
+            
+            normalize_inputs = agent_params.get(dash_utils.get_key({'type':'normalize-input', 'model':'none', 'agent':agent_type_dropdown_value}))
 
-            discount = dash_utils.get_specific_value(
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    id_type = 'discount',
-                    model_type = 'none',
-                    agent_type = agent_type_dropdown_value,
-                )
-            
-            tau=dash_utils.get_specific_value(
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    id_type = 'tau',
-                    model_type = 'none',
-                    agent_type = agent_type_dropdown_value,
-                )
-            
-            epsilon = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'epsilon-greedy',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
-            
-            batch_size = dash_utils.get_specific_value(
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    id_type = 'batch-size',
-                    model_type = 'none',
-                    agent_type = agent_type_dropdown_value,
-                )
-            
-            noise=dash_utils.create_noise_object(
-                    env = env,
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    agent_type = agent_type_dropdown_value,
-                )
-            
-            normalize_inputs = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'normalize-input',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
+            clip_value = agent_params.get(dash_utils.get_key({'type':'clip-value', 'model':'none', 'agent':agent_type_dropdown_value}))
 
-            clip_value = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'clip-value',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
-
-            warmup = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'warmup',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
+            warmup = agent_params.get(dash_utils.get_key({'type':'warmup', 'model':'none', 'agent':agent_type_dropdown_value}))
             
-            agent = rl_agents.DDPG(
+            agent = DDPG(
                 env = env,
                 actor_model = actor_model,
                 critic_model = critic_model,
@@ -1865,7 +1764,7 @@ def register_callbacks(app, shared_data):
                 actor_cnn = None
 
 
-            actor_dense_layers = models.build_layers(
+            actor_dense_layers = build_layers(
                 dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
@@ -1952,7 +1851,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value
             )
             
-            critic_state_layers = models.build_layers(
+            critic_state_layers = build_layers(
                 dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
@@ -1986,7 +1885,7 @@ def register_callbacks(app, shared_data):
             else:
                 critic_cnn = None
 
-            critic_merged_layers = models.build_layers(
+            critic_merged_layers = build_layers(
                 dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
@@ -2133,7 +2032,7 @@ def register_callbacks(app, shared_data):
             )
 
             
-            agent = rl_agents.TD3(
+            agent = TD3(
                 env = env,
                 actor_model = actor_model,
                 critic_model = critic_model,
@@ -2231,7 +2130,7 @@ def register_callbacks(app, shared_data):
                 actor_cnn=None
 
 
-            actor_dense_layers = models.build_layers(
+            actor_dense_layers = build_layers(
                 dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
@@ -2322,7 +2221,7 @@ def register_callbacks(app, shared_data):
                 agent_type=agent_type_dropdown_value
             )
             
-            critic_state_layers = models.build_layers(
+            critic_state_layers = build_layers(
                 dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
@@ -2356,7 +2255,7 @@ def register_callbacks(app, shared_data):
             else:
                 critic_cnn = None
 
-            critic_merged_layers = models.build_layers(
+            critic_merged_layers = build_layers(
                 dash_utils.format_layers(
                     all_values=all_values,
                     all_ids=all_ids,
@@ -2464,7 +2363,7 @@ def register_callbacks(app, shared_data):
                 agent_type = agent_type_dropdown_value,
             )
             
-            ddpg_agent = rl_agents.DDPG(
+            ddpg_agent = DDPG(
                 env = env,
                 actor_model = actor_model,
                 critic_model = critic_model,
@@ -2523,7 +2422,7 @@ def register_callbacks(app, shared_data):
             )
 
             # create HER object
-            agent = rl_agents.HER(
+            agent = HER(
                 ddpg_agent,
                 strategy=strategy,
                 tolerance=tolerance,
@@ -2563,7 +2462,7 @@ def register_callbacks(app, shared_data):
             # Flatten the list if it's a list of lists, which can happen with ALL
             flattened_values = [item for sublist in callbacks for item in (sublist if isinstance(sublist, list) else [sublist])]
             if 'Weights & Biases' in flattened_values:
-                return dash_utils.generate_wandb_login('/build-agent')
+                return dash_utils.create_wandb_login('/build-agent')
             else:
                 return html.Div()
         
@@ -2612,7 +2511,7 @@ def register_callbacks(app, shared_data):
     def show_project_selection(wandb_login, page):
         
         if wandb_login:
-            return dash_utils.generate_wandb_project_dropdown(page)
+            return dash_utils.create_wandb_project_dropdown(page)
     
     @app.callback(
         [Output({'type':'env-description', 'page':MATCH}, 'children'),
@@ -2634,146 +2533,103 @@ def register_callbacks(app, shared_data):
     @app.callback(
         Output({'type':'hidden-div', 'page':'/train-agent'}, 'data'),
         Input({'type':'start', 'page':'/train-agent'}, 'n_clicks'),
-        State({'type':'start', 'page':'/train-agent'}, 'id'),
+        # State({'type':'start', 'page':'/train-agent'}, 'id'),
         State({'type':'agent-store', 'page':'/train-agent'}, 'data'),
-        State({'type':'storage', 'page':'/train-agent'}, 'data'),
-        State({'type':'env-dropdown', 'page':'/train-agent'}, 'value'),
-        State({'type':'num-episodes', 'page':'/train-agent'}, 'value'),
-        State({'type':'render-option', 'page':'/train-agent'}, 'value'),
-        State({'type':'render-freq', 'page':'/train-agent'}, 'value'),
-        State({'type':'epochs', 'page':'/train-agent'}, 'value'),
-        State({'type':'cycles', 'page':'/train-agent'}, 'value'),
-        State({'type':'learning-cycles', 'page':'/train-agent'}, 'value'),
-        State({'type':'num-timesteps', 'page':'/train-agent'}, 'value'),
-        State({'type':'traj-length', 'page':'/train-agent'}, 'value'),
-        State({'type':'batch-size', 'page':'/train-agent'}, 'value'),
-        State({'type':'learning-epochs', 'page':'/train-agent'}, 'value'),
-        State({'type':'num-envs', 'page':'/train-agent'}, 'value'),
-        State({'type':'mpi', 'page':'/train-agent'}, 'value'),
-        State({'type':'workers', 'page':'/train-agent'}, 'value'),
-        State({'type':'load-weights', 'page':'/train-agent'}, 'value'),
-        State({'type':'seed', 'page':'/train-agent'}, 'value'),
-        State({'type':'run-number', 'page':'/train-agent'}, 'value'),
-        State({'type':'num-runs', 'page':'/train-agent'}, 'value'),
-        State({'type':'save-dir', 'page':'/train-agent'}, 'value'),
-        prevent_initial_call=True,
+        State({'type':'run-params-store', 'page':'/train-agent'}, 'data'),
+        # State({'type':'env-dropdown', 'page':'/train-agent'}, 'value'),
+        # State({'type':'num-episodes', 'page':'/train-agent'}, 'value'),
+        # State({'type':'render-option', 'page':'/train-agent'}, 'value'),
+        # State({'type':'render-freq', 'page':'/train-agent'}, 'value'),
+        # State({'type':'epochs', 'page':'/train-agent'}, 'value'),
+        # State({'type':'cycles', 'page':'/train-agent'}, 'value'),
+        # State({'type':'learning-cycles', 'page':'/train-agent'}, 'value'),
+        # State({'type':'num-timesteps', 'page':'/train-agent'}, 'value'),
+        # State({'type':'traj-length', 'page':'/train-agent'}, 'value'),
+        # State({'type':'batch-size', 'page':'/train-agent'}, 'value'),
+        # State({'type':'learning-epochs', 'page':'/train-agent'}, 'value'),
+        # State({'type':'num-envs', 'page':'/train-agent'}, 'value'),
+        # State({'type':'mpi', 'page':'/train-agent'}, 'value'),
+        # State({'type':'workers', 'page':'/train-agent'}, 'value'),
+        # State({'type':'load-weights', 'page':'/train-agent'}, 'value'),
+        # State({'type':'seed', 'page':'/train-agent'}, 'value'),
+        # State({'type':'run-number', 'page':'/train-agent'}, 'value'),
+        # State({'type':'num-runs', 'page':'/train-agent'}, 'value'),
+        # State({'type':'save-dir', 'page':'/train-agent'}, 'value'),
+        # prevent_initial_call=True,
     )
-    def train_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, render_option, render_freq, epochs, cycles, num_updates, num_timesteps, traj_length, batch_size,
-                    learning_epochs, num_envs, use_mpi, workers, load_weights, seed, run_number, num_runs, save_dir):
+    def train_agent(n_clicks, agent_data, run_data):
         # clear metrics in storage
         if os.path.exists('/workspaces/RL_Agents/pytorch/src/app/assets/training_data.json'):
             # Remove the file
             os.remove('/workspaces/RL_Agents/pytorch/src/app/assets/training_data.json')
-        if n_clicks > 0:
-            
-            # Use the agent_data['save_dir'] to load agent
-            if agent_data:  # Check if agent_data is not empty
-                # set save dir to agent config save dir if save dir == None
-                if not save_dir:
-                    save_dir = agent_data['save_dir']
-                
-                # Create an empty dict for train_config.json
-                train_config = {}
-                # render = True if render_option == 'RENDER' else False
-                # use_mpi = agent_data.get('use_mpi', False)
-                
-                # clear the renders in the train folder
-                if render_option:
-                    if os.path.exists(save_dir + '/renders/training'):
-                        dash_utils.delete_renders(save_dir + '/renders/training')
+        if n_clicks > 0 and agent_data and run_data:
+            # Create an empty dict for train_config.json
+            train_config = {}
 
-                # Update the configuration with render settings
-                train_config['num_envs'] = num_envs
-                train_config['render'] = render_option
-                train_config['render_freq'] = render_freq if render_freq is not None else 0
-                train_config['load_weights'] = load_weights
-                train_config['seed'] = seed
-                train_config['run_number'] = run_number
-                train_config['num_runs'] = num_runs
-                train_config['save_dir'] = save_dir
+            # Update the configuration with render settings
+            # Loop over each entry of run_data and format into train_config
+            for key, value in run_data.items():
+                train_config[dash_utils.get_param_from_key(key)] = value
+            #DEBUG
+            print(f'train config:{train_config}')
 
-                # Add MPI settings to config if DDPG or HER
-                if agent_data['agent_type'] in ['DDPG','TD3','HER']:
-                    train_config['num_episodes'] = num_episodes
-                    train_config['use_mpi'] = use_mpi
-                    train_config['num_workers'] = workers
-                
-                # Update additional settings for HER agent
-                if agent_data['agent_type'] == 'HER':
-                    train_config['num_epochs'] = epochs
-                    train_config['num_cycles'] = cycles
-                    train_config['num_updates'] = num_updates
+            # Save the updated configuration to a train config file
+            train_config_path = agent_data["save_dir"] + '/train_config.json'
+            with open(train_config_path, 'w') as f:
+                json.dump(train_config, f)
 
-                # Update additional setting for PPO agent
-                if agent_data['agent_type'] == 'PPO':
-                    train_config['timesteps'] = num_timesteps
-                    train_config['trajectory_length'] = traj_length
-                    train_config['batch_size'] = batch_size
-                    train_config['learning_epochs'] = learning_epochs
-            
-                # Save the updated configuration to a train config file
-                train_config_path = save_dir + '/train_config.json'
-                print(f'agent train config path:{train_config_path}')
-                with open(train_config_path, 'w') as f:
-                    json.dump(train_config, f)
+            # Set the config path of the agent
+            agent_config_path = agent_data["save_dir"] + '/config.json'
 
-                # Set the config path of the agent
-                agent_config_path = save_dir + '/config.json'
-                print(f'agent config path:{agent_config_path}')
+            # clear the renders in the train folder
+            # if train_config["render_freq"] > 0:
+            if os.path.exists(agent_data["save_dir"] + '/renders/training'):
+                dash_utils.delete_renders(agent_data["save_dir"] + '/renders/training')
 
-                script_path = 'train.py'
-                run_command = f"python {script_path} --agent_config {agent_config_path} --train_config {train_config_path}"
-                subprocess.Popen(run_command, shell=True)
+            script_path = 'train.py'
+            run_command = f"python {script_path} --agent_config {agent_config_path} --train_config {train_config_path}"
+            subprocess.Popen(run_command, shell=True)
 
         raise PreventUpdate
     
     @app.callback(
         Output({'type':'hidden-div', 'page':'/test-agent'}, 'data'),
         Input({'type':'start', 'page':'/test-agent'}, 'n_clicks'),
-        State({'type':'start', 'page':'/test-agent'}, 'id'),
+        # State({'type':'start', 'page':'/test-agent'}, 'id'),
         State({'type':'agent-store', 'page':'/test-agent'}, 'data'),
-        State({'type':'storage', 'page':'/test-agent'}, 'data'),
-        State({'type':'env-dropdown', 'page':'/test-agent'}, 'value'),
-        State({'type':'num-episodes', 'page':'/test-agent'}, 'value'),
-        State({'type':'num-envs', 'page':'/test-agent'}, 'value'),
-        State({'type':'render-option', 'page':'/test-agent'}, 'value'),
-        State({'type':'render-freq', 'page':'/test-agent'}, 'value'),
-        State({'type':'load-weights', 'page':'/test-agent'}, 'value'),
-        State({'type':'seed', 'page':'/test-agent'}, 'value'),
-        State({'type':'run-number', 'page':'/test-agent'}, 'value'),
-        State({'type':'num-runs', 'page':'/test-agent'}, 'value'),
-        prevent_initial_call=True,
+        State({'type':'run-params-store', 'page':'/test-agent'}, 'data'),
+        # State({'type':'env-dropdown', 'page':'/test-agent'}, 'value'),
+        # State({'type':'num-episodes', 'page':'/test-agent'}, 'value'),
+        # State({'type':'num-envs', 'page':'/test-agent'}, 'value'),
+        # State({'type':'render-option', 'page':'/test-agent'}, 'value'),
+        # State({'type':'render-freq', 'page':'/test-agent'}, 'value'),
+        # State({'type':'load-weights', 'page':'/test-agent'}, 'value'),
+        # State({'type':'seed', 'page':'/test-agent'}, 'value'),
+        # State({'type':'run-number', 'page':'/test-agent'}, 'value'),
+        # State({'type':'num-runs', 'page':'/test-agent'}, 'value'),
+        # prevent_initial_call=True,
     )
-    def test_agent(n_clicks, id, agent_data, storage_data, env_name, num_episodes, num_envs, render_option, render_freq, load_weights, seed, run_number, num_runs):
+    def test_agent(n_clicks, agent_data, run_data):
 
         # clear metrics in storage
         if os.path.exists('/workspaces/RL_Agents/pytorch/src/app/assets/testing_data.json'):
             # Remove the file
             os.remove('/workspaces/RL_Agents/pytorch/src/app/assets/testing_data.json')
         try:
-            if n_clicks > 0 and agent_data:
-                #DEBUG
-                print('n clicks and agent data passed')
-                # clear the renders in the train folder
-                agent_type = agent_data['agent_type']
-                if agent_type == "HER":
-                    agent_type = agent_data['agent']['agent_type']
-                if os.path.exists(agent_data['save_dir'] + '/renders'):
-                    dash_utils.delete_renders(agent_data['save_dir'] + '/renders')
-
+            if n_clicks > 0 and agent_data and run_data:
+                
                 # Create empty dict for test_config.json
                 test_config = {}
-                # Update the configuration with render settings
-                print(f'render option:{render_option}')
-                render = render_option is True
-                test_config['render'] = render
-                test_config['num_episodes'] = num_episodes
-                test_config['num_envs'] = num_envs
-                test_config['render_freq'] = render_freq
-                test_config['load_weights'] = load_weights
-                test_config['seed'] = seed
-                test_config['run_number'] = run_number
-                test_config['num_runs'] = num_runs
+                # # Update the configuration with render settings
+                # Loop over each entry of run_data and format into train_config
+                for key, value in run_data.items():
+                    test_config[dash_utils.get_param_from_key(key)] = value
+                #DEBUG
+                print(f'test config:{test_config}')
+
+                # Delete renders if any in folder
+                if os.path.exists(agent_data['save_dir'] + '/renders'):
+                    dash_utils.delete_renders(agent_data['save_dir'] + '/renders')
 
                 # Save the updated configuration to a file
                 test_config_path = agent_data['save_dir'] + '/test_config.json'
@@ -2784,8 +2640,6 @@ def register_callbacks(app, shared_data):
                 agent_config_path = agent_data['save_dir'] + '/config.json'
                 
                 script_path = 'test.py'
-                #DEBUG
-                print(f'script set to {script_path}')
                 run_command = f"python {script_path} --agent_config {agent_config_path} --test_config {test_config_path}"
                 subprocess.Popen(run_command, shell=True)
 
@@ -2808,8 +2662,8 @@ def register_callbacks(app, shared_data):
 
         except Exception as e:
             print(f"An unexpected error occurred: {str(e)}")
-    # Handle any other unexpected exceptions
-    # You can choose to raise an exception, return an error message, or take appropriate action
+            # Handle any other unexpected exceptions
+            # You can choose to raise an exception, return an error message, or take appropriate action
 
         # if n_clicks > 0:
         #     # clear the renders in the train folder
@@ -2862,63 +2716,76 @@ def register_callbacks(app, shared_data):
             return config, success_message
     
         return {}, "Please upload a file.", {'display': 'none'}
-    
-    @app.callback(
-    Output({'type': 'her-options', 'page': '/train-agent'}, 'style'),
-    Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
-    prevent_initial_call = True,
-    )
-    def update_her_options(agent_data):
 
-        if agent_data['agent_type'] == 'HER':
-            her_options_style = {'display': 'block'}
-        else:
-            her_options_style = {'display': 'none'}
-        
-        return her_options_style
-    
     @app.callback(
-    Output({'type': 'ppo-options', 'page': '/train-agent'}, 'style'),
-    Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
-    prevent_initial_call = True,
+        Output({'type': 'run-options', 'page': MATCH}, 'children'),
+        Input({'type': 'agent-store', 'page': MATCH}, 'data'),
+        State({'type': 'agent-store', 'page': MATCH}, 'id'),
+        prevent_initial_call=True,
     )
-    def update_ppo_options(agent_data):
-
-        if agent_data['agent_type'] == 'PPO':
-            ppo_options_style = {'display': 'block'}
-        else:
-            ppo_options_style = {'display': 'none'}
+    def update_run_options(agent_data, data_id):
+        agent_type = agent_data['agent_type']
+        page = data_id['page']
         
-        return ppo_options_style
+        # Return the dynamically created dash components
+        return dash_utils.update_run_options(agent_type, page)
     
-    @app.callback(
-    Output({'type': 'episode-option', 'page': '/test-agent'}, 'style'),
-    Input({'type':'agent-store', 'page': '/test-agent'}, 'data'),
-    prevent_initial_call = True,
-    )
-    def update_ppo_test_options(agent_data):
+    # @app.callback(
+    # Output({'type': 'her-options', 'page': '/train-agent'}, 'style'),
+    # Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
+    # prevent_initial_call = True,
+    # )
+    # def update_her_options(agent_data):
 
-        if agent_data['agent_type'] == 'PPO':
-            episode_option_style = {'display': 'block'}
-        else:
-            episode_option_style = {'display': 'none'}
+    #     if agent_data['agent_type'] == 'HER':
+    #         her_options_style = {'display': 'block'}
+    #     else:
+    #         her_options_style = {'display': 'none'}
         
-        return episode_option_style
+    #     return her_options_style
     
-    @app.callback(
-    Output({'type': 'mpi-options', 'page': '/train-agent'}, 'style'),
-    Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
-    prevent_initial_call = True,
-    )
-    def update_mpi_options(agent_data):
+    # @app.callback(
+    # Output({'type': 'ppo-options', 'page': '/train-agent'}, 'style'),
+    # Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
+    # prevent_initial_call = True,
+    # )
+    # def update_ppo_options(agent_data):
 
-        if agent_data['agent_type'] in ['DDPG', 'TD3', 'HER']:
-            mpi_options_style = {'display': 'block'}
+    #     if agent_data['agent_type'] == 'PPO':
+    #         ppo_options_style = {'display': 'block'}
+    #     else:
+    #         ppo_options_style = {'display': 'none'}
         
-        else:
-            mpi_options_style = {'display': 'none'}
+    #     return ppo_options_style
+    
+    # @app.callback(
+    # Output({'type': 'episode-option', 'page': '/test-agent'}, 'style'),
+    # Input({'type':'agent-store', 'page': '/test-agent'}, 'data'),
+    # prevent_initial_call = True,
+    # )
+    # def update_ppo_test_options(agent_data):
+
+    #     if agent_data['agent_type'] == 'PPO':
+    #         episode_option_style = {'display': 'block'}
+    #     else:
+    #         episode_option_style = {'display': 'none'}
         
-        return mpi_options_style
+    #     return episode_option_style
+    
+    # @app.callback(
+    # Output({'type': 'mpi-options', 'page': '/train-agent'}, 'style'),
+    # Input({'type':'agent-store', 'page': '/train-agent'}, 'data'),
+    # prevent_initial_call = True,
+    # )
+    # def update_mpi_options(agent_data):
+
+    #     if agent_data['agent_type'] in ['DDPG', 'TD3', 'HER']:
+    #         mpi_options_style = {'display': 'block'}
+        
+    #     else:
+    #         mpi_options_style = {'display': 'none'}
+        
+    #     return mpi_options_style
     
     @app.callback(
     Output({'type': 'mpi-options', 'page': '/hyperparameter-search'}, 'style'),
@@ -2987,11 +2854,11 @@ def register_callbacks(app, shared_data):
         return clamp_options_style
     
     @app.callback(
-    Output({'type': 'policy-grad-clip-block', 'model':MATCH, 'agent':MATCH}, 'style'),
-    Input({'type':'clip-policy-grad', 'model':MATCH, 'agent':MATCH}, 'value'),
+    Output({'type': 'grad-clip-block', 'model':MATCH, 'agent':MATCH}, 'style'),
+    Input({'type':'clip-grad', 'model':MATCH, 'agent':MATCH}, 'value'),
     # prevent_initial_call = True,
     )
-    def update_policy_grad_clip_options(clip_grad):
+    def update_grad_clip_options(clip_grad):
 
         if clip_grad:
             clip_options_style = {'display': 'block', 'margin-left': '20px'}
@@ -3021,79 +2888,79 @@ def register_callbacks(app, shared_data):
         return {'display': 'none'}
     
 
-    @app.callback(
-        Output({'type':'storage', 'page':MATCH}, 'data'),
-        [Input({'type':'interval-component', 'page':MATCH}, 'n_intervals'),
-        Input({'type':'start', 'page':MATCH}, 'n_clicks')],  # Add the train button as an input
-        [State({'type':'storage', 'page':MATCH}, 'data'),
-        State({'type':'agent-store', 'page':MATCH}, 'data'),
-        # State({'type':'num-episodes', 'page':MATCH}, 'value'),
-        # State({'type':'num-timesteps', 'page':MATCH}, 'value'),
-        # State({'type':'epochs', 'page':MATCH}, 'value'),
-        # State({'type':'cycles', 'page':MATCH}, 'value'),
-        State('url', 'pathname')],
-        prevent_initial_call=True,
-    )
-    def update_data(n, n_clicks, storage_data, agent_config, pathname):
-        ctx = dash.callback_context
+    # @app.callback(
+    #     Output({'type':'storage', 'page':MATCH}, 'data'),
+    #     [Input({'type':'interval-component', 'page':MATCH}, 'n_intervals'),
+    #     Input({'type':'start', 'page':MATCH}, 'n_clicks')],  # Add the train button as an input
+    #     [State({'type':'storage', 'page':MATCH}, 'data'),
+    #     State({'type':'agent-store', 'page':MATCH}, 'data'),
+    #     # State({'type':'num-episodes', 'page':MATCH}, 'value'),
+    #     # State({'type':'num-timesteps', 'page':MATCH}, 'value'),
+    #     # State({'type':'epochs', 'page':MATCH}, 'value'),
+    #     # State({'type':'cycles', 'page':MATCH}, 'value'),
+    #     State('url', 'pathname')],
+    #     prevent_initial_call=True,
+    # )
+    # def update_data(n, n_clicks, storage_data, agent_config, pathname):
+    #     ctx = dash.callback_context
 
-        # Determine which input fired the callback
-        if not ctx.triggered:
-            raise PreventUpdate
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    #     # Determine which input fired the callback
+    #     if not ctx.triggered:
+    #         raise PreventUpdate
+    #     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-        # Clear data if the train button was clicked
-        if trigger_id == '{"page":"/train-agent","type":"start"}':
-            print('train start trigger')
-            storage_data = {'data': {}, 'progress': 0, 'status': 'Training Started...'}
-            print(f'storage_data:{storage_data}')
-            return storage_data
+    #     # Clear data if the train button was clicked
+    #     if trigger_id == '{"page":"/train-agent","type":"start"}':
+    #         print('train start trigger')
+    #         storage_data = {'data': {}, 'progress': 0, 'status': 'Training Started...'}
+    #         print(f'storage_data:{storage_data}')
+    #         return storage_data
         
-        elif trigger_id == '{"page":"/test-agent","type":"start"}':
-            storage_data = {'data': {}, 'progress': 0, 'status': 'Testing Started...'}
-            return storage_data
+    #     elif trigger_id == '{"page":"/test-agent","type":"start"}':
+    #         storage_data = {'data': {}, 'progress': 0, 'status': 'Testing Started...'}
+    #         return storage_data
         
-        # Proceed with regular data update if the interval component fired the callback
-        # if trigger_id == f"{'type':'interval-component', 'page':MATCH}":
-        else:
-            # if num_episodes is not None or num_timesteps is not None:
-            #     if pathname == '/train-agent':
-            #         file_name = 'training_data.json'
-            #         process = 'Training'
-            #     elif pathname == '/test-agent':
-            #         file_name = 'testing_data.json'
-            #         process = 'Testing'
-            #     else:
-            #         raise PreventUpdate
+    #     # Proceed with regular data update if the interval component fired the callback
+    #     # if trigger_id == f"{'type':'interval-component', 'page':MATCH}":
+    #     else:
+    #         # if num_episodes is not None or num_timesteps is not None:
+    #         #     if pathname == '/train-agent':
+    #         #         file_name = 'training_data.json'
+    #         #         process = 'Training'
+    #         #     elif pathname == '/test-agent':
+    #         #         file_name = 'testing_data.json'
+    #         #         process = 'Testing'
+    #         #     else:
+    #         #         raise PreventUpdate
 
-            #     # Read the latest training progress data from the JSON file
-            #     try:
-            #         with open(Path("assets") / file_name, 'r') as f:
-            #             data = json.load(f)
-            #     except (FileNotFoundError, json.JSONDecodeError):
-            #         data = {}
+    #         #     # Read the latest training progress data from the JSON file
+    #         #     try:
+    #         #         with open(Path("assets") / file_name, 'r') as f:
+    #         #             data = json.load(f)
+    #         #     except (FileNotFoundError, json.JSONDecodeError):
+    #         #         data = {}
 
-            #     # If the new data dict isn't empty, update storage data
-            #     if data:
-            #         # Determine agent type to correctly calculate num_episodes and progress
-            #         if agent_config['agent_type'] == 'HER':
-            #             num_episodes = num_epochs * num_cycles * num_episodes
-            #         storage_data['data'] = data
-            #         if agent_config['agent_type'] in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3']:
-            #             storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
-            #         elif agent_config['agent_type'] == 'PPO':
-            #             if pathname == "/train-agent":
-            #                 storage_data['progress'] = round(data['episode'] / num_timesteps, ndigits=2)
-            #             elif pathname == "/test-agent":
-            #                 storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
+    #         #     # If the new data dict isn't empty, update storage data
+    #         #     if data:
+    #         #         # Determine agent type to correctly calculate num_episodes and progress
+    #         #         if agent_config['agent_type'] == 'HER':
+    #         #             num_episodes = num_epochs * num_cycles * num_episodes
+    #         #         storage_data['data'] = data
+    #         #         if agent_config['agent_type'] in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3']:
+    #         #             storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
+    #         #         elif agent_config['agent_type'] == 'PPO':
+    #         #             if pathname == "/train-agent":
+    #         #                 storage_data['progress'] = round(data['episode'] / num_timesteps, ndigits=2)
+    #         #             elif pathname == "/test-agent":
+    #         #                 storage_data['progress'] = round(data['episode'] / num_episodes, ndigits=2)
                     
-            #         # Update status
-            #         if storage_data['progress'] == 1.0:
-            #             storage_data['status'] = f"{process} Completed"
-            #         else:
-            #             storage_data['status'] = f"{process} in Progress..."
+    #         #         # Update status
+    #         #         if storage_data['progress'] == 1.0:
+    #         #             storage_data['status'] = f"{process} Completed"
+    #         #         else:
+    #         #             storage_data['status'] = f"{process} in Progress..."
             
-            return storage_data
+    #         return storage_data
     
     
     @app.callback(
@@ -3673,16 +3540,16 @@ def register_callbacks(app, shared_data):
         return tabs, hide_header
 
     @app.callback(
-        Output({'type': 'learning-rate-scheduler-tabs-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
-        Input({'type': 'learning-rate-scheduler-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
-        State({'type': 'learning-rate-scheduler-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
+        Output({'type': 'lr-scheduler-tabs-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'lr-scheduler-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'lr-scheduler-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
     )
-    def update_scheduler_tabs_hyperparam(lr_schedulers, lr_schedulers_id):
+    def update_lr_scheduler_tabs_hyperparam(lr_schedulers, lr_schedulers_id):
         agent_type = lr_schedulers_id['agent']
         model_type = lr_schedulers_id['model']
         #DEBUG
         print(f'agent:{agent_type}, model:{model_type}')
-        return dash_utils.update_learning_rate_scheduler_hyperparam_options(agent_type, model_type, lr_schedulers)
+        return dash_utils.update_lr_scheduler_hyperparam_options(agent_type, model_type, lr_schedulers)
 
     @app.callback(
         Output({'type':'hidden-div-hyperparam', 'page':'/hyperparameter-search'}, 'children'),

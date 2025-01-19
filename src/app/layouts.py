@@ -69,15 +69,17 @@ def build_agent(page):
 def train_agent(page):
    
     return dbc.Container([
+        dcc.Store(id={"type":"run-params-store", "page":page}, data={}),
         html.H1("Train Agent", style={'textAlign': 'center'}),
         dcc.Store(id={'type':'agent-store', 'page':page}),
         dash_utils.upload_component(page),
         html.Div(id={'type':'output-agent-load', 'page':page}),
-        dash_utils.env_dropdown_component(page),
-        html.Div(id={'type':'env-description', 'page':page}),
-        html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
-        html.Div(id={'type':'gym-params', 'page':page}),
-        dash_utils.run_agent_settings_component(page),
+        # dash_utils.env_dropdown_component(page),
+        # html.Div(id={'type':'env-description', 'page':page}),
+        # html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
+        # html.Div(id={'type':'gym-params', 'page':page}),
+        # dash_utils.run_agent_settings_component(page),
+        html.Div(id={'type': 'run-options', 'page': page}),
         dbc.Button("Start",
             id={
                 'type': 'start',
@@ -124,15 +126,16 @@ def train_agent(page):
 def test_agent(page):
     
     return dbc.Container([
+        dcc.Store(id={"type":"run-params-store", "page":page}, data={}),
         html.H1("Test Agent", style={'textAlign': 'center'}),
         dcc.Store(id={'type':'agent-store', 'page':page}),
         dash_utils.upload_component(page),
         html.Div(id={'type':'output-agent-load', 'page':page}),
-        dash_utils.env_dropdown_component(page),
-        html.Div(id={'type':'env-description', 'page':page}),
-        html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
-        html.Div(id={'type':'gym-params', 'page':page}),
-        dash_utils.run_agent_settings_component(page),
+        # dash_utils.env_dropdown_component(page),
+        # html.Div(id={'type':'env-description', 'page':page}),
+        # html.Img(id={'type':'env-gif', 'page':page}, style={'width': '300px'}),
+        # html.Div(id={'type':'gym-params', 'page':page}),
+        html.Div(id={'type': 'run-options', 'page': page}),
         dbc.Button("Start",
             id={
                 'type': 'start',
@@ -168,7 +171,7 @@ def hyperparameter_search(page):
     right_column = dbc.Col(
         [
             html.H3('Wandb Project'),
-            dash_utils.generate_wandb_project_dropdown(page),
+            dash_utils.create_wandb_project_dropdown(page),
             html.Hr(),
             html.H3("Search Configuration"),
             dash_utils.env_dropdown_component(page),
@@ -253,7 +256,7 @@ def hyperparameter_search(page):
                     ),
                 ],
             ),
-            dash_utils.generate_seed_component(page),
+            dash_utils.create_seed_component(page),
             html.Hr(),
             dbc.Button("Download WandB Config", id="download-wandb-config-button", color="primary", className="mr-2"),
             dcc.Download(id="download-wandb-config"),
@@ -383,7 +386,7 @@ def hyperparameter_search(page):
                     html.H1("Hyperparameter Search", style={'textAlign': 'center'}),
                     html.Div(
                         [  
-                            dash_utils.generate_wandb_login(page),
+                            dash_utils.create_wandb_login(page),
                         ],
                         style={'textAlign': 'center'},
                     ),
@@ -397,8 +400,8 @@ def hyperparameter_search(page):
 def co_occurrence_analysis(page):
     return html.Div([
         html.H1("Co-Occurrence Analysis", style={'textAlign': 'center'}),
-        dash_utils.generate_wandb_project_dropdown(page),
-        dash_utils.generate_sweeps_dropdown(page),
+        dash_utils.create_wandb_project_dropdown(page),
+        dash_utils.create_sweeps_dropdown(page),
         html.Button('Get Data', id={'type':'sweep-data-button', 'page':page}, n_clicks=0),
         html.Div(id={'type':'output-data-upload', 'page':page}),
         dcc.Dropdown(

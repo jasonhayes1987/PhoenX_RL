@@ -1,5 +1,6 @@
 from zipfile import ZipFile
 import os
+import re
 from natsort import natsorted
 import requests
 from pathlib import Path
@@ -13,6 +14,7 @@ import re
 import wandb
 import wandb_support
 import gymnasium as gym
+import gymnasium.wrappers as base_wrappers
 import gymnasium_robotics as gym_robo
 # import tensorflow as tf
 import numpy as np
@@ -22,6 +24,137 @@ import models
 from models import StochasticContinuousPolicy, StochasticDiscretePolicy, ActorModel, ValueModel, CriticModel
 import rl_callbacks
 from env_wrapper import GymnasiumWrapper, IsaacSimWrapper
+from noise import *
+from buffer import *
+
+# Wrappers NOT in the user dropdown
+EXCLUSION_LIST = {
+    "RecordEpisodeStatistics",
+    "RenderCollection",
+    "RecordVideo",
+    "HumanRendering",
+    "DelayObservation",
+    "MaxAndSkipObservation",
+    "TransformAction",
+    "ClipAction",
+    "RescaleAction",
+    "TransformObservation",
+    "FilterObservation",
+    "FlattenObservation",
+    "ReshapeObservation",
+    "RescaleObservation",
+    "DtypeObservation",
+    "AddRenderObservation",
+    "Autoreset",
+    "JaxToNumpy",
+    "JaxToTorch",
+    "NumpyToTorch",
+    "OrderEnforcing",
+    "PassiveEnvChecker",
+    "vector"
+}
+
+# Wrappers that require extra parameter inputs:
+WRAPPER_REGISTRY = {
+    "AtariPreprocessing": {
+        "cls": base_wrappers.AtariPreprocessing,
+        "default_params": {
+            "frame_skip": 1,
+            "grayscale_obs": True,
+            "scale_obs": True
+        }
+    },
+    "TimeLimit": {
+        "cls": base_wrappers.TimeLimit,
+        "default_params": {
+            "max_episode_steps": 1000
+        }
+    },
+    "TimeAwareObservation": {
+        "cls": base_wrappers.TimeAwareObservation,
+        "default_params": {
+            "flatten": False,
+            "normalize_time": False
+        }
+    },
+    "FrameStackObservation": {
+        "cls": base_wrappers.FrameStackObservation,
+        "default_params": {
+            "stack_size": 4
+        }
+    },
+    "ResizeObservation": {
+        "cls": base_wrappers.ResizeObservation,
+        "default_params": {
+            "shape": 84
+        }
+    }
+}
+
+def camel_to_words(name: str) -> str:
+    """
+    Convert CamelCase to spaced words with each word capitalized.
+    E.g. 'AtariPreprocessing' -> 'Atari Preprocessing'
+    """
+    # Insert a space before any capital letter that isn't the first character
+    spaced = re.sub(r'(?<!^)(?=[A-Z])', ' ', name)
+    # Now split on spaces and capitalize each token
+    words = [word.capitalize() for word in spaced.split()]
+    # Join them back into a single string
+    return ' '.join(words)
+
+def get_wrappers_dropdown_options():
+    """
+    Returns a sorted list of *all* wrappers from base_wrappers.__all__,
+    minus those in EXCLUSION_LIST, for the user to select from.
+    """
+    all_wrappers = set(base_wrappers.__all__)
+    valid_wrappers = all_wrappers - EXCLUSION_LIST
+    return sorted(valid_wrappers)
+
+def create_wrappers_list(selected_wrappers, user_params):
+    """
+    Given a list of selected wrapper names and a dictionary of user-overridden
+    parameters, return a list of wrapper factory functions suitable for gym.make_vec(..., wrappers=...).
+
+    Any wrapper found in WRAPPER_REGISTRY uses user_params if provided.
+    Any wrapper not in WRAPPER_REGISTRY is applied with no arguments.
+    """
+    if not selected_wrappers:
+        return []
+
+    wrappers_list = []
+
+    for w_name in selected_wrappers:
+        # If wrapper is in registry, it may have parameter overrides
+        if w_name in WRAPPER_REGISTRY:
+            wrapper_cls = WRAPPER_REGISTRY[w_name]["cls"]
+            default_params = WRAPPER_REGISTRY[w_name]["default_params"]
+            override_params = user_params.get(w_name, {}) if user_params else {}
+            final_params = {**default_params, **override_params}
+
+            # Example: special case for ResizeObservation
+            if w_name == "ResizeObservation" and isinstance(final_params.get("shape", None), int):
+                side = final_params["shape"]
+                final_params["shape"] = (side, side)
+
+            def wrapper_factory(env, cls=wrapper_cls, fparams=final_params):
+                return cls(env, **fparams)
+
+        else:
+            # It's NOT in WRAPPER_REGISTRY => no-arg wrapper
+            wrapper_cls = getattr(base_wrappers, w_name, None)
+            # If the user only picks from a valid filtered list, wrapper_cls should not be None.
+            if wrapper_cls is None:
+                # If somehow the user selected an invalid or excluded wrapper, skip or log
+                continue
+
+            def wrapper_factory(env, cls=wrapper_cls):
+                return cls(env)
+
+        wrappers_list.append(wrapper_factory)
+
+    return wrappers_list
 
 def get_key(id_dict, param=None):
     """
@@ -42,6 +175,9 @@ def get_key(id_dict, param=None):
     else:
         base_key = "_".join(f"{k}:{v}" for k, v in list(id_dict.items()))
         return base_key
+
+def get_param_from_key(key):
+    return key.split("_")[0].split(":")[-1].replace("-","_")
 
 def get_specific_value(all_values, all_ids, id_type, model_type, agent_type):
     #DEBUG
@@ -76,108 +212,36 @@ def get_specific_value_id(all_values, all_ids, value_type, model_type, agent_typ
     # Return None or some default value if not found
     return None
 
-def create_noise_object(env, all_values, all_ids, agent_type):
-    noise_type = get_specific_value(
-        all_values=all_values,
-        all_ids=all_ids,
-        id_type='noise-function',
-        model_type='none',
-        agent_type=agent_type,
-    )
+def create_noise_object(env, model_type, agent_type, agent_params):
+    noise_type = agent_params.get(get_key({'type':'noise-function', 'model':model_type, 'agent':agent_type}))
 
     if noise_type == "Normal":
-        return helper.Noise.create_instance(
+        return Noise.create_instance(
             noise_class_name=noise_type,
             shape=env.action_space.shape,
-            mean=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='normal-mean',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            stddev=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='normal-stddv',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            device=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type,
-            )
+            mean=agent_params.get(get_key({'type':'normal-mean', 'model':model_type, 'agent':agent_type})),
+            stddev=agent_params.get(get_key({'type':'normal-stddv', 'model':model_type, 'agent':agent_type})),
+            device=agent_params.get(get_key({'type':'device', 'model':model_type, 'agent':agent_type})),
         )
 
     elif noise_type == "Uniform":
-        return helper.Noise.create_instance(
+        return Noise.create_instance(
             noise_class_name=noise_type,
             shape=env.action_space.shape,
-            minval=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='uniform-min',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            maxval=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='uniform-max',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            device=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type,
-            )
+            minval=agent_params.get(get_key({'type':'uniform-min', 'model':model_type, 'agent':agent_type})),
+            maxval=agent_params.get(get_key({'type':'uniform-max', 'model':model_type, 'agent':agent_type})),
+            device=agent_params.get(get_key({'type':'device', 'model':model_type, 'agent':agent_type})),
         )
 
     elif noise_type == "Ornstein-Uhlenbeck":
-        return helper.Noise.create_instance(
+        return Noise.create_instance(
             noise_class_name=noise_type,
             shape=env.action_space.shape,
-            mean=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='ou-mean',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            theta=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='ou-theta',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            sigma=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='ou-sigma',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            dt=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='ou-dt',
-                model_type='none',
-                agent_type=agent_type,
-            ),
-            device=get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='device',
-                model_type='none',
-                agent_type=agent_type,
-            )
+            mean=agent_params.get(get_key({'type':'ou-mean', 'model':model_type, 'agent':agent_type})),
+            theta=agent_params.get(get_key({'type':'ou-theta', 'model':model_type, 'agent':agent_type})),
+            sigma=agent_params.get(get_key({'type':'ou-sigma', 'model':model_type, 'agent':agent_type})),
+            dt=agent_params.get(get_key({'type':'ou-dt', 'model':model_type, 'agent':agent_type})),
+            device=agent_params.get(get_key({'type':'device', 'model':model_type, 'agent':agent_type})),
         )
 
 def format_layers(model, agent, agent_params):
@@ -213,27 +277,17 @@ def format_layers(model, agent, agent_params):
                 layer_entry["type"] = relevant_keys[type_key]
 
             # Handle layers with parameters (e.g., dense, conv2d)
-            if layer_entry["type"] in ["dense", "conv2d"]:
-                units_key = f"type:num-units_model:{model}_agent:{agent}_index:{index}"
-                kernel_key = f"type:kernel-init_model:{model}_agent:{agent}_index:{index}"
+            if layer_entry["type"] == "dense":
+                layer_entry["params"] = format_dense_layer(model, agent, index, relevant_keys)
 
-                layer_entry["params"] = {
-                    "units": relevant_keys.get(units_key, None),
-                    "kernel": relevant_keys.get(kernel_key, "default"),
-                    "kernel params": {}
-                }
+            elif layer_entry["type"] == "conv2d":
+                layer_entry["params"] = format_cnn_layer(model, agent, index, relevant_keys)
 
-                # Add kernel-specific parameters if applicable
-                kernel_type = layer_entry["params"]["kernel"]
-                KERNEL_PARAMS_MAP = get_kernel_params_map()  # Assuming this is defined elsewhere
-                if kernel_type in KERNEL_PARAMS_MAP:
-                    for param in KERNEL_PARAMS_MAP[kernel_type]:
-                        param_key = f"type:{param}_model:{model}_agent:{agent}_index:{index}"
-                        if param_key in relevant_keys:
-                            layer_entry["params"]["kernel params"][param] = relevant_keys[param_key]
+            # elif layer_entry["type"] == 
 
-            # Handle activation layers
-            elif layer_entry["type"] in ["relu", "tanh", "flatten", "dropout"]:
+
+            # Handle layers with no params
+            elif layer_entry["type"] in ["relu", "tanh", "flatten"]:
                 layer_entry.pop("params", None)  # Remove params if present
 
             # Append the structured layer entry
@@ -244,153 +298,192 @@ def format_layers(model, agent, agent_params):
     print(f'Final layer config: {layer_config}')
     return layer_config
 
-def format_cnn_layers(all_values, all_ids, all_indexed_values, all_indexed_ids, model_type, agent_type):
-    layers = []
-    # Get num CNN layers for model type
-    num_cnn_layers = get_specific_value(
-        all_values=all_values,
-        all_ids=all_ids,
-        id_type='conv-layers',
-        model_type=model_type,
-        agent_type=agent_type,
-    )
-    #DEBUG
-    # print(f'num_cnn_layers: {num_cnn_layers}')
+def format_dense_layer(model, agent, index, keys):
+    units_key = f"type:num-units_model:{model}_agent:{agent}_index:{index}"
+    kernel_key = f"type:kernel-init_model:{model}_agent:{agent}_index:{index}"
+    bias_key = f"type:bias_model:{model}_agent:{agent}_index:{index}"
 
-    # Loop through num of CNN layers
-    for index in range(1, num_cnn_layers+1):
-        # Get the layer type
-        layer_type = get_specific_value_id(
-            all_values=all_indexed_values,
-            all_ids=all_indexed_ids,
-            value_type='cnn-layer-type',
-            model_type=model_type,
-            agent_type=agent_type,
-            index=index
-        )
-        #DEBUG
-        # print(f'layer_type: {layer_type}')
+    params = {
+        "units": keys.get(units_key, None),
+        "kernel": keys.get(kernel_key, "default"),
+        "kernel params": {},
+        "bias": keys.get(bias_key, True)
+    }
 
-        # Parse layer types to set params
-        if layer_type == "conv":
-            params = {}
-            params['out_channels'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='conv-filters',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            params['kernel_size'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='conv-kernel-size',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            params['stride'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='conv-stride',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            padding = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='conv-padding',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            if padding == "custom":
-                params['padding'] = get_specific_value_id(
-                    all_values=all_indexed_values,
-                    all_ids=all_indexed_ids,
-                    value_type='conv-padding-custom',
-                    model_type=model_type,
-                    agent_type=agent_type,
-                    index=index
-                )
+    kernel_type = params["kernel"]
+    KERNEL_PARAMS_MAP = get_kernel_params_map()
+    if kernel_type in KERNEL_PARAMS_MAP:
+        for param in KERNEL_PARAMS_MAP[kernel_type]:
+            param_key = f"type:{param}_model:{model}_agent:{agent}_index:{index}"
+            if param_key in keys:
+                params["kernel params"][param] = keys[param_key]
+    return params
 
-            else:
-                params['padding'] = padding
+def format_cnn_layer(model, agent, index, keys):
+    out_channels_key = f"type:out-channels_model:{model}_agent:{agent}_index:{index}"
+    kernel_size_key = f"type:kernel-size_model:{model}_agent:{agent}_index:{index}"
+    stride_key = f"type:stride_model:{model}_agent:{agent}_index:{index}"
+    padding_key = f"type:padding-dropdown_model:{model}_agent:{agent}_index:{index}"
+    bias_key = f"type:bias_model:{model}_agent:{agent}_index:{index}"
+
+    params = {
+        "out_channels": keys.get(out_channels_key, 32),
+        "kernel_size": keys.get(kernel_size_key, 2),
+        "stride": keys.get(stride_key, 1),
+        "padding": keys.get(padding_key, 0),
+        "bias": keys.get(bias_key, True),
+    }
+    return params
 
 
-            params['bias'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='conv-use-bias',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            # Append to layers list
-            layers.append({layer_type: params})
-            continue
+#TODO Don't think I need this function anymore
+# def format_cnn_layers(all_values, all_ids, all_indexed_values, all_indexed_ids, model_type, agent_type):
+#     layers = []
+#     # Get num CNN layers for model type
+#     num_cnn_layers = get_specific_value(
+#         all_values=all_values,
+#         all_ids=all_ids,
+#         id_type='conv-layers',
+#         model_type=model_type,
+#         agent_type=agent_type,
+#     )
+#     #DEBUG
+#     # print(f'num_cnn_layers: {num_cnn_layers}')
+
+#     # Loop through num of CNN layers
+#     for index in range(1, num_cnn_layers+1):
+#         # Get the layer type
+#         layer_type = get_specific_value_id(
+#             all_values=all_indexed_values,
+#             all_ids=all_indexed_ids,
+#             value_type='cnn-layer-type',
+#             model_type=model_type,
+#             agent_type=agent_type,
+#             index=index
+#         )
+#         #DEBUG
+#         # print(f'layer_type: {layer_type}')
+
+#         # Parse layer types to set params
+#         if layer_type == "conv":
+#             params = {}
+#             params['out_channels'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='conv-filters',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             params['kernel_size'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='conv-kernel-size',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             params['stride'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='conv-stride',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             padding = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='conv-padding',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             if padding == "custom":
+#                 params['padding'] = get_specific_value_id(
+#                     all_values=all_indexed_values,
+#                     all_ids=all_indexed_ids,
+#                     value_type='conv-padding-custom',
+#                     model_type=model_type,
+#                     agent_type=agent_type,
+#                     index=index
+#                 )
+
+#             else:
+#                 params['padding'] = padding
+
+
+#             params['bias'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='conv-use-bias',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             # Append to layers list
+#             layers.append({layer_type: params})
+#             continue
         
-        elif layer_type == "batchnorm":
-            params = {}
-            params['num_features'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='batch-features',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            layers.append({layer_type: params})
-            continue
+#         elif layer_type == "batchnorm":
+#             params = {}
+#             params['num_features'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='batch-features',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             layers.append({layer_type: params})
+#             continue
         
-        elif layer_type == "pool":
-            params = {}
-            params['kernel_size'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='pool-kernel-size',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            params['stride'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='pool-stride',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            layers.append({layer_type: params})
-            continue
+#         elif layer_type == "pool":
+#             params = {}
+#             params['kernel_size'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='pool-kernel-size',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             params['stride'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='pool-stride',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             layers.append({layer_type: params})
+#             continue
 
-        elif layer_type == 'dropout':
-            params = {}
-            params['p'] = get_specific_value_id(
-                all_values=all_indexed_values,
-                all_ids=all_indexed_ids,
-                value_type='dropout-prob',
-                model_type=model_type,
-                agent_type=agent_type,
-                index=index
-            )
-            layers.append({layer_type: params})
-            continue
+#         elif layer_type == 'dropout':
+#             params = {}
+#             params['p'] = get_specific_value_id(
+#                 all_values=all_indexed_values,
+#                 all_ids=all_indexed_ids,
+#                 value_type='dropout-prob',
+#                 model_type=model_type,
+#                 agent_type=agent_type,
+#                 index=index
+#             )
+#             layers.append({layer_type: params})
+#             continue
 
-        elif layer_type == 'relu':
-            params = {}
-            layers.append({layer_type: params})
+#         elif layer_type == 'relu':
+#             params = {}
+#             layers.append({layer_type: params})
 
-        elif layer_type == 'tanh':
-            params = {}
-            layers.append({layer_type: params})
+#         elif layer_type == 'tanh':
+#             params = {}
+#             layers.append({layer_type: params})
 
-        else:
-            raise ValueError(f'Layer type {layer_type} not supported')
+#         else:
+#             raise ValueError(f'Layer type {layer_type} not supported')
         
-    return layers
+#     return layers
 
 
 
@@ -585,24 +678,24 @@ def load(agent_data, env_name):
     
     return agent
 
-def train_model(agent_data, env_name, num_episodes, render, render_freq, num_epochs=None, num_cycles=None, num_updates=None, workers=None):  
-    # print('Training agent...')
-    # agent = rl_agents.load_agent_from_config(save_dir)
-    agent = load(agent_data, env_name)
-    # print('Agent loaded.')
-    if agent_data['agent_type'] == "HER":
-        agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq)
-    else:
-        agent.train(num_episodes, render, render_freq)
-    # print('Training complete.')
+# def train_model(agent_data, env_name, num_episodes, render, render_freq, num_epochs=None, num_cycles=None, num_updates=None, workers=None):  
+#     # print('Training agent...')
+#     # agent = rl_agents.load_agent_from_config(save_dir)
+#     agent = load(agent_data, env_name)
+#     # print('Agent loaded.')
+#     if agent_data['agent_type'] == "HER":
+#         agent.train(num_epochs, num_cycles, num_episodes, num_updates, render, render_freq)
+#     else:
+#         agent.train(num_episodes, render, render_freq)
+#     # print('Training complete.')
 
-def test_model(agent_data, env_name, num_episodes, render, render_freq):  
-    # print('Testing agent...')
-    # agent = rl_agents.load_agent_from_config(save_dir)
-    agent = load(agent_data, env_name)
-    # print('Agent loaded.')
-    agent.test(num_episodes, render, render_freq)
-    # print('Testing complete.')
+# def test_model(agent_data, env_name, num_episodes, render, render_freq):  
+#     # print('Testing agent...')
+#     # agent = rl_agents.load_agent_from_config(save_dir)
+#     agent = load(agent_data, env_name)
+#     # print('Agent loaded.')
+#     agent.test(num_episodes, render, render_freq)
+#     # print('Testing complete.')
 
 def delete_renders(folder_path):
     # Iterate over the files in the folder
@@ -693,11 +786,11 @@ def upload_component(page):
         multiple=False
     )
 
-def instantiate_envwrapper_obj(library:str, env_id:str):
+def instantiate_envwrapper_obj(library:str, env_id:str, wrappers:list = []):
     # Instantiates an EnvWrapper object for an env of library
     if library == 'gymnasium':
         env = gym.make(env_id)
-        return GymnasiumWrapper(env.spec.to_json())
+        return GymnasiumWrapper(env.spec, wrappers)
         
     elif library == 'isaacsim':
         # Placeholder for IsaacSim environments
@@ -705,8 +798,9 @@ def instantiate_envwrapper_obj(library:str, env_id:str):
 
 # Environment dropdown components
 def env_dropdown_component(page):
-
-    return html.Div([
+    allowed_wrappers = get_wrappers_dropdown_options()
+    layout = html.Div([
+        html.H2("Select Environment"),
         dcc.Dropdown(
             id={
                 'type': 'library-select',
@@ -727,92 +821,98 @@ def env_dropdown_component(page):
             options=[],
             placeholder="Select Gym Environment",
             style={'display': 'none'},
-        )
+        ),
+        html.H2("Select Wrappers"),
+        dcc.Dropdown(
+            id={
+                'type': 'gym_wrappers_dropdown',
+                'page': page,
+            },
+            options=[{"label": camel_to_words(w), "value": w} for w in allowed_wrappers],
+            multi=True,
+            placeholder="Select one or more wrappers..."
+        ),
+        dcc.Tabs(id={"type":"wrapper-tabs", "page":page}, children=[]),
+
+        # This store will hold user param overrides for those wrappers in the registry
+        dcc.Store(id={"type":"wrappers_params_store", "page":page}, data={}),
     ])
+    print(f'layer:{layout}')
+    return layout
 
 def get_all_gym_envs():
-    """Returns a list of all gym environments."""
+    """
+    Returns a list of the latest gym environment versions, excluding:
+      - Certain directories (phys2d/, tabular/, etc.).
+      - Atari games that contain 'Deterministic', 'NoFrameskip', or '-ram' in their IDs.
+      - All older versions if there's a newer version available.
+    """
+    # 1) Directories to exclude entirely:
+    exclude = ["Gym", "phys2d/", "tabular/"]
 
-    exclude_list = [
-        "/",
-        "Gym",
-        "CartPole-v0",
-        "Reacher-v2",
-        "Reacher-v4",
-        "Pusher-v2",
-        "Pusher-v4",
-        "InvertedPendulum-v2",
-        "InvertedPendulum-v4",
-        "InvertedDoublePendulum-v2",
-        "InvertedDoublePendulum-v4",
-        "HalfCheetah-v2",
-        "HalfCheetah-v3",
-        "HalfCheetah-v4",
-        "Hopper-v2",
-        "Hopper-v3",
-        "Hopper-v4",
-        "Walker2d-v2",
-        "Walker2d-v3",
-        "Walker2d-v4",
-        "Swimmer-v2",
-        "Swimmer-v3",
-        "Swimmer-v4",
-        "Ant-v2",
-        "Ant-v3",
-        "Ant-v4",
-        "Humanoid-v2",
-        "Humanoid-v3",
-        "Humanoid-v4",
-        "HumanoidStandup-v2",
-        "HumanoidStandup-v4",
-        "BipedalWalkerHardcore-v3",
-        "LunarLanderContinuous-v2",
-        "FrozenLake8x8-v1",
-        "MountainCarContinuous-v0",
-        "FetchReach-v1",
-        "FetchSlide-v1",
-        "FetchPush-v1",
-        "FetchPickAndPlace-v1",
-        "HandReach-v0",
-        "HandManipulateBlockRotateZ-v0",
-        "HandManipulateBlockRotateZ_BooleanTouchSensors-v0",
-        "HandManipulateBlockRotateZ_ContinuousTouchSensors-v0",
-        "HandManipulateBlockRotateParallel-v0",
-        "HandManipulateBlockRotateParallel_BooleanTouchSensors-v0",
-        "HandManipulateBlockRotateParallel_ContinuousTouchSensors-v0",
-        "HandManipulateBlockRotateXYZ-v0",
-        "HandManipulateBlockRotateXYZ_BooleanTouchSensors-v0",
-        "HandManipulateBlockRotateXYZ_ContinuousTouchSensors-v0",
-        "HandManipulateBlockFull-v0",
-        "HandManipulateBlock-v0",
-        "HandManipulateBlockDense-v0",
-        "HandManipulateBlock_BooleanTouchSensors-v0",
-        "HandManipulateBlock_ContinuousTouchSensors-v0",
-        "HandManipulateEgg-v0",
-        "HandManipulateEggDense-v0",
-        "HandManipulateEggRotate-v0",
-        "HandManipulateEggRotateDense-v0",
-        "HandManipulateEggFull-v0",
-        "HandManipulateEggFullDense-v0",
-        "HandManipulateEgg-v0",
-        "HandManipulateEgg_ContinuousTouchSensors-v0",
-        "HandManipulateEggRotate_ContinuousTouchSensors-v0",
-        "HandManipulateEggFull_ContinuousTouchSensors-v0",
-        "HandManipulateEgg_BooleanTouchSensors-v0",
-        "HandManipulateEggRotate_BooleanTouchSensors-v0",
-        "HandManipulateEggFull_BooleanTouchSensors-v0",
-        "HandManipulateEgg_ContinuousTouchSensorsDense-v0",
-        "HandManipulateEggRotate_ContinuousTouchSensorsDense-v0",
-        "HandManipulateEggFull_ContinuousTouchSensorsDense-v0",
-        "HandManipulateEgg_BooleanTouchSensorsDense-v0",
-        "HandManipulateEggRotate_BooleanTouchSensorsDense-v0",
-        "HandManipulateEggFull_BooleanTouchSensorsDense-v0",
+    # 2) Collect all env specs, skipping excluded directories
+    all_specs = [
+        spec for spec in gym.envs.registry.values()
+        if not any(spec.id.startswith(ex) for ex in exclude)
     ]
-    return [
-        env_spec
-        for env_spec in gym.envs.registration.registry
-        if not any(exclude in env_spec for exclude in exclude_list)
-    ]
+
+    # 3) Exclude Atari variants with 'Deterministic', 'NoFrameskip', or '-ram'
+    #    If you ONLY want to exclude these for Atari envs, check if env is "Atari-like".
+    #    In practice, though, those suffixes only appear for Atari anyway.
+    def is_unwanted_atari_variant(env_id: str) -> bool:
+        return (
+            "Deterministic" in env_id
+            or "NoFrameskip" in env_id
+            or "-ram" in env_id
+        )
+    
+    filtered_specs = []
+    for spec in all_specs:
+        # skip if it has the "unwanted Atari variant" substrings
+        if is_unwanted_atari_variant(spec.id):
+            continue
+        filtered_specs.append(spec)
+
+    # 4) Now parse the final list to group them by (base_name) -> version
+    def parse_env_id(env_id: str):
+        """
+        e.g., "ALE/Breakout-v5" -> ("Breakout", 5)
+              "Breakout-v4"     -> ("Breakout", 4)
+              "CartPole-v1"     -> ("CartPole", 1)
+              "ALE/Crossbow-v5" -> ("Crossbow", 5)
+        """
+        # Remove the directory prefix if it exists: "ALE/Breakout-v5" -> "Breakout-v5"
+        final_name = env_id.split("/")[-1]
+        if "-v" in final_name:
+            base_name, version_str = final_name.rsplit("-v", 1)
+            try:
+                version = int(version_str)
+            except ValueError:
+                version = None
+        else:
+            base_name = final_name
+            version = None
+        return base_name, version
+
+    # Group by base_name
+    grouped = {}
+    for spec in filtered_specs:
+        base_name, version = parse_env_id(spec.id)
+        grouped.setdefault(base_name, []).append((spec.id, version))
+
+    # Pick the environment that has the highest version for each base_name
+    def version_or_neg1(v):
+        return v if v is not None else -1
+
+    latest_envs = []
+    for base_name, items in grouped.items():
+        best_item = max(items, key=lambda x: version_or_neg1(x[1]))  # max by version
+        latest_envs.append(best_item[0])  # just the env_id
+
+    # print(latest_envs)
+
+    # Sort so the list is stable and predictable
+    return sorted(latest_envs)
 
 def get_env_data(env_name):
     env_data = {
@@ -1224,40 +1324,203 @@ def get_env_data(env_name):
 
     return description, gif_url
 
-# Training settings component
-def run_agent_settings_component(page, agent_type=None):
+def update_run_options(agent_type, page):
+    if agent_type == 'PPO':
+        return create_ppo_run_options(page)
+    elif agent_type == 'HER':
+        return create_her_run_options(page)
+    elif agent_type == 'Reinforce':
+        return create_reinforce_run_options(page)
+    elif agent_type == 'ActorCritic':
+        return create_actor_critic_run_options(page)
+    else:
+        # return some default or "unknown agent type" message
+        return html.Div([
+            html.P(f"No options found for agent type: {agent_type}")
+        ])
+
+
+def create_ppo_run_options(page):
+    return html.Div(
+        [
+            create_num_timesteps_component(page),
+            create_trajectory_length_component(page),
+            create_batch_size_component(page),
+            create_learning_epochs_component(page),
+            *create_common_run_components(page)
+        ],
+    ),
+
+
+def create_her_run_options(page):
     return html.Div([
-        html.Div(
-            id={
-                'type': 'mpi-options',
-                'page': page,
-            },
-            style={'display': 'none'},
-            # hidden=True,
-            children=[
-                html.Label('Use MPI', style={'text-decoration': 'underline'}),
-                dcc.RadioItems(
+        dcc.Input(
+            id={'type': 'epochs', 'page': page},
+            type='number', min=1, placeholder="Number of Epochs"
+        ),
+        dcc.Input(
+            id={'type': 'cycles', 'page': page},
+            type='number', min=1, placeholder="Number of Cycles"
+        ),
+        # ...
+    ], style={'border': '1px solid #ccc', 'padding': '10px'})
+
+
+def create_reinforce_run_options(page):
+    components = []
+    components.append(create_num_episodes_component(page))
+    if page == '/train-agent':
+        components.append(create_batch_size_component(page))
+    
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_actor_critic_run_options(page):
+    components = []
+    components.append(create_num_episodes_component(page))
+    
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_num_timesteps_component(page):
+    return dcc.Input(
+                id={
+                    'type': 'num-timesteps',
+                    'page': page,
+                },
+                type='number',
+                placeholder="Number of Timesteps",
+                min=1,
+            )
+def create_trajectory_length_component(page):
+    return dcc.Input(
+                id={
+                    'type': 'traj-length',
+                    'page': page,
+                },
+                type='number',
+                placeholder="Trajectories Length (timesteps)",
+                min=1,
+            )
+
+def create_batch_size_component(page):
+    return dcc.Input(
+                id={
+                    'type': 'batch-size',
+                    'page': page,
+                },
+                type='number',
+                placeholder="Batch Size",
+                min=1,
+            )
+
+def create_learning_epochs_component(page):
+    return dcc.Input(
+                id={
+                    'type': 'learning-epochs',
+                    'page': page,
+                },
+                type='number',
+                placeholder="Learning Epochs",
+                min=1,
+            )
+
+def create_num_episodes_component(page):
+    return dcc.Input(
                     id={
-                        'type': 'mpi',
-                        'page': page,
-                    },
-                    options=[
-                    {'label': 'Yes', 'value': True},
-                    {'label': 'No', 'value': False},
-                    ],
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'workers',
+                        'type': 'num-episodes',
                         'page': page,
                     },
                     type='number',
-                    placeholder="Number of Workers",
+                    placeholder="Number of Episodes",
                     min=1,
-                    style={'display': 'none'},
-                ),
-            ]
+                )
+
+def create_num_envs_component(page):
+    return dcc.Input(
+            id={
+                'type': 'num-envs',
+                'page': page,
+            },
+            type='number',
+            placeholder="Number of Envs",
+            min=1,
+        )
+
+def create_load_weights_component(page):
+    return dcc.Checklist(
+            options=[
+                {'label': 'Load Weights', 'value': True}
+            ],
+            id={
+                'type': 'load-weights',
+                'page': page,
+            },
+        )
+
+def create_render_episode_component(page):
+    return html.Div([
+        html.Label('Render Episodes'),
+        dcc.RadioItems(
+            id={
+                'type': 'render-option',
+                'page': page,
+            },
+            options=[
+                {'label': 'True', 'value': True},
+                {'label': 'False', 'value': False},
+            ],
+            value=False,
+            style={'margin-left': '10px'},
         ),
+        html.Div(
+            id = {
+                'type':'render-block',
+                'page':page,
+            },
+            children = [
+                html.Label('Render Frequency'),
+                dcc.Input(
+                    id={
+                        'type': 'render-freq',
+                        'page': page,
+                    },
+                    type='number',
+                    placeholder="Every 'n' Episodes",
+                    min=1,
+                )
+            ],
+            style={'margin-left': '10px', 'display':'none'}
+        )
+    ])
+        
+
+def create_common_run_components(page):
+    common = []
+    # if page == '/train-agent':
+    common.append(create_num_envs_component(page))
+    common.append(create_seed_component(page))
+    common.append(create_load_weights_component(page))
+    common.append(create_render_episode_component(page))
+    # Create hidden div to serve as dummy output for train callback
+    hidden = html.Div(
+            id={
+                'type':'hidden-div',
+                'page':page,
+            },
+            style={'display': 'none'}
+        )
+    common.append(hidden)
+
+    return common
+
+# Training settings component
+def run_agent_settings_component(page, agent_type=None):
+    return html.Div([
         html.Div(
             id={
                 'type': 'her-options',
@@ -1293,146 +1556,6 @@ def run_agent_settings_component(page, agent_type=None):
                     min=1,
                 ),
             ]
-        ),
-        html.Div(
-            id={
-                'type': 'episode-option',
-                'page': page,
-            },
-            style={'display': 'none'},
-            children=[
-                dcc.Input(
-                    id={
-                        'type': 'num-episodes',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Episodes",
-                    min=1,
-                ),
-            ],
-        ),
-        html.Div(
-            id={
-                'type': 'ppo-options',
-                'page': page,
-            },
-            style={'display': 'none'},
-            children=[
-                dcc.Input(
-                    id={
-                        'type': 'num-timesteps',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Timesteps",
-                    min=1,
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'traj-length',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Trajectories Length (timesteps)",
-                    min=1,
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'batch-size',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Batch Size",
-                    min=1,
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'learning-epochs',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Learning Epochs",
-                    min=1,
-                ),
-            ],
-        ),
-        dcc.Input(
-            id={
-                'type': 'num-envs',
-                'page': page,
-            },
-            type='number',
-            placeholder="Number of Envs",
-            min=1,
-        ),
-        dcc.Checklist(
-            options=[
-                {'label': 'Load Weights', 'value': True}
-            ],
-            id={
-                'type': 'load-weights',
-                'page': page,
-            },
-        ),
-        html.Label('Render Episodes'),
-            dcc.RadioItems(
-                id={
-                    'type': 'render-option',
-                    'page': page,
-                },
-                options=[
-                    {'label': 'True', 'value': True},
-                    {'label': 'False', 'value': False},
-                ],
-                value=False,
-                style={'margin-left': '10px'},
-            ),
-            html.Div(
-                id = {
-                    'type':'render-block',
-                    'page':page,
-                },
-                children = [
-                    html.Label('Render Frequency'),
-                    dcc.Input(
-                        id={
-                            'type': 'render-freq',
-                            'page': page,
-                        },
-                        type='number',
-                        placeholder="Every 'n' Episodes",
-                        min=1,
-                    )
-                ],
-                style={'margin-left': '10px', 'display':'none'}
-            ),
-        generate_seed_component(page),
-        dcc.Input(
-            id={
-                'type': 'run-number',
-                'page': page,
-            },
-            type='number',
-            placeholder="WANDB Run Number (blank for None)",
-        ),
-        dcc.Input(
-            id={
-                'type': 'num-runs',
-                'page': page,
-            },
-            type='number',
-            placeholder="Number of Runs",
-            min=1,
-        ),
-        html.Label('Save Directory:', style={'text-decoration': 'underline'}),
-        dcc.Input(
-            id={
-                'type':'save-dir',
-                'page':page,
-            },
-            type='text',
-            placeholder='path/to/model'
         ),
         html.Div(
             id={
@@ -1689,10 +1812,10 @@ def create_uniform_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=-0.99,
-                max=0.99,
+                min=-0.999,
+                max=0.999,
                 step=0.001,
-                value=-0.99,  # Default position
+                value=-0.999,  # Default position
             ),
 
             html.Label('Maximum', style={'text-decoration': 'underline'}),
@@ -1833,7 +1956,7 @@ def format_output_kernel_initializer_config(model_type, agent_type, agent_params
     # }
 
     #DEBUG
-    print(f'agent params passed to format init:{agent_params}')
+    # print(f'agent params passed to format init:{agent_params}')
 
     # Get initializer type
     initializer_type = agent_params.get(get_key({'type':'kernel-init', 'model':model_type, 'agent':agent_type, 'index':0}))
@@ -1888,14 +2011,14 @@ def create_advantage_coeff_input(agent_type):
         ]
     )
 
-def create_policy_clip_input(agent_type):
+def create_surrogate_loss_clip_input(agent_type, model_type):
     return html.Div(
         [
-            html.Label('Policy Loss Clip', style={'text-decoration': 'underline'}),
+            html.Label(f'{model_type.capitalize()} Loss Clip', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'policy-clip',
-                    'model':'policy',
+                    'type':'surrogate-clip',
+                    'model':model_type,
                     'agent':agent_type
                 },
                 type='number',
@@ -1903,37 +2026,426 @@ def create_policy_clip_input(agent_type):
                 max=0.99,
                 step=0.01,
                 value=0.2,
+            ),
+            create_surrogate_loss_clip_scheduler_input(agent_type, model_type)
+
+        ]
+    )
+
+def create_surrogate_loss_clip_scheduler_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label(f'{model_type.capitalize()} Clip Scheduler', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'surrogate-clip-scheduler',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
+                placeholder=f"{model_type.capitalize()} Clip Scheduler",
+            ),
+            html.Div(
+                id={
+                    'type':'surrogate-clip-scheduler-options',
+                    'model':model_type,
+                    'agent':agent_type,
+                }
             )
         ]
     )
 
-def create_policy_grad_clip_input(agent_type):
+def update_surrogate_loss_clip_scheduler_options(agent_type, model_type, surr_clip_scheduler):
+    if surr_clip_scheduler == 'step':
+        return surrogate_loss_clip_step_scheduler_options(agent_type, model_type)
+    elif surr_clip_scheduler == 'exponential':
+        return surrogate_loss_clip_exponential_scheduler_options(agent_type, model_type)
+    elif surr_clip_scheduler == 'cosineannealing':
+        return surrogate_loss_clip_cosineannealing_scheduler_options(agent_type, model_type)
+    elif surr_clip_scheduler == 'linear':
+        return surrogate_loss_clip_linear_scheduler_options(agent_type, model_type)
+    return html.Div()
+
+def surrogate_loss_clip_cosineannealing_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-t-max',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=10000,
+                step=1,
+                value=1000,
+            ),
+            html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-eta-min',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.000001,
+                max=0.1,
+                step=0.000001,
+                value=0.0001,
+            ),
+        ]
+    )
+
+def surrogate_loss_clip_exponential_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-gamma',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=0.99,
+                step=0.01,
+                value=0.99,
+            ),
+        ]
+    )
+
+def surrogate_loss_clip_step_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Step Size', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-step-size',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=1000,
+                step=1,
+                value=100,
+            ),
+            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-gamma',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=0.99,
+                step=0.01,
+                value=0.99,
+            ),
+        ]
+    )
+
+def surrogate_loss_clip_linear_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Start Factor', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-start-factor',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=1.0,
+                step=0.01,
+                value=1.0,
+            ),
+            html.Label('End Factor', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-end-factor',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=1.00,
+                step=0.01,
+                value=0.01,
+            ),
+            html.Label('Total Iterations', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'surrogate-clip-total-iters',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=1e8,
+                step=1,
+                value=1e3,
+            ),
+        ]
+    )
+
+def get_surrogate_loss_clip_scheduler(model_type, agent_type, agent_params):
+
+    scheduler = agent_params.get(get_key({'type':'surrogate-clip-scheduler', 'model':model_type, 'agent':agent_type}))
+    if scheduler == 'none':
+        return None
+    params = {}
+    if scheduler == 'step':
+        params['step_size'] = agent_params.get(get_key({'type':'surrogate-clip-step-size', 'model':model_type, 'agent':agent_type}))
+        params['gamma'] = agent_params.get(get_key({'type':'surrogate-clip-gamma', 'model':model_type, 'agent':agent_type}))
+    elif scheduler == 'exponential':
+        params['gamma'] = agent_params.get(get_key({'type':'surrogate-clip-gamma', 'model':model_type, 'agent':agent_type}))
+    elif scheduler == 'cosineannealing':
+        params['T_max'] = agent_params.get(get_key({'type':'surrogate-clip-t-max', 'model':model_type, 'agent':agent_type}))
+        params['eta_min'] = agent_params.get(get_key({'type':'surrogate-clip-eta-min', 'model':model_type, 'agent':agent_type}))
+    elif scheduler == 'linear':
+        params['start_factor'] = agent_params.get(get_key({'type':'surrogate-clip-start-factor', 'model':model_type, 'agent':agent_type}))
+        params['end_factor'] = agent_params.get(get_key({'type':'surrogate-clip-end-factor', 'model':model_type, 'agent':agent_type}))
+        params['total_iters'] = agent_params.get(get_key({'type':'surrogate-clip-total-iters', 'model':model_type, 'agent':agent_type}))
+
+    return {'type':scheduler, 'params':params}
+
+# def create_value_clip_input(agent_type):
+#     return html.Div(
+#         [
+#             html.Label('Value Loss Clip', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip',
+#                     'model':'value',
+#                     'agent':agent_type
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=0.99,
+#                 step=0.01,
+#                 value=0.2,
+#             ),
+#             create_value_clip_scheduler_input(agent_type)
+
+#         ]
+#     )
+
+# def create_value_clip_scheduler_input(agent_type):
+#     return html.Div(
+#         [
+#             html.Label('Value Clip Scheduler', style={'text-decoration': 'underline'}),
+#             dcc.Dropdown(
+#                 id={
+#                     'type':'value-clip-scheduler',
+#                     'model':'value',
+#                     'agent':agent_type,
+#                 },
+#                 options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
+#                 placeholder="Value Clip Scheduler",
+#             ),
+#             html.Div(
+#                 id={
+#                     'type':'value-clip-scheduler-options',
+#                     'model':'value',
+#                     'agent':agent_type,
+#                 }
+#             )
+#         ]
+#     )
+
+# def update_value_clip_scheduler_options(agent_type, model_type, lr_scheduler):
+#     if lr_scheduler == 'step':
+#         return value_clip_step_scheduler_options(agent_type, model_type)
+#     elif lr_scheduler == 'exponential':
+#         return value_clip_exponential_scheduler_options(agent_type, model_type)
+#     elif lr_scheduler == 'cosineannealing':
+#         return value_clip_cosineannealing_scheduler_options(agent_type, model_type)
+#     elif lr_scheduler == 'linear':
+#         return value_clip_linear_scheduler_options(agent_type, model_type)
+#     return html.Div()
+
+# def value_clip_cosineannealing_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-t-max',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=10000,
+#                 step=1,
+#                 value=1000,
+#             ),
+#             html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-eta-min',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.000001,
+#                 max=0.1,
+#                 step=0.000001,
+#                 value=0.0001,
+#             ),
+#         ]
+#     )
+
+# def value_clip_exponential_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-gamma',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=0.99,
+#                 step=0.01,
+#                 value=0.99,
+#             ),
+#         ]
+#     )
+
+# def value_clip_step_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Step Size', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-step-size',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=1000,
+#                 step=1,
+#                 value=100,
+#             ),
+#             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-gamma',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=0.99,
+#                 step=0.01,
+#                 value=0.99,
+#             ),
+#         ]
+#     )
+
+# def value_clip_linear_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Start Factor', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-start-factor',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=1.0,
+#                 step=0.01,
+#                 value=1.0,
+#             ),
+#             html.Label('End Factor', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-end-factor',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=1.00,
+#                 step=0.01,
+#                 value=0.01,
+#             ),
+#             html.Label('Total Iterations', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'value-clip-total-iters',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=1e8,
+#                 step=1,
+#                 value=1e3,
+#             ),
+#         ]
+#     )
+
+# def get_value_clip_scheduler(model_type, agent_type, agent_params):
+
+#     scheduler = agent_params.get(get_key({'type':'value-clip-scheduler', 'model':model_type, 'agent':agent_type}))
+#     if scheduler == 'none':
+#         return None
+#     params = {}
+#     if scheduler == 'step':
+#         params['step_size'] = agent_params.get(get_key({'type':'value-clip-step-size', 'model':model_type, 'agent':agent_type}))
+#         params['gamma'] = agent_params.get(get_key({'type':'value-clip-gamma', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'exponential':
+#         params['gamma'] = agent_params.get(get_key({'type':'value-clip-gamma', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'cosineannealing':
+#         params['T_max'] = agent_params.get(get_key({'type':'value-clip-t-max', 'model':model_type, 'agent':agent_type}))
+#         params['eta_min'] = agent_params.get(get_key({'type':'value-clip-eta-min', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'linear':
+#         params['start_factor'] = agent_params.get(get_key({'type':'value-clip-start-factor', 'model':model_type, 'agent':agent_type}))
+#         params['end_factor'] = agent_params.get(get_key({'type':'value-clip-end-factor', 'model':model_type, 'agent':agent_type}))
+#         params['total_iters'] = agent_params.get(get_key({'type':'value-clip-total-iters', 'model':model_type, 'agent':agent_type}))
+
+#     return {'type':scheduler, 'params':params}
+
+def create_grad_clip_input(agent_type, model_type):
     return html.Div(
         [
             # html.Label('Normalize Advantage', style={'text-decoration': 'underline'}),
             dcc.Checklist(
-                id={'type':'clip-policy-grad',
-                    'model':'policy',
+                id={'type':f'clip-grad',
+                    'model':model_type,
                     'agent':agent_type,
                 },
                 options=[
-                    {'label': 'Clip Policy Gradient', 'value': True},
+                    {'label': f'Clip {model_type.capitalize()} Gradient', 'value': True},
                 ],
                 # value=False
                 style={'display':'inline-block'}
             ),
             html.Div(
                 id = {
-                    'type':'policy-grad-clip-block',
-                    'model':'policy',
+                    'type':f'grad-clip-block',
+                    'model':model_type,
                     'agent':agent_type,
                 },
                 children = [
-                    html.Label('Policy Gradient Clip'),
+                    html.Label(f'{model_type.capitalize()} Gradient Clip'),
                     dcc.Input(
                         id={
-                            'type': 'policy-grad-clip',
-                            'model': 'policy',
+                            'type': 'grad-clip',
+                            'model': model_type,
                             'agent': agent_type
                         },
                         type='number',
@@ -1948,7 +2460,7 @@ def create_policy_grad_clip_input(agent_type):
         ]
     )
 
-def create_entropy_coeff_input(agent_type):
+def create_entropy_input(agent_type):
     return html.Div(
         [
             html.Label('Entropy Coefficient', style={'text-decoration': 'underline'}),
@@ -1963,9 +2475,194 @@ def create_entropy_coeff_input(agent_type):
                 max=0.990,
                 step=0.0001,
                 value=0.001,
+            ),
+            create_entropy_scheduler_input(agent_type)
+        ]
+    )
+
+def create_entropy_scheduler_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Entropy Scheduler', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'entropy-scheduler',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
+                placeholder="Entropy Coefficient Scheduler",
+            ),
+            html.Div(
+                id={
+                    'type':'entropy-scheduler-options',
+                    'model':'none',
+                    'agent':agent_type,
+                }
             )
         ]
     )
+
+def update_entropy_scheduler_options(agent_type, model_type, lr_scheduler):
+    if lr_scheduler == 'step':
+        return entropy_step_scheduler_options(agent_type, model_type)
+    elif lr_scheduler == 'exponential':
+        return entropy_exponential_scheduler_options(agent_type, model_type)
+    elif lr_scheduler == 'cosineannealing':
+        return entropy_cosineannealing_scheduler_options(agent_type, model_type)
+    elif lr_scheduler == 'linear':
+        return entropy_linear_scheduler_options(agent_type, model_type)
+    return html.Div()
+
+def entropy_cosineannealing_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-t-max',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=10000,
+                step=1,
+                value=1000,
+            ),
+            html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-eta-min',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.000001,
+                max=0.1,
+                step=0.000001,
+                value=0.0001,
+            ),
+        ]
+    )
+
+
+def entropy_exponential_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-gamma',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=0.99,
+                step=0.01,
+                value=0.99,
+            ),
+        ]
+    )
+
+def entropy_step_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Step Size', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-step-size',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=1000,
+                step=1,
+                value=100,
+            ),
+            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-gamma',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=0.99,
+                step=0.01,
+                value=0.99,
+            ),
+        ]
+    )
+
+def entropy_linear_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Start Factor', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-start-factor',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=1.0,
+                step=0.01,
+                value=1.0,
+            ),
+            html.Label('End Factor', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-end-factor',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=1.00,
+                step=0.01,
+                value=0.01,
+            ),
+            html.Label('Total Iterations', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'entropy-total-iters',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=1e8,
+                step=1,
+                value=1e3,
+            ),
+        ]
+    )
+
+def get_entropy_scheduler(model_type, agent_type, agent_params):
+
+    scheduler = agent_params.get(get_key({'type':'entropy-scheduler', 'model':model_type, 'agent':agent_type}))
+    if scheduler == 'none':
+        return None
+    params = {}
+    if scheduler == 'step':
+        params['step_size'] = agent_params.get(get_key({'type':'entropy-step-size', 'model':model_type, 'agent':agent_type}))
+        params['gamma'] = agent_params.get(get_key({'type':'entropy-gamma', 'model':model_type, 'agent':agent_type}))
+    elif scheduler == 'exponential':
+        params['gamma'] = agent_params.get(get_key({'type':'entropy-gamma', 'model':model_type, 'agent':agent_type}))
+    elif scheduler == 'cosineannealing':
+        params['T_max'] = agent_params.get(get_key({'type':'entropy-t-max', 'model':model_type, 'agent':agent_type}))
+        params['eta_min'] = agent_params.get(get_key({'type':'entropy-eta-min', 'model':model_type, 'agent':agent_type}))
+    elif scheduler == 'linear':
+        params['start_factor'] = agent_params.get(get_key({'type':'entropy-start-factor', 'model':model_type, 'agent':agent_type}))
+        params['end_factor'] = agent_params.get(get_key({'type':'entropy-end-factor', 'model':model_type, 'agent':agent_type}))
+        params['total_iters'] = agent_params.get(get_key({'type':'entropy-total-iters', 'model':model_type, 'agent':agent_type}))
+
+    return {'type':scheduler, 'params':params}
 
 def create_kl_coeff_input(agent_type):
     return html.Div(
@@ -1982,6 +2679,137 @@ def create_kl_coeff_input(agent_type):
                 max=10.00,
                 step=0.01,
                 value=3.00,
+            ),
+            html.Div(
+                [
+                    html.Label('Use Adaptive KL'),
+                    dcc.RadioItems(
+                        id={
+                            'type': 'adaptive-kl',
+                            'model': 'none',
+                            'agent': agent_type,
+                        },
+                        options=[
+                            {'label': 'True', 'value': True},
+                            {'label': 'False', 'value': False},
+                        ],
+                        value=False,
+                        style={'margin-left': '10px'},
+                    ),
+                    html.Div(
+                        id = {
+                            'type':'adaptive-kl-block',
+                            'model':'none',
+                            'agent':agent_type,
+                        },
+                        style={'margin-left': '20px'}
+                    )
+                ],
+            )
+        ]
+    )
+
+def create_adaptive_kl_options(agent_type):
+    return html.Div([
+        html.Label('Target KL'),
+        dcc.Input(
+            id={
+                'type': 'adaptive-kl-target-kl',
+                'model': 'none',
+                'agent': agent_type
+            },
+            type='number',
+            min=0.0,
+            max=1.0,
+            value=0.01,
+            step=0.0001,
+        ),
+        html.Label('Scale Up'),
+        dcc.Input(
+            id={
+                'type': 'adaptive-kl-scale-up',
+                'model': 'none',
+                'agent': agent_type
+            },
+            type='number',
+            min=0.0,
+            max=3.0,
+            value=2.0,
+            step=0.1,
+        ),
+        html.Label('Scale Down'),
+        dcc.Input(
+            id={
+                'type': 'adaptive-kl-scale-down',
+                'model': 'none',
+                'agent': agent_type
+            },
+            type='number',
+            min=0.0,
+            max=3.0,
+            value=0.5,
+            step=0.1,
+        ),
+        html.Label('High Tolerance'),
+        dcc.Input(
+            id={
+                'type': 'adaptive-kl-tolerance-high',
+                'model': 'none',
+                'agent': agent_type
+            },
+            type='number',
+            min=0.0,
+            max=3.0,
+            value=1.5,
+            step=0.1,
+        ),
+        html.Label('Low Tolerance'),
+        dcc.Input(
+            id={
+                'type': 'adaptive-kl-tolerance-low',
+                'model': 'none',
+                'agent': agent_type
+            },
+            type='number',
+            min=0.0,
+            max=3.0,
+            value=0.5,
+            step=0.1,
+        )
+    ])
+
+def get_kl_adapter(model_type, agent_type, agent_params):
+    adapt_kl = agent_params.get(get_key({'type':'adaptive-kl', 'model':model_type, 'agent':agent_type}))
+    if not adapt_kl:
+        return None
+    params = {}
+    params['initial_beta'] = agent_params.get(get_key({'type':'kl-coeff', 'model':model_type, 'agent':agent_type}))
+    params['target_kl'] = agent_params.get(get_key({'type':'adaptive-kl-target-kl', 'model':model_type, 'agent':agent_type}))
+    params['scale_up'] = agent_params.get(get_key({'type':'adaptive-kl-scale-up', 'model':model_type, 'agent':agent_type}))
+    params['scale_down'] = agent_params.get(get_key({'type':'adaptive-kl-scale-down', 'model':model_type, 'agent':agent_type}))
+    params['kl_tolerance_high'] = agent_params.get(get_key({'type':'adaptive-kl-tolerance-high', 'model':model_type, 'agent':agent_type}))
+    params['kl_tolerance_low'] = agent_params.get(get_key({'type':'adaptive-kl-tolerance-low', 'model':model_type, 'agent':agent_type}))
+
+    #DEBUG
+    print(f'kl adapter params:{params}')
+
+    return params
+
+def create_value_model_coeff_input(agent_type):
+    return html.Div(
+        [
+            html.Label('Value Model Coefficient', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'value-model-coeff',
+                    'model':'value',
+                    'agent':agent_type
+                },
+                type='number',
+                min=0.01,
+                max=2.00,
+                step=0.01,
+                value=0.5,
             )
         ]
     )
@@ -2403,7 +3231,7 @@ def create_kernel_input(agent_type, model_type, index, stored_values=None, key=N
                     'index': index,
                 },
                     options=[
-                        {"label": x, "value": x} for x in 
+                        {"label": x, "value": x.replace(" ", "_")} for x in 
                         ["kaiming uniform", "kaiming normal", "xavier uniform", "xavier normal", "truncated normal", 
                         "uniform", "normal", "constant", "ones", "zeros", "variance scaling", "default"
                         ]
@@ -2424,15 +3252,15 @@ def create_kernel_input(agent_type, model_type, index, stored_values=None, key=N
 
 def get_kernel_params_map():
     return {
-        "kaiming normal": ["mode"],
-        "kaiming uniform": ["mode"],
-        "xavier normal": ["gain"],
-        "xavier uniform": ["gain"],
-        "truncated normal": ["mean", "std-dev"],
+        "kaiming_normal": ["mode"],
+        "kaiming_uniform": ["mode"],
+        "xavier_normal": ["gain"],
+        "xavier_uniform": ["gain"],
+        "truncated_normal": ["mean", "std-dev"],
         "uniform": ["min", "max"],
         "normal": ["mean", "std-dev"],
         "constant": ["value"],
-        "variance scaling": ["scale", "mode", "distribution"]
+        "variance_scaling": ["scale", "mode", "distribution"]
     }
 
 def create_activation_input(agent_type, model_type):
@@ -2673,22 +3501,22 @@ def create_learning_rate_exponent_input(agent_type, model_type):
         ]
     )
 
-def create_learning_rate_scheduler_input(agent_type, model_type):
+def create_lr_scheduler_input(agent_type, model_type):
     return html.Div(
         [
             html.Label('Learning Rate Scheduler', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
-                    'type':'learning-rate-scheduler',
+                    'type':'lr-scheduler',
                     'model':model_type,
                     'agent':agent_type,
                 },
-                options=[{'label': i, 'value': i.lower()} for i in ['StepLR', 'ExponentialLR', 'CosineAnnealingLR', 'None']],
+                options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
                 placeholder="Learning Rate Scheduler",
             ),
             html.Div(
                 id={
-                    'type':'learning-rate-scheduler-options',
+                    'type':'lr-scheduler-options',
                     'model':model_type,
                     'agent':agent_type,
                 }
@@ -2696,16 +3524,18 @@ def create_learning_rate_scheduler_input(agent_type, model_type):
         ]
     )
 
-def update_learning_rate_scheduler_options(agent_type, model_type, lr_scheduler):
-    if lr_scheduler == 'steplr':
-        return steplr_scheduler_options(agent_type, model_type)
-    elif lr_scheduler == 'exponentiallr':
-        return exponentiallr_scheduler_options(agent_type, model_type)
-    elif lr_scheduler == 'cosineannealinglr':
-        return cosineannealinglr_scheduler_options(agent_type, model_type)
+def update_lr_scheduler_options(agent_type, model_type, lr_scheduler):
+    if lr_scheduler == 'step':
+        return lr_step_scheduler_options(agent_type, model_type)
+    elif lr_scheduler == 'exponential':
+        return lr_exponential_scheduler_options(agent_type, model_type)
+    elif lr_scheduler == 'cosineannealing':
+        return lr_cosineannealing_scheduler_options(agent_type, model_type)
+    elif lr_scheduler == 'linear':
+        return lr_linear_scheduler_options(agent_type, model_type)
     return html.Div()
 
-def cosineannealinglr_scheduler_options(agent_type, model_type):
+def lr_cosineannealing_scheduler_options(agent_type, model_type):
     return html.Div(
         [
             html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
@@ -2738,7 +3568,7 @@ def cosineannealinglr_scheduler_options(agent_type, model_type):
     )
 
 
-def exponentiallr_scheduler_options(agent_type, model_type):
+def lr_exponential_scheduler_options(agent_type, model_type):
     return html.Div(
         [
             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
@@ -2757,7 +3587,7 @@ def exponentiallr_scheduler_options(agent_type, model_type):
         ]
     )
 
-def steplr_scheduler_options(agent_type, model_type):
+def lr_step_scheduler_options(agent_type, model_type):
     return html.Div(
         [
             html.Label('Step Size', style={'text-decoration': 'underline'}),
@@ -2789,20 +3619,71 @@ def steplr_scheduler_options(agent_type, model_type):
         ]
     )
 
+def lr_linear_scheduler_options(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label('Start Factor', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'lr-start-factor',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=1.0,
+                step=0.01,
+                value=1.0,
+            ),
+            html.Label('End Factor', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'lr-end-factor',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.01,
+                max=1.00,
+                step=0.01,
+                value=0.01,
+            ),
+            html.Label('Total Iterations', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'lr-total-iters',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=1e8,
+                step=1,
+                value=1e3,
+            ),
+        ]
+    )
+
 def get_lr_scheduler(model_type, agent_type, agent_params):
 
-    lr_scheduler = agent_params.get(get_key({'type':'learning-rate-scheduler', 'model':model_type, 'agent':agent_type}))
+    scheduler = agent_params.get(get_key({'type':'lr-scheduler', 'model':model_type, 'agent':agent_type}))
+    if scheduler == 'none':
+        return None
     params = {}
-    if lr_scheduler == 'steplr':
+    if scheduler == 'step':
         params['step_size'] = agent_params.get(get_key({'type':'lr-step-size', 'model':model_type, 'agent':agent_type}))
         params['gamma'] = agent_params.get(get_key({'type':'lr-gamma', 'model':model_type, 'agent':agent_type}))
-    elif lr_scheduler == 'exponentiallr':
+    elif scheduler == 'exponential':
         params['gamma'] = agent_params.get(get_key({'type':'lr-gamma', 'model':model_type, 'agent':agent_type}))
-    elif lr_scheduler == 'cosineannealinglr':
+    elif scheduler == 'cosineannealing':
         params['T_max'] = agent_params.get(get_key({'type':'lr-t-max', 'model':model_type, 'agent':agent_type}))
         params['eta_min'] = agent_params.get(get_key({'type':'lr-eta-min', 'model':model_type, 'agent':agent_type}))
+    elif scheduler == 'linear':
+        params['start_factor'] = agent_params.get(get_key({'type':'lr-start-factor', 'model':model_type, 'agent':agent_type}))
+        params['end_factor'] = agent_params.get(get_key({'type':'lr-end-factor', 'model':model_type, 'agent':agent_type}))
+        params['total_iters'] = agent_params.get(get_key({'type':'lr-total-iters', 'model':model_type, 'agent':agent_type}))
 
-    return {'type':lr_scheduler, 'params':params}
+    return {'type':scheduler, 'params':params}
 
 def create_goal_strategy_input(agent_type):
     return html.Div(
@@ -3050,7 +3931,7 @@ def create_policy_model_input(agent_type):
             create_optimizer_input(agent_type, 'policy'),
             create_learning_rate_constant_input(agent_type, 'policy'),
             create_learning_rate_exponent_input(agent_type, 'policy'),
-            create_learning_rate_scheduler_input(agent_type, 'policy')
+            create_lr_scheduler_input(agent_type, 'policy')
         ]
     )
 
@@ -3069,7 +3950,7 @@ def create_value_model_input(agent_type):
             create_optimizer_input(agent_type, 'value'),
             create_learning_rate_constant_input(agent_type, 'value'),
             create_learning_rate_exponent_input(agent_type, 'value'),
-            create_learning_rate_scheduler_input(agent_type, 'value')
+            create_lr_scheduler_input(agent_type, 'value')
         ]
     )
     
@@ -3078,17 +3959,17 @@ def create_actor_model_input(agent_type):
     return html.Div(
         [
             html.H3("Actor Model Configuration"),
-            create_convolution_layers_input(agent_type, 'actor'),
-            create_dense_layers_input(agent_type, 'actor'),
-            create_normalize_layers_input(agent_type, 'actor'),
-            # create_clamp_output_input(agent_type, 'actor'),
-            html.Label("Hidden Layers Kernel Initializers"),
-            create_kernel_input(agent_type, 'actor-hidden'),
+            # create_dense_layers_input(agent_type, 'value'),
+            # html.Label("Hidden Layers Kernel Initializers"),
+            # create_kernel_input(agent_type, 'value-hidden'),
+            create_add_layer_button(agent_type, 'actor'),
             html.Label("Output Layer Kernel Initializer"),
-            create_kernel_input(agent_type, 'actor-output'),
-            create_activation_input(agent_type, 'actor'),
+            create_kernel_input(agent_type, 'actor', 0),
+            # create_activation_input(agent_type, 'value'),
+            create_optimizer_input(agent_type, 'actor'),
             create_learning_rate_constant_input(agent_type, 'actor'),
             create_learning_rate_exponent_input(agent_type, 'actor'),
+            create_lr_scheduler_input(agent_type, 'actor')
         ]
     )
 
@@ -3096,77 +3977,167 @@ def create_actor_model_input(agent_type):
 def create_critic_model_input(agent_type):
     return html.Div(
         [
-            html.H3("Critic Model Configuration"),
-            create_convolution_layers_input(agent_type, 'critic'),
-            create_dense_layers_input(agent_type, 'critic-state'),
-            create_dense_layers_input(agent_type, 'critic-merged'),
-            create_normalize_layers_input(agent_type, 'critic'),
-            html.Label("Hidden Layers Kernel Initializers"),
-            create_kernel_input(agent_type, 'critic-hidden'),
+            html.H3("Critic State Layers Configuration"),
+            create_add_layer_button(agent_type, 'critic-state'),
+            html.H3("Critic State/Action Layers Configuration"),
+            create_add_layer_button(agent_type, 'critic-merged'),
             html.Label("Output Layer Kernel Initializer"),
-            create_kernel_input(agent_type, 'critic-output'),
-            create_activation_input(agent_type, 'critic'),
+            create_kernel_input(agent_type, 'critic', 0),
+            # create_activation_input(agent_type, 'value'),
             create_optimizer_input(agent_type, 'critic'),
             create_learning_rate_constant_input(agent_type, 'critic'),
             create_learning_rate_exponent_input(agent_type, 'critic'),
+            create_lr_scheduler_input(agent_type, 'critic')
         ]
     )
 
 
 def create_reinforce_parameter_inputs(agent_type):
+    """Adds inputs for REINFORCE Agent"""
     return html.Div(
-        [
-            create_learning_rate_constant_input(agent_type, 'none'),
-            create_learning_rate_exponent_input(agent_type, 'none'),
-            create_discount_factor_input(agent_type),
-            # Policy Model
-            create_policy_model_input(agent_type),
-            # Value Mode
-            create_value_model_input(agent_type),
-            # Save dir
-            create_save_dir_input(agent_type),
+        id=f'{agent_type}-inputs',
+        children=[
+            dbc.Tabs([
+                # Tab 1 Agent Parameters
+                dbc.Tab(
+                    label="Agent Parameters",
+                    children=[
+                        create_discount_factor_input(agent_type),
+                    ]
+                ),
+
+                # Tab 2 Policy Model
+                dbc.Tab(
+                    label="Policy Model",
+                    children=[
+                        create_policy_model_input(agent_type),
+                    ]
+                ),
+
+                # Tab 3 Value Model
+                dbc.Tab(
+                    label="Value Model",
+                    children=[
+                        create_value_model_input(agent_type),
+                    ]
+                ),
+
+                # Tab 4 Agent Options
+                dbc.Tab(
+                    label="Agent Options",
+                    children=[
+                        create_device_input(agent_type),
+                        create_save_dir_input(agent_type),
+                    ]
+                ),
+            ])
         ]
     )
 
 def create_actor_critic_parameter_inputs(agent_type):
     return html.Div(
-        [
-            create_learning_rate_constant_input(agent_type, 'none'),
-            create_learning_rate_exponent_input(agent_type, 'none'),
-            create_discount_factor_input(agent_type),
-            create_trace_decay_input(agent_type, 'policy'),
-            create_trace_decay_input(agent_type, 'value'),
-            # Policy Model
-            create_policy_model_input(agent_type),
-            # Value Model
-            create_value_model_input(agent_type),
-            # Save dir
-            create_save_dir_input(agent_type),
+        id=f'{agent_type}-inputs',
+        children=[
+            dbc.Tabs([
+                # Tab 1 Agent Parameters
+                dbc.Tab(
+                    label="Agent Parameters",
+                    children=[
+                        create_discount_factor_input(agent_type),
+                        create_trace_decay_input(agent_type, 'policy'),
+                        create_trace_decay_input(agent_type, 'value'),
+                    ]
+                ),
+
+                # Tab 2 Policy Model
+                dbc.Tab(
+                    label="Policy Model",
+                    children=[
+                        create_policy_model_input(agent_type),
+                    ]
+                ),
+
+                # Tab 3 Value Model
+                dbc.Tab(
+                    label="Value Model",
+                    children=[
+                        create_value_model_input(agent_type),
+                    ]
+                ),
+
+                # Tab 4 Agent Options
+                dbc.Tab(
+                    label="Agent Options",
+                    children=[
+                        create_device_input(agent_type),
+                        create_save_dir_input(agent_type),
+                    ]
+                ),
+            ])
         ]
     )
 
 def create_ddpg_parameter_inputs(agent_type):
     """Adds inputs for DDPG Agent"""
+    # return html.Div(
+    #     id=f'{agent_type}-inputs',
+    #     children=[
+    #         create_device_input(agent_type),
+            
+    #         # Actor Model Configuration
+    #         ,
+    #         # Critic Model Configuration
+    #         html.H3("Critic Model Configuration"),
+            
+    #         # Save dir
+    #         create_save_dir_input(agent_type)
+    #     ]
+    # )
     return html.Div(
-        id=f'{agent_type}-inputs',
-        children=[
-            create_device_input(agent_type),
-            create_discount_factor_input(agent_type),
-            create_tau_input(agent_type),
-            create_epsilon_greedy_input(agent_type),
-            create_batch_size_input(agent_type),
-            create_noise_function_input(agent_type),
-            create_input_normalizer_input(agent_type),
-            create_warmup_input(agent_type),
-            # Actor Model Configuration
-            create_actor_model_input(agent_type),
-            # Critic Model Configuration
-            html.H3("Critic Model Configuration"),
-            create_critic_model_input(agent_type),
-            # Save dir
-            create_save_dir_input(agent_type)
-        ]
-    )
+            id=f'{agent_type}-inputs',
+            children=[
+                dbc.Tabs([
+                    # Tab 1 Agent Parameters
+                    dbc.Tab(
+                        label="Agent Parameters",
+                        children=[
+                            create_discount_factor_input(agent_type),
+                            create_tau_input(agent_type),
+                            create_epsilon_greedy_input(agent_type),
+                            create_batch_size_input(agent_type),
+                            create_noise_function_input(agent_type),
+                            create_input_normalizer_input(agent_type),
+                            create_warmup_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 2 Policy Model
+                    dbc.Tab(
+                        label="Actor Model",
+                        children=[
+                            create_actor_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 3 Value Model
+                    dbc.Tab(
+                        label="Critic Model",
+                        children=[
+                            create_critic_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 4 Agent Options
+                    dbc.Tab(
+                        label="Agent Options",
+                        children=[
+                            create_device_input(agent_type),
+                            create_save_dir_input(agent_type),
+                        ]
+                    ),
+                ])
+            ]
+        )
 
 def create_td3_parameter_inputs(agent_type):
     """Adds inputs for TD3 Agent"""
@@ -3232,7 +4203,7 @@ def create_ppo_parameter_inputs(agent_type):
                         create_distribution_input(agent_type),
                         create_discount_factor_input(agent_type),
                         create_advantage_coeff_input(agent_type),
-                        create_entropy_coeff_input(agent_type),
+                        create_entropy_input(agent_type),
                         create_kl_coeff_input(agent_type),
                         create_normalize_advantage_input(agent_type),
                         create_normalize_values_input(agent_type),
@@ -3245,8 +4216,8 @@ def create_ppo_parameter_inputs(agent_type):
                     label="Policy Model",
                     children=[
                         create_policy_model_type_input(agent_type),
-                        create_policy_clip_input(agent_type),
-                        create_policy_grad_clip_input(agent_type),
+                        create_surrogate_loss_clip_input(agent_type, 'policy'),
+                        create_grad_clip_input(agent_type, 'policy'),
                         create_policy_model_input(agent_type),
                     ]
                 ),
@@ -3255,6 +4226,9 @@ def create_ppo_parameter_inputs(agent_type):
                 dbc.Tab(
                     label="Value Model",
                     children=[
+                        create_surrogate_loss_clip_input(agent_type, 'value'),
+                        create_value_model_coeff_input(agent_type),
+                        create_grad_clip_input(agent_type, 'value'),
                         create_value_model_input(agent_type),
                     ]
                 ),
@@ -5532,17 +6506,17 @@ def create_learning_rate_scheduler_hyperparam_input(agent_type, model_type):
             html.Label('Learning Rate Scheduler', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
-                    'type':'learning-rate-scheduler-hyperparam',
+                    'type':'lr-scheduler-hyperparam',
                     'model':model_type,
                     'agent':agent_type,
                 },
-                options=[{'label': i, 'value': i.lower()} for i in ['StepLR', 'ExponentialLR', 'CosineAnnealingLR', 'None']],
+                options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'None']],
                 multi=True,
                 placeholder="Select Learning Rate Scheduler(s)",
             ),
             html.Div(
                 id={
-                    'type':'learning-rate-scheduler-tabs-hyperparam',
+                    'type':'lr-scheduler-tabs-hyperparam',
                     'model':model_type,
                     'agent':agent_type,
                 }
@@ -5550,7 +6524,7 @@ def create_learning_rate_scheduler_hyperparam_input(agent_type, model_type):
         ]
     )
 
-def update_learning_rate_scheduler_hyperparam_options(agent_type, model_type, lr_schedulers):
+def update_lr_scheduler_hyperparam_options(agent_type, model_type, lr_schedulers):
     #DEBUG
     print(f'lr_schedulers:{lr_schedulers}')
     if not lr_schedulers:
@@ -5565,15 +6539,15 @@ def update_learning_rate_scheduler_hyperparam_options(agent_type, model_type, lr
         print(f'tab_label:{tab_label}')
         # tabs.append(dcc.Tab(label=tab_label, value=scheduler))
 
-        if scheduler == 'steplr':
-            tab_contents = steplr_scheduler_hyperparam_options(agent_type, model_type)
-            tab_label = 'Step LR'
-        elif scheduler == 'exponentiallr':
-            tab_contents = exponentiallr_scheduler_hyperparam_options(agent_type, model_type)
-            tab_label = 'Exponential LR'
-        elif scheduler == 'cosineannealinglr':
-            tab_contents = cosineannealinglr_scheduler_hyperparam_options(agent_type, model_type)
-            tab_label = 'Cosine Annealing LR'
+        if scheduler == 'step':
+            tab_contents = lr_step_scheduler_hyperparam_options(agent_type, model_type)
+            tab_label = 'Step'
+        elif scheduler == 'exponential':
+            tab_contents = lr_exponential_scheduler_hyperparam_options(agent_type, model_type)
+            tab_label = 'Exponential'
+        elif scheduler == 'cosineannealing':
+            tab_contents = lr_cosineannealing_scheduler_hyperparam_options(agent_type, model_type)
+            tab_label = 'Cosine Annealing'
 
         tab = dcc.Tab(
             label=tab_label,
@@ -5584,7 +6558,7 @@ def update_learning_rate_scheduler_hyperparam_options(agent_type, model_type, lr
 
     return dcc.Tabs(
         id={
-            'type': 'scheduler-tabs-hyperparam',
+            'type': 'lr-scheduler-tabs-options-hyperparam',
             'model': model_type,
             'agent': agent_type,
         },
@@ -5593,7 +6567,7 @@ def update_learning_rate_scheduler_hyperparam_options(agent_type, model_type, lr
         style={'margin-top': '10px'}
     )
 
-def cosineannealinglr_scheduler_hyperparam_options(agent_type, model_type):
+def lr_cosineannealing_scheduler_hyperparam_options(agent_type, model_type):
     return html.Div(
         [
             html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
@@ -5622,7 +6596,7 @@ def cosineannealinglr_scheduler_hyperparam_options(agent_type, model_type):
         ]
     )
 
-def exponentiallr_scheduler_hyperparam_options(agent_type, model_type):
+def lr_exponential_scheduler_hyperparam_options(agent_type, model_type):
     return html.Div(
         [
             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
@@ -5639,7 +6613,7 @@ def exponentiallr_scheduler_hyperparam_options(agent_type, model_type):
         ]
     )
 
-def steplr_scheduler_hyperparam_options(agent_type, model_type):
+def lr_step_scheduler_hyperparam_options(agent_type, model_type):
     return html.Div(
         [
             html.Label('Step Size', style={'text-decoration': 'underline'}),
@@ -5667,10 +6641,10 @@ def steplr_scheduler_hyperparam_options(agent_type, model_type):
         ]
     )
 
-def generate_seed_component(page):
-    return html.Div([
-        html.Label('Seed', style={'text-decoration': 'underline'}),
-        dcc.Input(
+def create_seed_component(page):
+    # return html.Div([
+        # html.Label('Seed', style={'text-decoration': 'underline'}),
+    return dcc.Input(
             id={
                 'type':'seed',
                 'page': page,
@@ -5678,11 +6652,11 @@ def generate_seed_component(page):
             type='number',
             min=1,
             placeholder="Blank for random"
-        ),
-    ])
+        )
+    # ])
 
 ## WEIGHTS AND BIASES FUNCTIONS
-def generate_wandb_login(page):
+def create_wandb_login(page):
     return html.Div([
         dcc.Input(
             id={
@@ -5707,7 +6681,7 @@ def generate_wandb_login(page):
         })
     ])
 
-def generate_wandb_project_dropdown(page):
+def create_wandb_project_dropdown(page):
     projects = get_projects()
     return html.Div([
             # html.Label("Select a Project:"),
@@ -5719,7 +6693,7 @@ def generate_wandb_project_dropdown(page):
             )
         ])
 
-def generate_sweeps_dropdown(page):
+def create_sweeps_dropdown(page):
     return html.Div([
         dcc.Dropdown(
             id={'type':'sweeps-dropdown', 'page':page},
@@ -5909,21 +6883,21 @@ def format_wandb_kernel_options(config, all_values, all_ids, model, agent, layer
     return config
 
 def format_wandb_lr_scheduler(config, all_values, all_ids, model, agent):
-    schedulers = get_specific_value(all_values, all_ids, 'learning-rate-scheduler-hyperparam', model, agent)
+    schedulers = get_specific_value(all_values, all_ids, 'lr-scheduler-hyperparam', model, agent)
     #DEBUG
     # print(f'format_wandb_kernel layer types:{layer_types}')
     for scheduler in schedulers:
-        config = format_wandb_config_param(config, "lr_scheduler", all_values, all_ids, 'learning-rate-scheduler-hyperparam', model, agent)
+        config = format_wandb_config_param(config, "scheduler", all_values, all_ids, 'lr-scheduler-hyperparam', model, agent)
         config = format_wandb_lr_scheduler_options(config, all_values, all_ids, model, agent, scheduler)
 
     return config
 
 def format_wandb_lr_scheduler_options(config, all_values, all_ids, model, agent, scheduler):
-    if scheduler == 'steplr':
+    if scheduler == 'step':
         config = format_wandb_steplr_options(config, all_values, all_ids, model, agent)
-    elif scheduler == 'exponentiallr':
+    elif scheduler == 'exponential':
         config = format_wandb_exponentiallr_options(config, all_values, all_ids, model, agent)
-    elif scheduler == 'cosineannealinglr':
+    elif scheduler == 'cosineannealing':
         config = format_wandb_cosineannealinglr_options(config, all_values, all_ids, model, agent)
     
     return config
@@ -5956,23 +6930,11 @@ def format_wandb_model_layers(config, all_values, all_ids, all_indexed_values, a
         # Loop through each layer type to assign correct params
         for layer_type in layer_types:
             if layer_type == 'dense':
-                # Add num neurons in layer to wandb config
-                #DEBUG
-                # print(f'format num units for layer {layer} of type {layer_type}')
                 config = format_wandb_config_param(config, 'num_units', all_indexed_values, all_indexed_ids, 'layer-units-slider', model, agent, layer)
-                #DEBUG
-                # print(f'format num units for layer {layer} of type {layer_type} success!')
-                # print(f'format bias for layer {layer} of type {layer_type}')
-                # Add bias bool to wandb config
                 config = format_wandb_config_param(config, 'bias', all_indexed_values, all_indexed_ids, 'dense-bias-hyperparam', model, agent, layer)
-                #DEBUG
-                # print(f'format bias for layer {layer} of type {layer_type} success!')
-                # print(f'format kernel for layer {layer} of type {layer_type}')
-                # Add kernel to wandb config
                 config = format_wandb_kernel(config, all_indexed_values, all_indexed_ids, model, agent, layer)
-                #DEBUG
-                # print(f'format kernel for layer {layer} of type {layer_type} success!')
-                # format_wandb_kernel_options(config, all_indexed_values, all_indexed_ids, model, agent, layer)
+            elif layer_type == 'cnn':
+                config = format_wandb_config_param(config, 'out_channels', all_indexed_values, all_indexed_ids, 'layer-units-slider', model, agent, layer)
 
     return config
 

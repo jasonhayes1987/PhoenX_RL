@@ -1,66 +1,107 @@
 import torch as T
 import numpy as np
-import env_wrapper
 import gymnasium as gym
+from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from utils import build_env_wrapper_obj
+from typing import Optional, Tuple, Any, Dict
 
 class Buffer():
-    """Base class for replay buffers."""
+    """
+    Base class for replay buffers.
+    """
 
     def __init__(self):
         pass
 
-    def add(self):
+    def add(self, *args, **kwargs):
+        """
+        Add a transition to the buffer.
+        """
         pass
     
-    def sample(self):
+    def sample(self, batch_size: int):
+        """
+        Sample a batch of transitions from the buffer.
+
+        Args:
+            batch_size (int): The number of transitions to sample.
+
+        Returns:
+            Tuple: Sampled transitions.
+        """
         pass
 
-    def config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """
+        Retrieve the configuration of the buffer.
+
+        Returns:
+            dict: Configuration details.
+        """
         pass
 
     @classmethod
-    def create_instance(cls, buffer_class_name, **kwargs):
-        """Creates an instance of the requested buffer class.
+    def create_instance(cls, buffer_class_name: str, **kwargs) -> 'Buffer':
+        """
+        Create an instance of the requested buffer class.
 
         Args:
-        buffer_class_name (str): The name of the buffer class.
+            buffer_class_name (str): Name of the buffer class.
+            kwargs: Parameters for the buffer class.
 
         Returns:
-        Buffer: An instance of the requested buffer class.
-        """
+            Buffer: An instance of the requested buffer class.
 
+        Raises:
+            ValueError: If the buffer class is not recognized.
+        """
         buffer_classes = {
             "ReplayBuffer": ReplayBuffer,
         }
 
-        
         if buffer_class_name in buffer_classes:
             return buffer_classes[buffer_class_name](**kwargs)
         else:
             raise ValueError(f"{buffer_class_name} is not a subclass of Buffer")
-
-#TODO update to EnvWrapper object
 class ReplayBuffer:
-    def __init__(self,
-                 env: gym.Env, #TODO
-                 buffer_size: int = 100000,
-                 goal_shape: tuple = None,
-                 device='cpu'
-                ):
+    """
+    Replay buffer for storing transitions during reinforcement learning.
+
+    Attributes:
+        env (EnvWrapper): The environment wrapper associated with the buffer.
+        buffer_size (int): Maximum size of the buffer.
+        goal_shape (Optional[tuple]): Shape of goals (if used).
+        device (str): Device to store the buffer ('cpu' or 'cuda').
+    """
+    def __init__(
+        self,
+        env: EnvWrapper,
+        buffer_size: int = 100000,
+        goal_shape: Optional[Tuple[int]] = None,
+        device: Optional[str] = None,
+    ):
+        """
+        Initialize the ReplayBuffer.
+
+        Args:
+            env (EnvWrapper): The environment wrapper object.
+            buffer_size (int): Maximum size of the buffer.
+            goal_shape (Optional[tuple]): Shape of goals, if applicable.
+            device (Optional[str]): Device to store buffer data ('cpu' or 'cuda').
+        """
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
-        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
+        self.device = device if device else 'cuda' if T.cuda.is_available() else 'cpu'
         
-        # set internal attributes
-        # get observation space
-        if isinstance(self.env.observation_space, gym.spaces.dict.Dict):
-            self._obs_space_shape = self.env.observation_space['observation'].shape
+        # Determine observation space shape
+        if isinstance(self.env.single_observation_space, gym.spaces.Dict):
+            self._obs_space_shape = self.env.single_observation_space['observation'].shape
         else:
-            self._obs_space_shape = self.env.observation_space.shape
+            self._obs_space_shape = self.env.single_observation_space.shape
 
         self.states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
-        self.actions = T.zeros((buffer_size, *env.action_space.shape), dtype=T.float32, device=self.device)
+        self.actions = T.zeros((buffer_size, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
         self.rewards = T.zeros((buffer_size,), dtype=T.float32, device=self.device)
         self.next_states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
         self.dones = T.zeros((buffer_size,), dtype=T.int8, device=self.device)
@@ -73,13 +114,16 @@ class ReplayBuffer:
         self.counter = 0
         self.gen = np.random.default_rng()
 
-    def reset(self):
-        """Reset the buffer to all zeros and counter to zero."""
+    def reset(self) -> None:
+        """
+        Reset the buffer to all zeros and the counter to zero.
+        """
         self.states.zero_()
         self.actions.zero_()
         self.rewards.zero_()
         self.next_states.zero_()
         self.dones.zero_()
+        self.counter = 0
         
         if self.goal_shape is not None:
             self.desired_goals.zero_()
@@ -87,9 +131,30 @@ class ReplayBuffer:
             self.next_state_achieved_goals.zero_()
         
         
-    def add(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool,
-            state_achieved_goal: np.ndarray = None, next_state_achieved_goal: np.ndarray = None, desired_goal: np.ndarray = None):
-        """Add a transition to the replay buffer."""
+    def add(
+        self,
+        state: np.ndarray,
+        action: np.ndarray,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+        state_achieved_goal: Optional[np.ndarray] = None,
+        next_state_achieved_goal: Optional[np.ndarray] = None,
+        desired_goal: Optional[np.ndarray] = None,
+    ) -> None:
+        """
+        Add a transition to the replay buffer.
+
+        Args:
+            state (np.ndarray): Current state.
+            action (np.ndarray): Action taken.
+            reward (float): Reward received.
+            next_state (np.ndarray): Next state.
+            done (bool): Whether the episode is done.
+            state_achieved_goal (Optional[np.ndarray]): Achieved goal in the current state.
+            next_state_achieved_goal (Optional[np.ndarray]): Achieved goal in the next state.
+            desired_goal (Optional[np.ndarray]): Desired goal.
+        """
         index = self.counter % self.buffer_size
         self.states[index] = T.tensor(state, device=self.device)
         self.actions[index] = T.tensor(action, device=self.device)
@@ -104,9 +169,18 @@ class ReplayBuffer:
             self.next_state_achieved_goals[index] = T.tensor(next_state_achieved_goal, device=self.device)
             self.desired_goals[index] = T.tensor(desired_goal, device=self.device)
         
-        self.counter = self.counter + 1
+        self.counter += 1
         
-    def sample(self, batch_size: int):
+    def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
+        """
+        Sample a batch of transitions from the replay buffer.
+
+        Args:
+            batch_size (int): Number of transitions to sample.
+
+        Returns:
+            Tuple[T.Tensor, ...]: Sampled transitions.
+        """
         size = min(self.counter, self.buffer_size)
         indices = self.gen.integers(0, size, (batch_size,))
         
@@ -130,25 +204,32 @@ class ReplayBuffer:
                 self.dones[indices]
             )
     
-    def get_config(self):
+    def get_config(self) -> Dict[str, Any]:
+        """
+        Retrieve the configuration of the replay buffer.
+
+        Returns:
+            Dict[str, Any]: Configuration details.
+        """
         return {
             'class_name': self.__class__.__name__,
             'config': {
-                "env": self.env.spec.id,
+                "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,
                 "goal_shape": self.goal_shape,
                 "device": self.device,
             }
         }
     
-    def clone(self):
-        env = gym.make(self.env.spec)
-        return ReplayBuffer(
-            env,
-            self.buffer_size,
-            self.goal_shape,
-            self.device
-        )
+    def clone(self) -> 'ReplayBuffer':
+        """
+        Clone the replay buffer.
+
+        Returns:
+            ReplayBuffer: A new instance of the replay buffer with the same configuration.
+        """
+        env = build_env_wrapper_obj(self.env.config)
+        return ReplayBuffer(env, self.buffer_size, self.goal_shape, self.device)
     
 #TODO Dont think shared replay buffer is needed.  If needed, update to EnvWrapper
 class SharedReplayBuffer(Buffer):
