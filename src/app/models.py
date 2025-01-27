@@ -24,7 +24,6 @@ from logging_config import logger
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import check_for_inf_or_NaN
 
-
 class Model(nn.Module):
     """
     Base class for all reinforcement learning models.
@@ -106,7 +105,11 @@ class Model(nn.Module):
                     _ = self.forward(state_input, goal_input)
         else:
             obs_shape = obs_space.shape
+            #DEBUG
+            # print(f'init model obs_shape:{obs_shape}')
             state_input = T.ones((1, *obs_shape), device=self.device, dtype=T.float)
+            #DEBUG
+            # print(f'state input shape:{state_input.shape}')
             if isinstance(self, CriticModel):
                 action_shape = self.env.single_action_space.shape
                 action_input = T.ones((1, *action_shape), device=self.device, dtype=T.float)
@@ -203,6 +206,8 @@ class Model(nn.Module):
             elif kernel == 'normal':
                 nn.init.normal_(layer.weight, **kernel_params)
                 # nn.init.normal_(layer.bias, **config['params']['kernel params'])
+            elif kernel == 'orthogonal':
+                nn.init.orthogonal_(layer.weight, **kernel_params)
             elif kernel == 'constant':
                 nn.init.constant_(layer.weight, **kernel_params)
                 # nn.init.constant_(layer.bias, **config['params']['kernel params'])
@@ -396,23 +401,27 @@ class StochasticDiscretePolicy(Model):
         Returns:
             Tuple[Categorical, Tensor]: Action distribution and logits for the action space.
         """
+        #DEBUG
+        # print(f'shape of x: {x.shape}')
         if x.dim() == 1: # Check if tensor is flat
             x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if len(x.shape) == 4 and x.shape[1] != self.env.single_observation_space.shape[0]:  # Check if channels are not already first
-            x = x.permute(0, 3, 1, 2)
-        x = x.to(self.device)
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        # Check if observation is image-like (HWC)
+        if isinstance(self.env, GymnasiumWrapper):
+            # obs_shape = self.env.single_observation_space.shape
+            #DEBUG
+            # print(f'observation space shape:{obs_shape}')
+            if x.dim() == 4 and x.shape[-1] in [3,4]:
+                # DEBUG
+                # print(f'permutation fired')
+                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
         #DEBUG
-        # print(f'Discrete Policy Input Shape: {x.size()}')
-        # check_for_inf_or_NaN(x, 'policy input')
+        # print(f'new x shape:{x.shape}')
+        x = x.to(self.device)
         for layer in self.layers.values():
             x = layer(x)
-            #DEBUG
-            # print(f'Discrete Policy {layer} Output: {x}')
-            # check_for_inf_or_NaN(x, str(layer))
         x = self.output_layer['policy_dense_output'](x)
-        #DEBUG
-        # print(f'Discrete Policy output (logits): {x}')
-        # check_for_inf_or_NaN(x, 'policy output')
         if self.distribution == 'categorical':
             dist = Categorical(logits=x)
             return dist, x
@@ -582,6 +591,8 @@ class StochasticContinuousPolicy(Model):
         """
         if x.dim() == 1: # Check if tensor is flat
             x = x.unsqueeze(-1)  # Reshape to (batch, 1)
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
         if len(x.shape) == 4 and x.shape[1] != self.env.single_observation_space.shape[0]:  # Check if channels are not already first
             x = x.permute(0, 3, 1, 2)
         x = x.to(self.device)
@@ -759,8 +770,17 @@ class ValueModel(Model):
         """
         if x.dim() == 1: # Check if tensor is flat
             x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if len(x.shape) == 4 and x.shape[1] != self.env.single_observation_space.shape[0]:  # Check if channels are not already first
-            x = x.permute(0, 3, 1, 2)
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        # Check if observation is image-like (HWC)
+        if isinstance(self.env, GymnasiumWrapper):
+            obs_shape = self.env.single_observation_space.shape
+            #DEBUG
+            # print(f'observation space shape:{obs_shape}')
+            if x.dim() == 4 and x.shape[-1] in [3,4]:
+                # DEBUG
+                # print(f'permutation fired')
+                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
         x = x.to(self.device)
         #DEBUG
         # print(f'Value Model Input Shape: {x.size()}')
@@ -1216,8 +1236,11 @@ def select_policy_model(env):
     Returns:
         Class: The class of the appropriate policy model.
     """
+    #DEBUG
+    # print(f'env action space type:{env.action_space}')
+    # print(f'env observation space:{env.observation_space.shape}')
     # Check if the action space is discrete
-    if isinstance(env.action_space, gym.spaces.Discrete):
+    if isinstance(env.action_space, gym.spaces.Discrete) or isinstance(env.action_space, gym.spaces.MultiDiscrete):
         model_class = StochasticDiscretePolicy
     # Check if the action space is continuous
     elif isinstance(env.action_space, gym.spaces.Box):

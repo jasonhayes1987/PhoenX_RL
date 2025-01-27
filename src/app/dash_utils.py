@@ -112,49 +112,72 @@ def get_wrappers_dropdown_options():
     valid_wrappers = all_wrappers - EXCLUSION_LIST
     return sorted(valid_wrappers)
 
-def create_wrappers_list(selected_wrappers, user_params):
-    """
-    Given a list of selected wrapper names and a dictionary of user-overridden
-    parameters, return a list of wrapper factory functions suitable for gym.make_vec(..., wrappers=...).
+# def create_wrappers_list(selected_wrappers, user_params):
+#     """
+#     Given a list of selected wrapper names and a dictionary of user-overridden
+#     parameters, return a list of wrapper factory functions.
 
-    Any wrapper found in WRAPPER_REGISTRY uses user_params if provided.
-    Any wrapper not in WRAPPER_REGISTRY is applied with no arguments.
-    """
-    if not selected_wrappers:
-        return []
+#     Any wrapper found in WRAPPER_REGISTRY uses user_params if provided.
+#     Any wrapper not in WRAPPER_REGISTRY is applied with no arguments.
+#     """
+#     #DEBUG
+#     if not selected_wrappers:
+#         return []
 
-    wrappers_list = []
+#     wrappers_list = []
 
-    for w_name in selected_wrappers:
-        # If wrapper is in registry, it may have parameter overrides
-        if w_name in WRAPPER_REGISTRY:
-            wrapper_cls = WRAPPER_REGISTRY[w_name]["cls"]
-            default_params = WRAPPER_REGISTRY[w_name]["default_params"]
-            override_params = user_params.get(w_name, {}) if user_params else {}
-            final_params = {**default_params, **override_params}
+#     for w_name in selected_wrappers:
+#         # If wrapper is in registry, it may have parameter overrides
+#         if w_name in WRAPPER_REGISTRY:
+#             wrapper_cls = WRAPPER_REGISTRY[w_name]["cls"]
+#             default_params = WRAPPER_REGISTRY[w_name]["default_params"]
+#             override_params = user_params.get(w_name, {}) if user_params else {}
+#             final_params = {**default_params, **override_params}
 
-            # Example: special case for ResizeObservation
-            if w_name == "ResizeObservation" and isinstance(final_params.get("shape", None), int):
-                side = final_params["shape"]
-                final_params["shape"] = (side, side)
+#             # Example: special case for ResizeObservation
+#             if w_name == "ResizeObservation" and isinstance(final_params.get("shape", None), int):
+#                 side = final_params["shape"]
+#                 final_params["shape"] = (side, side)
 
-            def wrapper_factory(env, cls=wrapper_cls, fparams=final_params):
-                return cls(env, **fparams)
+#             def wrapper_factory(env, cls=wrapper_cls, fparams=final_params):
+#                 return cls(env, **fparams)
 
-        else:
-            # It's NOT in WRAPPER_REGISTRY => no-arg wrapper
-            wrapper_cls = getattr(base_wrappers, w_name, None)
-            # If the user only picks from a valid filtered list, wrapper_cls should not be None.
-            if wrapper_cls is None:
-                # If somehow the user selected an invalid or excluded wrapper, skip or log
-                continue
+#         else:
+#             # It's NOT in WRAPPER_REGISTRY => no-arg wrapper
+#             wrapper_cls = getattr(base_wrappers, w_name, None)
+#             # If the user only picks from a valid filtered list, wrapper_cls should not be None.
+#             if wrapper_cls is None:
+#                 # If somehow the user selected an invalid or excluded wrapper, skip or log
+#                 continue
 
-            def wrapper_factory(env, cls=wrapper_cls):
-                return cls(env)
+#             def wrapper_factory(env, cls=wrapper_cls):
+#                 return cls(env)
 
-        wrappers_list.append(wrapper_factory)
+#         wrappers_list.append(wrapper_factory)
 
-    return wrappers_list
+#     return wrappers_list
+
+def format_wrappers(wrapper_store):
+    wrappers_dict = {}
+    for key, value in wrapper_store.items():
+        # Split the key into wrapper type and parameter name
+        parts = key.split('_param:')
+        # print(f'parts:{parts}')
+        wrapper_type = parts[0].split('wrapper:')[1]
+        # print(f'wrapper_type:{wrapper_type}')
+        param_name = parts[1]
+        # print(f'param name:{param_name}')
+        
+        # If the wrapper type already exists in the dictionary, append to its params
+        if wrapper_type not in wrappers_dict:
+            wrappers_dict[wrapper_type] = {'type': wrapper_type, 'params': {}}
+        
+        wrappers_dict[wrapper_type]['params'][param_name] = value
+    
+    # Convert the dictionary to a list of dictionaries
+    formatted_wrappers = list(wrappers_dict.values())
+    
+    return formatted_wrappers
 
 def get_key(id_dict, param=None):
     """
@@ -786,10 +809,11 @@ def upload_component(page):
         multiple=False
     )
 
-def instantiate_envwrapper_obj(library:str, env_id:str, wrappers:list = []):
+def instantiate_envwrapper_obj(library:str, env_id:str, wrappers:list = None):
     # Instantiates an EnvWrapper object for an env of library
     if library == 'gymnasium':
         env = gym.make(env_id)
+        print(f'env spec:{env.spec}')
         return GymnasiumWrapper(env.spec, wrappers)
         
     elif library == 'isaacsim':
@@ -2173,10 +2197,10 @@ def surrogate_loss_clip_linear_scheduler_options(agent_type, model_type):
                     'agent':agent_type,
                 },
                 type='number',
-                min=0.01,
-                max=1.00,
-                step=0.01,
-                value=0.01,
+                min=0.0001,
+                max=1.0000,
+                step=0.0001,
+                value=0.0010,
             ),
             html.Label('Total Iterations', style={'text-decoration': 'underline'}),
             dcc.Input(
@@ -3019,7 +3043,7 @@ def create_distribution_input(agent_type):
                 'model':'none',
                 'agent':agent_type,
                 },
-                options=[{'label': i.capitalize(), 'value': i} for i in ["beta", "normal"]],
+                options=[{'label': i.capitalize(), 'value': i} for i in ["beta", "normal", "categorical"]],
                 placeholder="select distribution"
             ),
         ]
@@ -3474,10 +3498,10 @@ def create_learning_rate_constant_input(agent_type, model_type):
                     'agent':agent_type,
                 },
                 type='number',
-                min=1,
-                max=9,
-                step=1,
-                value=1,
+                min=1.0,
+                max=9.0,
+                step=0.1,
+                value=1.0,
             ),
         ]
     )
@@ -3493,8 +3517,8 @@ def create_learning_rate_exponent_input(agent_type, model_type):
                     'agent':agent_type,
                 },
                 type='number',
-                min=-6,
-                max=-2,
+                min=-9,
+                max=-1,
                 step=1,
                 value=-4,
             ),
@@ -3630,9 +3654,9 @@ def lr_linear_scheduler_options(agent_type, model_type):
                     'agent':agent_type,
                 },
                 type='number',
-                min=0.01,
-                max=1.0,
-                step=0.01,
+                min=0.0001,
+                max=1.0000,
+                step=0.0001,
                 value=1.0,
             ),
             html.Label('End Factor', style={'text-decoration': 'underline'}),
@@ -3643,10 +3667,10 @@ def lr_linear_scheduler_options(agent_type, model_type):
                     'agent':agent_type,
                 },
                 type='number',
-                min=0.01,
-                max=1.00,
-                step=0.01,
-                value=0.01,
+                min=0.0001,
+                max=1.0000,
+                step=0.0001,
+                value=0.0010,
             ),
             html.Label('Total Iterations', style={'text-decoration': 'underline'}),
             dcc.Input(
