@@ -74,8 +74,8 @@ def train_agent(agent_config, train_config):
                 agent.train(num_episodes, render_freq, run_number=run_number)
             
             elif agent_type == 'PPO':
-                timesteps = train_config['timesteps']
-                traj_length = train_config['trajectory_length']
+                timesteps = train_config['num_timesteps']
+                traj_length = train_config['traj_length']
                 batch_size = train_config['batch_size']
                 learning_epochs = train_config['learning_epochs']
                 agent.train(timesteps, traj_length, batch_size, learning_epochs, num_envs, seed, 10, render_freq, run_number=run_number)

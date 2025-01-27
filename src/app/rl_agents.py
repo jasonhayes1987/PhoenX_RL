@@ -27,8 +27,8 @@ from noise import Noise, NormalNoise, UniformNoise, OUNoise
 import wandb
 import wandb_support
 from torch_utils import set_seed, VarianceScaling_
-import dash_callbacks
-import gym_helper
+# import dash_callbacks
+# import gym_helper
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import render_video, build_env_wrapper_obj, check_for_inf_or_NaN
 
@@ -5317,29 +5317,43 @@ class PPO(Agent):
                 next_values = self.value_model(next_states_env).squeeze(-1)
                 advantages = T.zeros_like(rewards_env)
                 returns = T.zeros_like(rewards_env)
-                gae = 0
-                for t in reversed(range(len(rewards_env))):
-                    delta = rewards_env[t] + self.discount * next_values[t] * (1 - dones_env[t]) - values[t]
-                    gae = delta + self.discount * self.gae_coefficient * (1 - dones_env[t]) * gae
+                gae = 0.0  # Use float instead of tensor for scalar accumulation
+                for t in reversed(range(num_steps)):
+                    if dones_env[t]:
+                        next_value = 0
+                        gae = 0
+                    else:
+                        next_value = next_values[t]
+
+                    delta = rewards_env[t] + self.discount * next_value - values[t]
+                    gae = delta + self.discount * self.gae_coefficient * gae
                     advantages[t] = gae
                     returns[t] = gae + values[t]
+                
+                # Append results for this environment
+                all_advantages.append(advantages)
+                all_returns.append(returns)
+                all_values.append(values)
 
-                if self.normalize_advantages:
-                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Stack results across environments
+        advantages = T.stack(all_advantages, dim=1)
+        returns = T.stack(all_returns, dim=1)
+        values = T.stack(all_values, dim=1)
 
-                all_advantages.append(advantages.unsqueeze(-1))
-                all_returns.append(returns.unsqueeze(-1))
-                all_values.append(values.unsqueeze(-1))
-
-        all_advantages = T.stack(all_advantages, dim=1)
-        all_returns = T.stack(all_returns, dim=1)
-        all_values = T.stack(all_values, dim=1)
+        # Normalize advantages across all environments and timesteps
+        if self.normalize_advantages:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
 
         self._train_episode_config["values"] = values.mean().item()
-        self._train_episode_config["advantages"] = all_advantages.mean().item()
-        self._train_episode_config["returns"] = all_returns.mean().item()
+        self._train_episode_config["advantages"] = advantages.mean().item()
+        self._train_episode_config["returns"] = returns.mean().item()
 
-        return all_advantages, all_returns, all_values
+        #DEBUG
+        # print(f'advantages shape:{advantages.shape}')
+        # print(f'returns shape:{returns.shape}')
+        # print(f'values shape:{values.shape}')
+
+        return advantages, returns, values
 
     def get_action(self, states):
         """
@@ -5353,6 +5367,8 @@ class PPO(Agent):
         """
         with T.no_grad():
             states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
+            #DEBUG
+            # print(f'get action states:{states.shape}')
             if self.policy_model.distribution == 'categorical':
                 dist, logits = self.policy_model(states)
             else:
@@ -5482,17 +5498,18 @@ class PPO(Agent):
         all_rewards = []
         all_next_states = []
         all_dones = []
-        episode_scores = [[] for _ in range(num_envs)]  # Track scores for each env
-        policy_loss_history = []
-        value_loss_history = []
-        entropy_history = []
-        kl_history = []
-        time_history = []
-        param_history = []
+        # policy_loss_history = []
+        # value_loss_history = []
+        # entropy_history = []
+        # kl_history = []
+        # time_history = []
+        # param_history = []
         frames = []  # List to store frames for the video
         self.episodes = np.zeros(self.num_envs) # Tracks current episode for each env
         episode_lengths = np.zeros(self.num_envs) # Tracks step count for each env
         scores = np.zeros(self.num_envs) # Tracks current score for each env
+        env_scores = np.zeros(self.num_envs)  # Tracks last episode score for each env
+        episode_scores = deque(maxlen=100) # Tracks the last 100 episode scores
         states, _ = self.env.reset()
 
         # set an episode rendered flag to track if an episode has yet to be rendered
@@ -5505,6 +5522,9 @@ class PPO(Agent):
             episode_lengths += 1 # increment the step count of each episode of each env by 1
             dones = []
             actions, log_probs = self.get_action(states)
+            #DEBUG
+            # print(f'train actions shape:{actions.shape}')
+            # print(f'train actions:{actions}')
             if self.policy_model.distribution == 'beta':
                 acts = self.action_adapter(actions)
             else:
@@ -5514,6 +5534,9 @@ class PPO(Agent):
             #     acts = acts.tolist()
             #     acts = [[float(a) for a in act] for act in acts]
             acts = self.env.format_actions(acts)
+            #DEBUG
+            # print(f'acts shape:{acts.shape}')
+            # print(f'acts:{acts}')
 
             # If using WANDB log action values of first environment
             if self.callbacks:
@@ -5529,12 +5552,13 @@ class PPO(Agent):
             # Update scores of each episode
             scores += rewards
 
-            self._train_step_config["step_reward"] = rewards.mean()
+            self._train_step_config["step_reward"] = rewards.max()
 
             for i, (term, trunc) in enumerate(zip(terms, truncs)):
                 if term or trunc:
                     dones.append(True)
-                    episode_scores[i].append(scores[i])  # Store score at end of episode
+                    env_scores[i] = scores[i]  # Store score at end of episode
+                    episode_scores.append(scores[i]) # Store score in deque to compute avg
                     self._train_step_config["episode_reward"] = scores[i]
                     scores[i] = 0  # Reset score for this environment
                     self._train_step_config["episode_length"] = episode_lengths[i]
@@ -5574,13 +5598,13 @@ class PPO(Agent):
 
             prev_episode = self.episodes[0]
 
-            env_scores = np.array([
-                env_score[-1] if len(env_score) > 0 else np.nan
-                for env_score in episode_scores
-            ])
+            # env_scores = np.array([
+            #     env_score[-1] if len(env_score) > 0 else np.nan
+            #     for env_score in episode_scores
+            # ])
 
             if self._step % self.trajectory_length == 0:
-                print(f'learning timestep: {self._step}')
+                # print(f'learning timestep: {self._step}')
                 trajectory = (all_states, all_actions, all_log_probs, all_rewards, all_next_states, all_dones)
                 # Get policy clip
                 policy_clip = self.policy_clip
@@ -5588,7 +5612,7 @@ class PPO(Agent):
                     policy_clip *= self.policy_clip_schedule.get_factor()                    
                 self._train_episode_config["policy_clip"] = policy_clip
                 # Get value clip
-                value_clip = self.policy_clip
+                value_clip = self.value_clip
                 if self.value_clip_schedule:
                     value_clip *= self.value_clip_schedule.get_factor()                    
                 self._train_episode_config["value_clip"] = value_clip
@@ -5607,7 +5631,7 @@ class PPO(Agent):
                     policy_loss, value_loss, entropy, kl, logits = self.learn(trajectory, batch_size, learning_epochs)
                 else:
                     policy_loss, value_loss, entropy, kl, param1, param2 = self.learn(trajectory, batch_size, learning_epochs)
-                self._train_episode_config[f"avg_env_scores"] = np.nanmean(env_scores)
+                # self._train_episode_config[f"avg_env_scores"] = np.nanmean(env_scores)
                 self._train_episode_config["actor_loss"] = policy_loss
                 self._train_episode_config["critic_loss"] = value_loss
                 self._train_episode_config["entropy"] = entropy
@@ -5620,50 +5644,56 @@ class PPO(Agent):
                     self._train_episode_config['value learning rate'] = self.value_model.scheduler.get_last_lr()[0]
                 else:
                     self._train_episode_config['value learning rate'] = self.value_model.optimizer.param_groups[0]['lr']
-                if self.policy_model.distribution == 'categorical':
-                    # Convert logits to probabilities
-                    probabilities = F.softmax(logits, dim=0)
-                    self._train_episode_config["probabilities"] = probabilities
-                else:
-                    self._train_episode_config["param1"] = param1.mean()
-                    self._train_episode_config["param2"] = param2.mean()
+                # if self.policy_model.distribution == 'categorical':
+                #     # Convert logits to probabilities
+                #     probabilities = F.softmax(logits, dim=0)
+                #     self._train_episode_config["probabilities"] = probabilities
+                # else:
+                #     self._train_episode_config["param1"] = param1.mean()
+                #     self._train_episode_config["param2"] = param2.mean()
 
-                # check if best reward
-                avg_score = np.mean([
-                    np.mean(env_score[-avg_num:]) if len(env_score) >= avg_num else np.mean(env_score)
-                    for env_score in episode_scores
-                ])
-                if avg_score > best_reward:
-                    best_reward = avg_score
-                    self._train_episode_config["best"] = True
-                    # save model
-                    self.save()
-                else:
-                    self._train_episode_config["best"] = False
-
-                policy_loss_history.append(policy_loss)
-                value_loss_history.append(value_loss)
-                entropy_history.append(entropy)
-                kl_history.append(kl)
-                if self.policy_model.distribution == 'categorical':
-                    param_history.append(logits)
-                else:
-                    param_history.append((param1, param2))
+                # policy_loss_history.append(policy_loss)
+                # value_loss_history.append(value_loss)
+                # entropy_history.append(entropy)
+                # kl_history.append(kl)
+                # if self.policy_model.distribution == 'categorical':
+                #     param_history.append(logits)
+                # else:
+                #     param_history.append((param1, param2))
+                
+                # Clear trajectory data
                 all_states = []
                 all_actions = []
                 all_log_probs = []
                 all_rewards = []
                 all_next_states = []
                 all_dones = []
-
+                
                 if self.callbacks:
                     for callback in self.callbacks:
                         callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
 
+                # # Clear CUDA cache
+                # T.cuda.empty_cache()
+
+            # Set avg score if 1 or more episodes scores are logged, else set avg to -inf
+            if len(episode_scores) > 0:
+                avg_score = sum(episode_scores) / len(episode_scores) # compute avg scores
+            else:
+                avg_score = -np.inf
+            # check if best reward
+            if avg_score > best_reward:
+                best_reward = avg_score
+                self._train_episode_config["best"] = True
+                # save model
+                self.save()
+            else:
+                self._train_episode_config["best"] = False
+
             states = next_states
 
             if self._step % 1000 == 0:
-                print(f'episode: {self.episodes}; total steps: {self._step}; episodes scores: {env_scores}; avg score: {np.nanmean(env_scores)}')
+                print(f'episode: {self.episodes}; total steps: {self._step}; episodes scores: {env_scores}; avg score: {avg_score}')
 
             if self.callbacks:
                 for callback in self.callbacks:
@@ -5673,14 +5703,14 @@ class PPO(Agent):
             for callback in self.callbacks:
                 callback.on_train_end(logs=self._train_episode_config)
 
-        return {
-                'scores': episode_scores,
-                'policy loss': policy_loss_history,
-                'value loss': value_loss_history,
-                'entropy': entropy_history,
-                'kl': kl_history,
-                'params': param_history,
-                }
+        # return {
+        #         'scores': episode_scores,
+        #         'policy loss': policy_loss_history,
+        #         'value loss': value_loss_history,
+        #         'entropy': entropy_history,
+        #         'kl': kl_history,
+        #         'params': param_history,
+        #         }
 
     def learn(self, trajectory, batch_size, learning_epochs):
         """
@@ -5700,6 +5730,8 @@ class PPO(Agent):
         # Convert lists to tensors without flattening
         # This results in tensors of shape (num_steps, num_envs, ...)
         states = T.stack([T.tensor(s, dtype=T.float32, device=self.policy_model.device) for s in all_states])
+        #DEBUG
+        # print(f'learn states shape:{states.shape}')
         # Convert actions to T.long values if categorical, else floats
         if self.policy_model.distribution == 'categorical':
             actions = T.stack([T.tensor(a, dtype=T.long, device=self.policy_model.device) for a in all_actions])
@@ -5723,6 +5755,8 @@ class PPO(Agent):
         obs_shape = states.shape[2:]  # Get observation shape
         states = states.reshape(total_samples, *obs_shape)
         next_states = next_states.reshape(total_samples, *obs_shape)
+        #DEBUG
+        # print(f'learn reshaped states shape:{states.shape}')
 
         # Reshape tensors for batching
         all_values = all_values.reshape(total_samples, -1) # Shape: (total_samples, 1)
@@ -5731,7 +5765,11 @@ class PPO(Agent):
         advantages = advantages.reshape(total_samples, 1) # Shape: (total_samples, 1)
         returns = returns.reshape(total_samples, 1)      # Shape: (total_samples, 1)
         #DEBUG
-        # print(f'resized actions:{actions}')
+        # print(f'resized values:{all_values.shape}')
+        # print(f'resized actions:{actions.shape}')
+        # print(f'resized log probs:{log_probs.shape}')
+        # print(f'resized advantages:{advantages.shape}')
+        # print(f'resized returns:{returns.shape}')
 
         # Set previous distribution to none (used for KL divergence calculation)
         # prev_dist = None
@@ -5799,47 +5837,72 @@ class PPO(Agent):
                 log_probs_batch = log_probs[batch_indices]
                 advantages_batch = advantages[batch_indices]
                 returns_batch = returns[batch_indices]
-                
+                #DEBUG
+                # print(f'states batch shape:{states_batch.shape}')
+                # print(f'actions batch shape:{actions_batch.shape}')
+                # print(f'log probs batch shape:{log_probs_batch.shape}')
+                # print(f'advantages batch shape:{advantages_batch.shape}')
+                # print(f'returns batch shape:{returns_batch.shape}')
+
                 # Create new distribution
                 if self.policy_model.distribution == 'categorical':
                     #DEBUG
-                    # print(f'##### NEW POLICY #####')
+                    # New distribution
                     new_dist, logits = self.policy_model(states_batch)
+                    new_log_probs = new_dist.log_prob(actions_batch.view(-1))
+                    # Old distribution
+                    old_dist, old_logits = old_policy(states_batch)
+                    old_log_probs = old_dist.log_prob(actions_batch.view(-1))
                     #DEBUG
                     # print(f'new logits: {logits}')
-                else:
+                else: # Continuous Distributions
+                    # New distribution
                     new_dist, param1, param2 = self.policy_model(states_batch)
+                    new_log_probs = new_dist.log_prob(actions_batch).sum(dim=-1)
+                    # Old distribution
+                    old_dist, old_param1, old_param2 = old_policy(states_batch)
+                    old_log_probs = old_dist.log_prob(actions_batch).sum(dim=-1)
 
                 # Calculate new log probabilities of actions
-                new_log_probs = new_dist.log_prob(actions_batch)
+                
+                #DEBUG
+                # print(f'new log probs shape:{new_log_probs.shape}')
+                # print(f'old log probs shape:{old_log_probs.shape}')
 
                 # Recreate old distribution
-                with T.no_grad():
-                    if self.policy_model.distribution == 'categorical':
-                        #DEBUG
-                        # print(f'##### OLD POLICY #####')
-                        old_dist, old_logits = old_policy(states_batch)
-                    else:
-                        old_dist, old_param1, old_param2 = old_policy(states_batch)
+                # with T.no_grad():
+                #     if self.policy_model.distribution == 'categorical':
+                #         #DEBUG
+                #         # print(f'##### OLD POLICY #####')
+                #         old_dist, old_logits = old_policy(states_batch)
+                #     else:
+                #         old_dist, old_param1, old_param2 = old_policy(states_batch)
                     
-                    old_log_probs = old_dist.log_prob(actions_batch)
-                    #DEBUG
-                    # print(f'old log probs: {new_log_probs}')
-                    # print(f"Old log probs range: {old_log_probs.min().item()} to {old_log_probs.max().item()}")
-                    # check_for_inf_or_NaN(old_log_probs, 'old_log_probs')
+                #     old_log_probs = old_dist.log_prob(actions_batch)
+                #     #DEBUG
 
                 # Calculate the ratios of new to old probabilities of actions
-                prob_ratio = T.exp(new_log_probs.sum(axis=-1, keepdim=True) - old_log_probs.sum(axis=-1, keepdim=True))
-                # print(f"prob ratio range: {prob_ratio.min().item()} to {prob_ratio.max().item()}")
-                # check_for_inf_or_NaN(prob_ratio, 'prob_ratio')
+                if new_log_probs.dim() == 1:
+                    new_log_probs = new_log_probs.unsqueeze(-1)
+                    old_log_probs = old_log_probs.unsqueeze(-1)
+                    advantages_batch = advantages_batch.view(-1,1)
+                prob_ratio = T.exp(new_log_probs - old_log_probs)
+                # prob_ratio = T.exp(new_log_probs.sum(axis=-1, keepdim=True) - old_log_probs.sum(axis=-1, keepdim=True))
+                #DEBUG
+                # print(f'prob ratio shape:{prob_ratio.shape}')
+                check_for_inf_or_NaN(prob_ratio, 'prob_ratio')
+                # print(f'prob ratio:{prob_ratio}')
 
                 # Calculate Surrogate Loss
-                surr1 = (prob_ratio * advantages_batch)
+                surr1 = prob_ratio * advantages_batch
                 # check_for_inf_or_NaN(surr1, 'surr1')
-                surr2 = (T.clamp(prob_ratio, 1 - policy_clip, 1 + policy_clip) * advantages_batch)
+                surr2 = T.clamp(prob_ratio, 1 - policy_clip, 1 + policy_clip) * advantages_batch
                 # check_for_inf_or_NaN(surr2, 'surr2')
                 surrogate_loss = -T.min(surr1, surr2).mean()
-                # check_for_inf_or_NaN(surrogate_loss, 'surrogate_loss')
+                #DEBUG
+                # print(f'surr1 shape:{surr1.shape}')
+                # print(f'surr2 shape:{surr2.shape}')
+                # print(f'surrogate loss shape:{surrogate_loss.shape}')
 
                 # Calculate Entropy penalty
                 entropy = new_dist.entropy().mean()
@@ -5857,7 +5920,7 @@ class PPO(Agent):
                 # print(f'surrogate loss: {surrogate_loss}')
                 # print(f'entropy penalty: {entropy_penalty}')
                 # print(f'kl_penatly: {kl_penalty}')
-                # print(f'policy loss: {policy_loss}')
+                # print(f'policy loss shape: {policy_loss.shape}')
 
                 # Update the policy
                 self.policy_model.optimizer.zero_grad()
@@ -5869,17 +5932,27 @@ class PPO(Agent):
                 # Update the value function
                 values = self.value_model(states_batch)
                 value_loss = (values - returns_batch).pow(2)
+                #DEBUG
+                # print(f'values loss shape:{value_loss.shape}')
                 
                 old_values = old_value_model(states_batch)
-                clipped_values = T.clamp(old_values + (values - old_values), 1 - value_clip, 1 + value_clip)
+                clipped_values = old_values + (values - old_values).clamp(-value_clip, value_clip)
+                # clipped_values = old_values + T.clamp(values - old_values, -value_clip, value_clip)
                 clipped_value_loss = (clipped_values - returns_batch).pow(2)
 
-                value_loss = self.value_loss_coefficient * T.max(value_loss, clipped_value_loss).mean()
+                value_loss = (self.value_loss_coefficient * (0.5 * T.max(value_loss, clipped_value_loss))).mean()
+                # value_loss = self.value_loss_coefficient * value_loss.mean()
 
                 self.value_model.optimizer.zero_grad()
                 value_loss.backward()
                 T.nn.utils.clip_grad_norm_(self.value_model.parameters(), max_norm=self.value_grad_clip)
                 self.value_model.optimizer.step()
+                #DEBUG
+                # print(f'values shape:{values.shape}')
+                # print(f'old values shape:{old_values.shape}')
+                # print(f'clipped value loss shape:{clipped_value_loss.shape}')
+                # print(f'final value loss shape:{value_loss.shape}')
+
                 
         # Step schedulers
         if self.policy_model.scheduler:
@@ -5955,10 +6028,10 @@ class PPO(Agent):
         # Decay Entropy Coefficient
         # self.entropy_coefficient *= self.entropy_decay
 
-        print(f'Policy Loss: {policy_loss.sum()}')
-        print(f'Value Loss: {value_loss}')
-        print(f'Entropy: {entropy}')
-        print(f'KL Divergence: {kl}')
+        # print(f'Policy Loss: {policy_loss.sum()}')
+        # print(f'Value Loss: {value_loss}')
+        # print(f'Entropy: {entropy}')
+        # print(f'KL Divergence: {kl}')
 
         if self.policy_model.distribution == 'categorical':
             return policy_loss, value_loss, entropy, kl, logits.detach().cpu().flatten()
@@ -6155,7 +6228,8 @@ class PPO(Agent):
 
 
         # load policy model
-        policy_model = StochasticContinuousPolicy.load(config['save_dir'], load_weights)
+        model = select_policy_model(env_wrapper)
+        policy_model = model.load(config['save_dir'], load_weights)
         # load value model
         value_model = ValueModel.load(config['save_dir'], load_weights)
         # load callbacks
@@ -6177,7 +6251,7 @@ class PPO(Agent):
             entropy_coefficient = config["entropy_coefficient"],
             entropy_schedule = ScheduleWrapper(config["entropy_schedule"]),
             kl_coefficient = config["kl_coefficient"],
-            kl_adapter = AdaptiveKL(**config["kl_adapter"]),
+            kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config["kl_adapter"] else None,
             normalize_advantages = config["normalize_advantages"],
             normalize_values = config["normalize_values"],
             value_normalizer_clip = config["normalizer_clip"],

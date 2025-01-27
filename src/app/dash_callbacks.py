@@ -40,7 +40,7 @@ import dash_utils
 # from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueModel, CriticModel, ActorModel
 from models import *
 # import rl_agents
-from rl_agents import *
+from rl_agents import Reinforce, ActorCritic, DDPG, PPO #HER, TD3
 import wandb_support
 from schedulers import ScheduleWrapper
 from adaptive_kl import AdaptiveKL
@@ -160,7 +160,7 @@ def register_callbacks(app, shared_data):
     def build_wrapper_tabs(selected_wrappers):
         """
         Create a dcc.Tab for each selected wrapper IF it is in WRAPPER_REGISTRY.
-        For wrappers not in the registry, we skip creating a tab (no extra params).
+        For wrappers not in the registry, skip creating a tab (no extra params).
         """
         #DEBUG
         print('build_wrapper_tabs called')
@@ -228,34 +228,53 @@ def register_callbacks(app, shared_data):
     @app.callback(
         Output({"type":"wrappers_params_store", "page":MATCH}, "data"),
         Input({"type": "wrapper-param", "wrapper": ALL, "param": ALL}, "value"),
+        State({"type": "wrapper-param", "wrapper": ALL, "param": ALL}, "id"),
         State({"type":"wrappers_params_store", "page":MATCH}, "data"),
-        prevent_initial_call=True
+        # prevent_initial_call=True
     )
-    def update_wrapper_params(all_values, current_store):
+    def update_wrapper_params(all_values, all_ids, store):
         """
         When any param input changes in a registry wrapper tab,
         store that new value in wrappers_params_store.
         """
         #DEBUG
         print('update_wrapper_params called')
-        triggered_id = ctx.triggered_id
-        if not triggered_id:
-            raise PreventUpdate
+        print(f'all values:{all_values}')
+        print(f'all ids:{all_ids}')
+        # triggered_id = ctx.triggered_id
+        # if not triggered_id:
+        #     raise PreventUpdate
 
-        # triggered_id has structure:
-        # { "type": "wrapper-param", "wrapper": "<wrapper_name>", "param": "<param_key>" }
-        w_name = triggered_id["wrapper"]
-        p_name = triggered_id["param"]
+        # # triggered_id has structure:
+        # # { "type": "wrapper-param", "wrapper": "<wrapper_name>", "param": "<param_key>" }
+        # w_name = triggered_id["wrapper"]
+        # p_name = triggered_id["param"]
 
-        store_data = dict(current_store) if current_store else {}
-        if w_name not in store_data:
-            store_data[w_name] = {}
+        # store_data = dict(current_store) if current_store else {}
+        # if w_name not in store_data:
+        #     store_data[w_name] = {}
 
-        # all_values is typically a list of a single item
-        new_val = all_values[0]  
-        store_data[w_name][p_name] = new_val
+        # # all_values is typically a list of a single item
+        # new_val = all_values[0] if isinstance(all_values, list) else all_values
+        # store_data[w_name][p_name] = new_val
 
-        return store_data
+        # #DEBUG
+        # print(f'new wrapper params:{store_data}')
+
+        # return store_data
+         # Initialize the store if it's None
+        store = store or {}
+
+        # Update the store with indexed components
+        for value, id_dict in zip(all_values, all_ids):
+            if value is not None:
+                # Convert the id_dict into a JSON-serializable string using underscores
+                key = "_".join(f"{k}:{v}" for k, v in id_dict.items() if k != 'type')
+                store[key] = value
+
+        # DEBUG
+        # print(f"Updated wrapper params store: {store}")
+        return store
 
     # Callback to add a new layer dropdown
     @app.callback(
@@ -632,7 +651,7 @@ def register_callbacks(app, shared_data):
                 store[key] = value
 
         # DEBUG
-        print(f"Updated run params store: {store}")
+        # print(f"Updated run params store: {store}")
         return store
 
     # Callback to toggle visibility of custom padding input for Conv2D layers
@@ -1479,8 +1498,11 @@ def register_callbacks(app, shared_data):
         if n_clicks is None or n_clicks < 1:
             raise PreventUpdate
         
-        wrappers_list = dash_utils.create_wrappers_list(wrappers, wrapper_params)
-        env = dash_utils.instantiate_envwrapper_obj(env_library, env_selection, wrappers_list)
+        # wrappers_list = dash_utils.create_wrappers_list(wrappers, wrapper_params)
+        formatted_wrappers = dash_utils.format_wrappers(wrapper_params)
+        #DEBUG
+        # print(f'formatted wrappers:{formatted_wrappers}')
+        env = dash_utils.instantiate_envwrapper_obj(env_library, env_selection, formatted_wrappers)
         device = agent_params.get(dash_utils.get_key({'type':'device', 'model':'none', 'agent':agent_type_dropdown_value}))
         save_dir = agent_params.get(dash_utils.get_key({'type':'save-dir', 'model':'none', 'agent':agent_type_dropdown_value}))
 
@@ -1591,17 +1613,22 @@ def register_callbacks(app, shared_data):
 
             elif agent_type_dropdown_value == "PPO":
                 
-                gae_coeff = agent_params.get(dash_utils.get_key({'type':'advantage-coeff', 'model':'none', 'agent':'PPO'}))
-                policy_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'policy', 'agent':'PPO'}))
+                gae_coeff = agent_params.get(dash_utils.get_key({'type':'advantage-coeff', 'model':'none', 'agent':agent_type_dropdown_value}))
+                policy_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'policy', 'agent':agent_type_dropdown_value}))
                 policy_clip_schedule = ScheduleWrapper(dash_utils.get_surrogate_loss_clip_scheduler('policy', agent_type_dropdown_value, agent_params))
-                value_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'value', 'agent':'PPO'}))
+                value_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'value', 'agent':agent_type_dropdown_value}))
                 value_clip_schedule = ScheduleWrapper(dash_utils.get_surrogate_loss_clip_scheduler('value', agent_type_dropdown_value, agent_params))
-                entropy_coeff = agent_params.get(dash_utils.get_key({'type':'entropy-coeff', 'model':'none', 'agent':'PPO'}))
+                value_loss_coeff = agent_params.get(dash_utils.get_key({'type':'value-model-coeff', 'model':'value', 'agent':agent_type_dropdown_value}))
+                entropy_coeff = agent_params.get(dash_utils.get_key({'type':'entropy-coeff', 'model':'none', 'agent':agent_type_dropdown_value}))
                 entropy_schedule = ScheduleWrapper(dash_utils.get_entropy_scheduler('none', agent_type_dropdown_value, agent_params))
-                kl_coeff = agent_params.get(dash_utils.get_key({'type':'kl-coeff', 'model':'none', 'agent':'PPO'}))
-                kl_adapter = AdaptiveKL(**dash_utils.get_kl_adapter('none', agent_type_dropdown_value, agent_params))
+                kl_coeff = agent_params.get(dash_utils.get_key({'type':'kl-coeff', 'model':'none', 'agent':agent_type_dropdown_value}))
+                kl_adapter_params = dash_utils.get_kl_adapter('none', agent_type_dropdown_value, agent_params)
+                if kl_adapter_params is None:
+                    kl_adapter = None
+                else:
+                    kl_adapter = AdaptiveKL(**kl_adapter_params)
                 #DEBUG
-                print(f'kl_adapter config:{kl_adapter.get_config()}')
+                # print(f'kl_adapter config:{kl_adapter.get_config()}')
                 normalize_advs = agent_params.get(dash_utils.get_key({'type':'norm-adv', 'model':'none', 'agent':'PPO'}), False)
                 normalize_values = agent_params.get(dash_utils.get_key({'type':'norm-values', 'model':'none', 'agent':'PPO'}), False)
                 val_norm_clip = agent_params.get(dash_utils.get_key({'type':'norm-clip', 'model':'none', 'agent':'PPO'}), np.inf)
@@ -1621,6 +1648,7 @@ def register_callbacks(app, shared_data):
                     policy_clip_schedule=policy_clip_schedule,
                     value_clip=value_clip,
                     value_clip_schedule=value_clip_schedule,
+                    value_loss_coefficient=value_loss_coeff,
                     entropy_coefficient=entropy_coeff,
                     entropy_schedule=entropy_schedule,
                     kl_coefficient=kl_coeff,

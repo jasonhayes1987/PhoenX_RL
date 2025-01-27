@@ -3,31 +3,109 @@ from abc import ABC, abstractmethod
 import numpy as np
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
-from gymnasium.wrappers import AtariPreprocessing, FrameStackObservation
+from gymnasium.wrappers import *
+from gymnasium.vector import VectorEnv, SyncVectorEnv
 
-def atari_wrappers(env):
-    """
-    Wrap an Atari environment with preprocessing and frame stacking.
+WRAPPER_REGISTRY = {
+    "AtariPreprocessing": {
+        "cls": AtariPreprocessing,
+        "default_params": {
+            "frame_skip": 1,
+            "grayscale_obs": True,
+            "scale_obs": True
+        }
+    },
+    "TimeLimit": {
+        "cls": TimeLimit,
+        "default_params": {
+            "max_episode_steps": 1000
+        }
+    },
+    "TimeAwareObservation": {
+        "cls": TimeAwareObservation,
+        "default_params": {
+            "flatten": False,
+            "normalize_time": False
+        }
+    },
+    "FrameStackObservation": {
+        "cls": FrameStackObservation,
+        "default_params": {
+            "stack_size": 4
+        }
+    },
+    "ResizeObservation": {
+        "cls": ResizeObservation,
+        "default_params": {
+            "shape": 84
+        }
+    }
+}
 
-    This function applies standard Atari preprocessing, including converting to grayscale,
-    resizing, scaling, and stacking multiple consecutive frames for better temporal
-    context.
+# def atari_wrappers(env):
+#     """
+#     Wrap an Atari environment with preprocessing and frame stacking.
 
-    Args:
-        env (gym.Env): The original Atari environment.
+#     This function applies standard Atari preprocessing, including converting to grayscale,
+#     resizing, scaling, and stacking multiple consecutive frames for better temporal
+#     context.
 
-    Returns:
-        gym.Env: The wrapped environment with preprocessing and frame stacking applied.
-    """
-    env = AtariPreprocessing(
-        env,
-        frame_skip=1,
-        grayscale_obs=True,
-        scale_obs=True,
-        screen_size=84
-    )
-    env = FrameStackObservation(env, stack_size=4)
-    return env
+#     Args:
+#         env (gym.Env): The original Atari environment.
+
+#     Returns:
+#         gym.Env: The wrapped environment with preprocessing and frame stacking applied.
+#     """
+#     env = AtariPreprocessing(
+#         env,
+#         frame_skip=1,
+#         grayscale_obs=True,
+#         scale_obs=True,
+#         screen_size=84
+#     )
+#     env = FrameStackObservation(env, stack_size=4)
+#     return env
+
+def wrap_env(vec_env, wrappers):
+    wrapper_list = []
+    for wrapper in wrappers:
+        if wrapper['type'] in WRAPPER_REGISTRY:
+            # print(f'wrapper type:{wrapper["type"]}')
+            # Use a copy of default_params to avoid modifying the registry
+            default_params = WRAPPER_REGISTRY[wrapper['type']]["default_params"].copy()
+            
+            if wrapper['type'] == "ResizeObservation":
+                # Ensure shape is a tuple for ResizeObservation
+                default_params['shape'] = (default_params['shape'], default_params['shape']) if isinstance(default_params['shape'], int) else default_params['shape']
+            
+            # print(f'default params:{default_params}')
+            override_params = wrapper.get("params", {})
+            
+            if wrapper['type'] == "ResizeObservation":
+                # Ensure override_params shape is a tuple
+                if 'shape' in override_params:
+                    override_params['shape'] = (override_params['shape'], override_params['shape']) if isinstance(override_params['shape'], int) else override_params['shape']
+            
+            # print(f'override params:{override_params}')
+            final_params = {**default_params, **override_params}
+            # print(f'final params:{final_params}')
+            
+            def wrapper_factory(env, cls=WRAPPER_REGISTRY[wrapper['type']]["cls"], params=final_params):
+                return cls(env, **params)
+            
+            wrapper_list.append(wrapper_factory)
+    
+    # Define apply_wrappers outside the loop
+    def apply_wrappers(env):
+        for wrapper in wrapper_list:
+            env = wrapper(env)
+            # print(f'length of obs space:{len(env.observation_space.shape)}')
+            # print(f'env obs space shape:{env.observation_space.shape}')
+        return env
+    
+    # print(f'wrapper list:{wrapper_list}')
+    envs = [lambda: apply_wrappers(gym.make(vec_env.spec.id, render_mode="rgb_array")) for _ in range(vec_env.num_envs)]    
+    return SyncVectorEnv(envs)
 
 class EnvWrapper(ABC):
     """
@@ -156,10 +234,12 @@ class GymnasiumWrapper(EnvWrapper):
     This wrapper supports initialization, resetting, stepping, rendering,
     and JSON-based serialization of Gymnasium environments.
     """
-    def __init__(self, env_spec: EnvSpec, wrappers: list[callable] = None):
+    def __init__(self, env_spec: EnvSpec, wrappers: list[dict] = None):
         self.env_spec = env_spec
-        self._wrappers = wrappers or []
+        self.wrappers = wrappers
         self.env = self._initialize_env()
+        #DEBUG
+        # print(f'wrappers sent to GymnasiumWrapper:{self.wrappers}')
 
     def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
         """
@@ -174,17 +254,24 @@ class GymnasiumWrapper(EnvWrapper):
             gym.Env: The initialized Gymnasium environment.
         """
         self.seed = seed
-        env = gym.make_vec(
-            id=self.env_spec,  # Can use EnvSpec directly here
+        vec_env = gym.make_vec(
+            id=self.env_spec,
             num_envs=num_envs,
-            wrappers=self._wrappers,
             render_mode="rgb_array" if render_freq > 0 else None,
         )
 
+        # Wrap vec env with wrappers if wrappers
+        if self.wrappers:
+            vec_env = wrap_env(vec_env, self.wrappers)
+
         if self.seed is not None:
-            _,_ = env.reset(seed=self.seed)
+            _,_ = vec_env.reset(seed=self.seed)
+
+        #DEBUG
+        # for env in vec_env.envs:
+            # print(f'env returned from gymwrapper _init_:{env.spec}')
         
-        return env
+        return vec_env
 
     def reset(self):
         """
@@ -279,7 +366,8 @@ class GymnasiumWrapper(EnvWrapper):
         """
         return {
             "type": self.__class__.__name__,
-            "env": self.env_spec.to_json()
+            "env": self.env_spec.to_json(),
+            "wrappers": self.wrappers,
         }
     
     def to_json(self):
@@ -309,8 +397,10 @@ class GymnasiumWrapper(EnvWrapper):
         #DEBUG
         # print(f'from json config:{config}, type:{type(config)}')
         env_spec = EnvSpec.from_json(config['env'])
+        #DEBUG
+        # print(f'wrappers in gym from json:{config["wrappers"]}')
         try:
-            return cls(env_spec)
+            return cls(env_spec, config["wrappers"])
         except Exception as e:
             raise ValueError(f"Environment wrapper error: {config}, {e}")
     
