@@ -4,6 +4,8 @@ from torch.optim import lr_scheduler
 
 class ScheduleWrapper:
     def __init__(self, schedule_config):
+        #DEBUG
+        # print(f'scheduler config:{schedule_config}')
         if schedule_config is None:
             self.schedule_config = None
             self.scheduler = None
