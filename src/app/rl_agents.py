@@ -5931,7 +5931,7 @@ class PPO(Agent):
                     
                 # Update the value function
                 values = self.value_model(states_batch)
-                value_loss = (values - returns_batch).pow(2)
+                loss = (values - returns_batch).pow(2)
                 #DEBUG
                 # print(f'values loss shape:{value_loss.shape}')
                 
@@ -5940,7 +5940,7 @@ class PPO(Agent):
                 # clipped_values = old_values + T.clamp(values - old_values, -value_clip, value_clip)
                 clipped_value_loss = (clipped_values - returns_batch).pow(2)
 
-                value_loss = (self.value_loss_coefficient * (0.5 * T.max(value_loss, clipped_value_loss))).mean()
+                value_loss = self.value_loss_coefficient * (0.5 * T.max(loss, clipped_value_loss).mean()).mean()
                 # value_loss = self.value_loss_coefficient * value_loss.mean()
 
                 self.value_model.optimizer.zero_grad()
