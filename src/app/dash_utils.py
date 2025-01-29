@@ -287,7 +287,7 @@ def format_layers(model, agent, agent_params):
     )
 
     # DEBUG
-    print(f'Layer indices: {layer_indices}')
+    # print(f'Layer indices: {layer_indices}')
 
     # Iterate over each layer index and construct the layer configuration
     for index in sorted(layer_indices):
@@ -324,12 +324,13 @@ def format_layers(model, agent, agent_params):
 def format_dense_layer(model, agent, index, keys):
     units_key = f"type:num-units_model:{model}_agent:{agent}_index:{index}"
     kernel_key = f"type:kernel-init_model:{model}_agent:{agent}_index:{index}"
+    kernel_params_key = f"type:kernel-params_model:{model}_agent:{agent}_index:{index}"
     bias_key = f"type:bias_model:{model}_agent:{agent}_index:{index}"
 
     params = {
         "units": keys.get(units_key, None),
         "kernel": keys.get(kernel_key, "default"),
-        "kernel params": {},
+        "kernel params": keys.get(kernel_params_key, {}),
         "bias": keys.get(bias_key, True)
     }
 
@@ -348,6 +349,8 @@ def format_cnn_layer(model, agent, index, keys):
     stride_key = f"type:stride_model:{model}_agent:{agent}_index:{index}"
     padding_key = f"type:padding-dropdown_model:{model}_agent:{agent}_index:{index}"
     bias_key = f"type:bias_model:{model}_agent:{agent}_index:{index}"
+    kernel_key = f"type:kernel-init_model:{model}_agent:{agent}_index:{index}"
+    kernel_params_key = f"type:kernel-params_model:{model}_agent:{agent}_index:{index}"
 
     params = {
         "out_channels": keys.get(out_channels_key, 32),
@@ -355,6 +358,8 @@ def format_cnn_layer(model, agent, index, keys):
         "stride": keys.get(stride_key, 1),
         "padding": keys.get(padding_key, 0),
         "bias": keys.get(bias_key, True),
+        "kernel": keys.get(kernel_key, "default"),
+        "kernel params": keys.get(kernel_params_key, {}),
     }
     return params
 
@@ -1649,8 +1654,10 @@ def create_save_dir_input(agent_type):
     )
 
 
-def get_kernel_initializer_inputs(selected_initializer, initializer_id):
+def get_kernel_initializer_inputs(selected_initializer, initializer_id, agent_params):
     # Dictionary mapping the initializer names to the corresponding function
+    #DEBUG
+    print(f'selected initializer:{selected_initializer}, initializer_id:{initializer_id}')
     initializer_input_creators = {
         "variance_scaling": create_variance_scaling_inputs,
         "constant": create_constant_initializer_inputs,
@@ -1667,11 +1674,40 @@ def get_kernel_initializer_inputs(selected_initializer, initializer_id):
     # or return an empty html.Div() if not found
     if selected_initializer in initializer_input_creators:
         # return initializer_input_creators.get(selected_initializer, lambda: html.Div())(initializer_id)
-        return initializer_input_creators.get(selected_initializer)(initializer_id)
-    elif selected_initializer not in ['ones', 'zeros', 'default']:
+        return initializer_input_creators.get(selected_initializer)(initializer_id, agent_params)
+    elif selected_initializer not in ['ones', 'zeros', 'orthogonal', 'default']:
         raise ValueError(f"{selected_initializer} not in initializer input creator dict")
 
-def create_kaiming_normal_initializer_inputs(initializer_id):
+def create_kaiming_normal_initializer_inputs(initializer_id, agent_params):
+    """Component for kaiming uniform initializer hyperparameters"""
+    # return html.Div(
+    #     id={
+    #         'type': 'kernel-params',
+    #         'model': initializer_id['model'],
+    #         'agent': initializer_id['agent']
+    #         },
+    children=[
+        html.Label('Mode', style={'text-decoration': 'underline'}),
+        dcc.Dropdown(
+            id={
+                'type':'mode',
+                'model':initializer_id['model'],
+                'agent':initializer_id['agent'],
+                'index':initializer_id['index'],
+                },
+            options=[
+                    {'label': 'fan in', 'value': 'fan_in'},
+                    {'label': 'fan out', 'value': 'fan_out'},
+                ],
+            value=agent_params.get(get_key(initializer_id, 'mode'), 'fan_in'),
+        ),
+        html.Hr(),
+    ]
+    return children
+    
+
+
+def create_kaiming_uniform_initializer_inputs(initializer_id, agent_params):
     """Component for kaiming uniform initializer hyperparameters"""
     return html.Div(
         id={
@@ -1691,34 +1727,7 @@ def create_kaiming_normal_initializer_inputs(initializer_id):
                         {'label': 'fan in', 'value': 'fan_in'},
                         {'label': 'fan out', 'value': 'fan_out'},
                     ],
-                value='fan_in',
-            ),
-            html.Hr(),
-        ]
-    )
-
-
-def create_kaiming_uniform_initializer_inputs(initializer_id):
-    """Component for kaiming uniform initializer hyperparameters"""
-    return html.Div(
-        id={
-            'type': 'kernel-params',
-            'model': initializer_id['model'],
-            'agent': initializer_id['agent']
-            },
-        children=[
-            html.Label('Mode', style={'text-decoration': 'underline'}),
-            dcc.Dropdown(
-                id={
-                    'type':'mode',
-                    'model':initializer_id['model'],
-                    'agent':initializer_id['agent'],
-                    },
-                options=[
-                        {'label': 'fan in', 'value': 'fan_in'},
-                        {'label': 'fan out', 'value': 'fan_out'},
-                    ],
-                value='fan_in',
+                value=agent_params.get(get_key(initializer_id, 'mode'), 'fan_in')
             ),
             html.Hr(),
         ]
@@ -1726,7 +1735,7 @@ def create_kaiming_uniform_initializer_inputs(initializer_id):
                     
 
 
-def create_xavier_normal_initializer_inputs(initializer_id):
+def create_xavier_normal_initializer_inputs(initializer_id, agent_params):
     """Component for xavier uniform initializer hyperparameters"""
     return html.Div(
         id={
@@ -1746,14 +1755,14 @@ def create_xavier_normal_initializer_inputs(initializer_id):
                 min=1.0,
                 max=3.0,
                 step=1.0,
-                value=1.0,
+                value=agent_params.get(get_key(initializer_id, 'gain'), 1.0)
             ),
             html.Hr(),
         ],
     )
 
 
-def create_xavier_uniform_initializer_inputs(initializer_id):
+def create_xavier_uniform_initializer_inputs(initializer_id, agent_params):
     """Component for xavier uniform initializer hyperparameters"""
     return html.Div(
         id={
@@ -1773,13 +1782,13 @@ def create_xavier_uniform_initializer_inputs(initializer_id):
                 min=1.0,
                 max=3.0,
                 step=1.0,
-                value=1.0,
+                value=agent_params.get(get_key(initializer_id, 'gain'), 1.0)
             ),
             html.Hr(),
         ],
     )
 
-def create_truncated_normal_initializer_inputs(initializer_id):
+def create_truncated_normal_initializer_inputs(initializer_id, agent_params):
     """Component for truncated normal initializer hyperparameters"""
     return html.Div(
         id={
@@ -1796,10 +1805,10 @@ def create_truncated_normal_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent'],
                 },
                 type='number',
-                min=0.01,
-                max=0.99,
+                min=0.00,
+                max=1.00,
                 step=0.01,
-                value=0.99,
+                value=agent_params.get(get_key(initializer_id, 'mean'), 0.00)
             ),
 
             html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
@@ -1811,15 +1820,15 @@ def create_truncated_normal_initializer_inputs(initializer_id):
                 },
                 type='number',
                 min=0.01,
-                max=2.99,
+                max=3.00,
                 step=0.01,
-                value=0.99,  # Default position
+                value=agent_params.get(get_key(initializer_id, 'std'), 1.00)
             ),
             html.Hr(),
     ])
 
 
-def create_uniform_initializer_inputs(initializer_id):
+def create_uniform_initializer_inputs(initializer_id, agent_params):
     """Component for random uniform initializer hyperparameters"""
     return html.Div(
         id={
@@ -1836,10 +1845,10 @@ def create_uniform_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=-0.999,
-                max=0.999,
+                min=-1.000,
+                max=1.000,
                 step=0.001,
-                value=-0.999,  # Default position
+                value=agent_params.get(get_key(initializer_id, 'a'), -1.000)
             ),
 
             html.Label('Maximum', style={'text-decoration': 'underline'}),
@@ -1850,16 +1859,16 @@ def create_uniform_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=-0.99,
-                max=0.99,
+                min=-1.000,
+                max=1.000,
                 step=0.001,
-                value=0.99
+                value=agent_params.get(get_key(initializer_id, 'b'), 1.000)
             ),
             html.Hr(),
     ])
 
 
-def create_normal_initializer_inputs(initializer_id):
+def create_normal_initializer_inputs(initializer_id, agent_params):
     """Component for random normal initializer hyperparameters"""
     return html.Div(
         children=[
@@ -1871,10 +1880,10 @@ def create_normal_initializer_inputs(initializer_id):
                 'agent':initializer_id['agent']
                 },
                 type='number',
-                min=0.01,
-                max=0.99,
+                min=-1.00,
+                max=1.00,
                 step=0.01,
-                value=0.99,
+                value=agent_params.get(get_key(initializer_id, 'mean'), 0.0)
             ),
 
             html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
@@ -1886,15 +1895,15 @@ def create_normal_initializer_inputs(initializer_id):
                 },
                 type='number',
                 min=0.01,
-                max=1.99,
+                max=2.00,
                 step=0.01,
-                value=0.99,
+                value=agent_params.get(get_key(initializer_id, 'std'), 1.0)
             ),
             html.Hr(),
     ])
 
 
-def create_constant_initializer_inputs(initializer_id):
+def create_constant_initializer_inputs(initializer_id, agent_params):
     """Component for constant initializer hyperparameters"""
     return html.Div(
         children=[
@@ -1909,14 +1918,14 @@ def create_constant_initializer_inputs(initializer_id):
                 min=0.001,
                 max=0.99,
                 step=0.001,
-                value=0.99,
+                value=agent_params.get(get_key(initializer_id, 'val'), 1.0)
             ),
             html.Hr(),
         ]
     )
 
 
-def create_variance_scaling_inputs(initializer_id):
+def create_variance_scaling_inputs(initializer_id, agent_params):
     """Component for variance scaling initializer hyperparameters"""
     return html.Div(
         children=[
@@ -1931,7 +1940,7 @@ def create_variance_scaling_inputs(initializer_id):
                 min=1.0,
                 max=5.0,
                 step=1.0,
-                value=2.0,  # Default position
+                value=agent_params.get(get_key(initializer_id, 'scale'), 2.0)
             ),
             
             html.Label('Mode', style={'text-decoration': 'underline'}),
@@ -1943,7 +1952,7 @@ def create_variance_scaling_inputs(initializer_id):
                 },
                 options=[{'label': mode, 'value': mode} for mode in ['fan_in', 'fan_out', 'fan_avg']],
                 placeholder="Mode",
-                value='fan_in'
+                value=agent_params.get(get_key(initializer_id, 'mode'), 'fan_in')
             ),
             
             html.Label('Distribution', style={'text-decoration': 'underline'}),
@@ -1955,7 +1964,7 @@ def create_variance_scaling_inputs(initializer_id):
                 },
                 options=[{'label': dist, 'value': dist} for dist in ['truncated_normal', 'uniform']],
                 placeholder="Distribution",
-                value='truncated_normal'
+                value=agent_params.get(get_key(initializer_id, 'distribution'), 'truncated_normal')
             ),
             html.Hr(),
         ]
@@ -3257,7 +3266,7 @@ def create_kernel_input(agent_type, model_type, index, stored_values=None, key=N
                     options=[
                         {"label": x, "value": x.replace(" ", "_")} for x in 
                         ["kaiming uniform", "kaiming normal", "xavier uniform", "xavier normal", "truncated normal", 
-                        "uniform", "normal", "constant", "ones", "zeros", "variance scaling", "default"
+                        "uniform", "normal", "constant", "ones", "zeros", "variance scaling", "orthogonal", "default"
                         ]
                     ],
                 placeholder="Kernel Initialization",

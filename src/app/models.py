@@ -164,6 +164,9 @@ class Model(nn.Module):
 
         elif layer_type == 'relu':
             return nn.ReLU()
+        
+        elif layer_type == 'leakyrelu':
+            return nn.LeakyReLU()
 
         elif layer_type == 'tanh':
             return nn.Tanh()

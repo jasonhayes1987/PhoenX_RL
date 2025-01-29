@@ -266,6 +266,7 @@ class GymnasiumWrapper(EnvWrapper):
 
         if self.seed is not None:
             _,_ = vec_env.reset(seed=self.seed)
+            _ = vec_env.action_space.seed(self.seed)
 
         #DEBUG
         # for env in vec_env.envs:
