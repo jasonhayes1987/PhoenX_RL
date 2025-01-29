@@ -321,6 +321,7 @@ def register_callbacks(app, shared_data):
                             {"label": "BatchNorm2D", "value": "batchnorm2d"},
                             {"label": "Flatten", "value": "flatten"},
                             {"label": "ReLU", "value": "relu"},
+                            {"label": "LeakyReLU", "value": "leakyrelu"},
                             {"label": "Tanh", "value": "tanh"}
                         ],
                         placeholder="Select Layer Type",
@@ -447,6 +448,7 @@ def register_callbacks(app, shared_data):
                     ),
                     style={'display': 'none'}
                 ),
+                dash_utils.create_kernel_input(ids['agent'], ids['model'], ids['index'], agent_params_store),
                 dcc.Dropdown(
                     id={
                         'type': 'bias',
@@ -1125,209 +1127,210 @@ def register_callbacks(app, shared_data):
         
     # Callback to display kernel initializer parameters based on the selected kernel type
     @app.callback(
-        Output({'type': 'kernel-params', 'model': ALL, 'agent': ALL, 'index': ALL}, 'children'),
-        Input({'type': 'kernel-init', 'model': ALL, 'agent': ALL, 'index': ALL}, 'value'),
-        [State({'type': 'kernel-init', 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
-         State("agent-params-store", "data")]
+        Output({'type': 'kernel-params', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'children'),
+        Input({'type': 'kernel-init', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'value'),
+        [State({'type': 'kernel-init', 'model': MATCH, 'agent': MATCH, 'index': MATCH}, 'id'),
+         State("agent-params-store", "data")],
+        prevent_initial_call=True
     )
-    def display_kernel_parameters(selected_kernels, dropdown_ids, agent_params):
-        children = []
-        for (kernel, ids) in zip(selected_kernels, dropdown_ids):
-            params = []
-            if kernel in ["kaiming_normal", "kaiming_uniform"]:
-                params = [
-                    dcc.Dropdown(
-                        id={
-                            'type': 'mode',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        options=[
-                            {"label": "fan in", "value": "fan_in"},
-                            {"label": "fan out", "value": "fan_out"}
-                        ],
-                        placeholder="Mode",
-                        value=agent_params.get(dash_utils.get_key(ids, 'mode'), None)
-                    )
-                ]
-            elif kernel in ["xavier_normal", "xavier_uniform"]:
-                params = [
-                    dcc.Input(
-                        id={
-                            'type': 'gain',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Gain',
-                        min=1.0,
-                        max=3.0,
-                        step=0.1,
-                        value=agent_params.get(dash_utils.get_key(ids, 'gain'), None)
-                    )
-                ]
-            elif kernel == "truncated_normal":
-                params = [
-                    dcc.Input(
-                        id={
-                            'type': 'mean',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Mean',
-                        min=0.01,
-                        max=0.99,
-                        step=0.01,
-                        value=agent_params.get(dash_utils.get_key(ids, 'mean'), None)
-                    ),
-                    dcc.Input(
-                        id={
-                            'type': 'std-dev',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Standard Deviation',
-                        min=0.1,
-                        max=3.0,
-                        step=0.1,
-                        value=agent_params.get(dash_utils.get_key(ids, 'std-dev'), None)
-                    )
-                ]
-            elif kernel == "uniform":
-                params = [
-                    dcc.Input(
-                        id={
-                            'type': 'min',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Minimum',
-                        min=0.01,
-                        max=1.0,
-                        step=0.01,
-                        value=agent_params.get(dash_utils.get_key(ids, 'min'), None)
-                    ),
-                    dcc.Input(
-                        id={
-                            'type': 'max',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Maximum',
-                        min=0.01,
-                        max=1.0,
-                        step=0.01,
-                        value=agent_params.get(dash_utils.get_key(ids, 'max'), None)
-                    )
-                ]
-            elif kernel == "normal":
-                params = [
-                    dcc.Input(
-                        id={
-                            'type': 'mean',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        }, 
-                        type='number',
-                        placeholder='Mean',
-                        min=0.01,
-                        max=0.99,
-                        step=0.01,
-                        value=agent_params.get(dash_utils.get_key(ids, 'mean'), None)
-                    ),
-                    dcc.Input(
-                        id={
-                            'type': 'std-dev',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Standard Deviation',
-                        min=0.1,
-                        max=3.0,
-                        step=0.1,
-                        value=agent_params.get(dash_utils.get_key(ids, 'std-dev'), None)
-                    )
-                ]
-            elif kernel == "constant":
-                params = [
-                    dcc.Input(
-                        id={
-                            'type': 'value',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Value',
-                        min=0.01,
-                        max=1.0,
-                        step=0.01,
-                        value=agent_params.get(dash_utils.get_key(ids, 'value'), None)
-                    )
-                ]
-            elif kernel == "variance_scaling":
-                params = [
-                    dcc.Input(
-                        id={
-                            'type': 'scale',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        type='number',
-                        placeholder='Scale',
-                        min=1.0,
-                        max=5.0,
-                        step=0.1,
-                        value=agent_params.get(dash_utils.get_key(ids, 'scale'), None)
-                    ),
-                    dcc.Dropdown(
-                        id={
-                            'type': 'mode',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        options=[
-                            {"label": "fan in", "value": "fan_in"},
-                            {"label": "fan out", "value": "fan_out"},
-                            {"label": "fan avg", "value": "fan_avg"}
-                        ],
-                        placeholder="Mode",
-                        value=agent_params.get(dash_utils.get_key(ids, 'mode'), None)
-                    ),
-                    dcc.Dropdown(
-                        id={
-                            'type': 'distribution',
-                            'model': ids['model'],
-                            'agent': ids['agent'],
-                            'index': ids['index'],
-                        },
-                        options=[
-                            {"label": "truncated normal", "value": "truncated_normal"},
-                            {"label": "uniform", "value": "uniform"}
-                        ],
-                        placeholder="Distribution",
-                        value=agent_params.get(dash_utils.get_key(ids, 'distribution'), None)
-                    )
-                ]
+    def display_kernel_parameters(selected_kernel, dropdown_id, agent_params):
+        # children = []
+        # for (kernel, ids) in zip(selected_kernels, dropdown_ids):
+            # params = []
+            # if kernel in ["kaiming_normal", "kaiming_uniform"]:
+            #     params = [
+            #         dcc.Dropdown(
+            #             id={
+            #                 'type': 'mode',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             options=[
+            #                 {"label": "fan in", "value": "fan_in"},
+            #                 {"label": "fan out", "value": "fan_out"}
+            #             ],
+            #             placeholder="Mode",
+            #             value=agent_params.get(dash_utils.get_key(ids, 'mode'), None)
+            #         )
+            #     ]
+            # elif kernel in ["xavier_normal", "xavier_uniform"]:
+            #     params = [
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'gain',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Gain',
+            #             min=1.0,
+            #             max=3.0,
+            #             step=0.1,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'gain'), None)
+            #         )
+            #     ]
+            # elif kernel == "truncated_normal":
+            #     params = [
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'mean',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Mean',
+            #             min=0.01,
+            #             max=0.99,
+            #             step=0.01,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'mean'), None)
+            #         ),
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'std-dev',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Standard Deviation',
+            #             min=0.1,
+            #             max=3.0,
+            #             step=0.1,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'std-dev'), None)
+            #         )
+            #     ]
+            # elif kernel == "uniform":
+            #     params = [
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'min',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Minimum',
+            #             min=0.01,
+            #             max=1.0,
+            #             step=0.01,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'min'), None)
+            #         ),
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'max',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Maximum',
+            #             min=0.01,
+            #             max=1.0,
+            #             step=0.01,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'max'), None)
+            #         )
+            #     ]
+            # elif kernel == "normal":
+            #     params = [
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'mean',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             }, 
+            #             type='number',
+            #             placeholder='Mean',
+            #             min=0.01,
+            #             max=0.99,
+            #             step=0.01,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'mean'), None)
+            #         ),
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'std-dev',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Standard Deviation',
+            #             min=0.1,
+            #             max=3.0,
+            #             step=0.1,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'std-dev'), None)
+            #         )
+            #     ]
+            # elif kernel == "constant":
+            #     params = [
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'value',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Value',
+            #             min=0.01,
+            #             max=1.0,
+            #             step=0.01,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'value'), None)
+            #         )
+            #     ]
+            # elif kernel == "variance_scaling":
+            #     params = [
+            #         dcc.Input(
+            #             id={
+            #                 'type': 'scale',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             type='number',
+            #             placeholder='Scale',
+            #             min=1.0,
+            #             max=5.0,
+            #             step=0.1,
+            #             value=agent_params.get(dash_utils.get_key(ids, 'scale'), None)
+            #         ),
+            #         dcc.Dropdown(
+            #             id={
+            #                 'type': 'mode',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             options=[
+            #                 {"label": "fan in", "value": "fan_in"},
+            #                 {"label": "fan out", "value": "fan_out"},
+            #                 {"label": "fan avg", "value": "fan_avg"}
+            #             ],
+            #             placeholder="Mode",
+            #             value=agent_params.get(dash_utils.get_key(ids, 'mode'), None)
+            #         ),
+            #         dcc.Dropdown(
+            #             id={
+            #                 'type': 'distribution',
+            #                 'model': ids['model'],
+            #                 'agent': ids['agent'],
+            #                 'index': ids['index'],
+            #             },
+            #             options=[
+            #                 {"label": "truncated normal", "value": "truncated_normal"},
+            #                 {"label": "uniform", "value": "uniform"}
+            #             ],
+            #             placeholder="Distribution",
+            #             value=agent_params.get(dash_utils.get_key(ids, 'distribution'), None)
+            #         )
+            #     ]
 
-            children.append(html.Div(params, style={'margin-top': '10px', 'margin-bottom': '10px', 'margin-left': '20px'}))
+            # children.append(html.Div(params, style={'margin-top': '10px', 'margin-bottom': '10px', 'margin-left': '20px'}))
         
-        return children
+        return dash_utils.get_kernel_initializer_inputs(selected_kernel, dropdown_id, agent_params)
     
     @app.callback(
         Output({'type': 'lr-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
