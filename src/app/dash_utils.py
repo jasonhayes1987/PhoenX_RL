@@ -1709,289 +1709,254 @@ def create_kaiming_normal_initializer_inputs(initializer_id, agent_params):
 
 def create_kaiming_uniform_initializer_inputs(initializer_id, agent_params):
     """Component for kaiming uniform initializer hyperparameters"""
-    return html.Div(
-        id={
-            'type': 'kernel-params',
-            'model': initializer_id['model'],
-            'agent': initializer_id['agent']
-            },
-        children=[
-            html.Label('Mode', style={'text-decoration': 'underline'}),
-            dcc.Dropdown(
-                id={
-                    'type':'mode',
-                    'model':initializer_id['model'],
-                    'agent':initializer_id['agent'],
-                    },
-                options=[
-                        {'label': 'fan in', 'value': 'fan_in'},
-                        {'label': 'fan out', 'value': 'fan_out'},
-                    ],
-                value=agent_params.get(get_key(initializer_id, 'mode'), 'fan_in')
-            ),
-            html.Hr(),
-        ]
-    )
+    children=[
+        html.Label('Mode', style={'text-decoration': 'underline'}),
+        dcc.Dropdown(
+            id={
+                'type':'mode',
+                'model':initializer_id['model'],
+                'agent':initializer_id['agent'],
+                'index':initializer_id['index'],
+                },
+            options=[
+                    {'label': 'fan in', 'value': 'fan_in'},
+                    {'label': 'fan out', 'value': 'fan_out'},
+                ],
+            value=agent_params.get(get_key(initializer_id, 'mode'), 'fan_in'),
+        ),
+        html.Hr(),
+    ]
+    return children
                     
 
 
 def create_xavier_normal_initializer_inputs(initializer_id, agent_params):
     """Component for xavier uniform initializer hyperparameters"""
-    return html.Div(
-        id={
-            'type': 'kernel-params',
-            'model': initializer_id['model'],
-            'agent': initializer_id['agent']
+    children=[
+        html.Label('Gain', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+                'type':'gain',
+                'model':initializer_id['model'],
+                'agent':initializer_id['agent'],
+                'index':initializer_id['index'],
             },
-        children=[
-            html.Label('Gain', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'gain',
-                    'model':initializer_id['model'],
-                    'agent':initializer_id['agent'],
-                },
-                type='number',
-                min=1.0,
-                max=3.0,
-                step=1.0,
-                value=agent_params.get(get_key(initializer_id, 'gain'), 1.0)
-            ),
-            html.Hr(),
-        ],
-    )
+            type='number',
+            min=1.0,
+            max=3.0,
+            step=1.0,
+            value=agent_params.get(get_key(initializer_id, 'gain'), 1.0)
+        ),
+        html.Hr(),
+    ]
+    return children
+
 
 
 def create_xavier_uniform_initializer_inputs(initializer_id, agent_params):
     """Component for xavier uniform initializer hyperparameters"""
-    return html.Div(
-        id={
-            'type': 'kernel-params',
-            'model': initializer_id['model'],
-            'agent': initializer_id['agent']
+    children=[
+        html.Label('Gain', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+                'type':'gain',
+                'model':initializer_id['model'],
+                'agent':initializer_id['agent'],
+                'index':initializer_id['index'],
             },
-        children=[
-            html.Label('Gain', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'gain',
-                    'model':initializer_id['model'],
-                    'agent':initializer_id['agent'],
-                },
-                type='number',
-                min=1.0,
-                max=3.0,
-                step=1.0,
-                value=agent_params.get(get_key(initializer_id, 'gain'), 1.0)
-            ),
-            html.Hr(),
-        ],
-    )
+            type='number',
+            min=1.0,
+            max=3.0,
+            step=1.0,
+            value=agent_params.get(get_key(initializer_id, 'gain'), 1.0)
+        ),
+        html.Hr(),
+    ]
+    return children
 
 def create_truncated_normal_initializer_inputs(initializer_id, agent_params):
     """Component for truncated normal initializer hyperparameters"""
-    return html.Div(
-        id={
-            'type': 'kernel-params',
-            'model': initializer_id['model'],
-            'agent': initializer_id['agent']
-        },
-        children=[
-            html.Label('Mean', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'mean',
-                'model':initializer_id['model'],
-                'agent':initializer_id['agent'],
-                },
-                type='number',
-                min=0.00,
-                max=1.00,
-                step=0.01,
-                value=agent_params.get(get_key(initializer_id, 'mean'), 0.00)
-            ),
+    children=[
+        html.Label('Mean', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'mean',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=0.00,
+            max=1.00,
+            step=0.01,
+            value=agent_params.get(get_key(initializer_id, 'mean'), 0.00)
+        ),
 
-            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'std',
-                'model':initializer_id['model'],
-                'agent':initializer_id['agent'],
-                },
-                type='number',
-                min=0.01,
-                max=3.00,
-                step=0.01,
-                value=agent_params.get(get_key(initializer_id, 'std'), 1.00)
-            ),
-            html.Hr(),
-    ])
+        html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'std',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=0.01,
+            max=3.00,
+            step=0.01,
+            value=agent_params.get(get_key(initializer_id, 'std'), 1.00)
+        ),
+        html.Hr(),
+    ]
+    return children
 
 
 def create_uniform_initializer_inputs(initializer_id, agent_params):
     """Component for random uniform initializer hyperparameters"""
-    return html.Div(
-        id={
-            'type': 'kernel-params',
-            'model': initializer_id['model'],
-            'agent': initializer_id['agent']
-        },
-        children=[
-            html.Label('Minimum', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'a',
-                'model':initializer_id['model'],
-                'agent':initializer_id['agent']
-                },
-                type='number',
-                min=-1.000,
-                max=1.000,
-                step=0.001,
-                value=agent_params.get(get_key(initializer_id, 'a'), -1.000)
-            ),
+    children=[
+        html.Label('Minimum', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'a',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=-1.000,
+            max=1.000,
+            step=0.001,
+            value=agent_params.get(get_key(initializer_id, 'a'), -1.000)
+        ),
 
-            html.Label('Maximum', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'b',
-                'model':initializer_id['model'],
-                'agent':initializer_id['agent']
-                },
-                type='number',
-                min=-1.000,
-                max=1.000,
-                step=0.001,
-                value=agent_params.get(get_key(initializer_id, 'b'), 1.000)
-            ),
-            html.Hr(),
-    ])
+        html.Label('Maximum', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'b',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=-1.000,
+            max=1.000,
+            step=0.001,
+            value=agent_params.get(get_key(initializer_id, 'b'), 1.000)
+        ),
+        html.Hr(),
+    ]
+    return children
 
 
 def create_normal_initializer_inputs(initializer_id, agent_params):
     """Component for random normal initializer hyperparameters"""
-    return html.Div(
-        children=[
-            html.Label('Mean', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'mean',
-                'model':initializer_id['model'],
-                'agent':initializer_id['agent']
-                },
-                type='number',
-                min=-1.00,
-                max=1.00,
-                step=0.01,
-                value=agent_params.get(get_key(initializer_id, 'mean'), 0.0)
-            ),
+    children=[
+        html.Label('Mean', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'mean',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=-1.00,
+            max=1.00,
+            step=0.01,
+            value=agent_params.get(get_key(initializer_id, 'mean'), 0.0)
+        ),
 
-            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'std',
-                'model':initializer_id['model'],
-                'agent':initializer_id['agent']
-                },
-                type='number',
-                min=0.01,
-                max=2.00,
-                step=0.01,
-                value=agent_params.get(get_key(initializer_id, 'std'), 1.0)
-            ),
-            html.Hr(),
-    ])
+        html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'std',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=0.01,
+            max=2.00,
+            step=0.01,
+            value=agent_params.get(get_key(initializer_id, 'std'), 1.0)
+        ),
+        html.Hr(),
+    ]
+    return children
 
 
 def create_constant_initializer_inputs(initializer_id, agent_params):
     """Component for constant initializer hyperparameters"""
-    return html.Div(
-        children=[
-            html.Label('Value', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'val',
-                'model':initializer_id['model'],
-                'agent':initializer_id['agent']
-                },
-                type='number',
-                min=0.001,
-                max=0.99,
-                step=0.001,
-                value=agent_params.get(get_key(initializer_id, 'val'), 1.0)
-            ),
-            html.Hr(),
-        ]
-    )
+    children=[
+        html.Label('Value', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'val',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=0.001,
+            max=0.99,
+            step=0.001,
+            value=agent_params.get(get_key(initializer_id, 'val'), 1.0)
+        ),
+        html.Hr(),
+    ]
+    return children
 
 
 def create_variance_scaling_inputs(initializer_id, agent_params):
     """Component for variance scaling initializer hyperparameters"""
-    return html.Div(
-        children=[
-            html.Label('Scale', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                'type':'scale',
+    children=[
+        html.Label('Scale', style={'text-decoration': 'underline'}),
+        dcc.Input(
+            id={
+            'type':'scale',
+            'model':initializer_id['model'],
+            'agent':initializer_id['agent'],
+            'index':initializer_id['index'],
+            },
+            type='number',
+            min=1.0,
+            max=5.0,
+            step=1.0,
+            value=agent_params.get(get_key(initializer_id, 'scale'), 2.0)
+        ),
+        
+        html.Label('Mode', style={'text-decoration': 'underline'}),
+        dcc.Dropdown(
+            id={
+                'type':'mode',
                 'model':initializer_id['model'],
-                'agent':initializer_id['agent']
-                },
-                type='number',
-                min=1.0,
-                max=5.0,
-                step=1.0,
-                value=agent_params.get(get_key(initializer_id, 'scale'), 2.0)
-            ),
-            
-            html.Label('Mode', style={'text-decoration': 'underline'}),
-            dcc.Dropdown(
-                id={
-                    'type':'mode',
-                    'model':initializer_id['model'],
-                    'agent':initializer_id['agent']
-                },
-                options=[{'label': mode, 'value': mode} for mode in ['fan_in', 'fan_out', 'fan_avg']],
-                placeholder="Mode",
-                value=agent_params.get(get_key(initializer_id, 'mode'), 'fan_in')
-            ),
-            
-            html.Label('Distribution', style={'text-decoration': 'underline'}),
-            dcc.Dropdown(
-                id={
-                    'type':'distribution',
-                    'model':initializer_id['model'],
-                    'agent':initializer_id['agent']
-                },
-                options=[{'label': dist, 'value': dist} for dist in ['truncated_normal', 'uniform']],
-                placeholder="Distribution",
-                value=agent_params.get(get_key(initializer_id, 'distribution'), 'truncated_normal')
-            ),
-            html.Hr(),
-        ]
-    )
+                'agent':initializer_id['agent'],
+                'index':initializer_id['index'],
+            },
+            options=[{'label': mode, 'value': mode} for mode in ['fan_in', 'fan_out', 'fan_avg']],
+            placeholder="Mode",
+            value=agent_params.get(get_key(initializer_id, 'mode'), 'fan_in')
+        ),
+        
+        html.Label('Distribution', style={'text-decoration': 'underline'}),
+        dcc.Dropdown(
+            id={
+                'type':'distribution',
+                'model':initializer_id['model'],
+                'agent':initializer_id['agent'],
+                'index':initializer_id['index'],
+            },
+            options=[{'label': dist, 'value': dist} for dist in ['truncated_normal', 'uniform']],
+            placeholder="Distribution",
+            value=agent_params.get(get_key(initializer_id, 'distribution'), 'truncated_normal')
+        ),
+        html.Hr(),
+    ]
+    return children
 
 def format_output_kernel_initializer_config(model_type, agent_type, agent_params):
     """Returns an initializer object based on initializer component values"""
-    # Define an initializer config dictionary listing params needed for each initializer
-    # initializer_configs = {
-    #     'variance scaling': ['scale', 'mode', 'distribution'],
-    #     'constant': ['val'],
-    #     'normal': ['mean', 'std'],
-    #     'uniform': ['a', 'b'],
-    #     'truncated normal': ['mean', 'std'],
-    #     'xavier uniform': ['gain'],
-    #     'xavier normal': ['gain'],
-    #     'kaiming uniform': ['mode'],
-    #     'kaiming normal': ['mode'],
-    #     # 'zeros': [],
-    #     # 'ones': [],
-    #     # 'default': [],
-    # }
 
-    #DEBUG
-    # print(f'agent params passed to format init:{agent_params}')
-
-    # Get initializer type
     initializer_type = agent_params.get(get_key({'type':'kernel-init', 'model':model_type, 'agent':agent_type, 'index':0}))
 
     # create empty dictionary to store initializer config params
@@ -2001,10 +1966,16 @@ def format_output_kernel_initializer_config(model_type, agent_type, agent_params
         for param in get_kernel_params_map()[initializer_type]:
             config[param] = agent_params.get(get_key({'type':param, 'model':model_type, 'agent':agent_type, 'index':0}))
     
-    # format 
-    initializer_config = {'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}
+    # Get distribution type in order to format output correctly
+    distribution = agent_params.get(get_key({'type':'distribution', 'model':'none', 'agent':agent_type}))
+    # format
+    if distribution == 'categorical':
+        initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
+    elif distribution in ['beta','normal']:
+        initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}},
+                              {'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
 
-    return [initializer_config]
+    return initializer_config
 
 def create_discount_factor_input(agent_type):
     return html.Div(
@@ -4548,15 +4519,16 @@ def create_ppo_hyperparam_input(agent_type):
                         [
                             create_model_type_hyperparam_input(agent_type, 'policy'),
                             create_distribution_hyperparam_input(agent_type, 'policy'),
-                            create_policy_clip_hyperparam_input(agent_type, 'policy'),
-                            create_policy_grad_clip_hyperparam_input(agent_type, 'policy'),
+                            create_surrogate_loss_clip_hyperparam_input(agent_type, 'policy'),
+                            create_grad_clip_hyperparam_input(agent_type, 'policy'),
                             create_learning_rate_constant_hyperparam_input(agent_type, 'policy'),
                             create_learning_rate_exponent_hyperparam_input(agent_type, 'policy'),
                             # generate_cnn_layer_hyperparam_component(agent_type, 'policy'),
                             generate_hidden_layer_hyperparam_component(agent_type, 'policy'),
                             # generate_kernel_initializer_hyperparam_component(agent_type, 'policy-hidden', 'Hidden Layers'),
                             html.Hr(),
-                            generate_kernel_initializer_hyperparam_component(agent_type, 'policy', 'output', 'dense'),
+                            html.H5(f'Output Layer', style={'margin-right': '10px'}),
+                            generate_kernel_initializer_hyperparam_component(agent_type, 'policy', -1),
                             html.Hr(),
                             # generate_activation_function_hyperparam_component(agent_type, 'policy'),
                             generate_optimizer_hyperparam_component(agent_type, 'policy'),
@@ -4571,13 +4543,17 @@ def create_ppo_hyperparam_input(agent_type):
                 dcc.Tab(
                     html.Div(
                         [
+                            create_loss_coeff_hyperparam_input(agent_type, 'value'),
+                            create_surrogate_loss_clip_hyperparam_input(agent_type, 'value'),
+                            create_grad_clip_hyperparam_input(agent_type, 'value'),
                             create_learning_rate_constant_hyperparam_input(agent_type, 'value'),
                             create_learning_rate_exponent_hyperparam_input(agent_type, 'value'),
                             # generate_cnn_layer_hyperparam_component(agent_type, 'critic'),
                             generate_hidden_layer_hyperparam_component(agent_type, 'value'),
                             # generate_kernel_initializer_hyperparam_component(agent_type, 'value-hidden', 'Hidden Layers'),
                             html.Hr(),
-                            generate_kernel_initializer_hyperparam_component(agent_type, 'value', 'output', 'dense'),
+                            html.H5(f'Output Layer', style={'margin-right': '10px'}),
+                            generate_kernel_initializer_hyperparam_component(agent_type, 'value', -1),
                             html.Hr(),
                             # generate_activation_function_hyperparam_component(agent_type, 'value'),
                             generate_optimizer_hyperparam_component(agent_type, 'value'),
@@ -4680,13 +4656,13 @@ def create_advantage_coeff_hyperparam_input(agent_type, model_type):
         ]
     )
 
-def create_policy_clip_hyperparam_input(agent_type, model_type):
+def create_surrogate_loss_clip_hyperparam_input(agent_type, model_type):
     return html.Div(
         [
-            html.Label('Policy Clip', style={'text-decoration': 'underline'}),
+            html.Label(f'{model_type.capitalize()} Surrogate Loss Clip', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
-                    'type':'policy-clip-hyperparam',
+                    'type':'surrogate-clip-hyperparam',
                     'model':model_type,
                     'agent':agent_type
                 },
@@ -5248,18 +5224,48 @@ def generate_layer_hyperparam_tab(agent_type, model_type, layer_num, layer_types
     tabs = []
     for layer_type in layer_types:
         if layer_type == 'dense':
-            tab = dcc.Tab([
-                item for item in generate_dense_layer_hyperparam_component(agent_type, model_type, layer_num)
-            ],
+            tab = dcc.Tab(
+                [item for item in generate_dense_layer_hyperparam_component(agent_type, model_type, layer_num)],
             label=f'{layer_type.title()}'
             )
-            tabs.append(tab)
+        elif layer_type == 'conv2d':
+            tab = dcc.Tab(
+                [item for item in generate_conv_layer_hyperparam_component(agent_type, model_type, layer_num)],
+            label=f'{layer_type.title()}'
+            )
+        tabs.append(tab)
     
     return dbc.Tabs(tabs)
 
 def generate_dense_layer_hyperparam_component(agent_type, model_type, layer_num):
     params = []
-    bias = html.Div(
+    params.append(generate_hidden_units_per_layer_hyperparam_component(agent_type, model_type, layer_num))
+    params.append(generate_dense_bias_hyperparam_component(agent_type, model_type, layer_num))
+    params.append(generate_kernel_initializer_hyperparam_component(agent_type, model_type, layer_num))
+
+    return params
+
+def generate_hidden_units_per_layer_hyperparam_component(agent_type, model_type, layer_num):
+    return html.Div(
+        [
+            html.H6(f'Neurons'),
+            dcc.Dropdown(
+                id={
+                    'type': f'layer-units-slider',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': layer_num
+                },
+                options=[{'label': i, 'value': i} for i in [8, 16, 32, 64, 128, 256, 512, 1024]],
+                multi=True,
+                style={'width':'200px'}
+            ),
+        ],
+        style={'display': 'flex', 'alignItems': 'center'}
+    )
+
+def generate_dense_bias_hyperparam_component(agent_type, model_type, layer_num):
+    return html.Div(
         [
             html.H6(f'Use Bias', style={'margin-right': '10px'}),
             dcc.Dropdown(
@@ -5276,33 +5282,8 @@ def generate_dense_layer_hyperparam_component(agent_type, model_type, layer_num)
         ],
         style={'display': 'flex', 'alignItems': 'center'}
     )
-                
-    params.append(generate_hidden_units_per_layer_hyperparam_component(agent_type, model_type, layer_num))
-    params.append(bias)
-    params.append(generate_kernel_initializer_hyperparam_component(agent_type, model_type, layer_num, 'dense'))
 
-    return params
-
-def generate_hidden_units_per_layer_hyperparam_component(agent_type, model_type, layer_num):
-    return html.Div(
-        [
-            html.H6(f'Neurons in Hidden Layer {layer_num}'),
-            dcc.Dropdown(
-                id={
-                    'type': f'layer-units-slider',
-                    'model': model_type,
-                    'agent': agent_type,
-                    'index': layer_num
-                },
-                options=[{'label': i, 'value': i} for i in [8, 16, 32, 64, 128, 256, 512, 1024]],
-                multi=True,
-                style={'width':'200px'}
-            ),
-        ],
-        style={'display': 'flex', 'alignItems': 'center'}
-    )
-
-def generate_kernel_initializer_hyperparam_component(agent_type, model_type, layer_num, layer_type):
+def generate_kernel_initializer_hyperparam_component(agent_type, model_type, layer_num):
     return html.Div([
         html.Div(
             id={
@@ -5311,12 +5292,9 @@ def generate_kernel_initializer_hyperparam_component(agent_type, model_type, lay
                 'agent': agent_type,
                 'index': layer_num,
             },
-            style={'display': 'flex', 'alignItems': 'center'},  # Fixed 'alignItems' typo
+            style={'display': 'flex', 'alignItems': 'center'},
             children=[
-                html.H5(
-                    f'{layer_type.capitalize()} {layer_num.capitalize() if isinstance(layer_num, str) else layer_num} Kernel Initializer',
-                    style={'margin-right': '10px'}  # Add spacing between H5 and Dropdown
-                ),
+                html.H6(f'Kernel Function', style={'margin-right': '10px'}),
                 dcc.Dropdown(
                     id={
                         'type': 'kernel-function-hyperparam',
@@ -5783,6 +5761,112 @@ def generate_truncated_normal_kernel_hyperparam_inputs(agent_type, model_type, l
         ])
     ],
     label='Truncated Normal')
+
+def generate_conv_layer_hyperparam_component(agent_type, model_type, layer_num):
+    params = [] 
+    params.append(generate_out_channels_hyperparam_component(agent_type, model_type, layer_num))
+    params.append(generate_kernel_size_hyperparam_component(agent_type, model_type, layer_num))
+    params.append(generate_stride_hyperparam_component(agent_type, model_type, layer_num))
+    params.append(generate_padding_hyperparam_component(agent_type, model_type, layer_num))
+    params.append(generate_conv_bias_hyperparam_component(agent_type, model_type, layer_num))
+    params.append(generate_kernel_initializer_hyperparam_component(agent_type, model_type, layer_num))
+
+    return params
+
+def generate_out_channels_hyperparam_component(agent_type, model_type, layer_num):
+    return html.Div(
+        [
+            html.H6(f'Out Channels'),
+            dcc.Dropdown(
+                id={
+                    'type': 'out-channels-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': layer_num
+                },
+                options=[{'label': i, 'value': i} for i in [8, 16, 32, 64, 128, 256, 512, 1024]],
+                multi=True,
+                style={'width':'200px'}
+            ),
+        ],
+        style={'display': 'flex', 'alignItems': 'center'}
+    )
+
+def generate_kernel_size_hyperparam_component(agent_type, model_type, layer_num):
+    return html.Div(
+        [
+            html.H6(f'Kernel Size'),
+            dcc.Dropdown(
+                id={
+                    'type': 'kernel-size-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': layer_num
+                },
+                options=[{'label': i, 'value': i} for i in range(1, 11)],
+                multi=True,
+                style={'width':'200px'}
+            ),
+        ],
+        style={'display': 'flex', 'alignItems': 'center'}
+    )
+
+def generate_stride_hyperparam_component(agent_type, model_type, layer_num):
+    return html.Div(
+        [
+            html.H6(f'Stride'),
+            dcc.Dropdown(
+                id={
+                    'type': 'stride-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': layer_num
+                },
+                options=[{'label': i, 'value': i} for i in range(1,6)],
+                multi=True,
+                style={'width':'200px'}
+            ),
+        ],
+        style={'display': 'flex', 'alignItems': 'center'}
+    )
+
+def generate_padding_hyperparam_component(agent_type, model_type, layer_num):
+    return html.Div(
+        [
+            html.H6(f'Padding'),
+            dcc.Dropdown(
+                id={
+                    'type': 'padding-hyperparam',
+                    'model': model_type,
+                    'agent': agent_type,
+                    'index': layer_num
+                },
+                options=[{'label': i, 'value': i} for i in range(6)],
+                multi=True,
+                style={'width':'200px'}
+            ),
+        ],
+        style={'display': 'flex', 'alignItems': 'center'}
+    )
+
+def generate_conv_bias_hyperparam_component(agent_type, model_type, layer_num):
+    return html.Div(
+        [
+            html.H6(f'Use Bias', style={'margin-right': '10px'}),
+            dcc.Dropdown(
+            id={
+                'type': 'conv-bias-hyperparam',
+                'model': model_type,
+                'agent': agent_type,
+                'index': layer_num,
+            },
+            options=[{"label": "True", "value": True}, {"label": "False", "value": False}],
+            multi=True,
+            style={'width': '200px'},
+            )
+        ],
+        style={'display': 'flex', 'alignItems': 'center'}
+    )
 
 def generate_activation_function_hyperparam_component(agent_type, model_type):
     return html.Div([
@@ -6366,13 +6450,13 @@ def create_input_normalizer_hyperparam_input(agent_type, model_type):
 #         ]
 #     )
 
-def create_policy_grad_clip_hyperparam_input(agent_type, model_type):
+def create_grad_clip_hyperparam_input(agent_type, model_type):
     return html.Div(
         [
-            html.Label(f'Policy Gradient Clip', style={'text-decoration': 'underline'}),
+            html.Label(f'{model_type.capitalize()} Gradient Clip', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
-                    'type':'policy-grad-clip-value-hyperparam',
+                    'type':'grad-clip-hyperparam',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -6397,6 +6481,43 @@ def create_policy_grad_clip_hyperparam_input(agent_type, model_type):
                     {'label': '40.0', 'value': 40.0},
                     {'label': '50.0', 'value': 50.0},
                     {'label': 'Infinity', 'value': 'infinity'},
+                ],
+                multi=True,
+            ),
+        ]
+    )
+
+def create_loss_coeff_hyperparam_input(agent_type, model_type):
+    return html.Div(
+        [
+            html.Label(f'{model_type.capitalize()} Loss Coefficient', style={'text-decoration': 'underline'}),
+            dcc.Dropdown(
+                id={
+                    'type':'loss-coeff-hyperparam',
+                    'model':model_type,
+                    'agent':agent_type,
+                },
+                options=[
+                    {'label': '0.1', 'value': 0.1},
+                    {'label': '0.2', 'value': 0.2},
+                    {'label': '0.3', 'value': 0.3},
+                    {'label': '0.4', 'value': 0.4},
+                    {'label': '0.5', 'value': 0.5},
+                    {'label': '0.6', 'value': 0.6},
+                    {'label': '0.7', 'value': 0.7},
+                    {'label': '0.8', 'value': 0.8},
+                    {'label': '0.9', 'value': 0.9},
+                    {'label': '1.0', 'value': 1.0},
+                    {'label': '1.1', 'value': 1.1},
+                    {'label': '1.2', 'value': 1.2},
+                    {'label': '1.3', 'value': 1.3},
+                    {'label': '1.4', 'value': 1.4},
+                    {'label': '1.5', 'value': 1.5},
+                    {'label': '1.6', 'value': 1.6},
+                    {'label': '1.7', 'value': 1.7},
+                    {'label': '1.8', 'value': 1.8},
+                    {'label': '1.9', 'value': 1.9},
+                    {'label': '2.0', 'value': 2.0},
                 ],
                 multi=True,
             ),
@@ -6981,7 +7102,7 @@ def format_wandb_layer_units(config, param_name, all_values, all_ids, all_indexe
     return config
 
 
-def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, env, env_params, agent, all_values, all_ids, all_indexed_values, all_indexed_ids):
+def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, env_library, env, env_params, env_wrappers, agent, all_values, all_ids, all_indexed_values, all_indexed_ids):
     #DEBUG
     # print(f'create wandb config fired...')
     sweep_config = {
@@ -6990,8 +7111,10 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
         "name": sweep_name,
         "metric": {"name": metric_name, "goal": metric_goal},
         "parameters": {
+            "env_library": {"value": env_library},
             "env_id": {"value": env},
             **{f'env_{param}': {"value":value} for param, value in env_params.items()},
+            "env_wrappers": {"values": env_wrappers},
             "model_type": {"value": agent},
         },
             
@@ -8581,11 +8704,11 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
         # Model type
         sweep_config = format_wandb_config_param(sweep_config, "model_type", all_values, all_ids, 'model-type-hyperparam', 'policy', agent)
         
-        # Policy Clip
-        sweep_config = format_wandb_config_param(sweep_config, "clip_range", all_values, all_ids, 'policy-clip-hyperparam', 'policy', agent)
+        # Policy Surrogate Clip
+        sweep_config = format_wandb_config_param(sweep_config, "clip_range", all_values, all_ids, 'surrogate-clip-hyperparam', 'policy', agent)
 
         # Policy Grad Clip
-        sweep_config = format_wandb_config_param(sweep_config, "grad_clip", all_values, all_ids, 'policy-grad-clip-value-hyperparam', 'policy', agent)
+        sweep_config = format_wandb_config_param(sweep_config, "grad_clip", all_values, all_ids, 'grad-clip-hyperparam', 'policy', agent)
 
         # Entropy Coeff
         sweep_config = format_wandb_config_param(sweep_config, "entropy", all_values, all_ids, 'entropy-coeff-hyperparam', 'none', agent)
@@ -8634,6 +8757,15 @@ def create_wandb_config(method, project, sweep_name, metric_name, metric_goal, e
 
         # Value layers
         sweep_config = format_wandb_model_layers(sweep_config, all_values, all_ids, all_indexed_values, all_indexed_ids, 'value', agent)
+
+        # Value Loss Coefficient
+        sweep_config = format_wandb_config_param(sweep_config, "loss_coeff", all_values, all_ids, 'loss-coeff-hyperparam', 'value', agent)
+
+        # Value Surrogate Clip
+        sweep_config = format_wandb_config_param(sweep_config, "clip_range", all_values, all_ids, 'surrogate-clip-hyperparam', 'value', agent)
+
+        # Value Grad Clip
+        sweep_config = format_wandb_config_param(sweep_config, "grad_clip", all_values, all_ids, 'grad-clip-hyperparam', 'value', agent)
 
         # value output layer kernel initializers
         sweep_config = format_wandb_kernel(sweep_config, all_indexed_values, all_indexed_ids, 'value', agent, 'output')
