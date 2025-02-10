@@ -344,7 +344,7 @@ class StochasticDiscretePolicy(Model):
         self,
         env: EnvWrapper,
         layer_config: list,
-        output_layer_kernel: dict = {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}},
+        output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         scheduler_params:dict = None,
         distribution: str = 'categorical',
@@ -378,7 +378,7 @@ class StochasticDiscretePolicy(Model):
         self.output_layer = nn.ModuleDict({
             'policy_dense_output': nn.LazyLinear(num_actions)
         })
-        self.add_module('output_layer', self.output_layer)
+        # self.add_module('output_layer', self.output_layer)
 
         # Initialize weights
         # self._init_weights(self.layer_config, self.layers)
@@ -405,7 +405,8 @@ class StochasticDiscretePolicy(Model):
             Tuple[Categorical, Tensor]: Action distribution and logits for the action space.
         """
         #DEBUG
-        # print(f'shape of x: {x.shape}')
+        # print(f'discrete policy shape of x: {x.shape}')
+        # print(f'discrete policy x:{x}')
         if x.dim() == 1: # Check if tensor is flat
             x = x.unsqueeze(-1)  # Reshape to (batch, 1)
         if x.dim() == 3:
@@ -420,7 +421,7 @@ class StochasticDiscretePolicy(Model):
                 # print(f'permutation fired')
                 x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
         #DEBUG
-        # print(f'new x shape:{x.shape}')
+        # print(f'discrete policy new x shape:{x.shape}')
         x = x.to(self.device)
         for layer in self.layers.values():
             x = layer(x)
@@ -538,7 +539,7 @@ class StochasticContinuousPolicy(Model):
         self,
         env:EnvWrapper,
         layer_config: List[Dict],
-        output_layer_kernel: dict = {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}},
+        output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         scheduler_params:dict = None,
         distribution: str = 'beta',
@@ -567,13 +568,9 @@ class StochasticContinuousPolicy(Model):
         num_actions = self.act_space.shape[-1]
         # Create the output layer
         self.output_layer = nn.ModuleDict({
-            'policy_dense_output': nn.LazyLinear(num_actions)
+            'policy_output_param_1': nn.LazyLinear(num_actions),
+            'policy_output_param_2': nn.LazyLinear(num_actions),
         })
-        self.add_module('output_layer', self.output_layer)
-
-        # Initialize weights
-        # self._init_weights(self.layer_config, self.layers)
-        # self._init_weights(self.output_config, self.output_layer)
 
         # Move model to device
         self.to(self.device)
@@ -592,30 +589,37 @@ class StochasticContinuousPolicy(Model):
         Returns:
             Tuple[Distribution, Tensor, Tensor]: Action distribution and its parameters.
         """
+        #DEBUG
+        # print(f'state shape sent to policy forward:{x.shape}')
         if x.dim() == 1: # Check if tensor is flat
             x = x.unsqueeze(-1)  # Reshape to (batch, 1)
         if x.dim() == 3:
             x = x.unsqueeze(1)
-        if len(x.shape) == 4 and x.shape[1] != self.env.single_observation_space.shape[0]:  # Check if channels are not already first
-            x = x.permute(0, 3, 1, 2)
+        # Check if observation is image-like (HWC)
+        if isinstance(self.env, GymnasiumWrapper):
+            # obs_shape = self.env.single_observation_space.shape
+            #DEBUG
+            # print(f'observation space shape:{obs_shape}')
+            if x.dim() == 4 and x.shape[-1] in [3,4]:
+                # DEBUG
+                # print(f'permutation fired')
+                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
         x = x.to(self.device)
         for layer in self.layers.values():
             x = layer(x)
-            # print(f'x shape for layer {layer}: {x.shape}')
-        x = self.output_layer['policy_dense_output'](x)
-
-        # Split x into param1 and param2 for beta distribution
-        # param1, param2 = T.split(x, self.act_space.shape[-1], dim=-1)
-        param1, param2 = T.chunk(x, 2, dim=-1)
-
+        param_1 = self.output_layer['policy_output_param_1'](x)
+        param_2 = self.output_layer['policy_output_param_2'](x)
+        #DEBUG
+        # print(f'param 1 shape:{param_1.shape}')
+        # print(f'param 2 shape:{param_2.shape}')
         if self.distribution == 'beta':
-            alpha = F.softplus(param1) + 1.0
-            beta = F.softplus(param2) + 1.0
+            alpha = F.softplus(param_1) + 1.0
+            beta = F.softplus(param_2) + 1.0
             dist = Beta(alpha, beta)
             return dist, alpha, beta
         elif self.distribution == 'normal':
-            mu = param1
-            sigma = F.softplus(param2)
+            mu = param_1
+            sigma = F.softplus(param_2)
             dist = Normal(mu, sigma)
             return dist, mu, sigma
         else:
@@ -729,7 +733,7 @@ class ValueModel(Model):
         self,
         env: EnvWrapper,
         layer_config: List[Dict],
-        output_layer_kernel: dict = {"default":{}},
+        output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         scheduler_params = None,
         device = 'cuda'
@@ -771,6 +775,9 @@ class ValueModel(Model):
         Returns:
             Tensor: Predicted state value.
         """
+        #DEBUG
+        # print(f'value model x shape:{x.shape}')
+        # print(f'value model x:{x}')
         if x.dim() == 1: # Check if tensor is flat
             x = x.unsqueeze(-1)  # Reshape to (batch, 1)
         if x.dim() == 3:
@@ -784,6 +791,8 @@ class ValueModel(Model):
                 # DEBUG
                 # print(f'permutation fired')
                 x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
+        #DEBUG
+        # print(f'value model new x shape:{x.shape}')
         x = x.to(self.device)
         #DEBUG
         # print(f'Value Model Input Shape: {x.size()}')
@@ -887,8 +896,7 @@ class ActorModel(Model):
     def __init__(self,
                  env: EnvWrapper,
                  layer_config: List[Dict],
-                 output_layer_kernel: dict={"default":{}},
-                #  goal_shape: tuple=None,
+                 output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  scheduler_params: dict=None,
                  device: str='cuda'
@@ -896,14 +904,12 @@ class ActorModel(Model):
         self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
         self.output_config = output_layer_kernel
-        # self.goal_shape = goal_shape
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
             'actor_mu': nn.LazyLinear(1),
             'actor_pi': nn.Tanh()
         })
-        # self.add_module('output_layer', self.output_layer)
 
         # Move the model to the specified device
         self.to(self.device)
@@ -914,27 +920,16 @@ class ActorModel(Model):
 
     def forward(self, x, goal=None):
         x = x.to(self.device)
-        #DEBUG
-        # print(f'actor input shape:{x.size()}')
 
         if goal is not None:
             goal = goal.to(self.device)
             x = T.cat([x, goal], dim=-1)
 
-        # if self.goal_shape is not None:
-        #     x = T.cat([x, goal], dim=-1)
-
         for layer in self.layers.values():
             x = layer(x)
-            #DEBUG
-            # print(f'actor {layer} output shape:{x.size()}')
 
         mu = self.output_layer["actor_mu"](x)
-        #DEBUG
-        # print(f'actor mu output shape:{mu.size()}')
         pi = self.output_layer["actor_pi"](mu)
-        #DEBUG
-        # print(f'actor pi output shape:{pi.size()}')
         pi = pi * T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
         return mu, pi
 
@@ -944,7 +939,6 @@ class ActorModel(Model):
             'num_layers': len(self.layers),
             'layer_config': self.layer_config,
             'output_layer_kernel':self.output_config,
-            # 'goal_shape': self.goal_shape,
             'optimizer_params': self.optimizer_params,
             'scheduler_params': self.scheduler_params,
             'device': self.device,
@@ -960,7 +954,6 @@ class ActorModel(Model):
             env=env,
             layer_config=self.layer_config.copy(),
             output_layer_kernel=self.output_config.copy(),
-            # goal_shape=self.goal_shape,
             optimizer_params=self.optimizer_params.copy(),
             scheduler_params=self.scheduler_params.copy() if self.scheduler_params else None,
             device=self.device
@@ -1038,7 +1031,7 @@ class CriticModel(Model):
                  env: EnvWrapper,
                  state_layers: List[Dict],
                  merged_layers: List[Dict],
-                 output_layer_kernel: dict={"default":{}},
+                 output_layer_kernel: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  scheduler_params: dict=None,

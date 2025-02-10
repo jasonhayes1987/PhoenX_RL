@@ -238,40 +238,46 @@ class GymnasiumWrapper(EnvWrapper):
         self.env_spec = env_spec
         self.wrappers = wrappers
         self.env = self._initialize_env()
-        #DEBUG
-        # print(f'wrappers sent to GymnasiumWrapper:{self.wrappers}')
 
     def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
         """
-        Initialize the Gymnasium environment.
+        Initialize the Gymnasium environment with unique seeds for each environment.
 
         Args:
             render_freq (int): Frequency of rendering (default: 0).
             num_envs (int): Number of parallel environments (default: 1).
-            seed (int): Random seed for the environment (default: None).
+            seed (int): Base random seed for the environment (default: None).
 
         Returns:
             gym.Env: The initialized Gymnasium environment.
         """
         self.seed = seed
-        vec_env = gym.make_vec(
-            id=self.env_spec,
-            num_envs=num_envs,
-            render_mode="rgb_array" if render_freq > 0 else None,
-        )
-
-        # Wrap vec env with wrappers if wrappers
-        if self.wrappers:
-            vec_env = wrap_env(vec_env, self.wrappers)
-
-        if self.seed is not None:
-            _,_ = vec_env.reset(seed=self.seed)
-            _ = vec_env.action_space.seed(self.seed)
-
-        #DEBUG
-        # for env in vec_env.envs:
-            # print(f'env returned from gymwrapper _init_:{env.spec}')
+        if self.seed is None:
+            seeds = [None] * num_envs
+        else:
+            seeds = [self.seed + i for i in range(num_envs)]  # Create different seeds for each environment
         
+        # Create a list of environment factories, each with its unique seed
+        env_fns = []
+        for i in range(num_envs):
+            def make_env(i=i):  # Use default argument to capture i
+                env = gym.make(self.env_spec.id, render_mode="rgb_array" if render_freq > 0 else None)
+                if seeds[i] is not None:
+                    env.reset(seed=seeds[i])  # Set seed for each environment
+                    env.action_space.seed(seeds[i])  # Also seed the action space
+                if self.wrappers:
+                    for wrapper in self.wrappers:
+                        if wrapper['type'] in WRAPPER_REGISTRY:
+                            default_params = WRAPPER_REGISTRY[wrapper['type']]["default_params"].copy()
+                            override_params = wrapper.get("params", {})
+                            final_params = {**default_params, **override_params}
+                            env = WRAPPER_REGISTRY[wrapper['type']]["cls"](env, **final_params)
+                return env
+            
+            env_fns.append(make_env)
+
+        vec_env = SyncVectorEnv(env_fns)
+
         return vec_env
 
     def reset(self):
@@ -309,9 +315,12 @@ class GymnasiumWrapper(EnvWrapper):
         """
         return self.env.render(mode=mode)
     
-    def format_actions(self, actions: np.ndarray):
+    def format_actions(self, actions: np.ndarray, testing=False):
         if isinstance(self.action_space, gym.spaces.Box):
-            num_envs = self.env.num_envs
+            if testing:
+                num_envs = 1
+            else:
+                num_envs = self.env.num_envs
             num_actions = self.action_space.shape[-1]
             return actions.reshape(num_envs, num_actions)
         if isinstance(self.action_space, gym.spaces.Discrete) or isinstance(self.action_space, gym.spaces.MultiDiscrete):

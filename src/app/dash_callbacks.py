@@ -40,7 +40,7 @@ import dash_utils
 # from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueModel, CriticModel, ActorModel
 from models import *
 # import rl_agents
-from rl_agents import Reinforce, ActorCritic, DDPG, PPO #HER, TD3
+from rl_agents import Reinforce, ActorCritic, DDPG, PPO, init_sweep #HER, TD3
 import wandb_support
 from schedulers import ScheduleWrapper
 from adaptive_kl import AdaptiveKL
@@ -87,15 +87,33 @@ def update_heatmap_process(shared_data, hyperparameters, bins, z_score, reward_t
         print(f"Error in update_heatmap_process: {str(e)}")
         # time.sleep(5)
 
+# def run_agent(sweep_id, sweep_config, num_sweeps):
+#     # from rl_agents import init_sweep
+#     print('run agent fired...')
+#     wandb.agent(
+#         sweep_id,
+#         function=lambda: init_sweep(sweep_config),
+#         count=num_sweeps,
+#         project=sweep_config["project"],
+#     )
+
 def run_agent(sweep_id, sweep_config, num_sweeps):
-    # from rl_agents import init_sweep
-    print('run agent fired...')
-    wandb.agent(
-        sweep_id,
-        function=lambda: init_sweep(sweep_config),
-        count=num_sweeps,
-        project=sweep_config["project"],
-    )
+    def agent_process():
+        wandb.agent(
+            sweep_id,
+            function=lambda: init_sweep(sweep_config),
+            count=num_sweeps,
+            project=sweep_config["project"],
+        )
+    # Determine how many agents you can run based on your hardware capabilities
+    num_processes = min(num_sweeps, multiprocessing.cpu_count())  # or adjust based on GPU capability
+    processes = []
+    for _ in range(num_processes):
+        p = multiprocessing.Process(target=agent_process)
+        p.start()
+        processes.append(p)
+    for p in processes:
+        p.join()
 
 
 def register_callbacks(app, shared_data):
@@ -3592,8 +3610,10 @@ def register_callbacks(app, shared_data):
         State('sweep-name', 'value'),
         State('goal-metric', 'value'),
         State('goal-type', 'value'),
+        State({'type':'library-select', 'page':'/hyperparameter-search'}, 'value'),
         State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
         State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
+        State({"type":"gym_wrappers_dropdown", "page":'/build-agent'}, "value"),
         State({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
         State('num-sweeps', 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
@@ -3602,7 +3622,7 @@ def register_callbacks(app, shared_data):
         State({'type': ALL, 'model': ALL, 'agent': ALL, 'index': ALL}, 'id'),
         prevent_initial_call=True
     )
-    def begin_sweep(num_clicks, agent_data, data, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent, num_sweeps, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def begin_sweep(num_clicks, agent_data, data, method, project, sweep_name, metric_name, metric_goal, env_library, env, env_params, env_wrappers, agent, num_sweeps, all_values, all_ids, all_indexed_values, all_indexed_ids):
         print('begin sweep callback fired...')
         try:
             if num_clicks > 0:
@@ -3621,8 +3641,10 @@ def register_callbacks(app, shared_data):
                         sweep_name,
                         metric_name,
                         metric_goal,
+                        env_library,
                         env,
                         params,
+                        env_wrappers,
                         agent,
                         all_values,
                         all_ids,
@@ -3907,8 +3929,10 @@ def register_callbacks(app, shared_data):
         State('sweep-name', 'value'),
         State('goal-metric', 'value'),
         State('goal-type', 'value'),
+        State({'type':'library-select', 'page':'/hyperparameter-search'}, 'value'),
         State({'type': 'env-dropdown', 'page': '/hyperparameter-search'}, 'value'),
         State({'type':'gym-params', 'page':'/hyperparameter-search'}, 'children'),
+        State({"type":"gym_wrappers_dropdown", "page":'/build-agent'}, "value"),
         State({'type':'agent-type-selector', 'page':'/hyperparameter-search'}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'value'),
         State({'type': ALL, 'model': ALL, 'agent': ALL}, 'id'),
@@ -3917,7 +3941,7 @@ def register_callbacks(app, shared_data):
     ],
     prevent_initial_call=True,
     )
-    def download_wandb_config(num_clicks, method, project, sweep_name, metric_name, metric_goal, env, env_params, agent_selection, all_values, all_ids, all_indexed_values, all_indexed_ids):
+    def download_wandb_config(num_clicks, method, project, sweep_name, metric_name, metric_goal, env_library, env, env_params, env_wrappers, agent_selection, all_values, all_ids, all_indexed_values, all_indexed_ids):
         # extract any additional gym env params
         params = dash_utils.extract_gym_params(env_params)
 
@@ -3928,8 +3952,10 @@ def register_callbacks(app, shared_data):
                 sweep_name,
                 metric_name,
                 metric_goal,
+                env_library,
                 env,
                 params,
+                env_wrappers,
                 agent_selection,
                 all_values,
                 all_ids,

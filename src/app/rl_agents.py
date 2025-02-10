@@ -5289,19 +5289,81 @@ class PPO(Agent):
         except Exception as e:
             logger.error(f"Error initializing callbacks: {e}", exc_info=True)
         
+    # def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
+    #     """
+    #     Compute advantages and returns using GAE.
+
+    #     Args:
+    #         rewards (Tensor): Rewards from the environment.
+    #         states (Tensor): Current states.
+    #         next_states (Tensor): Next states.
+    #         dones (Tensor): Done flags indicating episode termination.
+
+    #     Returns:
+    #         Tuple[Tensor, Tensor, Tensor]: Advantages, returns, and state values.
+    #     """
+    #     num_steps, num_envs = rewards.shape
+    #     all_advantages = []
+    #     all_returns = []
+    #     all_values = []
+
+    #     for env_idx in range(num_envs):
+    #         with T.no_grad():
+    #             rewards_env = rewards[:, env_idx]
+    #             states_env = states[:, env_idx, ...]
+    #             next_states_env = next_states[:, env_idx, ...]
+    #             dones_env = dones[:, env_idx]
+    #             values = self.value_model(states_env).squeeze(-1)
+    #             next_values = self.value_model(next_states_env).squeeze(-1)
+    #             advantages = T.zeros_like(rewards_env)
+    #             returns = T.zeros_like(rewards_env)
+    #             gae = 0.0  # Use float instead of tensor for scalar accumulation
+    #             for t in reversed(range(num_steps)):
+    #                 if dones_env[t]:
+    #                     next_value = 0
+    #                     gae = 0
+    #                 else:
+    #                     next_value = next_values[t]
+
+    #                 delta = rewards_env[t] + self.discount * next_value - values[t]
+    #                 gae = delta + self.discount * self.gae_coefficient * gae
+    #                 advantages[t] = gae
+    #                 returns[t] = gae + values[t]
+                
+    #             # Append results for this environment
+    #             all_advantages.append(advantages)
+    #             all_returns.append(returns)
+    #             all_values.append(values)
+
+    #     # Stack results across environments
+    #     advantages = T.stack(all_advantages, dim=1)
+    #     returns = T.stack(all_returns, dim=1)
+    #     values = T.stack(all_values, dim=1)
+
+    #     # Normalize advantages across all environments and timesteps
+    #     if self.normalize_advantages:
+    #         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
+
+    #     self._train_episode_config["values"] = values.mean().item()
+    #     self._train_episode_config["advantages"] = advantages.mean().item()
+    #     self._train_episode_config["returns"] = returns.mean().item()
+
+    #     #DEBUG
+    #     # print(f'advantages shape:{advantages.shape}')
+    #     # print(f'returns shape:{returns.shape}')
+    #     # print(f'values shape:{values.shape}')
+
+    #     return advantages, returns, values
+
     def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
         """
-        Compute advantages and returns using GAE.
-
-        Args:
-            rewards (Tensor): Rewards from the environment.
-            states (Tensor): Current states.
-            next_states (Tensor): Next states.
-            dones (Tensor): Done flags indicating episode termination.
-
-        Returns:
-            Tuple[Tensor, Tensor, Tensor]: Advantages, returns, and state values.
+        Compute advantages and returns using GAE, correctly handling episode terminations.
         """
+        #DEBUG
+        # print(f'states shape:{states.shape}')
+        # print(f'next states shape:{next_states.shape}')
+        # print(f'rewards shape:{rewards.shape}')
+        # print(f'dones shape:{dones.shape}')
         num_steps, num_envs = rewards.shape
         all_advantages = []
         all_returns = []
@@ -5317,20 +5379,24 @@ class PPO(Agent):
                 next_values = self.value_model(next_states_env).squeeze(-1)
                 advantages = T.zeros_like(rewards_env)
                 returns = T.zeros_like(rewards_env)
-                gae = 0.0  # Use float instead of tensor for scalar accumulation
-                for t in reversed(range(num_steps)):
-                    if dones_env[t]:
-                        next_value = 0
-                        gae = 0
-                    else:
-                        next_value = next_values[t]
+                gae = 0.0
 
-                    delta = rewards_env[t] + self.discount * next_value - values[t]
-                    gae = delta + self.discount * self.gae_coefficient * gae
+                #DEBUG
+                # print(f'reward_env shape:{rewards_env.shape}')
+                
+                # Calculate deltas across the trajectory
+                deltas = rewards_env + self.discount * next_values * (1.0 - dones_env) - values
+                #DEBUG
+                # print(f'deltas shape:{deltas.shape}')
+
+                for t in reversed(range(num_steps)):
+                    # delta = rewards_env[t] + self.discount * next_values[t] * (1-) 
+                    gae = deltas[t] + self.discount * self.gae_coefficient * gae * (1.0 - dones_env[t])
+                    #DEBUG
+                    # print(f'gae:{gae}')
                     advantages[t] = gae
                     returns[t] = gae + values[t]
-                
-                # Append results for this environment
+
                 all_advantages.append(advantages)
                 all_returns.append(returns)
                 all_values.append(values)
@@ -5340,18 +5406,13 @@ class PPO(Agent):
         returns = T.stack(all_returns, dim=1)
         values = T.stack(all_values, dim=1)
 
-        # Normalize advantages across all environments and timesteps
-        if self.normalize_advantages:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
-
         self._train_episode_config["values"] = values.mean().item()
         self._train_episode_config["advantages"] = advantages.mean().item()
         self._train_episode_config["returns"] = returns.mean().item()
 
-        #DEBUG
-        # print(f'advantages shape:{advantages.shape}')
-        # print(f'returns shape:{returns.shape}')
-        # print(f'values shape:{values.shape}')
+        # Normalize advantages if required
+        if self.normalize_advantages:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
 
         return advantages, returns, values
 
@@ -5393,6 +5454,9 @@ class PPO(Agent):
             if isinstance(self.env.single_action_space, gym.spaces.Box):
                 action_space_low = self.env.single_action_space.low
                 action_space_high = self.env.single_action_space.high
+                # Map action values to be between 0-1 if using normal distribution
+                if self.policy_model.distribution == 'normal':
+                    actions = 1/(1 + np.exp(-actions))
                 # Map from [0, 1] to [action_space_low, action_space_high]
                 adapted_actions = action_space_low + (action_space_high - action_space_low) * actions
                 return adapted_actions
@@ -5752,9 +5816,9 @@ class PPO(Agent):
         total_samples = num_steps * num_envs
 
         # Reshape observations
-        obs_shape = states.shape[2:]  # Get observation shape
-        states = states.reshape(total_samples, *obs_shape)
-        next_states = next_states.reshape(total_samples, *obs_shape)
+        # obs_shape = states.shape[2:]  # Get observation shape
+        states = states.reshape(total_samples, *self.env.single_observation_space.shape)
+        next_states = next_states.reshape(total_samples, *self.env.single_observation_space.shape)
         #DEBUG
         # print(f'learn reshaped states shape:{states.shape}')
 
@@ -5827,9 +5891,7 @@ class PPO(Agent):
 
         # Training loop
         for epoch in range(learning_epochs):
-            #DEBUG
-            # print(f'EPOCH {epoch}')
-            
+
             for batch_num in range(num_batches):
                 batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
                 states_batch = states[batch_indices]
@@ -5837,12 +5899,7 @@ class PPO(Agent):
                 log_probs_batch = log_probs[batch_indices]
                 advantages_batch = advantages[batch_indices]
                 returns_batch = returns[batch_indices]
-                #DEBUG
-                # print(f'states batch shape:{states_batch.shape}')
-                # print(f'actions batch shape:{actions_batch.shape}')
-                # print(f'log probs batch shape:{log_probs_batch.shape}')
-                # print(f'advantages batch shape:{advantages_batch.shape}')
-                # print(f'returns batch shape:{returns_batch.shape}')
+                
 
                 # Create new distribution
                 if self.policy_model.distribution == 'categorical':
@@ -5863,23 +5920,6 @@ class PPO(Agent):
                     old_dist, old_param1, old_param2 = old_policy(states_batch)
                     old_log_probs = old_dist.log_prob(actions_batch).sum(dim=-1)
 
-                # Calculate new log probabilities of actions
-                
-                #DEBUG
-                # print(f'new log probs shape:{new_log_probs.shape}')
-                # print(f'old log probs shape:{old_log_probs.shape}')
-
-                # Recreate old distribution
-                # with T.no_grad():
-                #     if self.policy_model.distribution == 'categorical':
-                #         #DEBUG
-                #         # print(f'##### OLD POLICY #####')
-                #         old_dist, old_logits = old_policy(states_batch)
-                #     else:
-                #         old_dist, old_param1, old_param2 = old_policy(states_batch)
-                    
-                #     old_log_probs = old_dist.log_prob(actions_batch)
-                #     #DEBUG
 
                 # Calculate the ratios of new to old probabilities of actions
                 if new_log_probs.dim() == 1:
@@ -5887,41 +5927,22 @@ class PPO(Agent):
                     old_log_probs = old_log_probs.unsqueeze(-1)
                     advantages_batch = advantages_batch.view(-1,1)
                 prob_ratio = T.exp(new_log_probs - old_log_probs)
-                # prob_ratio = T.exp(new_log_probs.sum(axis=-1, keepdim=True) - old_log_probs.sum(axis=-1, keepdim=True))
-                #DEBUG
-                # print(f'prob ratio shape:{prob_ratio.shape}')
-                check_for_inf_or_NaN(prob_ratio, 'prob_ratio')
-                # print(f'prob ratio:{prob_ratio}')
 
                 # Calculate Surrogate Loss
                 surr1 = prob_ratio * advantages_batch
-                # check_for_inf_or_NaN(surr1, 'surr1')
                 surr2 = T.clamp(prob_ratio, 1 - policy_clip, 1 + policy_clip) * advantages_batch
-                # check_for_inf_or_NaN(surr2, 'surr2')
                 surrogate_loss = -T.min(surr1, surr2).mean()
-                #DEBUG
-                # print(f'surr1 shape:{surr1.shape}')
-                # print(f'surr2 shape:{surr2.shape}')
-                # print(f'surrogate loss shape:{surrogate_loss.shape}')
 
                 # Calculate Entropy penalty
                 entropy = new_dist.entropy().mean()
                 entropy_penalty = entropy * -entropy_coefficient 
-                # check_for_inf_or_NaN(entropy_penalty, 'entropy_penalty')
 
                 # Calculate the KL penalty
                 kl = kl_divergence(old_dist, new_dist).mean()
                 kl_penalty = kl * kl_coefficient
-                # check_for_inf_or_NaN(kl_penalty, 'kl_penalty')
                 
                 policy_loss = surrogate_loss + entropy_penalty + kl_penalty
-                # check_for_inf_or_NaN(policy_loss, 'policy_loss')
-                #DEBUG
-                # print(f'surrogate loss: {surrogate_loss}')
-                # print(f'entropy penalty: {entropy_penalty}')
-                # print(f'kl_penatly: {kl_penalty}')
-                # print(f'policy loss shape: {policy_loss.shape}')
-
+                
                 # Update the policy
                 self.policy_model.optimizer.zero_grad()
                 policy_loss.backward()
@@ -5932,26 +5953,14 @@ class PPO(Agent):
                 # Update the value function
                 values = self.value_model(states_batch)
                 loss = (values - returns_batch).pow(2)
-                #DEBUG
-                # print(f'values loss shape:{value_loss.shape}')
-                
                 old_values = old_value_model(states_batch)
                 clipped_values = old_values + (values - old_values).clamp(-value_clip, value_clip)
-                # clipped_values = old_values + T.clamp(values - old_values, -value_clip, value_clip)
                 clipped_value_loss = (clipped_values - returns_batch).pow(2)
-
                 value_loss = self.value_loss_coefficient * (0.5 * T.max(loss, clipped_value_loss).mean()).mean()
-                # value_loss = self.value_loss_coefficient * value_loss.mean()
-
                 self.value_model.optimizer.zero_grad()
                 value_loss.backward()
                 T.nn.utils.clip_grad_norm_(self.value_model.parameters(), max_norm=self.value_grad_clip)
                 self.value_model.optimizer.step()
-                #DEBUG
-                # print(f'values shape:{values.shape}')
-                # print(f'old values shape:{old_values.shape}')
-                # print(f'clipped value loss shape:{clipped_value_loss.shape}')
-                # print(f'final value loss shape:{value_loss.shape}')
 
                 
         # Step schedulers
@@ -6097,8 +6106,10 @@ class PPO(Agent):
 
                 # Get action and log probability from the current policy
                 actions, log_prob = self.get_action(states)
+                # print(f'actions:{actions}')
                 if self.policy_model.distribution == 'beta':
                     acts = self.action_adapter(actions)
+                    # print(f'formatted actions from beta:{acts}')
                 else:
                     acts = actions
                 # if self.policy_model.distribution != 'categorical':
@@ -6106,7 +6117,7 @@ class PPO(Agent):
                 #     acts = np.clip(acts, env.single_action_space.low, env.single_action_space.high)
                 #     acts = acts.tolist()
                 #     acts = [[float(a) for a in act] for act in acts]
-                acts = self.env.format_actions(acts)
+                acts = self.env.format_actions(acts, testing=True)
 
                 #  log prob to log probs list
                 log_probs.append(log_prob)
@@ -6288,9 +6299,16 @@ class PPO(Agent):
         logger.debug(f"init_sweep fired")
         try:
             # Instantiate env from env_spec
-            env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
+            env_spec = gym.envs.registration.EnvSpec.from_json(env_spec)
+            env_library = config["parameters"]["env_library"]
+            env_wrappers = config["parameters"]["env_wrappers"]
+            if env_library == 'Gymnasium':
+                env = GymnasiumWrapper(env_spec, env_wrappers)
+            # env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
 
             # logger.debug(f"train config: {train_config}")
+            print(f"env library: {env_library}")
+            print(f"env wrappers: {env_wrappers}")
             print(f"env spec id: {env.spec.id}")
             print(f"callbacks: {callbacks}")
             print(f"run number: {run_number}")
@@ -6303,9 +6321,6 @@ class PPO(Agent):
 
             # Format policy and value layers, and kernels
             model_config = wandb_support.format_layers(config)
-            #DEBUG
-            # print(f'model config:{model_config}')
-            # logger.debug(f"layers built")
 
             # Policy
             # Learning Rate
@@ -6358,24 +6373,6 @@ class PPO(Agent):
             value_optimizer_params = {'type':value_optimizer, 'params':optimizer_params}
             logger.debug(f"value optimizer params set to {value_optimizer_params}")
 
-            # Check if CNN layers and if so, build CNN model
-            # if actor_cnn_layers:
-            #     actor_cnn_model = cnn_models.CNN(actor_cnn_layers, env)
-            # else:
-            #     actor_cnn_model = None
-            # if comm is not None:
-            #     logger.debug(f"{comm.Get_name()}; Rank {rank} actor cnn layers set: {actor_cnn_layers}")
-            # else:
-            #     logger.debug(f"actor cnn layers set: {actor_cnn_layers}")
-
-            # if critic_cnn_layers:
-            #     critic_cnn_model = cnn_models.CNN(critic_cnn_layers, env)
-            # else:
-            #     critic_cnn_model = None
-            # if comm is not None:
-            #     logger.debug(f"{comm.Get_name()}; Rank {rank} critic cnn layers set: {critic_cnn_layers}")
-            # else:
-            #     logger.debug(f"critic cnn layers set: {critic_cnn_layers}")
             value_model = ValueModel(
                 env = env,
                 layer_config = model_config['value']['hidden'],
@@ -6393,6 +6390,9 @@ class PPO(Agent):
             # Policy clip
             policy_clip = get_wandb_config_value(config, agent_type, 'policy', 'clip_range')
             logger.debug(f"policy clip set to {policy_clip}")
+            # Value clip
+            value_clip = get_wandb_config_value(config, agent_type, 'value', 'clip_range')
+            logger.debug(f"value clip set to {value_clip}")
             # Entropy coefficient
             entropy_coeff = get_wandb_config_value(config, agent_type, 'none', 'entropy')
             logger.debug(f"entropy coeff set to {entropy_coeff}")
@@ -6413,6 +6413,16 @@ class PPO(Agent):
             if policy_grad_clip == "infinity":
                 policy_grad_clip = np.inf
             logger.debug(f"policy grad clip set to {policy_grad_clip}")
+            # Value gradient clip
+            value_grad_clip = get_wandb_config_value(config, agent_type, 'value', 'grad_clip')
+            # Change value of policy_grad_clip to np.inf if == 'infinity'
+            if value_grad_clip == "infinity":
+                value_grad_clip = np.inf
+            logger.debug(f"value grad clip set to {value_grad_clip}")
+
+            # Value Loss coefficient
+            value_coeff = get_wandb_config_value(config, agent_type, 'value', 'loss_coeff')
+            logger.debug(f"gae coeff set to {value_coeff}")
 
             # Reward clip
             reward_clip = get_wandb_config_value(config, agent_type, 'none', 'reward_clip')
@@ -6423,18 +6433,21 @@ class PPO(Agent):
 
 
             # create PPO agent
-            ppo_agent= cls(
+            ppo_agent= PPO(
                 env = env,
                 policy_model = policy_model,
                 value_model = value_model,
                 discount = discount,
                 gae_coefficient = gae_coeff,
                 policy_clip = policy_clip,
+                value_clip = value_clip,
+                value_loss_coefficient = value_coeff,
                 entropy_coefficient = entropy_coeff,
                 normalize_advantages = normalize_advantages,
                 normalize_values = normalize_values,
                 value_normalizer_clip = normalize_val_clip,
                 policy_grad_clip = policy_grad_clip,
+                value_grad_clip = value_grad_clip,
                 reward_clip = reward_clip,
                 callbacks = callbacks,
                 device = device,
@@ -6491,7 +6504,7 @@ class PPO(Agent):
                 "policy_grad_clip": self.policy_grad_clip,
                 "value_grad_clip": self.value_grad_clip,
                 "reward_clip": self.reward_clip,
-                "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
+                "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
                 "save_dir": self.save_dir,
                 "device": self.device,
                 # "seed": self.seed,
@@ -7784,151 +7797,201 @@ def get_agent_class_from_type(agent_type: str):
 
     raise ValueError(f"Unknown agent type: {agent_type}")
 
-def init_sweep(sweep_config, comm=None):
-    # rank = MPI.COMM_WORLD.Get_rank()
-    if comm is not None:
-        logger.debug(f"Rank {rank} comm detected")
-        rank = comm.Get_rank()
-        logger.debug(f"Global rank {MPI.COMM_WORLD.Get_rank()} set to comm rank {rank}")
-        logger.debug(f"Rank {rank} in {comm.Get_name()}, name {comm.Get_name()}")
+# def init_sweep(sweep_config, comm=None):
+#     # rank = MPI.COMM_WORLD.Get_rank()
+#     if comm is not None:
+#         logger.debug(f"Rank {rank} comm detected")
+#         rank = comm.Get_rank()
+#         logger.debug(f"Global rank {MPI.COMM_WORLD.Get_rank()} set to comm rank {rank}")
+#         logger.debug(f"Rank {rank} in {comm.Get_name()}, name {comm.Get_name()}")
     
+#     try:
+#         # Set the environment variable
+#         os.environ['WANDB_DISABLE_SERVICE'] = 'true'
+#         # logger.debug(f"{comm.Get_name()}; Rank {rank} WANDB_DISABLE_SERVICE set to true")
+
+#         # Set seeds (Seeds now set in train.  Update each)
+#         # random.seed(train_config['seed'])
+#         # np.random.seed(train_config['seed'])
+#         # T.manual_seed(train_config['seed'])
+#         # T.cuda.manual_seed(train_config['seed'])
+#         # logger.debug(f'{comm.Get_name()}; Rank {rank} random seeds set')
+
+#         # Only primary process (rank 0) calls wandb.init() to build agent and log data
+#         if comm is not None:
+#             if rank == 0:
+#                 # logger.debug('MPI rank 0 process fired')
+#                 # try:
+#                 run_number = wandb_support.get_next_run_number(sweep_config["project"])
+#                 logger.debug(f"{comm.Get_name()}; Rank {rank} run number set: {run_number}")
+                
+#                 run = wandb.init(
+#                     project=sweep_config["project"],
+#                     settings=wandb.Settings(start_method='thread'),
+#                     job_type="train",
+#                     name=f"train-{run_number}",
+#                     tags=["train"],
+#                     group=f"group-{run_number}",
+#                     # dir=run_dir
+#                 )
+#                 logger.debug("wandb.init() fired")
+#                 wandb_config = dict(wandb.config)
+#                 model_type = list(wandb_config.keys())[0]
+                
+#                 # Wait for configuration to be populated
+#                 max_retries = 10
+#                 retry_interval = 1  # in seconds
+
+#                 for _ in range(max_retries):
+#                     if "model_type" in wandb.config:
+#                         break
+#                     logger.debug(f"{comm.Get_name()}; Rank {rank} Waiting for wandb.config to be populated...")
+#                     time.sleep(retry_interval)
+
+#                 if "model_type" in wandb.config:
+#                     logger.debug(f'{comm.Get_name()}; Rank {rank} wandb.config: {wandb.config}')
+#                     run.tags = run.tags + (model_type,)
+#                 else:
+#                     logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
+                
+#                 run.tags = run.tags + (model_type,)
+#                 logger.debug(f"{comm.Get_name()}; Rank {rank} run.tag set")
+#                 env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+#                 # save env spec to string
+#                 env_spec = env.spec.to_json()
+#                 logger.debug(f"{comm.Get_name()}; Rank {rank} env built: {env.spec}")
+#                 callbacks = []
+#                 callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
+#                 logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks created")
+
+#             else:
+#                 env_spec = None
+#                 callbacks = None
+#                 run_number = None
+#                 wandb_config = None
+            
+#             # Use MPI Barrier to sync processes
+#             logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep calling MPI Barrier")
+#             comm.Barrier()
+#             logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep MPI Barrier passed")
+
+#             env_spec = comm.bcast(env_spec, root=0)
+#             callbacks = comm.bcast(callbacks, root=0)
+#             run_number = comm.bcast(run_number, root=0)
+#             wandb_config = comm.bcast(wandb_config, root=0)
+#             model_type = sweep_config['parameters']['model_type']
+#             logger.debug(f"{comm.Get_name()}; Rank {rank} broadcasts complete")
+
+#             agent = get_agent_class_from_type(model_type)
+#             logger.debug(f"{comm.Get_name()}; Rank {rank} agent class found. Calling sweep_train")
+#             agent.sweep_train(wandb_config, env_spec, callbacks, run_number, comm)
+        
+#         else:
+#             print('comm = None')
+#             run_number = wandb_support.get_next_run_number(sweep_config["project"])
+#             logger.debug(f"run number set: {run_number}")
+#             print(f'run number:{run_number}')
+            
+#             run = wandb.init(
+#                 project=sweep_config["project"],
+#                 settings=wandb.Settings(start_method='thread'),
+#                 job_type="train",
+#                 name=f"train-{run_number}",
+#                 tags=["train"],
+#                 group=f"group-{run_number}",
+#                 # dir=run_dir
+#             )
+#             logger.debug("wandb.init() fired")
+#             wandb_config = dict(wandb.config)
+#             print(f'wandb config: {wandb_config}')
+#             model_type = wandb_config['model_type']
+            
+#             # Wait for configuration to be populated
+#             max_retries = 10
+#             retry_interval = 1  # in seconds
+
+#             for _ in range(max_retries):
+#                 if "model_type" in wandb.config:
+#                     break
+#                 logger.debug(f"Waiting for wandb.config to be populated...")
+#                 time.sleep(retry_interval)
+
+#             if "model_type" in wandb.config:
+#                 logger.debug(f'wandb.config: {wandb.config}')
+#                 run.tags = run.tags + (model_type,)
+#             else:
+#                 logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
+            
+#             run.tags = run.tags + (model_type,)
+#             logger.debug(f"run.tag set")
+#             # env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
+#             env_params = {
+#                 key.replace("env_", ""): val["value"]
+#                 for key, val in sweep_config["parameters"].items()
+#                 if key.startswith("env_")
+#             }
+#             #DEBUG
+#             print(f'env_params:{env_params}')
+#             env = gym.make(**env_params)
+#             # save env spec to string
+#             env_spec = env.spec.to_json()
+#             logger.debug(f"env built: {env.spec}")
+#             callbacks = []
+#             callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
+#             logger.debug(f"callbacks created")
+#             agent = get_agent_class_from_type(model_type)
+#             logger.debug(f"agent class found. Calling sweep_train")
+#             agent.sweep_train(wandb_config, env_spec, callbacks, run_number)
+
+#     except Exception as e:
+#         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
+
+def init_sweep(sweep_config):
     try:
         # Set the environment variable
         os.environ['WANDB_DISABLE_SERVICE'] = 'true'
-        # logger.debug(f"{comm.Get_name()}; Rank {rank} WANDB_DISABLE_SERVICE set to true")
-
-        # Set seeds (Seeds now set in train.  Update each)
-        # random.seed(train_config['seed'])
-        # np.random.seed(train_config['seed'])
-        # T.manual_seed(train_config['seed'])
-        # T.cuda.manual_seed(train_config['seed'])
-        # logger.debug(f'{comm.Get_name()}; Rank {rank} random seeds set')
-
-        # Only primary process (rank 0) calls wandb.init() to build agent and log data
-        if comm is not None:
-            if rank == 0:
-                # logger.debug('MPI rank 0 process fired')
-                # try:
-                run_number = wandb_support.get_next_run_number(sweep_config["project"])
-                logger.debug(f"{comm.Get_name()}; Rank {rank} run number set: {run_number}")
-                
-                run = wandb.init(
-                    project=sweep_config["project"],
-                    settings=wandb.Settings(start_method='thread'),
-                    job_type="train",
-                    name=f"train-{run_number}",
-                    tags=["train"],
-                    group=f"group-{run_number}",
-                    # dir=run_dir
-                )
-                logger.debug("wandb.init() fired")
-                wandb_config = dict(wandb.config)
-                model_type = list(wandb_config.keys())[0]
-                
-                # Wait for configuration to be populated
-                max_retries = 10
-                retry_interval = 1  # in seconds
-
-                for _ in range(max_retries):
-                    if "model_type" in wandb.config:
-                        break
-                    logger.debug(f"{comm.Get_name()}; Rank {rank} Waiting for wandb.config to be populated...")
-                    time.sleep(retry_interval)
-
-                if "model_type" in wandb.config:
-                    logger.debug(f'{comm.Get_name()}; Rank {rank} wandb.config: {wandb.config}')
-                    run.tags = run.tags + (model_type,)
-                else:
-                    logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
-                
-                run.tags = run.tags + (model_type,)
-                logger.debug(f"{comm.Get_name()}; Rank {rank} run.tag set")
-                env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
-                # save env spec to string
-                env_spec = env.spec.to_json()
-                logger.debug(f"{comm.Get_name()}; Rank {rank} env built: {env.spec}")
-                callbacks = []
-                callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
-                logger.debug(f"{comm.Get_name()}; Rank {rank} callbacks created")
-
-            else:
-                env_spec = None
-                callbacks = None
-                run_number = None
-                wandb_config = None
-            
-            # Use MPI Barrier to sync processes
-            logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep calling MPI Barrier")
-            comm.Barrier()
-            logger.debug(f"{comm.Get_name()}; Rank {rank} init_sweep MPI Barrier passed")
-
-            env_spec = comm.bcast(env_spec, root=0)
-            callbacks = comm.bcast(callbacks, root=0)
-            run_number = comm.bcast(run_number, root=0)
-            wandb_config = comm.bcast(wandb_config, root=0)
-            model_type = sweep_config['parameters']['model_type']
-            logger.debug(f"{comm.Get_name()}; Rank {rank} broadcasts complete")
-
-            agent = get_agent_class_from_type(model_type)
-            logger.debug(f"{comm.Get_name()}; Rank {rank} agent class found. Calling sweep_train")
-            agent.sweep_train(wandb_config, env_spec, callbacks, run_number, comm)
-        
-        else:
-            print('comm = None')
-            run_number = wandb_support.get_next_run_number(sweep_config["project"])
-            logger.debug(f"run number set: {run_number}")
-            print(f'run number:{run_number}')
-            
-            run = wandb.init(
-                project=sweep_config["project"],
-                settings=wandb.Settings(start_method='thread'),
-                job_type="train",
-                name=f"train-{run_number}",
-                tags=["train"],
-                group=f"group-{run_number}",
-                # dir=run_dir
-            )
-            logger.debug("wandb.init() fired")
-            wandb_config = dict(wandb.config)
-            print(f'wandb config: {wandb_config}')
-            model_type = wandb_config['model_type']
-            
-            # Wait for configuration to be populated
-            max_retries = 10
-            retry_interval = 1  # in seconds
-
-            for _ in range(max_retries):
-                if "model_type" in wandb.config:
-                    break
-                logger.debug(f"Waiting for wandb.config to be populated...")
-                time.sleep(retry_interval)
-
+        run_number = wandb_support.get_next_run_number(sweep_config["project"])
+        logger.debug(f"run number set: {run_number}")
+        run = wandb.init(
+            project=sweep_config["project"],
+            settings=wandb.Settings(start_method='thread'),
+            job_type="train",
+            name=f"train-{run_number}",
+            tags=["train"],
+            group=f"group-{run_number}",
+        )
+        logger.debug("wandb.init() fired")
+        wandb_config = dict(wandb.config)
+        model_type = list(wandb_config.keys())[0]
+        # Wait for configuration to be populated
+        max_retries = 10
+        retry_interval = 1  # in seconds
+        for _ in range(max_retries):
             if "model_type" in wandb.config:
-                logger.debug(f'wandb.config: {wandb.config}')
-                run.tags = run.tags + (model_type,)
-            else:
-                logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
-            
+                break
+            logger.debug("Waiting for wandb.config to be populated...")
+            time.sleep(retry_interval)
+        if "model_type" in wandb.config:
+            logger.debug(f'wandb.config: {wandb.config}')
             run.tags = run.tags + (model_type,)
-            logger.debug(f"run.tag set")
-            # env = gym.make(**{param: value["value"] for param, value in sweep_config["parameters"]["env"]["parameters"].items()})
-            env_params = {
-                key.replace("env_", ""): val["value"]
-                for key, val in sweep_config["parameters"].items()
-                if key.startswith("env_")
-            }
-            #DEBUG
-            print(f'env_params:{env_params}')
-            env = gym.make(**env_params)
-            # save env spec to string
-            env_spec = env.spec.to_json()
-            logger.debug(f"env built: {env.spec}")
-            callbacks = []
-            callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
-            logger.debug(f"callbacks created")
-            agent = get_agent_class_from_type(model_type)
-            logger.debug(f"agent class found. Calling sweep_train")
-            agent.sweep_train(wandb_config, env_spec, callbacks, run_number)
-
+        else:
+            logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
+        run.tags = run.tags + (model_type,)
+        logger.debug("run.tag set")
+        # Extract environment parameters from sweep_config
+        env_params = {
+            key.replace("env_", ""): val["value"]
+            for key, val in sweep_config["parameters"].items()
+            if key.startswith("env_")
+        }
+        env = gym.make(**env_params)
+        env_spec = env.spec.to_json()
+        logger.debug(f"env built: {env.spec}")
+        callbacks = []
+        callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
+        logger.debug(f"callbacks created")
+        agent = get_agent_class_from_type(model_type)
+        logger.debug(f"agent class found. Calling sweep_train")
+        agent.sweep_train(wandb_config, env_spec, callbacks, run_number)
     except Exception as e:
         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
