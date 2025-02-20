@@ -13,6 +13,7 @@ import re
 
 import wandb
 import wandb_support
+# import ray.tune as tune
 import gymnasium as gym
 import gymnasium.wrappers as base_wrappers
 import gymnasium_robotics as gym_robo
@@ -4528,7 +4529,7 @@ def create_ppo_hyperparam_input(agent_type):
                             # generate_kernel_initializer_hyperparam_component(agent_type, 'policy-hidden', 'Hidden Layers'),
                             html.Hr(),
                             html.H5(f'Output Layer', style={'margin-right': '10px'}),
-                            generate_kernel_initializer_hyperparam_component(agent_type, 'policy', -1),
+                            generate_kernel_initializer_hyperparam_component(agent_type, 'policy', 'output'),
                             html.Hr(),
                             # generate_activation_function_hyperparam_component(agent_type, 'policy'),
                             generate_optimizer_hyperparam_component(agent_type, 'policy'),
@@ -4553,7 +4554,7 @@ def create_ppo_hyperparam_input(agent_type):
                             # generate_kernel_initializer_hyperparam_component(agent_type, 'value-hidden', 'Hidden Layers'),
                             html.Hr(),
                             html.H5(f'Output Layer', style={'margin-right': '10px'}),
-                            generate_kernel_initializer_hyperparam_component(agent_type, 'value', -1),
+                            generate_kernel_initializer_hyperparam_component(agent_type, 'value', 'output'),
                             html.Hr(),
                             # generate_activation_function_hyperparam_component(agent_type, 'value'),
                             generate_optimizer_hyperparam_component(agent_type, 'value'),
@@ -6878,12 +6879,8 @@ def format_wandb_config_param(config, param_name, all_values, all_ids, dash_id, 
     """
     if index:
         value = get_specific_value_id(all_values, all_ids, dash_id, model, agent, index)
-        #DEBUG
-        # print(f'format wandb config param: value = {value} for {dash_id} {model} {agent} {index}')
     else:
         value = get_specific_value(all_values, all_ids, dash_id, model, agent)
-        #DEBUG
-        # print(f'format wandb config param: value = {value} for {dash_id} {model} {agent}')
 
     if is_range:
         # Check if the range has a single value or a min/max range
@@ -6901,19 +6898,13 @@ def format_wandb_config_param(config, param_name, all_values, all_ids, dash_id, 
 
     if index:
         config["parameters"][f"{agent}_{model}_{index}_{param_name}"] = param
-        #DEBUG
-        # print(f'config["parameters"][{agent}]["parameters"][f"{agent}_{model}_{index}_{param_name}"] = {param}')
     else:
         config["parameters"][f"{agent}_{model}_{param_name}"] = param
-        #DEBUG
-        # print(f'config["parameters"][{agent}]["parameters"][f"{agent}_{model}_{param_name}"] = {param}')
 
     return config
 
 def format_wandb_optimizer_options(config, param_name, all_values, all_ids, model, agent):
     for value in config["parameters"][f"{agent}_{model}_{param_name}"]['values']:
-        # config["parameters"][agent]["parameters"][f"{agent}_{model}_{param_name}_{value}_options"] = {'parameters': {}}
-        # param = {}
         if value == 'Adam':
             config["parameters"][f"{agent}_{model}_{param_name}_{value}_weight_decay"] = {"values": get_specific_value(all_values, all_ids, 'adam-weight-decay-hyperparam', model, agent)}
 
@@ -6928,31 +6919,13 @@ def format_wandb_optimizer_options(config, param_name, all_values, all_ids, mode
         elif value == 'SGD':
             config["parameters"][f"{agent}_{model}_{param_name}_{value}_weight_decay"] = {"values": get_specific_value(all_values, all_ids, 'sgd-weight-decay-hyperparam', model, agent)}
             config["parameters"][f"{agent}_{model}_{param_name}_{value}_momentum"] = {"values": get_specific_value(all_values, all_ids, 'sgd-momentum-hyperparam', model, agent)}
-            
-        # config["parameters"][agent]["parameters"][f"{agent}_{model}_{param_name}_{value}_options"]['parameters'] = param
     return config
     
 def format_wandb_kernel(config, all_indexed_values, all_indexed_ids, model, agent, layer):
-    #DEBUG
-    # print(f'format wandb kernel fired...')
-    # num_layers = get_specific_value(all_values, all_ids, 'hidden-layers-slider', model, agent)[1]
-
-    # Hidden layers
-    # for layer_num in range(1, num_layers + 1):
-        #DEBUG
-        # print(f'format wandb kernel layer {layer_num} fired...')
-        # Check if layer type is either dense or conv2d layer
-    #DEBUG
-    # print(f'format_wandb_kernel;layer:{layer}')
-    # Check if output layer
     if isinstance(layer, int):
         layer_types = get_specific_value_id(all_indexed_values, all_indexed_ids, 'layer-type-hyperparam', model, agent, layer)
-        #DEBUG
-        # print(f'format_wandb_kernel layer types:{layer_types}')
         for layer_type in layer_types:
             if layer_type in ['dense', 'conv2d']:
-                #DEBUG
-                # print(f'format_wandb_kernel layer type:{layer_type}')
                 # Add selected kernels for layer to sweep config
                 config = format_wandb_config_param(config, "kernel", all_indexed_values, all_indexed_ids, 'kernel-function-hyperparam', model, agent, layer)
                 # Add params for each selected kernel to sweep config
@@ -6968,14 +6941,10 @@ def format_wandb_kernel(config, all_indexed_values, all_indexed_ids, model, agen
 def format_wandb_kernel_options(config, all_values, all_ids, model, agent, layer_num):
     for kernel in get_specific_value_id(all_values, all_ids, 'kernel-function-hyperparam', model, agent, layer_num):
         if kernel != 'default':
-            # if f"{agent}_{model}_{layer_num}_{kernel}" not in config["parameters"][agent]["parameters"]:
-            #     config["parameters"][agent]["parameters"][f"{agent}_{model}_{layer_num}_{kernel}"]={"parameters":{}}
-
             # initialize empty config dictionary for parameters
             param = {}
 
             if kernel == "constant":
-                # param["value"] = {"values": get_specific_value_id(all_values, all_ids, 'constant-value-hyperparam', model, agent, layer_num)}
                 config = format_wandb_config_param(config, "kernel", all_values, all_ids, 'constant-value-hyperparam', model, agent, layer_num)
 
             elif kernel == "variance_scaling":
@@ -7030,16 +6999,10 @@ def format_wandb_kernel_options(config, all_values, all_ids, model, agent, layer
                     "uniform", "normal", "truncated_normal", "variance_scaling"]:
                     raise ValueError(f"Unknown kernel: {kernel}")
 
-            #DEBUG
-            # print(f'kernel param: {config["parameters"][agent]["parameters"][f"{agent}_{model}_{layer_num}_{kernel}"]["parameters"]} = {param}')
-                
-            # config["parameters"][agent]["parameters"][f"{agent}_{model}_{layer_num}_{kernel}"]["parameters"] = param
     return config
 
 def format_wandb_lr_scheduler(config, all_values, all_ids, model, agent):
     schedulers = get_specific_value(all_values, all_ids, 'lr-scheduler-hyperparam', model, agent)
-    #DEBUG
-    # print(f'format_wandb_kernel layer types:{layer_types}')
     for scheduler in schedulers:
         config = format_wandb_config_param(config, "scheduler", all_values, all_ids, 'lr-scheduler-hyperparam', model, agent)
         config = format_wandb_lr_scheduler_options(config, all_values, all_ids, model, agent, scheduler)
@@ -7070,15 +7033,11 @@ def format_wandb_cosineannealinglr_options(config, all_values, all_ids, model, a
 def format_wandb_model_layers(config, all_values, all_ids, all_indexed_values, all_indexed_ids, model, agent):
     # Get num layers in model
     num_layers = get_specific_value(all_values, all_ids, 'hidden-layers-slider', model, agent)[1]
-    #DEBUG
-    # print(f'max {num_layers} found for {agent} {model}')
     # Add num_layers to wandb config
     config = format_wandb_config_param(config, 'num_layers', all_values, all_ids, 'hidden-layers-slider', model, agent, index=None, is_range=True)
     for layer in range(1, num_layers + 1):
         # Get layer types
         layer_types = get_specific_value_id(all_indexed_values, all_indexed_ids, 'layer-type-hyperparam', model, agent, layer)
-        #DEBUG
-        # print(f'layer types for layer {layer}: {layer_types}')
         # Add layer_types to wandb config
         config = format_wandb_config_param(config, 'layer_types', all_indexed_values, all_indexed_ids, 'layer-type-hyperparam', model, agent, layer)
         # Loop through each layer type to assign correct params
@@ -9224,24 +9183,306 @@ def create_ppo_sweep_options(agent_type):
                 ]
             ),
 
-# def build_train_config(agent, config, num_sweeps):
-#     """Builds train_config.json to pass to sweep.py
+## TUNE FUNCTIONS ##
+def create_tune_config(method, project, sweep_name, metric_name, metric_goal,
+                       env_library, env, env_params, env_wrappers, agent,
+                       all_values, all_ids, all_indexed_values, all_indexed_ids):
+    # For Ray Tune, the "config" is usually just the hyperparameter search space.
+    tune_config = {
+        "env_library": env_library,
+        "env_id": env,
+    }
+    # Add each environment parameter as a fixed value.
+    for param, value in env_params.items():
+        tune_config[f"env_{param}"] = value
+    # For lists (like env_wrappers), you can either use the raw list or a search space (e.g., tune.choice)
+    tune_config["env_wrappers"] = env_wrappers  # or: tune.choice(env_wrappers)
+    tune_config["model_type"] = agent
 
-#     Args:
-#         agent (str): agent selected
-#         config (dict): wandb config dict
-#     """
+    # Add agent-specific hyperparameters. Here we assume agent == "PPO".
+    if agent == "PPO":
+        # For each parameter, we use a helper that returns a Tune search space object.
+        tune_config["policy_learning_rate_constant"] = format_tune_config_param(
+            "learning_rate_constant", all_values, all_ids, "learning-rate-const-hyperparam", "policy", agent)
+        tune_config["policy_learning_rate_exponent"] = format_tune_config_param(
+            "learning_rate_exponent", all_values, all_ids, "learning-rate-exp-hyperparam", "policy", agent)
+        tune_config["value_learning_rate_constant"] = format_tune_config_param(
+            "learning_rate_constant", all_values, all_ids, "learning-rate-const-hyperparam", "value", agent)
+        tune_config["value_learning_rate_exponent"] = format_tune_config_param(
+            "learning_rate_exponent", all_values, all_ids, "learning-rate-exp-hyperparam", "value", agent)
+        tune_config["distribution"] = format_tune_config_param(
+            "distribution", all_values, all_ids, "distribution-hyperparam", "policy", agent)
+        tune_config["discount"] = format_tune_config_param(
+            "discount", all_values, all_ids, "discount-slider", "none", agent)
+        tune_config["reward_clip"] = format_tune_config_param(
+            "reward_clip", all_values, all_ids, "reward-clip-hyperparam", "none", agent)
+        tune_config["advantage"] = format_tune_config_param(
+            "advantage", all_values, all_ids, "advantage-coeff-hyperparam", "none", agent)
+        tune_config["model_type_param"] = format_tune_config_param(
+            "model_type", all_values, all_ids, "model-type-hyperparam", "policy", agent)
+        tune_config["policy_clip_range"] = format_tune_config_param(
+            "clip_range", all_values, all_ids, "surrogate-clip-hyperparam", "policy", agent)
+        tune_config["policy_grad_clip"] = format_tune_config_param(
+            "grad_clip", all_values, all_ids, "grad-clip-hyperparam", "policy", agent)
+        tune_config["entropy"] = format_tune_config_param(
+            "entropy", all_values, all_ids, "entropy-coeff-hyperparam", "none", agent)
+        tune_config["kl"] = format_tune_config_param(
+            "kl", all_values, all_ids, "kl-coeff-hyperparam", "none", agent)
+        tune_config["normalize_advantage"] = format_tune_config_param(
+            "normalize_advantage", all_values, all_ids, "normalize-advantage-hyperparam", "none", agent)
+        tune_config["normalize_values"] = format_tune_config_param(
+            "normalize_values", all_values, all_ids, "normalize-values-hyperparam", "value", agent)
+        tune_config["normalize_values_clip"] = format_tune_config_param(
+            "normalize_values_clip", all_values, all_ids, "norm-values-clip-hyperparam", "value", agent)
+        tune_config["device"] = format_tune_config_param(
+            "device", all_values, all_ids, "device", "none", agent)
 
-#     if agent == "PPO":
-#         train_config['num_sweeps'] = num_sweeps
-#         train_config['num_timesteps'] = config['PPO_num_timesteps']
-#         train_config['seed'] = config['PPO_seed'] if config['PPO_seed'] is not None else None
-        
-#     if agent == "HER":
-#         # Update additional settings for HER agent
-#         train_config['num_epochs'] = num_epochs if num_epochs is not None else None
-#         train_config['num_cycles'] = num_cycles if num_cycles is not None else None
-#         train_config['num_updates'] = num_updates if num_updates is not None else 1
+        # Model architecture parameters.
+        tune_config["policy_layers"] = format_tune_model_layers(
+            all_values, all_ids, all_indexed_values, all_indexed_ids, "policy", agent)
+        tune_config["policy_kernel_output"] = format_tune_kernel(
+            all_indexed_values, all_indexed_ids, "policy", agent, "output")
+        tune_config["policy_optimizer"] = format_tune_config_param(
+            "optimizer", all_values, all_ids, "optimizer-hyperparam", "policy", agent)
+        tune_config["policy_optimizer_options"] = format_tune_optimizer_options(
+            "optimizer", all_values, all_ids, "policy", agent)
+        tune_config["policy_lr_scheduler"] = format_tune_lr_scheduler(
+            all_values, all_ids, "policy", agent)
+
+        tune_config["value_layers"] = format_tune_model_layers(
+            all_values, all_ids, all_indexed_values, all_indexed_ids, "value", agent)
+        tune_config["loss_coeff"] = format_tune_config_param(
+            "loss_coeff", all_values, all_ids, "loss-coeff-hyperparam", "value", agent)
+        tune_config["value_clip_range"] = format_tune_config_param(
+            "clip_range", all_values, all_ids, "surrogate-clip-hyperparam", "value", agent)
+        tune_config["value_grad_clip"] = format_tune_config_param(
+            "grad_clip", all_values, all_ids, "grad-clip-hyperparam", "value", agent)
+        tune_config["value_kernel_output"] = format_tune_kernel(
+            all_indexed_values, all_indexed_ids, "value", agent, "output")
+        tune_config["value_optimizer"] = format_tune_config_param(
+            "optimizer", all_values, all_ids, "optimizer-hyperparam", "value", agent)
+        tune_config["value_optimizer_options"] = format_tune_optimizer_options(
+            "optimizer", all_values, all_ids, "value", agent)
+        tune_config["value_lr_scheduler"] = format_tune_lr_scheduler(
+            all_values, all_ids, "value", agent)
+
+        # Training parameters.
+        tune_config["save_dir"] = format_tune_config_param(
+            "save_dir", all_values, all_ids, "save-dir", "none", agent)
+        tune_config["num_timesteps"] = format_tune_config_param(
+            "num_timesteps", all_values, all_ids, "num-timesteps", "none", agent)
+        tune_config["trajectory_length"] = format_tune_config_param(
+            "trajectory_length", all_values, all_ids, "trajectory-length", "none", agent)
+        tune_config["batch_size"] = format_tune_config_param(
+            "batch_size", all_values, all_ids, "batch-size", "none", agent)
+        tune_config["learning_epochs"] = format_tune_config_param(
+            "learning_epochs", all_values, all_ids, "learning-epochs", "none", agent)
+        tune_config["num_envs"] = format_tune_config_param(
+            "num_envs", all_values, all_ids, "num-envs", "none", agent)
+        tune_config["seed"] = format_tune_config_param(
+            "seed", all_values, all_ids, "seed", "none", agent)
+    return tune_config
+
+def format_tune_config_param(config, param_name, all_values, all_ids, dash_id, model, agent, index=None, is_range=False):
+    """
+    For Ray Tune, returns a fixed value or search space object (e.g., tune.uniform or tune.choice)
+    for a given parameter.
+    """
+    if index:
+        value = get_specific_value_id(all_values, all_ids, dash_id, model, agent, index)
+    else:
+        value = get_specific_value(all_values, all_ids, dash_id, model, agent)
+    
+    if is_range:
+        # If the two endpoints are equal, use the fixed value;
+        # otherwise, use a uniform search space between min and max.
+        if value[0] == value[1]:
+            param = value[0]
+        else:
+            param = tune.uniform(value[0], value[1])
+    else:
+        # If value is a list, assume we want a choice over them.
+        if isinstance(value, list):
+            param = tune.choice(value)
+        else:
+            param = value
+
+    if index:
+        config[f"{agent}_{model}_{index}_{param_name}"] = param
+    else:
+        config[f"{agent}_{model}_{param_name}"] = param
+
+    return config
+
+def format_tune_optimizer_options(config, param_name, all_values, all_ids, model, agent):
+    # Assume that config[f"{agent}_{model}_{param_name}"] is a list of optimizer names.
+    for value in config[f"{agent}_{model}_{param_name}"]:
+        if value == 'Adam':
+            config[f"{agent}_{model}_{param_name}_{value}_weight_decay"] = tune.choice(
+                get_specific_value(all_values, all_ids, 'adam-weight-decay-hyperparam', model, agent)
+            )
+        elif value == 'Adagrad':
+            config[f"{agent}_{model}_{param_name}_{value}_weight_decay"] = tune.choice(
+                get_specific_value(all_values, all_ids, 'adagrad-weight-decay-hyperparam', model, agent)
+            )
+            config[f"{agent}_{model}_{param_name}_{value}_lr_decay"] = tune.choice(
+                get_specific_value(all_values, all_ids, 'adagrad-lr-decay-hyperparam', model, agent)
+            )
+        elif value == 'RMSprop':
+            config[f"{agent}_{model}_{param_name}_{value}_weight_decay"] = tune.choice(
+                get_specific_value(all_values, all_ids, 'rmsprop-weight-decay-hyperparam', model, agent)
+            )
+            config[f"{agent}_{model}_{param_name}_{value}_momentum"] = tune.choice(
+                get_specific_value(all_values, all_ids, 'rmsprop-momentum-hyperparam', model, agent)
+            )
+        elif value == 'SGD':
+            config[f"{agent}_{model}_{param_name}_{value}_weight_decay"] = tune.choice(
+                get_specific_value(all_values, all_ids, 'sgd-weight-decay-hyperparam', model, agent)
+            )
+            config[f"{agent}_{model}_{param_name}_{value}_momentum"] = tune.choice(
+                get_specific_value(all_values, all_ids, 'sgd-momentum-hyperparam', model, agent)
+            )
+    return config
+
+def format_tune_kernel(config, all_indexed_values, all_indexed_ids, model, agent, layer):
+    if isinstance(layer, int):
+        layer_types = get_specific_value_id(all_indexed_values, all_indexed_ids, 'layer-type-hyperparam', model, agent, layer)
+        for layer_type in layer_types:
+            if layer_type in ['dense', 'conv2d']:
+                config = format_tune_config_param(config, "kernel", all_indexed_values, all_indexed_ids,
+                                                    'kernel-function-hyperparam', model, agent, layer)
+                config = format_tune_kernel_options(config, all_indexed_values, all_indexed_ids, model, agent, layer)
+    else:
+        # For output layers, use index 'output'
+        config = format_tune_config_param(config, "kernel", all_indexed_values, all_indexed_ids,
+                                            "kernel-function-hyperparam", model, agent, 'output')
+        config = format_tune_kernel_options(config, all_indexed_values, all_indexed_ids, model, agent, 'output')
+    return config
+
+def format_tune_kernel_options(config, all_values, all_ids, model, agent, layer_num):
+    # For each kernel option, update config with additional parameters.
+    for kernel in get_specific_value_id(all_values, all_ids, 'kernel-function-hyperparam', model, agent, layer_num):
+        if kernel != 'default':
+            if kernel == "constant":
+                config = format_tune_config_param(config, "kernel", all_values, all_ids,
+                                                    'constant-value-hyperparam', model, agent, layer_num)
+            elif kernel == "variance_scaling":
+                config[f"{agent}_{model}_{layer_num}_{kernel}_scale"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'variance-scaling-scale-hyperparam', model, agent, layer_num)
+                )
+                config[f"{agent}_{model}_{layer_num}_{kernel}_mode"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'variance-scaling-mode-hyperparam', model, agent, layer_num)
+                )
+                config[f"{agent}_{model}_{layer_num}_{kernel}_distribution"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'variance-scaling-distribution-hyperparam', model, agent, layer_num)
+                )
+            elif kernel == "uniform":
+                config[f"{agent}_{model}_{layer_num}_{kernel}_maxval"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'random-uniform-maxval-hyperparam', model, agent, layer_num)
+                )
+                config[f"{agent}_{model}_{layer_num}_{kernel}_minval"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'random-uniform-minval-hyperparam', model, agent, layer_num)
+                )
+            elif kernel == "normal":
+                config[f"{agent}_{model}_{layer_num}_{kernel}_mean"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'random-normal-mean-hyperparam', model, agent, layer_num)
+                )
+                config[f"{agent}_{model}_{layer_num}_{kernel}_stddev"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'random-normal-stddev-hyperparam', model, agent, layer_num)
+                )
+            elif kernel == "truncated_normal":
+                config[f"{agent}_{model}_{layer_num}_{kernel}_mean"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'truncated-normal-mean-hyperparam', model, agent, layer_num)
+                )
+                config[f"{agent}_{model}_{layer_num}_{kernel}_stddev"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'truncated-normal-stddev-hyperparam', model, agent, layer_num)
+                )
+            elif kernel == "xavier_uniform":
+                config[f"{agent}_{kernel}_{layer_num}_{model}_gain"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'xavier-uniform-gain-hyperparam', model, agent, layer_num)
+                )
+            elif kernel == "xavier_normal":
+                config[f"{agent}_{model}_{layer_num}_{kernel}_gain"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'xavier-normal-gain-hyperparam', model, agent, layer_num)
+                )
+            elif kernel == "kaiming_uniform":
+                config[f"{agent}_{model}_{layer_num}_{kernel}_mode"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'kaiming-uniform-mode-hyperparam', model, agent, layer_num)
+                )
+            elif kernel == "kaiming_normal":
+                config[f"{agent}_{model}_{layer_num}_{kernel}_mode"] = tune.choice(
+                    get_specific_value_id(all_values, all_ids, 'kaiming-normal-mode-hyperparam', model, agent, layer_num)
+                )
+            else:
+                if kernel not in ["default", "constant", "xavier_uniform", "xavier_normal", "kaiming_uniform",
+                                  "kaiming_normal", "zeros", "ones", "uniform", "normal", "truncated_normal", "variance_scaling"]:
+                    raise ValueError(f"Unknown kernel: {kernel}")
+    return config
+
+def format_tune_lr_scheduler(config, all_values, all_ids, model, agent):
+    schedulers = get_specific_value(all_values, all_ids, 'lr-scheduler-hyperparam', model, agent)
+    for scheduler in schedulers:
+        config = format_tune_config_param(config, "scheduler", all_values, all_ids,
+                                          'lr-scheduler-hyperparam', model, agent)
+        config = format_tune_lr_scheduler_options(config, all_values, all_ids, model, agent, scheduler)
+    return config
+
+def format_tune_lr_scheduler_options(config, all_values, all_ids, model, agent, scheduler):
+    if scheduler == 'step':
+        config = format_tune_steplr_options(config, all_values, all_ids, model, agent)
+    elif scheduler == 'exponential':
+        config = format_tune_exponentiallr_options(config, all_values, all_ids, model, agent)
+    elif scheduler == 'cosineannealing':
+        config = format_tune_cosineannealinglr_options(config, all_values, all_ids, model, agent)
+    return config
+
+def format_tune_steplr_options(config, all_values, all_ids, model, agent):
+    config = format_tune_config_param(config, "step_size", all_values, all_ids,
+                                      'lr-step-size-hyperparam', model, agent)
+    config = format_tune_config_param(config, "gamma", all_values, all_ids,
+                                      'lr-gamma-hyperparam', model, agent)
+    return config
+
+def format_tune_exponentiallr_options(config, all_values, all_ids, model, agent):
+    config = format_tune_config_param(config, "step_size", all_values, all_ids,
+                                      'lr-gamma-hyperparam', model, agent)
+    return config
+
+def format_tune_cosineannealinglr_options(config, all_values, all_ids, model, agent):
+    config = format_tune_config_param(config, "step_size", all_values, all_ids,
+                                      'lr-t-max-hyperparam', model, agent)
+    config = format_tune_config_param(config, "step_size", all_values, all_ids,
+                                      'lr-eta-min-hyperparam', model, agent)
+    return config
+
+def format_tune_model_layers(config, all_values, all_ids, all_indexed_values, all_indexed_ids, model, agent):
+    num_layers = get_specific_value(all_values, all_ids, 'hidden-layers-slider', model, agent)[1]
+    config = format_tune_config_param(config, 'num_layers', all_values, all_ids,
+                                      'hidden-layers-slider', model, agent, index=None, is_range=True)
+    for layer in range(1, num_layers + 1):
+        layer_types = get_specific_value_id(all_indexed_values, all_indexed_ids, 'layer-type-hyperparam', model, agent, layer)
+        config = format_tune_config_param(config, 'layer_types', all_indexed_values, all_indexed_ids,
+                                          'layer-type-hyperparam', model, agent, layer)
+        for layer_type in layer_types:
+            if layer_type == 'dense':
+                config = format_tune_config_param(config, 'num_units', all_indexed_values, all_indexed_ids,
+                                                  'layer-units-slider', model, agent, layer)
+                config = format_tune_config_param(config, 'bias', all_indexed_values, all_indexed_ids,
+                                                  'dense-bias-hyperparam', model, agent, layer)
+                config = format_tune_kernel(config, all_indexed_values, all_indexed_ids, model, agent, layer)
+            elif layer_type == 'cnn':
+                config = format_tune_config_param(config, 'out_channels', all_indexed_values, all_indexed_ids,
+                                                  'layer-units-slider', model, agent, layer)
+    return config
+
+def format_tune_layer_units(config, param_name, all_values, all_ids, all_indexed_values, all_indexed_ids, id, model, agent):
+    num_layers = get_specific_value(all_values, all_ids, id, model, agent)
+    for i in range(1, num_layers[1] + 1):
+        config[f"{agent}_{model}_layer_{i}_{param_name}"] = tune.choice(
+            get_specific_value_id(all_indexed_values, all_indexed_ids, 'layer-units-slider', model, agent, i)
+        )
+    return config
+
 
 
 ## GYMNASIUM FUNCTIONS

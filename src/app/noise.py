@@ -80,7 +80,7 @@ class UniformNoise(Noise):
     def __init__(self, shape, minval=0, maxval=1, device=None):
         super().__init__()
         self.shape = shape
-        self.device = device if device else 'cuda' if T.cuda.is_available() else 'cpu'
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
         self.minval = T.tensor(minval, device=self.device)
         self.maxval = T.tensor(maxval, device=self.device)
         
@@ -108,7 +108,7 @@ class UniformNoise(Noise):
                 'shape': self.shape,
                 'minval': self.minval.item(),
                 'maxval': self.maxval.item(),
-                'device': self.device,
+                'device': self.device.type,
             }
         }
     
@@ -128,7 +128,7 @@ class NormalNoise:
     def __init__(self, shape, mean=0.0, stddev=1.0, device=None):
         super().__init__()
         self.shape = shape
-        self.device = device if device else 'cuda' if T.cuda.is_available() else 'cpu'
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
         self.mean = T.tensor(mean, dtype=T.float32, device=self.device)
         self.stddev = T.tensor(stddev, dtype=T.float32, device=self.device)
         self.reset_noise_gen()
@@ -173,7 +173,7 @@ class NormalNoise:
                 'shape': self.shape,
                 'mean': self.mean.item(),
                 'stddev': self.stddev.item(),
-                'device': self.device,
+                'device': self.device.type,
             }
         }
     
@@ -195,7 +195,7 @@ class OUNoise(Noise):
 
     def __init__(self, shape: tuple, mean: float = 0.0, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2, device=None):
         super().__init__()
-        self.device = device if device else 'cuda' if T.cuda.is_available() else 'cpu'
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
         self.shape = shape
         self.mean = T.tensor(mean, device=self.device)
         self.mu = T.ones(self.shape, device=self.device) * self.mean
@@ -242,7 +242,7 @@ class OUNoise(Noise):
                 "theta": self.theta.item(),
                 "sigma": self.sigma.item(),
                 "dt": self.dt.item(),
-                'device': self.device,
+                'device': self.device.type,
             }
         }
         

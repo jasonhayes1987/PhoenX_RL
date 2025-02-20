@@ -169,3 +169,6 @@ tmp*/
 __autograph_*.py
 *.csv
 *.mp4
+*.onnx
+*.pt
+*.json
