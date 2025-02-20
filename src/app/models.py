@@ -57,8 +57,7 @@ class Model(nn.Module):
         self.layers = nn.ModuleDict()
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
         self.scheduler_params = scheduler_params
-
-        self.device = device or T.device("cuda" if T.cuda.is_available() else "cpu")
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
 
         # Build the layers dynamically based on config
         for i, layer_info in enumerate(self.layer_config):
@@ -447,7 +446,7 @@ class StochasticDiscretePolicy(Model):
             'optimizer_params': self.optimizer_params,
             'scheduler_params': self.scheduler_params,
             'distribution': self.distribution,
-            'device': self.device,
+            'device': self.device.type,
         }
         return config
 
@@ -640,7 +639,7 @@ class StochasticContinuousPolicy(Model):
             'optimizer_params': self.optimizer_params,
             'scheduler_params': self.scheduler_params,
             'distribution': self.distribution,
-            'device': self.device,
+            'device': self.device.type,
         }
         return config
 
@@ -819,7 +818,7 @@ class ValueModel(Model):
             'output_layer_kernel': self.output_config,
             'optimizer_params': self.optimizer_params,
             'scheduler_params': self.scheduler_params,
-            'device': self.device,
+            'device': self.device.type,
         }
 
         return config
@@ -941,7 +940,7 @@ class ActorModel(Model):
             'output_layer_kernel':self.output_config,
             'optimizer_params': self.optimizer_params,
             'scheduler_params': self.scheduler_params,
-            'device': self.device,
+            'device': self.device.type,
         }
 
         return config
@@ -949,14 +948,14 @@ class ActorModel(Model):
 
     def get_clone(self, weights=True):
         # Reconstruct the model from its configuration
-        env = GymnasiumWrapper(self.env.env_spec)
+        env = GymnasiumWrapper(self.env.env_spec, self.env.wrappers)
         cloned_model = ActorModel(
             env=env,
             layer_config=self.layer_config.copy(),
             output_layer_kernel=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             scheduler_params=self.scheduler_params.copy() if self.scheduler_params else None,
-            device=self.device
+            device=self.device.type
         )
         
         if weights:
@@ -1115,7 +1114,7 @@ class CriticModel(Model):
             # 'goal_shape': self.goal_shape,
             'optimizer_params': self.optimizer_params,
             'scheduler_params': self.scheduler_params,
-            'device': self.device,
+            'device': self.device.type,
         }
 
         return config
@@ -1131,7 +1130,7 @@ class CriticModel(Model):
             # goal_shape=self.goal_shape.copy(),
             optimizer_params=self.optimizer_params.copy(),
             scheduler_params=self.scheduler_params.copy() if self.scheduler_params else None,
-            device=self.device
+            device=self.device.type
         )
         
         if weights:
