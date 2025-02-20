@@ -92,7 +92,7 @@ class ReplayBuffer:
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
-        self.device = device if device else 'cuda' if T.cuda.is_available() else 'cpu'
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
         
         # Determine observation space shape
         if isinstance(self.env.single_observation_space, gym.spaces.Dict):
@@ -217,7 +217,7 @@ class ReplayBuffer:
                 "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,
                 "goal_shape": self.goal_shape,
-                "device": self.device,
+                "device": self.device.type,
             }
         }
     

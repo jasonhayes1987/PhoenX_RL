@@ -109,9 +109,7 @@ class ActorCritic(Agent):
     ):
         
         # Set the device
-        if device == None:
-            device = T.device("cuda" if T.cuda.is_available() else "cpu")
-        self.device = device
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
 
         self.env = env
         self.policy_model = policy_model
@@ -609,9 +607,7 @@ class Reinforce(Agent):
         device: str = 'cuda',
     ):
         # Set the device
-        if device == None:
-            device = T.device("cuda" if T.cuda.is_available() else "cpu")
-        self.device = device
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
 
         self.env = env
         self.policy_model = policy_model
@@ -1215,9 +1211,7 @@ class DDPG(Agent):
     ):
         try:
             # Set the device
-            if device == None:
-                device = T.device("cuda" if T.cuda.is_available() else "cpu")
-            self.device = device
+            self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
             self.env = env
             self.actor_model = actor_model
             self.critic_model = critic_model
@@ -1483,8 +1477,9 @@ class DDPG(Agent):
                 
         # if random number is less than epsilon or in warmup, sample random action
         elif np.random.random() < self.action_epsilon or self._step <= self.warmup:
+            print('random action')
             action_np = self.env.action_space.sample()
-            noise_np = np.zeros_like(action_np)
+            noise_np = np.zeros(action_np.shape[-1])
         
         else:
             # (HER) use passed state normalizer if using HER
@@ -1516,10 +1511,15 @@ class DDPG(Agent):
             #     self._train_step_config[f'action_{i}'] = a
 
         # Loop over the noise and action values and log them to wandb
-        for i in range(noise_np.shape[-1]):
+        for i in range(action_np.shape[-1]):
             # Log the values to wandb
             # self._train_step_config[f'action_{i}'] = a
-            self._train_step_config[f'action_{i}_noise'] = noise_np[i].mean()
+            #DEBUG
+            print(f'noise shape:{noise_np.shape}')
+            print(f'noise:{noise_np}')
+            print(f'action {i} noise:{noise_np[i].mean()}')
+            self._train_step_config[f'action_{i}'] = action_np[:,i].mean()
+            self._train_step_config[f'action_{i}_noise'] = noise_np[i]
 
         return action_np
 
@@ -1899,7 +1899,8 @@ class DDPG(Agent):
             # reset noise
             if type(self.noise) == OUNoise:
                 self.noise.reset()
-            
+            #DEBUG
+            print('train get action called')
             actions = self.get_action(states)
             # Format actions
             actions = self.env.format_actions(actions)
@@ -1941,7 +1942,7 @@ class DDPG(Agent):
                         if self.callbacks:
                             for callback in self.callbacks:
                                 if isinstance(callback, WandbCallback):
-                                    wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")})
+                                    wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self._step)
                         rendered = True
                         # Switch models back to train mode after rendering
                         self.actor_model.train()
@@ -2031,10 +2032,11 @@ class DDPG(Agent):
             # if self.callbacks:
             #     for callback in self.callbacks:
             #         callback.on_train_step_begin(step=self._step, logs=None)
-            
+            #DEBUG
+            print('test get action called.')
             actions = self.get_action(states, test=True)
             # Format actions
-            actions = self.env.format_actions(actions)
+            actions = self.env.format_actions(actions, testing=True)
             next_states, rewards, terms, truncs, _ = env.step(actions)
             self._test_step_config["step_reward"] = rewards
             episode_scores += rewards
@@ -2109,10 +2111,10 @@ class DDPG(Agent):
                 "env": self.env.to_json(),
                 "actor_model": self.actor_model.get_config(),
                 "critic_model": self.critic_model.get_config(),
+                "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
                 "discount": self.discount,
                 "tau": self.tau,
                 "action_epsilon": self.action_epsilon,
-                "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
                 "batch_size": self.batch_size,
                 "noise": self.noise.get_config(),
                 'normalize_inputs': self.normalize_inputs,
@@ -2121,11 +2123,11 @@ class DDPG(Agent):
                 'warmup': self.warmup,
                 "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
                 "save_dir": self.save_dir,
-                "device": self.device,
+                "device": self.device.type,
             }
 
 
-    def save(self, save_dir=None):
+    def save(self):
         """Saves the model."""
 
         # Change self.save_dir if save_dir
@@ -2263,7 +2265,7 @@ class DDPG(Agent):
 #             self.normalizer_clip = normalizer_clip
 #             self.normalizer_eps = normalizer_eps
 #             self.warmup = warmup
-#             self.device = device
+#             self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
 #             # if self.use_mpi:
 #             #     logger.debug(f"rank {self.rank} TD3 init attributes set")
 #             # else:
@@ -3786,7 +3788,7 @@ class DDPG(Agent):
 #             self.normalizer_clip = normalizer_clip
 #             self.normalizer_eps = normalizer_eps
 #             self.replay_buffer_size = replay_buffer_size
-#             self.device = device
+#             self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
 #             if save_dir is not None and "/her/" not in save_dir:
 #                 self.save_dir = save_dir + "/her/"
 #                 # change save dir of agent to be in save dir of HER
@@ -5249,7 +5251,7 @@ class PPO(Agent):
         self.value_grad_clip = value_grad_clip
         self.reward_clip = reward_clip
         # self.callbacks = callbacks
-        self.device = device
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
 
         if self.normalize_values:
             self.normalizer = Normalizer((1), clip_range=self.value_norm_clip, device=device)
@@ -5288,72 +5290,6 @@ class PPO(Agent):
                 self._wandb = False
         except Exception as e:
             logger.error(f"Error initializing callbacks: {e}", exc_info=True)
-        
-    # def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
-    #     """
-    #     Compute advantages and returns using GAE.
-
-    #     Args:
-    #         rewards (Tensor): Rewards from the environment.
-    #         states (Tensor): Current states.
-    #         next_states (Tensor): Next states.
-    #         dones (Tensor): Done flags indicating episode termination.
-
-    #     Returns:
-    #         Tuple[Tensor, Tensor, Tensor]: Advantages, returns, and state values.
-    #     """
-    #     num_steps, num_envs = rewards.shape
-    #     all_advantages = []
-    #     all_returns = []
-    #     all_values = []
-
-    #     for env_idx in range(num_envs):
-    #         with T.no_grad():
-    #             rewards_env = rewards[:, env_idx]
-    #             states_env = states[:, env_idx, ...]
-    #             next_states_env = next_states[:, env_idx, ...]
-    #             dones_env = dones[:, env_idx]
-    #             values = self.value_model(states_env).squeeze(-1)
-    #             next_values = self.value_model(next_states_env).squeeze(-1)
-    #             advantages = T.zeros_like(rewards_env)
-    #             returns = T.zeros_like(rewards_env)
-    #             gae = 0.0  # Use float instead of tensor for scalar accumulation
-    #             for t in reversed(range(num_steps)):
-    #                 if dones_env[t]:
-    #                     next_value = 0
-    #                     gae = 0
-    #                 else:
-    #                     next_value = next_values[t]
-
-    #                 delta = rewards_env[t] + self.discount * next_value - values[t]
-    #                 gae = delta + self.discount * self.gae_coefficient * gae
-    #                 advantages[t] = gae
-    #                 returns[t] = gae + values[t]
-                
-    #             # Append results for this environment
-    #             all_advantages.append(advantages)
-    #             all_returns.append(returns)
-    #             all_values.append(values)
-
-    #     # Stack results across environments
-    #     advantages = T.stack(all_advantages, dim=1)
-    #     returns = T.stack(all_returns, dim=1)
-    #     values = T.stack(all_values, dim=1)
-
-    #     # Normalize advantages across all environments and timesteps
-    #     if self.normalize_advantages:
-    #         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
-
-    #     self._train_episode_config["values"] = values.mean().item()
-    #     self._train_episode_config["advantages"] = advantages.mean().item()
-    #     self._train_episode_config["returns"] = returns.mean().item()
-
-    #     #DEBUG
-    #     # print(f'advantages shape:{advantages.shape}')
-    #     # print(f'returns shape:{returns.shape}')
-    #     # print(f'values shape:{values.shape}')
-
-    #     return advantages, returns, values
 
     def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
         """
@@ -7946,52 +7882,98 @@ def get_agent_class_from_type(agent_type: str):
 #     except Exception as e:
 #         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
 
-def init_sweep(sweep_config):
+# def init_sweep(sweep_config):
+#     try:
+#         # Set the environment variable
+#         os.environ['WANDB_DISABLE_SERVICE'] = 'true'
+#         run_number = wandb_support.get_next_run_number(sweep_config["project"])
+#         logger.debug(f"run number set: {run_number}")
+#         run = wandb.init(
+#             project=sweep_config["project"],
+#             settings=wandb.Settings(start_method='thread'),
+#             job_type="train",
+#             name=f"train-{run_number}",
+#             tags=["train"],
+#             group=f"group-{run_number}",
+#         )
+#         logger.debug("wandb.init() fired")
+#         wandb_config = dict(wandb.config)
+#         model_type = list(wandb_config.keys())[0]
+#         # Wait for configuration to be populated
+#         max_retries = 10
+#         retry_interval = 1  # in seconds
+#         for _ in range(max_retries):
+#             if "model_type" in wandb.config:
+#                 break
+#             logger.debug("Waiting for wandb.config to be populated...")
+#             time.sleep(retry_interval)
+#         if "model_type" in wandb.config:
+#             logger.debug(f'wandb.config: {wandb.config}')
+#             run.tags = run.tags + (model_type,)
+#         else:
+#             logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
+#         run.tags = run.tags + (model_type,)
+#         logger.debug("run.tag set")
+#         # Extract environment parameters from sweep_config
+#         env_params = {
+#             key.replace("env_", ""): val["value"]
+#             for key, val in sweep_config["parameters"].items()
+#             if key.startswith("env_")
+#         }
+#         env = gym.make(**env_params)
+#         env_spec = env.spec.to_json()
+#         logger.debug(f"env built: {env.spec}")
+#         callbacks = []
+#         callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
+#         logger.debug(f"callbacks created")
+#         agent = get_agent_class_from_type(model_type)
+#         logger.debug(f"agent class found. Calling sweep_train")
+#         agent.sweep_train(wandb_config, env_spec, callbacks, run_number)
+#     except Exception as e:
+#         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
+
+def init_sweep(config):
     try:
-        # Set the environment variable
-        os.environ['WANDB_DISABLE_SERVICE'] = 'true'
-        run_number = wandb_support.get_next_run_number(sweep_config["project"])
-        logger.debug(f"run number set: {run_number}")
-        run = wandb.init(
-            project=sweep_config["project"],
-            settings=wandb.Settings(start_method='thread'),
-            job_type="train",
-            name=f"train-{run_number}",
-            tags=["train"],
-            group=f"group-{run_number}",
-        )
-        logger.debug("wandb.init() fired")
-        wandb_config = dict(wandb.config)
-        model_type = list(wandb_config.keys())[0]
-        # Wait for configuration to be populated
-        max_retries = 10
-        retry_interval = 1  # in seconds
-        for _ in range(max_retries):
-            if "model_type" in wandb.config:
-                break
-            logger.debug("Waiting for wandb.config to be populated...")
-            time.sleep(retry_interval)
-        if "model_type" in wandb.config:
-            logger.debug(f'wandb.config: {wandb.config}')
-            run.tags = run.tags + (model_type,)
-        else:
-            logger.error("wandb.config did not populate with model_type within the expected time", exc_info=True)
-        run.tags = run.tags + (model_type,)
-        logger.debug("run.tag set")
-        # Extract environment parameters from sweep_config
+        # Extract the model type (stored as a list) from the config.
+        model_type_list = config.get("model_type", [])
+        if not model_type_list:
+            raise ValueError("No model type provided in config.")
+        model_type = model_type_list[0]
+
+        # Inject wandb settings into the config if not already provided.
+        if "wandb" not in config:
+            run_number = wandb_support.get_next_run_number(config["project"])
+            config["wandb"] = {
+                "project": config["project"],
+                "name": f"train-{run_number}",
+                "job_type": "train",
+                "tags": ["train", model_type],
+                "group": f"group-{run_number}",
+            }
+
+        # Build the environment.
         env_params = {
-            key.replace("env_", ""): val["value"]
-            for key, val in sweep_config["parameters"].items()
-            if key.startswith("env_")
+            key.replace("env_", ""): config[key]
+            for key in config if key.startswith("env_")
         }
         env = gym.make(**env_params)
         env_spec = env.spec.to_json()
-        logger.debug(f"env built: {env.spec}")
+        logger.debug(f"Environment built: {env.spec}")
+
+        # Create callbacks (using your custom WandbCallback).
         callbacks = []
-        callbacks.append(rl_callbacks.WandbCallback(project_name=sweep_config["project"], run_name=f"train-{run_number}", _sweep=True))
-        logger.debug(f"callbacks created")
+        callbacks.append(WandbCallback(
+            project_name=config["project"],
+            run_name=config["wandb"]["name"],
+            _sweep=True
+        ))
+        logger.debug("Callbacks created")
+
+        # Get the appropriate agent class from the model type.
         agent = get_agent_class_from_type(model_type)
-        logger.debug(f"agent class found. Calling sweep_train")
-        agent.sweep_train(wandb_config, env_spec, callbacks, run_number)
+        logger.debug("Agent class found. Calling sweep_train")
+
+        # Call the sweep_train function on the agent with the full config.
+        agent.sweep_train(config, env_spec, callbacks, run_number)
     except Exception as e:
-        logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
+        logger.error(f"Error in init_sweep: {e}", exc_info=True)
