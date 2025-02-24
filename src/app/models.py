@@ -906,7 +906,7 @@ class ActorModel(Model):
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
-            'actor_mu': nn.LazyLinear(1),
+            'actor_mu': nn.LazyLinear(self.env.single_action_space.shape[-1]),
             'actor_pi': nn.Tanh()
         })
 
