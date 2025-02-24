@@ -325,6 +325,13 @@ class GymnasiumWrapper(EnvWrapper):
             return actions.reshape(num_envs, num_actions)
         if isinstance(self.action_space, gym.spaces.Discrete) or isinstance(self.action_space, gym.spaces.MultiDiscrete):
             return actions.ravel()
+        
+    def get_base_env(self, env_idx:int=0):
+        """Recursively unwrap an environment to get the base environment."""
+        env = self.env.envs[env_idx]
+        while hasattr(env, 'env'):
+            env = env.env
+        return env
     
     @property
     def observation_space(self):
