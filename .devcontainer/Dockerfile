@@ -55,6 +55,9 @@ SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 # Install PyTorch with CUDA support
 RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
+# Install Gymnasium Robotics directly from Repo for Mujoco v4 support
+RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git
+
 # # Install MuJoCo
 # RUN mkdir -p /root/.mujoco && \
 #     wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz && \

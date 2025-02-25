@@ -1890,6 +1890,7 @@ class DDPG(Agent):
             self._step += 1
             #DEBUG
             # print(f'completed steps:{self._step}')
+            rendered = False # Flag to keep track of render status to avoid rendering multiple times per step
             if self.callbacks:
                 for callback in self.callbacks:
                     callback.on_train_epoch_begin(epoch=self._step, logs=None)
@@ -1942,8 +1943,8 @@ class DDPG(Agent):
                         # Switch models back to train mode after rendering
                         self.actor_model.train()
                         self.critic_model.train()
-                    else:
-                        rendered = False
+                    # else:
+                    #     rendered = False
 
                     print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {episode_scores[i]}, Avg_Score {avg_reward}")
 
@@ -3381,6 +3382,7 @@ class TD3(Agent):
         states, _ = self.env.reset()
         while self.completed_episodes.sum() < num_episodes:
             self._step += 1
+            rendered = False # Flag to keep track of render status to avoid rendering multiple times per step
             if self.callbacks:
                 for callback in self.callbacks:
                     callback.on_train_epoch_begin(epoch=self._step, logs=None)
@@ -3403,6 +3405,28 @@ class TD3(Agent):
                         self.save()
                     else:
                         self._train_episode_config["best"] = 0
+                    
+                    # Check if number of completed episodes should trigger render
+                    if self.completed_episodes.sum() % render_freq == 0 and not rendered:
+                        print(f"Rendering episode {self.completed_episodes.sum()} during training...")
+                        # Call the test function to render an episode
+                        self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
+                        # Add render to wandb log
+                        video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes.sum()}.mp4")
+                        # Log the video to wandb
+                        if self.callbacks:
+                            for callback in self.callbacks:
+                                if isinstance(callback, WandbCallback):
+                                    wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self._step)
+                        rendered = True
+                        # Switch models back to train mode after rendering
+                        self.actor_model.train()
+                        self.critic_model_a.train()
+                        self.critic_model_b.train()
+                    # else:
+                    #     rendered = False
+
+
                     if self.callbacks:
                         for callback in self.callbacks:
                             callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
@@ -3527,13 +3551,20 @@ class TD3(Agent):
                 if dones[i]:
                     completed_scores.append(episode_scores[i])
                     self._test_episode_config["episode_reward"] = episode_scores[i]
-                    if (render_freq > 0) and (int(completed_episodes.sum()) % render_freq == 0):
-                        render_video(frames, int(completed_episodes.sum()), self.save_dir, 'test')
-                        video_path = os.path.join(self.save_dir, f"renders/test/episode_{int(completed_episodes.sum())}.mp4")
-                        if self.callbacks:
-                            for callback in self.callbacks:
-                                if isinstance(callback, WandbCallback):
-                                    wandb.log({"testing_video": wandb.Video(video_path, caption="Testing process", format="mp4")})
+                    # Save the video if the episode number is divisible by render_freq
+                    if (render_freq > 0) and ((completed_episodes.sum()) % render_freq == 0):
+                        if training:
+                            render_video(frames, self.completed_episodes.sum(), self.save_dir, 'train')
+                        else:
+                            render_video(frames, completed_episodes.sum(), self.save_dir, 'test')
+                            # Add render to wandb log
+                            video_path = os.path.join(self.save_dir, f"renders/test/episode_{completed_episodes.sum()}.mp4")
+                            # Log the video to wandb
+                            if self.callbacks:
+                                for callback in self.callbacks:
+                                    if isinstance(callback, WandbCallback):
+                                        wandb.log({"training_video": wandb.Video(video_path, caption="Testing process", format="mp4")})
+                        # Empty frames array
                         frames = []
                     if self.callbacks and not training:
                         for callback in self.callbacks:
@@ -4269,6 +4300,7 @@ class HER(Agent):
             total_episodes = num_epochs * num_cycles * num_episodes
             while self.completed_episodes.sum() < total_episodes:
                 self.agent._step += 1
+                rendered = False # Flag to keep track of render status to avoid rendering multiple times per step
 
                 if self.agent.callbacks:
                     for callback in self.agent.callbacks:
@@ -4287,8 +4319,8 @@ class HER(Agent):
                 # Step the environment
                 next_states, rewards, terms, truncs, _ = self.agent.env.step(formatted_actions)
                 #DEBUG
-                if np.any(rewards == 0.0):
-                    print(f"0 reward found at step {self.agent._step}: {rewards}")
+                # if np.any(rewards == 0.0):
+                #     print(f"0 reward found at step {self.agent._step}: {rewards}")
                 dones = np.logical_or(terms, truncs)
                 episode_scores += rewards
 
@@ -4327,7 +4359,9 @@ class HER(Agent):
                     # print(f'success:{success}')
                     success_counter += success
                     # print(f'success counter:{success_counter}')
-                    success_perc = success_counter / self.agent._step
+                    # To correctly calculate success percentage, must divide success counter by
+                    # num envs to put on same scale as self.agent._step
+                    success_perc = (success_counter / num_envs) / self.agent._step
                     # store success metrics to train step config
                     self.agent._train_step_config["success rate"] = success_perc
                     self.agent._train_step_config["goal distance"] = goal_distance
@@ -4359,24 +4393,47 @@ class HER(Agent):
                             for callback in self.agent.callbacks:
                                 callback.on_train_epoch_end(epoch=self.agent._step, logs=self.agent._train_episode_config)
 
+                        # Check if number of completed episodes should trigger render
+                        if self.completed_episodes.sum() % render_freq == 0 and not rendered:
+                            print(f"Rendering episode {self.completed_episodes.sum()} during training...")
+                            # Call the test function to render an episode
+                            self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
+                            # Add render to wandb log
+                            video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes.sum()}.mp4")
+                            # Log the video to wandb
+                            if self.agent.callbacks:
+                                for callback in self.agent.callbacks:
+                                    if isinstance(callback, WandbCallback):
+                                        wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self.agent._step)
+                            rendered = True
+                            # Set models to train mode
+                            self.agent.actor_model.train()
+                            if hasattr(self.agent, 'critic_model'):
+                                self.agent.critic_model.train()  # For DDPG
+                            if hasattr(self.agent, 'critic_model_a'):
+                                self.agent.critic_model_a.train()  # For TD3
+                            if hasattr(self.agent, 'critic_model_b'):
+                                self.agent.critic_model_b.train()  # For TD3
+
                         print(f"Environment {i}: episode {int(self.completed_episodes[i])}, score {episode_scores[i]}, avg_score {avg_reward}")
                         episode_scores[i] = 0
 
                 # Perform learning updates
-                if self.agent.replay_buffer.counter > self.agent.batch_size:
-                    for _ in range(num_updates):
-                        actor_loss, critic_loss = self.agent.learn(
-                            # replay_buffer=self.replay_buffer,
-                            state_normalizer=self.state_normalizer,
-                            goal_normalizer=self.goal_normalizer
-                        )
-                        self.agent._train_step_config.update({
-                            "actor_loss": actor_loss,
-                            "critic_loss": critic_loss
-                        })
-                        # if isinstance(self.agent, DDPG):
-                        #     self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
-                        #     self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
+                if int(self.completed_episodes.sum()) > self.agent.warmup:
+                    if self.agent.replay_buffer.counter > self.agent.batch_size:
+                        for _ in range(num_updates):
+                            actor_loss, critic_loss = self.agent.learn(
+                                # replay_buffer=self.replay_buffer,
+                                state_normalizer=self.state_normalizer,
+                                goal_normalizer=self.goal_normalizer
+                            )
+                            self.agent._train_step_config.update({
+                                "actor_loss": actor_loss,
+                                "critic_loss": critic_loss
+                            })
+                            # if isinstance(self.agent, DDPG):
+                            #     self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
+                            #     self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
 
                 # Update states
                 states = next_states
@@ -4396,79 +4453,97 @@ class HER(Agent):
         except Exception as e:
             logger.error(f"Error during HER train process: {e}", exc_info=True)
     
-    def test(self, num_episodes, render, render_freq, save_dir=None):
+    def test(self, num_episodes: int, num_envs: int = 1, seed: int = None, render_freq: int = 0, training: bool = False):
         """Runs a test over 'num_episodes'."""
 
-        # set model in eval mode
+        # Set models to eval mode
         self.agent.actor_model.eval()
-        self.agent.critic_model.eval()
-        # self.agent.target_actor_model.eval()
-        # self.agent.target_critic_model.eval()
+        if hasattr(self.agent, 'critic_model'):
+            self.agent.critic_model.eval()  # For DDPG
+        if hasattr(self.agent, 'critic_model_a'):
+            self.agent.critic_model_a.eval()  # For TD3
+        if hasattr(self.agent, 'critic_model_b'):
+            self.agent.critic_model_b.eval()  # For TD3
+        
+        if seed is None:
+            seed = np.random.randint(100)
+        if render_freq is None:
+            render_freq = 0
+        set_seed(seed)
 
-        if self.agent.callbacks:
+        try:
+            env = self.agent.env._initialize_env(render_freq, num_envs, seed)
+        except Exception as e:
+            logger.error("Error in HER.test during env initialization", exc_info=True)
+
+        if self.agent.callbacks and not training:
             for callback in self.agent.callbacks:
-                callback.on_test_begin(logs=self.agent._config)
-                #DEBUG
-                print('on test begin callback called...')
-
-        # instantiate new environment
-        self.agent.env = self.agent._initialize_env(render, render_freq, context='test')
-
-        # instantiate list to store reward, step time, and episode time history
-        reward_history = []
-        self._step = 1
-        success_counter = 0.0
-        # set the model to calculate no gradients during evaluation
-        with T.no_grad():
-            for i in range(num_episodes):
-                if self.agent.callbacks:
-                    for callback in self.agent.callbacks:
-                        callback.on_test_epoch_begin(epoch=self._step, logs=None)
-
-                state, _ = self.agent.env.reset()
-                if isinstance(state, dict): # if state is a dict, extract observation (robotics)
-                    state = state["observation"]
-                # set desired goal
-                desired_goal = self.desired_goal_func(self.agent.env)
-                done = False
-                episode_reward = 0
-                while not done:
-                    # get action
-                    action = self.agent.get_action(state, desired_goal, grad=False, test=True,
-                                                   state_normalizer=self.state_normalizer,
-                                                   goal_normalizer=self.goal_normalizer)
-                    next_state, reward, term, trunc, _ = self.agent.env.step(action)
-                    # extract observation from next state if next_state is dict (robotics)
-                    if isinstance(next_state, dict):
-                        next_state = next_state['observation']
-                    if term or trunc:
-                        done = True
-                    episode_reward += reward
-                    state = next_state
-                    self._step += 1
-
-                reward_history.append(episode_reward)
-                avg_reward = np.mean(reward_history[-100:])
-                self.agent._test_episode_config["episode reward"] = episode_reward
-                self.agent._test_episode_config["avg reward"] = avg_reward
-                # calculate success rate
-                goal_distance = np.linalg.norm(self.achieved_goal_func(self.agent.env) - desired_goal, axis=-1)
-                success = (goal_distance <= self.tolerance).astype(np.float32)
-                success_counter += success
-                success_perc = success_counter / (i+1)
-                # store success rate to train episode config
-                self.agent._test_episode_config["success rate"] = success_perc
-                if self.agent.callbacks:
-                    for callback in self.agent.callbacks:
-                        callback.on_test_epoch_end(epoch=self._step, logs=self.agent._test_episode_config)
-
-                print(f"episode {i+1}, score {episode_reward}, avg_score {avg_reward}, success {success_perc}")
-
-            if self.agent.callbacks:
+                self.agent._config = callback._config(self)
+                if isinstance(callback, WandbCallback):
+                    self.agent._config['seed'] = seed
+                    self.agent._config['num_envs'] = num_envs
+                callback.on_test_begin(logs=self._config)
+        _step = 0
+        completed_episodes = np.zeros(num_envs)
+        episode_scores = np.zeros(num_envs)
+        completed_scores = deque(maxlen=num_episodes)
+        frames = []
+        states, _ = env.reset()
+        while completed_episodes.sum() < num_episodes:
+            _step += 1
+            if self.agent.callbacks and not training:
                 for callback in self.agent.callbacks:
-                    callback.on_test_end(logs=self.agent._test_episode_config)
-            # close the environment
-            self.agent.env.close()
+                    callback.on_test_epoch_begin(epoch=_step, logs=None)
+            # Get actions
+            actions = self.agent.get_action(
+                    states['observation'],
+                    states['desired_goal'],
+                    test=True,  # Test mode
+                    state_normalizer=self.state_normalizer,
+                    goal_normalizer=self.goal_normalizer
+                )
+            actions = self.agent.env.format_actions(actions, testing=True)
+            next_states, rewards, terms, truncs, _ = env.step(actions)
+            self.agent._test_step_config["step_reward"] = rewards
+            episode_scores += rewards
+            dones = np.logical_or(terms, truncs)
+            completed_episodes += dones
+            for i in range(num_envs):
+                if dones[i]:
+                    completed_scores.append(episode_scores[i])
+                    self.agent._test_episode_config["episode_reward"] = episode_scores[i]
+                    # Save the video if the episode number is divisible by render_freq
+                    if (render_freq > 0) and ((completed_episodes.sum()) % render_freq == 0):
+                        if training:
+                            render_video(frames, self.completed_episodes.sum(), self.save_dir, 'train')
+                        else:
+                            render_video(frames, completed_episodes.sum(), self.save_dir, 'test')
+                            # Add render to wandb log
+                            video_path = os.path.join(self.save_dir, f"renders/test/episode_{completed_episodes.sum()}.mp4")
+                            # Log the video to wandb
+                            if self.agent.callbacks:
+                                for callback in self.agent.callbacks:
+                                    if isinstance(callback, WandbCallback):
+                                        wandb.log({"training_video": wandb.Video(video_path, caption="Testing process", format="mp4")})
+                        # Empty frames array
+                        frames = []
+                    if self.agent.callbacks and not training:
+                        for callback in self.agent.callbacks:
+                            callback.agent.on_test_epoch_end(epoch=_step, logs=self.agent._test_episode_config)
+                    
+                    print(f"Environment {i}: Episode {int(completed_episodes.sum())}/{num_episodes} Score: {completed_scores[-1]} Avg Score: {sum(completed_scores)/len(completed_scores)}")
+                    episode_scores[i] = 0
+
+            if render_freq > 0:
+                frame = env.render()[0]
+                frames.append(frame)
+            states = next_states
+            if self.agent.callbacks and not training:
+                for callback in self.agent.callbacks:
+                    callback.on_test_step_end(step=_step, logs=self.agent._test_step_config)
+        if self.agent.callbacks and not training:
+            for callback in self.agent.callbacks:
+                callback.on_test_end(logs=self.agent._test_episode_config)
 
     def store_hindsight_trajectory(self, trajectory):
         """
