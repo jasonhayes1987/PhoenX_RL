@@ -172,3 +172,10 @@ __autograph_*.py
 *.onnx
 *.pt
 *.json
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
