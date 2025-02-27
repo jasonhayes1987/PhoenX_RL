@@ -1200,6 +1200,7 @@ class DDPG(Agent):
         action_epsilon: float = 0.0,
         batch_size: int = 64,
         noise: Noise=None,
+        noise_schedule: ScheduleWrapper=None,
         normalize_inputs: bool=False,
         normalizer_clip: float=5.0,
         normalizer_eps: float=0.01,
@@ -1223,6 +1224,7 @@ class DDPG(Agent):
             self.replay_buffer = replay_buffer
             self.batch_size = batch_size
             self.noise = noise
+            self.noise_schedule = noise_schedule
             self.normalize_inputs = normalize_inputs
             # self.normalize_kwargs = normalize_kwargs
             self.normalizer_clip = normalizer_clip
@@ -1471,7 +1473,7 @@ class DDPG(Agent):
             elif self.normalize_inputs:
                 state = self.state_normalizer.normalize(state)
             
-            _, pi = self.actor_model(state, goal)
+            _, pi = self.target_actor_model(state, goal)
             return pi.cpu().detach().numpy()
                 
         # if random number is less than epsilon or in warmup, sample random action
@@ -1489,8 +1491,10 @@ class DDPG(Agent):
             # use self.state_normalizer if self.normalize_inputs
             elif self.normalize_inputs:
                 state = self.state_normalizer.normalize(state)
-                
+            
             noise = self.noise()
+            if self.noise_schedule:
+                noise *= self.noise_schedule.get_factor()
 
             _, pi = self.actor_model(state, goal)
 
@@ -1953,11 +1957,18 @@ class DDPG(Agent):
             
             states = next_states
             
-            # check if enough samples in replay buffer and if so, learn from experiences
-            if self.agent.replay_buffer.counter > self.batch_size:
-                actor_loss, critic_loss = self.learn()
-                self._train_step_config["actor_loss"] = actor_loss
-                self._train_step_config["critic_loss"] = critic_loss
+            # Check if past warmup
+            if self.agent._step > self.agent.warmup:
+                # check if enough samples in replay buffer and if so, learn from experiences
+                if self.agent.replay_buffer.counter > self.batch_size:
+                    actor_loss, critic_loss = self.learn()
+                    self._train_step_config["actor_loss"] = actor_loss
+                    self._train_step_config["critic_loss"] = critic_loss
+                    # Step scheduler if not None
+                    if self.noise_schedule:
+                        self.noise_schedule.step()
+                        self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
+
 
             self._train_step_config["step_reward"] = rewards.mean()
             
@@ -4226,8 +4237,7 @@ class HER(Agent):
     #     except Exception as e:
     #         logger.error(f"An error occurred: {e}", exc_info=True)
 
-    def train(self, num_epochs: int, num_cycles: int, num_episodes: int, num_updates: int,
-              render_freq: int, num_envs: int = 1, seed: int = None):
+    def train(self, num_episodes: int, num_updates: int, render_freq: int, num_envs: int = 1, seed: int = None):
         """
         Train the HER agent with a vectorized environment setup.
 
@@ -4257,8 +4267,8 @@ class HER(Agent):
             # Update agent config
             if self.agent.callbacks:
                 self.agent._config.update({
-                    'num_epochs': num_epochs,
-                    'num_cycles': num_cycles,
+                    # 'num_epochs': num_epochs,
+                    # 'num_cycles': num_cycles,
                     'num_episodes': num_episodes,
                     'num_updates': num_updates,
                     'tolerance': self.tolerance,
@@ -4297,8 +4307,8 @@ class HER(Agent):
             states, _ = self.agent.env.reset()
 
             # Total episodes across all environments
-            total_episodes = num_epochs * num_cycles * num_episodes
-            while self.completed_episodes.sum() < total_episodes:
+            # total_episodes = num_epochs * num_cycles * num_episodes
+            while self.completed_episodes.sum() < num_episodes:
                 self.agent._step += 1
                 rendered = False # Flag to keep track of render status to avoid rendering multiple times per step
 
@@ -4349,6 +4359,17 @@ class HER(Agent):
                         'desired_goal': states['desired_goal'][i]
                     })
 
+                    # Update normalizer local stats with obs and goal info
+                    self.state_normalizer.update_local_stats(
+                        T.tensor(states['observation'][i], dtype=T.float32,
+                                 device=self.state_normalizer.device.type)
+                    )
+
+                    self.goal_normalizer.update_local_stats(
+                        T.tensor(states['achieved_goal'][i], dtype=T.float32,
+                                 device=self.state_normalizer.device.type)
+                    )
+
                     # calculate success rate
                     goal_distance = np.linalg.norm(states['achieved_goal'][i] - states['desired_goal'][i], axis=-1)
                     # goal_distance = self.agent.env.get_base_env().goal_distance(states['achieved_goal'][i], states['desired_goal'][i])
@@ -4397,7 +4418,7 @@ class HER(Agent):
                         if self.completed_episodes.sum() % render_freq == 0 and not rendered:
                             print(f"Rendering episode {self.completed_episodes.sum()} during training...")
                             # Call the test function to render an episode
-                            self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
+                            self.test(num_episodes=1, seed=None, render_freq=1, training=True)
                             # Add render to wandb log
                             video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes.sum()}.mp4")
                             # Log the video to wandb
@@ -4418,8 +4439,12 @@ class HER(Agent):
                         print(f"Environment {i}: episode {int(self.completed_episodes[i])}, score {episode_scores[i]}, avg_score {avg_reward}")
                         episode_scores[i] = 0
 
+                # Update normalizer global values
+                self.state_normalizer.update_global_stats()
+                self.goal_normalizer.update_global_stats()
+
                 # Perform learning updates
-                if int(self.completed_episodes.sum()) > self.agent.warmup:
+                if self.agent._step > self.agent.warmup:
                     if self.agent.replay_buffer.counter > self.agent.batch_size:
                         for _ in range(num_updates):
                             actor_loss, critic_loss = self.agent.learn(
@@ -4434,6 +4459,11 @@ class HER(Agent):
                             # if isinstance(self.agent, DDPG):
                             #     self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
                             #     self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
+
+                        # Step scheduler if not None
+                        if self.agent.noise_schedule:
+                            self.agent.noise_schedule.step()
+                            self.agent._train_step_config["noise_anneal"] = self.agent.noise_schedule.get_factor()
 
                 # Update states
                 states = next_states
@@ -4466,7 +4496,7 @@ class HER(Agent):
             self.agent.critic_model_b.eval()  # For TD3
         
         if seed is None:
-            seed = np.random.randint(100)
+            seed = np.random.randint(10000)
         if render_freq is None:
             render_freq = 0
         set_seed(seed)
