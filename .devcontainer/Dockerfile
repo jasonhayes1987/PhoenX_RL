@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     swig \
     cmake \
     gcc \
+    curl \
     libglfw3-dev \
     libglew-dev \
     libopengl0 \
