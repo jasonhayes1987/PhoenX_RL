@@ -1,5 +1,7 @@
 name: rl_env
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
@@ -40,6 +42,12 @@ dependencies:
   - cupy
   - dash-bootstrap-components
   - mujoco>=2.2.0,<3.2.0
+  - python-dotenv
+  - python-dotenv-with-cli
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.4
   - pip:
     - expecttest!=0.2.0
     - optree>=0.9.1
