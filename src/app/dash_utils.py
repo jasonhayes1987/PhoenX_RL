@@ -1363,6 +1363,10 @@ def update_run_options(agent_type, page):
         return create_reinforce_run_options(page)
     elif agent_type == 'ActorCritic':
         return create_actor_critic_run_options(page)
+    elif agent_type == 'DDPG':
+        return create_ddpg_run_options(page)
+    elif agent_type == 'TD3':
+        return create_td3_run_options(page)
     else:
         # return some default or "unknown agent type" message
         return html.Div([
@@ -1408,6 +1412,24 @@ def create_reinforce_run_options(page):
     ])
 
 def create_actor_critic_run_options(page):
+    components = []
+    components.append(create_num_episodes_component(page))
+    
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_ddpg_run_options(page):
+    components = []
+    components.append(create_num_episodes_component(page))
+    
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_td3_run_options(page):
     components = []
     components.append(create_num_episodes_component(page))
     
@@ -1968,10 +1990,12 @@ def format_output_kernel_initializer_config(model_type, agent_type, agent_params
             config[param] = agent_params.get(get_key({'type':param, 'model':model_type, 'agent':agent_type, 'index':0}))
     
     # Get distribution type in order to format output correctly
-    distribution = agent_params.get(get_key({'type':'distribution', 'model':'none', 'agent':agent_type}))
+    distribution = agent_params.get(get_key({'type':'distribution', 'model':'none', 'agent':agent_type}), None)
     # format
-    if distribution == 'categorical':
+    if distribution is None or distribution == 'categorical':
         initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
+    # elif distribution == 'categorical':
+    #     initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
     elif distribution in ['beta','normal']:
         initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}},
                               {'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
@@ -4147,28 +4171,53 @@ def create_ddpg_parameter_inputs(agent_type):
 def create_td3_parameter_inputs(agent_type):
     """Adds inputs for TD3 Agent"""
     return html.Div(
-        id=f'{agent_type}-inputs',
-        children=[
-            create_device_input(agent_type),
-            create_discount_factor_input(agent_type),
-            create_tau_input(agent_type),
-            create_epsilon_greedy_input(agent_type),
-            create_batch_size_input(agent_type),
-            create_noise_function_input(agent_type),
-            create_target_noise_stddev_input(agent_type),
-            create_target_noise_clip_input(agent_type),
-            create_input_normalizer_input(agent_type),
-            create_warmup_input(agent_type),
-            # Actor Model Configuration
-            create_actor_model_input(agent_type),
-            create_actor_delay_input(agent_type),
-            # Critic Model Configuration
-            html.H3("Critic Model Configuration"),
-            create_critic_model_input(agent_type),
-            # Save dir
-            create_save_dir_input(agent_type)
-        ]
-    )
+            id=f'{agent_type}-inputs',
+            children=[
+                dbc.Tabs([
+                    # Tab 1 Agent Parameters
+                    dbc.Tab(
+                        label="Agent Parameters",
+                        children=[
+                            create_discount_factor_input(agent_type),
+                            create_tau_input(agent_type),
+                            create_epsilon_greedy_input(agent_type),
+                            create_batch_size_input(agent_type),
+                            create_noise_function_input(agent_type),
+                            create_target_noise_stddev_input(agent_type),
+                            create_target_noise_clip_input(agent_type),
+                            create_input_normalizer_input(agent_type),
+                            create_warmup_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 2 Policy Model
+                    dbc.Tab(
+                        label="Actor Model",
+                        children=[
+                            create_actor_model_input(agent_type),
+                            create_actor_delay_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 3 Value Model
+                    dbc.Tab(
+                        label="Critic Model",
+                        children=[
+                            create_critic_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 4 Agent Options
+                    dbc.Tab(
+                        label="Agent Options",
+                        children=[
+                            create_device_input(agent_type),
+                            create_save_dir_input(agent_type),
+                        ]
+                    ),
+                ])
+            ]
+        )
 
 
 def create_her_ddpg_parameter_inputs(agent_type):

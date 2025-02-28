@@ -12,10 +12,9 @@
         "CLANG_VERSION": ""
       }
     },
-    "runArgs": ["--gpus", "all",
-                "--shm-size", "2g",     // Set shared memory size to 2GB
-                "--ipc", "host",
-               ],
+    "runArgs": [
+      "--gpus=all"
+    ],
     "forwardPorts": [8000, 8080],
     "mounts": [
       "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app,target=/app,type=bind,consistency=cached"

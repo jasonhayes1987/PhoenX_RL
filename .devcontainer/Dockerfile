@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     cmake \
     gcc \
     curl \
+    nodejs \
+    npm \
     libglfw3-dev \
     libglew-dev \
     libopengl0 \
@@ -54,7 +56,7 @@ ENV CONDA_DEFAULT_ENV=rl_env
 SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 
 # Install PyTorch with CUDA support
-RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+# RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
 # Install Gymnasium Robotics directly from Repo for Mujoco v4 support
 RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git
@@ -86,7 +88,7 @@ WORKDIR /app
 COPY src/ /app/
 
 # Verify CUDA installation with nvcc
-# RUN nvcc --version
+RUN nvcc --version
 
 # Verify CUDA availability in PyTorch
 # RUN python -c "import torch; print(f'CUDA version: {torch.version.cuda}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Number of CUDA devices: {torch.cuda.device_count()}')"

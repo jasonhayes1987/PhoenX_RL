@@ -1907,12 +1907,14 @@ class DDPG(Agent):
             next_states, rewards, terms, truncs, _ = self.env.step(actions)
             episode_scores += rewards
             dones = np.logical_or(terms, truncs)
-            self.completed_episodes += dones # Increments completed episodes per env by dones flag
+            # self.completed_episodes += dones # Increments completed episodes per env by dones flag
 
             for i in range(self.num_envs):
                 # store trajectory in replay buffer
-                self.agent.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i])
+                self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i])
                 if dones[i]:
+                    # Increment completed episodes for env by 1
+                    self.completed_episodes[i] += 1
                     score_history.append(episode_scores[i]) 
                     avg_reward = sum(score_history) / len(score_history)
                     self._train_episode_config['episode'] = self.completed_episodes.sum()
@@ -1958,9 +1960,9 @@ class DDPG(Agent):
             states = next_states
             
             # Check if past warmup
-            if self.agent._step > self.agent.warmup:
+            if self._step > self.warmup:
                 # check if enough samples in replay buffer and if so, learn from experiences
-                if self.agent.replay_buffer.counter > self.batch_size:
+                if self.replay_buffer.counter > self.batch_size:
                     actor_loss, critic_loss = self.learn()
                     self._train_step_config["actor_loss"] = actor_loss
                     self._train_step_config["critic_loss"] = critic_loss
@@ -2043,11 +2045,11 @@ class DDPG(Agent):
             self._test_step_config["step_reward"] = rewards
             episode_scores += rewards
             dones = np.logical_or(terms, truncs)
-            # Increment completed_episodes counter
-            completed_episodes += dones
 
             for i in range(num_envs):
                 if dones[i]:
+                    # Increment completed episodes for env by 1
+                    completed_episodes[i] += 1
                     # Append environment score to completed scores
                     completed_scores.append(episode_scores[i])
                     # Add the episode reward to the episode log for callbacks
@@ -2158,7 +2160,7 @@ class DDPG(Agent):
 
         # Load EnvWrapper
         env_wrapper = EnvWrapper.from_json(config["env"])
-
+            
         # load policy model
         actor_model = ActorModel.load(config['save_dir'], load_weights)
         # load value model
@@ -2269,7 +2271,7 @@ class TD3(Agent):
             else:
                 self._obs_space_shape = obs_space.shape
             if self.normalize_inputs:
-                self.state_normalizer = Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip, device)
+                self.state_normalizer = Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip, device=self.device)
             # Update the save directory: append '/td3/' if not already there
             if save_dir is not None:
                 if "/td3/" not in save_dir:
@@ -2475,7 +2477,7 @@ class TD3(Agent):
     #     agent.save()
 
     #     return agent
-
+    
     def _init_her(self):
             self._use_her = True
 
@@ -3633,6 +3635,7 @@ class TD3(Agent):
             "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
             "batch_size": self.batch_size,
             "noise": self.noise.get_config() if self.noise is not None else None,
+            "target_noise": self.target_noise.get_config() if self.target_noise is not None else None,
             "target_noise_clip": self.target_noise_clip,
             "actor_update_delay": self.actor_update_delay,
             "normalize_inputs": self.normalize_inputs,
@@ -3642,14 +3645,10 @@ class TD3(Agent):
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
-        }
-    
-    def save(self, save_dir=None):
-        if save_dir is not None:
-            if "/td3/" not in save_dir:
-                self.save_dir = os.path.join(save_dir, "td3")
-            else:
-                self.save_dir = save_dir
+            }
+
+    def save(self):
+
         config = self.get_config()
         os.makedirs(self.save_dir, exist_ok=True)
         with open(os.path.join(self.save_dir, "config.json"), "w", encoding="utf-8") as f:
@@ -3749,18 +3748,27 @@ class TD3(Agent):
 
     @classmethod
     def load(cls, config, load_weights=True):
+        """Loads the model."""
+        # Load EnvWrapper
         env_wrapper = EnvWrapper.from_json(config["env"])
+            
+        # load policy model
         actor_model = ActorModel.load(config['save_dir'], load_weights)
+        # load value model
         critic_model = CriticModel.load(config['save_dir'], load_weights)
+        # load replay buffer if not None
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
             replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
-        noise = None
-        if config["noise"] is not None:
-            noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
-        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']] if config['callbacks'] else None
+        noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
+        target_noise = Noise.create_instance(config["target_noise"]["class_name"], **config["target_noise"]["config"])
+        normalize_inputs = config['normalize_inputs']
+        normalizer_clip = config['normalizer_clip']
+        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
+                    if config['callbacks'] else None
+
         agent = cls(
             env=env_wrapper,
             actor_model=actor_model,
@@ -3771,7 +3779,7 @@ class TD3(Agent):
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             noise=noise,
-            target_noise_stddev=config["target_noise_stddev"],
+            target_noise=target_noise,
             target_noise_clip=config["target_noise_clip"],
             actor_update_delay=config["actor_update_delay"],
             normalize_inputs=config["normalize_inputs"],
@@ -3785,6 +3793,7 @@ class TD3(Agent):
         if agent.normalize_inputs:
             agent.state_normalizer = Normalizer.load_state(os.path.join(config["save_dir"], "state_normalizer.npz"))
         return agent
+
 class HER(Agent):
     """Hindsight Experience Replay Agent wrapper."""
 

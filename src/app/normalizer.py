@@ -15,7 +15,7 @@ class Normalizer:
         self.size = size
         self.eps = T.tensor(eps, device=device)
         self.clip_range = clip_range
-        self.device = device
+        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
 
         # Local statistics
         self.local_sum = T.zeros(self.size, dtype=T.float32, device=self.device)

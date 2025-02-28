@@ -67,11 +67,11 @@ def train_agent(agent_config, train_config):
             
             elif agent_type == 'DDPG':
                 num_episodes = train_config['num_episodes']
-                agent.train(num_episodes, render_freq)
+                agent.train(num_episodes, num_envs, seed, render_freq)
 
             elif agent_type == 'TD3':
                 num_episodes = train_config['num_episodes']
-                agent.train(num_episodes, render_freq, run_number=run_number)
+                agent.train(num_episodes, num_envs, seed, render_freq)
             
             elif agent_type == 'PPO':
                 timesteps = train_config['num_timesteps']
