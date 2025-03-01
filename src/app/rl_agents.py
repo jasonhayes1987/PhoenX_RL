@@ -25,7 +25,7 @@ from normalizer import Normalizer, SharedNormalizer
 from noise import Noise, NormalNoise, UniformNoise, OUNoise
 import wandb
 import wandb_support
-from torch_utils import set_seed, VarianceScaling_
+from torch_utils import set_seed, get_device, VarianceScaling_
 # import dash_callbacks
 # import gym_helper
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
@@ -104,11 +104,11 @@ class ActorCritic(Agent):
         value_trace_decay: float=0.0,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models/",
-        device: str = 'cuda',
+        device: str = None,
     ):
         
         # Set the device
-        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+        self.device = get_device(device)
 
         self.env = env
         self.policy_model = policy_model
@@ -603,10 +603,10 @@ class Reinforce(Agent):
         discount: float = 0.99,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
-        device: str = 'cuda',
+        device: str = None,
     ):
         # Set the device
-        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+        self.device = get_device(device)
 
         self.env = env
         self.policy_model = policy_model
@@ -1207,11 +1207,10 @@ class DDPG(Agent):
         warmup: int=1000,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
-        device: str = 'cuda'
+        device: str = None
     ):
         try:
-            # Set the device
-            self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+            self.device = get_device(device)
             self.env = env
             self.actor_model = actor_model
             self.critic_model = critic_model
@@ -2229,10 +2228,10 @@ class TD3(Agent):
         warmup: int = 1000,
         callbacks: list = None,
         save_dir: str = "models",
-        device: str = 'cuda'
+        device: str = None
     ):
         try:
-            self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+            self.device = get_device(device)
             self.env = env
             self.actor_model = actor_model
             self.critic_model_a = critic_model
@@ -2271,7 +2270,7 @@ class TD3(Agent):
             else:
                 self._obs_space_shape = obs_space.shape
             if self.normalize_inputs:
-                self.state_normalizer = Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip, device=self.device)
+                self.state_normalizer = Normalizer(self._obs_space_shape, self.normalizer_eps, self.normalizer_clip, device=device)
             # Update the save directory: append '/td3/' if not already there
             if save_dir is not None:
                 if "/td3/" not in save_dir:
@@ -2484,6 +2483,11 @@ class TD3(Agent):
     def get_action(self, state, goal=None, test=False,
                    state_normalizer:Normalizer=None,
                    goal_normalizer:Normalizer=None):
+
+        # make sure state is a tensor and on correct device
+        state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
+        if goal is not None:
+            goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
         
         # check if get action is for testing
         if test:
@@ -2494,15 +2498,7 @@ class TD3(Agent):
                 # (HER) else if using HER, normalize using passed normalizer
                 elif self._use_her:
                     state = state_normalizer.normalize(state)
-
-                # make sure state is a tensor and on correct device
-                state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
-                
-                # (HER) normalize goal if self._use_her using passed normalizer
-                if self._use_her:
                     goal = goal_normalizer.normalize(goal)
-                    # make sure goal is a tensor and on correct device
-                    goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
 
                 # get action
                 _, action = self.target_actor_model(state, goal) # use target network for testing
@@ -2523,12 +2519,7 @@ class TD3(Agent):
                 elif self._use_her:
                     state = state_normalizer.normalize(state)
                     goal = goal_normalizer.normalize(goal)
-                    # make sure goal is a tensor and on correct device
-                    goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 
-                # make sure state is a tensor and on correct device
-                state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
-
                 # Create noise
                 noise = self.noise()
 
@@ -2820,6 +2811,12 @@ class TD3(Agent):
             states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
         else:
             states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+        #DEBUG
+        # print(f"states device: {states.device}")
+        # print(f"actions device: {actions.device}")
+        # print(f"rewards device: {rewards.device}")
+        # print(f"next_states device: {next_states.device}")
+        # print(f"dones device: {dones.device}")
         
         # Normalize states if self.normalize_inputs
         if self.normalize_inputs==True:
@@ -3373,7 +3370,7 @@ class TD3(Agent):
         self.critic_model_b.train()
         self.num_envs = num_envs
         if seed is None:
-            seed = np.random.randint(100)
+            seed = np.random.randint(1000)
         set_seed(seed)
         if self.callbacks:
             for callback in self.callbacks:
@@ -3402,12 +3399,14 @@ class TD3(Agent):
             actions = self.get_action(states)
             actions = self.env.format_actions(actions)
             next_states, rewards, terms, truncs, _ = self.env.step(actions)
+            self._train_step_config["step_reward"] = rewards
             episode_scores += rewards
             dones = np.logical_or(terms, truncs)
-            self.completed_episodes += dones
             for i in range(self.num_envs):
                 self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i])
                 if dones[i]:
+                    # increment completed episodes for env by 1
+                    self.completed_episodes[i] += 1
                     score_history.append(episode_scores[i])
                     avg_reward = sum(score_history) / len(score_history)
                     self._train_episode_config['episode'] = int(self.completed_episodes.sum())
@@ -3554,7 +3553,7 @@ class TD3(Agent):
                 for callback in self.callbacks:
                     callback.on_test_epoch_begin(epoch=_step, logs=None)
             actions = self.get_action(states, test=True)
-            actions = self.env.format_actions(actions)
+            actions = self.env.format_actions(actions, testing=True)
             next_states, rewards, terms, truncs, _ = env.step(actions)
             self._test_step_config["step_reward"] = rewards
             episode_scores += rewards
@@ -3806,7 +3805,7 @@ class HER(Agent):
         normalizer_clip: float = 5.0,
         normalizer_eps: float = 0.01,
         # replay_buffer_size: int = 1_000_000,
-        device: str = 'cuda',
+        device: str = None,
         save_dir: str = "models",
         # callbacks: Optional[list[Callback]] = None
     ):
@@ -4809,7 +4808,7 @@ class PPO(Agent):
                  reward_clip: float = float('inf'),
                  callbacks: Optional[list[Callback]] = None,
                  save_dir: str = 'models',
-                 device: str = 'cuda'
+                 device: str = None
                  ):
         """
         Initialize the PPO agent.
@@ -4859,7 +4858,7 @@ class PPO(Agent):
         self.value_grad_clip = value_grad_clip
         self.reward_clip = reward_clip
         # self.callbacks = callbacks
-        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+        self.device = get_device(device)
 
         if self.normalize_values:
             self.normalizer = Normalizer((1), clip_range=self.value_norm_clip, device=device)

@@ -38,7 +38,7 @@ def train_agent(agent_config, train_config):
         #DEBUG
         # print(f'training save dir: {save_dir}')
         num_envs = train_config['num_envs']
-        seed = train_config['seed']
+        seed = train_config.get('seed', np.random.randint(1000))
         run_number = train_config.get('run_number', None)
         # num_runs = train_config.get('num_runs', 1)
 
