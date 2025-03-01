@@ -4,7 +4,6 @@ import logging
 import argparse
 import subprocess
 
-import random
 import numpy as np
 import torch as T
 
@@ -29,12 +28,12 @@ def test_agent(agent_config, test_config):
         num_episodes = test_config['num_episodes']
         num_envs = test_config['num_envs']
         # render = test_config['render']
-        render_freq = test_config['render_freq']
-        seed = test_config['seed']
+        render_freq = test_config.get('render_freq', 0)
+        seed = test_config.get('seed', np.random.randint(1000))
         # run_number = test_config['run_number']
         # num_runs = test_config['num_runs']
 
-        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
+        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
             agent = load_agent_from_config(agent_config, load_weights)
