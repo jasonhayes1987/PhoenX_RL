@@ -69,7 +69,7 @@ class Normalizer:
         try:
             self.local_sum += new_data.sum(dim=0).to(self.device)
             self.local_sum_sq += (new_data**2).sum(dim=0).to(self.device)
-            self.local_cnt += new_data.size(0).to(self.device)
+            self.local_cnt += new_data.size(0)
         except Exception as e:
             print(f"Error during local stats update: {e}")
     

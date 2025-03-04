@@ -1367,6 +1367,8 @@ def update_run_options(agent_type, page):
         return create_ddpg_run_options(page)
     elif agent_type == 'TD3':
         return create_td3_run_options(page)
+    elif agent_type == 'HER':
+        return create_her_run_options(page)
     else:
         # return some default or "unknown agent type" message
         return html.Div([
@@ -1384,21 +1386,6 @@ def create_ppo_run_options(page):
             *create_common_run_components(page)
         ],
     ),
-
-
-def create_her_run_options(page):
-    return html.Div([
-        dcc.Input(
-            id={'type': 'epochs', 'page': page},
-            type='number', min=1, placeholder="Number of Epochs"
-        ),
-        dcc.Input(
-            id={'type': 'cycles', 'page': page},
-            type='number', min=1, placeholder="Number of Cycles"
-        ),
-        # ...
-    ], style={'border': '1px solid #ccc', 'padding': '10px'})
-
 
 def create_reinforce_run_options(page):
     components = []
@@ -1433,6 +1420,15 @@ def create_td3_run_options(page):
     components = []
     components.append(create_num_episodes_component(page))
     
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_her_run_options(page):
+    components = []
+    components.append(create_num_episodes_component(page))
+    components.append(create_learning_epochs_component(page))
     return html.Div([
         *components,
         *create_common_run_components(page)
@@ -3138,13 +3134,13 @@ def create_target_noise_stddev_input(agent_type):
             dcc.Input(
                 id={
                     'type':'target-noise-stddev',
-                    'model':'actor',
+                    'model':'none',
                     'agent':agent_type,
                 },
                 type='number',
-                min=0.1,
+                min=0.01,
                 max=0.9,
-                step=0.1,
+                step=0.01,
                 value=0.2,
             ),
         ]
@@ -3157,13 +3153,13 @@ def create_target_noise_clip_input(agent_type):
             dcc.Input(
                 id={
                     'type':'target-noise-clip',
-                    'model':'actor',
+                    'model':'none',
                     'agent':agent_type,
                 },
                 type='number',
-                min=0.1,
+                min=0.01,
                 max=0.9,
-                step=0.1,
+                step=0.01,
                 value=0.5,
             ),
         ]
@@ -4108,20 +4104,6 @@ def create_actor_critic_parameter_inputs(agent_type):
 
 def create_ddpg_parameter_inputs(agent_type):
     """Adds inputs for DDPG Agent"""
-    # return html.Div(
-    #     id=f'{agent_type}-inputs',
-    #     children=[
-    #         create_device_input(agent_type),
-            
-    #         # Actor Model Configuration
-    #         ,
-    #         # Critic Model Configuration
-    #         html.H3("Critic Model Configuration"),
-            
-    #         # Save dir
-    #         create_save_dir_input(agent_type)
-    #     ]
-    # )
     return html.Div(
             id=f'{agent_type}-inputs',
             children=[
@@ -4223,26 +4205,105 @@ def create_td3_parameter_inputs(agent_type):
 def create_her_ddpg_parameter_inputs(agent_type):
     """Adds inputs for Hindsight Experience Replay w/DDPG Agent"""
     return html.Div(
-        id=f'{agent_type}-inputs',
-        children=[
-            create_device_input(agent_type),
-            create_goal_strategy_input(agent_type),
-            create_tolerance_input(agent_type),
-            create_discount_factor_input(agent_type),
-            create_tau_input(agent_type),
-            create_epsilon_greedy_input(agent_type),
-            create_batch_size_input(agent_type),
-            create_noise_function_input(agent_type),
-            html.H6("Input Normalizers"),
-            create_input_normalizer_options_input(agent_type),
-            # Actor Model Configuration
-            create_actor_model_input(agent_type),
-            # Critic Model Configuration
-            create_critic_model_input(agent_type),
-            # Save dir
-            create_save_dir_input(agent_type),
-        ]
-    )
+            id=f'{agent_type}-inputs',
+            children=[
+                dbc.Tabs([
+                    # Tab 1 Agent Parameters
+                    dbc.Tab(
+                        label="Agent Parameters",
+                        children=[
+                            create_goal_strategy_input(agent_type),
+                            create_tolerance_input(agent_type),
+                            create_discount_factor_input(agent_type),
+                            create_tau_input(agent_type),
+                            create_epsilon_greedy_input(agent_type),
+                            create_batch_size_input(agent_type),
+                            create_noise_function_input(agent_type),
+                            create_input_normalizer_input(agent_type),
+                            create_warmup_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 2 Policy Model
+                    dbc.Tab(
+                        label="Actor Model",
+                        children=[
+                            create_actor_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 3 Value Model
+                    dbc.Tab(
+                        label="Critic Model",
+                        children=[
+                            create_critic_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 4 Agent Options
+                    dbc.Tab(
+                        label="Agent Options",
+                        children=[
+                            create_device_input(agent_type),
+                            create_save_dir_input(agent_type),
+                        ]
+                    ),
+                ])
+            ]
+        )
+
+def create_her_td3_parameter_inputs(agent_type):
+    """Adds inputs for Hindsight Experience Replay w/TD3 Agent"""
+    return html.Div(
+            id=f'{agent_type}-inputs',
+            children=[
+                dbc.Tabs([
+                    # Tab 1 Agent Parameters
+                    dbc.Tab(
+                        label="Agent Parameters",
+                        children=[
+                            create_goal_strategy_input(agent_type),
+                            create_tolerance_input(agent_type),
+                            create_discount_factor_input(agent_type),
+                            create_tau_input(agent_type),
+                            create_epsilon_greedy_input(agent_type),
+                            create_batch_size_input(agent_type),
+                            create_noise_function_input(agent_type),
+                            create_target_noise_stddev_input(agent_type),
+                            create_target_noise_clip_input(agent_type),
+                            create_input_normalizer_input(agent_type),
+                            create_warmup_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 2 Policy Model
+                    dbc.Tab(
+                        label="Actor Model",
+                        children=[
+                            create_actor_model_input(agent_type),
+                            create_actor_delay_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 3 Value Model
+                    dbc.Tab(
+                        label="Critic Model",
+                        children=[
+                            create_critic_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 4 Agent Options
+                    dbc.Tab(
+                        label="Agent Options",
+                        children=[
+                            create_device_input(agent_type),
+                            create_save_dir_input(agent_type),
+                        ]
+                    ),
+                ])
+            ]
+        )
 
 def create_ppo_parameter_inputs(agent_type):
     """Adds inputs for PPO Agent"""
@@ -4315,6 +4376,9 @@ def create_agent_parameter_inputs(agent_type):
     
     elif agent_type == 'HER_DDPG':
         return create_her_ddpg_parameter_inputs(agent_type)
+    
+    elif agent_type == 'HER_TD3':
+        return create_her_td3_parameter_inputs(agent_type)
     
     elif agent_type == 'PPO':
         return create_ppo_parameter_inputs(agent_type)

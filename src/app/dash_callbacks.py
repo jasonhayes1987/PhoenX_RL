@@ -40,7 +40,7 @@ import dash_utils
 # from models import StochasticDiscretePolicy, StochasticContinuousPolicy, ValueModel, CriticModel, ActorModel
 from models import *
 # import rl_agents
-from rl_agents import Reinforce, ActorCritic, DDPG, PPO, TD3,init_sweep #HER
+from rl_agents import Reinforce, ActorCritic, DDPG, PPO, TD3,init_sweep, HER
 import wandb_support
 from schedulers import ScheduleWrapper
 from adaptive_kl import AdaptiveKL
@@ -1604,22 +1604,7 @@ def register_callbacks(app, shared_data):
                 )
 
             elif agent_type_dropdown_value == "ActorCritic":
-
-                # policy_trace_decay=dash_utils.get_specific_value(
-                #         all_values=all_values,
-                #         all_ids=all_ids,
-                #         id_type='trace-decay',
-                #         model_type='policy',
-                #         agent_type=agent_type_dropdown_value,
-                #     )
                 policy_trace_decay = agent_params.get(dash_utils.get_key({'type':'trace-decay', 'model':'policy', 'agent':agent_type_dropdown_value}))
-                # value_trace_decay=dash_utils.get_specific_value(
-                #         all_values=all_values,
-                #         all_ids=all_ids,
-                #         id_type='trace-decay',
-                #         model_type='value',
-                #         agent_type=agent_type_dropdown_value,
-                #     )
                 value_trace_decay = agent_params.get(dash_utils.get_key({'type':'trace-decay', 'model':'value', 'agent':agent_type_dropdown_value}))
 
                 agent = ActorCritic(
@@ -1649,13 +1634,9 @@ def register_callbacks(app, shared_data):
                     kl_adapter = None
                 else:
                     kl_adapter = AdaptiveKL(**kl_adapter_params)
-                #DEBUG
-                # print(f'kl_adapter config:{kl_adapter.get_config()}')
                 normalize_advs = agent_params.get(dash_utils.get_key({'type':'norm-adv', 'model':'none', 'agent':'PPO'}), False)
                 normalize_values = agent_params.get(dash_utils.get_key({'type':'norm-values', 'model':'none', 'agent':'PPO'}), False)
                 val_norm_clip = agent_params.get(dash_utils.get_key({'type':'norm-clip', 'model':'none', 'agent':'PPO'}), np.inf)
-                # clip_policy_grad = agent_params.get(utils.get_key({'type':'policy-grad-clip', 'model':'none', 'agent':'PPO'}), False)
-                # if clip_policy_grad:
                 policy_grad_clip = agent_params.get(dash_utils.get_key({'type':'grad-clip', 'model':'policy', 'agent':'PPO'}), np.inf)
                 value_grad_clip = agent_params.get(dash_utils.get_key({'type':'grad-clip', 'model':'value', 'agent':'PPO'}), np.inf)
                 reward_clip = agent_params.get(dash_utils.get_key({'type':'reward-clip', 'model':'none', 'agent':'PPO'}), np.inf)
@@ -1687,7 +1668,7 @@ def register_callbacks(app, shared_data):
 
                 )
 
-        elif agent_type_dropdown_value == "DDPG":
+        elif agent_type_dropdown_value in ["DDPG", "TD3", "HER_DDPG", "HER_TD3"]:
 
             actor_learning_rate_schedule = dash_utils.get_lr_scheduler('actor', agent_type_dropdown_value, agent_params)
             actor_optimizer = dash_utils.get_optimizer('actor', agent_type_dropdown_value, agent_params)
@@ -1726,6 +1707,7 @@ def register_callbacks(app, shared_data):
             discount = agent_params.get(dash_utils.get_key({'type':'discount', 'model':'none', 'agent':agent_type_dropdown_value}))
             tau = agent_params.get(dash_utils.get_key({'type':'tau', 'model':'none', 'agent':agent_type_dropdown_value}))
             epsilon = agent_params.get(dash_utils.get_key({'type':'epsilon-greedy', 'model':'none', 'agent':agent_type_dropdown_value}))
+            replay_buffer = ReplayBuffer(env, 100000, device=device)
             batch_size = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
             noise = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
             noise = dash_utils.create_noise_object(env, model_type='none', agent_type=agent_type_dropdown_value, agent_params=agent_params)
@@ -1736,474 +1718,118 @@ def register_callbacks(app, shared_data):
 
             warmup = agent_params.get(dash_utils.get_key({'type':'warmup', 'model':'none', 'agent':agent_type_dropdown_value}))
             
-            agent = DDPG(
-                env = env,
-                actor_model = actor_model,
-                critic_model = critic_model,
-                discount = discount,
-                tau = tau,
-                action_epsilon = epsilon,
-                replay_buffer = ReplayBuffer(env, 100000, device=device),
-                batch_size = batch_size,
-                noise = noise,
-                normalize_inputs = normalize_inputs,
-                normalizer_clip = clip_value,
-                warmup = warmup,
-                callbacks = dash_utils.get_callbacks(callbacks, project),
-                save_dir = os.path.join(os.getcwd(), save_dir),
-                device=device,
-            )
-
-        elif agent_type_dropdown_value == "TD3":
-            actor_learning_rate_schedule = dash_utils.get_lr_scheduler('actor', agent_type_dropdown_value, agent_params)
-            actor_optimizer = dash_utils.get_optimizer('actor', agent_type_dropdown_value, agent_params)
-            actor_layers = dash_utils.format_layers('actor', agent_type_dropdown_value, agent_params)
-            actor_output_kernel = dash_utils.format_output_kernel_initializer_config('actor', agent_type_dropdown_value, agent_params)
-
-            # Create actor model
-            actor_model = ActorModel(
-                env=env,
-                layer_config=actor_layers,
-                output_layer_kernel=actor_output_kernel,
-                optimizer_params=actor_optimizer,
-                scheduler_params=actor_learning_rate_schedule,
-                device=device,
-            )
-            
-            # Set critic params
-
-            critic_learning_rate_schedule = dash_utils.get_lr_scheduler('critic', agent_type_dropdown_value, agent_params)
-            critic_optimizer = dash_utils.get_optimizer('critic', agent_type_dropdown_value, agent_params)
-            critic_state_layers = dash_utils.format_layers('critic-state', agent_type_dropdown_value, agent_params)
-            critic_merged_layers = dash_utils.format_layers('critic-merged', agent_type_dropdown_value, agent_params)
-            critic_output_kernel = dash_utils.format_output_kernel_initializer_config('critic', agent_type_dropdown_value, agent_params)
-           
-            critic_model = CriticModel(
-                env=env,
-                state_layers=critic_state_layers,
-                merged_layers=critic_merged_layers,
-                output_layer_kernel=critic_output_kernel,
-                optimizer_params=critic_optimizer,
-                scheduler_params=critic_learning_rate_schedule,
-                device=device,
-            )
-
-            # Set TD3 params
-            discount = agent_params.get(dash_utils.get_key({'type':'discount', 'model':'none', 'agent':agent_type_dropdown_value}))
-            tau = agent_params.get(dash_utils.get_key({'type':'tau', 'model':'none', 'agent':agent_type_dropdown_value}))
-            epsilon = agent_params.get(dash_utils.get_key({'type':'epsilon-greedy', 'model':'none', 'agent':agent_type_dropdown_value}))
-            batch_size = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
-            noise = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
-            noise = dash_utils.create_noise_object(env, model_type='none', agent_type=agent_type_dropdown_value, agent_params=agent_params)
-            target_noise = agent_params.get(dash_utils.get_key({'type':'target-noise-stddev', 'model':'none', 'agent':agent_type_dropdown_value}))
-            target_noise_clip = agent_params.get(dash_utils.get_key({'type':'target-noise-clip', 'model':'actor', 'agent':agent_type_dropdown_value}))
-            actor_delay = agent_params.get(dash_utils.get_key({'type':'actor-update-delay', 'model':'actor', 'agent':agent_type_dropdown_value}))
-            normalize_inputs = agent_params.get(dash_utils.get_key({'type':'normalize-input', 'model':'none', 'agent':agent_type_dropdown_value}))
-            clip_value = agent_params.get(dash_utils.get_key({'type':'clip-value', 'model':'none', 'agent':agent_type_dropdown_value}))
-            warmup = agent_params.get(dash_utils.get_key({'type':'warmup', 'model':'none', 'agent':agent_type_dropdown_value}))
-            
-            agent = TD3(
-                env = env,
-                actor_model = actor_model,
-                critic_model = critic_model,
-                discount = discount,
-                tau = tau,
-                action_epsilon = epsilon,
-                replay_buffer = ReplayBuffer(env, 100000, device=device),
-                batch_size = batch_size,
-                noise = noise,
-                target_noise = target_noise,
-                target_noise_clip = target_noise_clip,
-                actor_update_delay = actor_delay,
-                normalize_inputs = normalize_inputs,
-                normalizer_clip = clip_value,
-                warmup = warmup,
-                callbacks = dash_utils.get_callbacks(callbacks, project),
-                save_dir = os.path.join(os.getcwd(), save_dir),
-                device=device,
-            )
-
-        elif agent_type_dropdown_value == "HER_DDPG":
-
-            # # Get device
-            # device = utils.get_specific_value(
-            #     all_values=all_values,
-            #     all_ids=all_ids,
-            #     id_type='device',
-            #     model_type='none',
-            #     agent_type=agent_type_dropdown_value,
-            # )
-
-            # get goal and reward functions and goal shape
-            desired_goal_func, achieved_goal_func, reward_func = gym_helper.get_her_goal_functions(env)
-            
-            # Reset env in order to instantiate and get goal shape
-            _,_ = env.reset()
-            goal_shape = desired_goal_func(env).shape
-
-            print(f'desired goal: {desired_goal_func}')
-            print(f'achieved goal: {achieved_goal_func}')
-            print(f'reward func: {reward_func}')
-            print(f'goal shape: {goal_shape}')
-
-            # Set actor params
-            # Set actor learning rate
-            actor_learning_rate=10**dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='learning-rate',
-                    model_type='actor',
-                    agent_type=agent_type_dropdown_value,
-                )
-
-            actor_optimizer = dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='optimizer',
-                    model_type='actor',
-                    agent_type=agent_type_dropdown_value,
-                )
-            
-            actor_opt_params = dash_utils.get_optimizer_params(
-                agent_type=agent_type_dropdown_value,
-                model_type='actor',
-                all_values=all_values,
-                all_ids=all_ids
-            )
-
-            actor_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='actor-hidden',
-                agent_type=agent_type_dropdown_value
-            )
-
-            actor_output_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='actor-output',
-                agent_type=agent_type_dropdown_value
-            )
-
-            actor_conv_layers = dash_utils.format_cnn_layers(
-                all_values,
-                all_ids,
-                layer_index_values,
-                layer_index_ids,
-                'actor',
-                agent_type_dropdown_value
-            )
-
-            if actor_conv_layers:
-                actor_cnn=cnn_models.CNN(actor_conv_layers, env)
-            else:
-                actor_cnn=None
-
-
-            actor_dense_layers = build_layers(
-                dash_utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='actor',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='actor',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                actor_hidden_kernel,
-            )
-
-            actor_normalize_layers = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='normalize-layers',
-                model_type='actor',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            #DEBUG
-            print(f'actor dense layers: {actor_dense_layers}')
-            print(f'actor output kernel: {actor_output_kernel}, type: {type(actor_output_kernel)}')
-            # Create actor model
-            actor_model = ActorModel(
-                env=env,
-                cnn_model=actor_cnn,
-                dense_layers=actor_dense_layers,
-                output_layer_kernel=actor_output_kernel,
-                goal_shape=goal_shape,
-                optimizer=actor_optimizer,
-                optimizer_params=actor_opt_params,
-                learning_rate=actor_learning_rate,
-                normalize_layers=actor_normalize_layers,
-                device=device,
-            )
-            
-            #DEBUG
-            # print(f'actor cnn model: {actor_cnn}')
-            # print(f'actor dense layers: {actor_dense_layers}')
-            # print(f'actor optimizer: {actor_optimizer}')
-            # print(f'actor learning rate: {actor_learning_rate}')
-            # print(f'actor model: {actor_model}')
-            
-            # Set critic params
-
-            critic_learning_rate=10**dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='learning-rate',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                )
-            
-            critic_optimizer = dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='optimizer',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                )
-            
-            critic_opt_params = dash_utils.get_optimizer_params(
-                agent_type=agent_type_dropdown_value,
-                model_type='critic',
-                all_values=all_values,
-                all_ids=all_ids
-            )
-
-            critic_hidden_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='critic-hidden',
-                agent_type=agent_type_dropdown_value
-            )
-
-            critic_output_kernel = dash_utils.format_output_kernel_initializer_config(
-                all_values=all_values,
-                all_ids=all_ids,
-                value_model='critic-output',
-                agent_type=agent_type_dropdown_value
-            )
-            
-            critic_state_layers = build_layers(
-                dash_utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='critic-state',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                critic_hidden_kernel,
-            )
-           
-            critic_conv_layers = dash_utils.format_cnn_layers(
-                all_values,
-                all_ids,
-                layer_index_values,
-                layer_index_ids,
-                'critic',
-                agent_type_dropdown_value
-            )
-
-            if critic_conv_layers:
-                critic_cnn = cnn_models.CNN(critic_conv_layers, env)
-            else:
-                critic_cnn = None
-
-            critic_merged_layers = build_layers(
-                dash_utils.format_layers(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    layer_units_values=layer_index_values,
-                    layer_units_ids=layer_index_ids,
-                    value_type='layer-units',
-                    value_model='critic-merged',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                dash_utils.get_specific_value(
-                    all_values=all_values,
-                    all_ids=all_ids,
-                    id_type='activation-function',
-                    model_type='critic',
-                    agent_type=agent_type_dropdown_value,
-                ),
-                critic_hidden_kernel,
-            )
-           
-            critic_normalize_layers = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='normalize-layers',
-                model_type='critic',
-                agent_type=agent_type_dropdown_value,
-            )
-           
-            critic_model = CriticModel(
-                env=env,
-                cnn_model=critic_cnn,
-                state_layers=critic_state_layers,
-                merged_layers=critic_merged_layers,
-                output_layer_kernel=critic_output_kernel,
-                goal_shape=goal_shape,
-                learning_rate=critic_learning_rate,
-                optimizer=critic_optimizer,
-                optimizer_params=critic_opt_params,
-                normalize_layers=critic_normalize_layers,
-                device=device,
-            )
-
-            #DEBUG
-            # print(f'critic cnn model: {critic_cnn}')
-            # print(f'critic state layers: {critic_state_layers}')
-            # print(f'critic merged layers: {critic_merged_layers}')
-            # print(f'critic optimizer: {critic_optimizer}')
-            # print(f'critic learning rate: {critic_learning_rate}')
-            # print(f'critic model: {critic_model}')
-
-
-            # Set DDPG params
-
-            discount = dash_utils.get_specific_value(
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    id_type = 'discount',
-                    model_type = 'none',
-                    agent_type = agent_type_dropdown_value,
-                )
-            
-            tau=dash_utils.get_specific_value(
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    id_type = 'tau',
-                    model_type = 'none',
-                    agent_type = agent_type_dropdown_value,
-                )
-            
-            epsilon = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'epsilon-greedy',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
-            
-            batch_size = dash_utils.get_specific_value(
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    id_type = 'batch-size',
-                    model_type = 'none',
-                    agent_type = agent_type_dropdown_value,
-                )
-            
-            noise=dash_utils.create_noise_object(
+            if agent_type_dropdown_value == "DDPG":
+                agent = DDPG(
                     env = env,
-                    all_values = all_values,
-                    all_ids = all_ids,
-                    agent_type = agent_type_dropdown_value,
+                    actor_model = actor_model,
+                    critic_model = critic_model,
+                    discount = discount,
+                    tau = tau,
+                    action_epsilon = epsilon,
+                    replay_buffer = replay_buffer,
+                    batch_size = batch_size,
+                    noise = noise,
+                    normalize_inputs = normalize_inputs,
+                    normalizer_clip = clip_value,
+                    warmup = warmup,
+                    callbacks = dash_utils.get_callbacks(callbacks, project),
+                    save_dir = os.path.join(os.getcwd(), save_dir),
+                    device=device,
                 )
+
+
+            elif agent_type_dropdown_value == "TD3":
+                # Set TD3 params
+                target_noise_std = agent_params.get(dash_utils.get_key({'type':'target-noise-stddev', 'model':'none', 'agent':agent_type_dropdown_value}))
+                target_noise = dash_utils.create_noise_object(env, model_type='none', agent_type=agent_type_dropdown_value, agent_params=agent_params)
+                target_noise_clip = agent_params.get(dash_utils.get_key({'type':'target-noise-clip', 'model':'actor', 'agent':agent_type_dropdown_value}))
+                actor_delay = agent_params.get(dash_utils.get_key({'type':'actor-update-delay', 'model':'actor', 'agent':agent_type_dropdown_value}))
             
-            normalize_inputs = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'normalize-input',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
+                agent = TD3(
+                    env = env,
+                    actor_model = actor_model,
+                    critic_model = critic_model,
+                    discount = discount,
+                    tau = tau,
+                    action_epsilon = epsilon,
+                    replay_buffer = replay_buffer,
+                    batch_size = batch_size,
+                    noise = noise,
+                    target_noise = target_noise,
+                    target_noise_clip = target_noise_clip,
+                    actor_update_delay = actor_delay,
+                    normalize_inputs = normalize_inputs,
+                    normalizer_clip = clip_value,
+                    warmup = warmup,
+                    callbacks = dash_utils.get_callbacks(callbacks, project),
+                    save_dir = os.path.join(os.getcwd(), save_dir),
+                    device=device,
+                )
 
-            clip_value = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'clip-value',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
-            
-            ddpg_agent = DDPG(
-                env = env,
-                actor_model = actor_model,
-                critic_model = critic_model,
-                discount = discount,
-                tau = tau,
-                action_epsilon = epsilon,
-                replay_buffer = ReplayBuffer(env, 100000, goal_shape, device=device),
-                batch_size = batch_size,
-                noise = noise,
-                normalize_inputs = normalize_inputs,
-                normalizer_clip = clip_value,
-                callbacks = dash_utils.get_callbacks(callbacks, project),
-                # save_dir = os.path.join(os.getcwd(), 'assets/models/ddpg/'),
-                device = device
-            )
+            elif agent_type_dropdown_value in ["HER_DDPG", "HER_TD3"]:
 
-            # set HER specific hyperparams
-            strategy = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='goal-strategy',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
+                # set HER specific hyperparams
+                replay_buffer = ReplayBuffer(env, 100000, (env.observation_space['desired_goal'].shape[-1],), device=device)
+                strategy = agent_params.get(dash_utils.get_key({'type':'goal-strategy', 'model':'none', 'agent':agent_type_dropdown_value}))
+                num_goals = agent_params.get(dash_utils.get_key({'type':'future-goals', 'model':'none', 'agent':agent_type_dropdown_value}))
+                tolerance = agent_params.get(dash_utils.get_key({'type':'goal-tolerance', 'model':'none', 'agent':agent_type_dropdown_value}))
+                normalizer_clip = agent_params.get(dash_utils.get_key({'type':'clip-value', 'model':'none', 'agent':agent_type_dropdown_value}))
+                save_dir = agent_params.get(dash_utils.get_key({'type':'save-dir', 'model':'none', 'agent':agent_type_dropdown_value}))
+                
+                if agent_type_dropdown_value == "HER_DDPG":
+                    # Create DDPG agent
+                    algo = DDPG(
+                        env = env,
+                        actor_model = actor_model,
+                        critic_model = critic_model,
+                        discount = discount,
+                        tau = tau,
+                        action_epsilon = epsilon,
+                        replay_buffer = replay_buffer,
+                        batch_size = batch_size,
+                        noise = noise,
+                        normalize_inputs = normalize_inputs,
+                        normalizer_clip = clip_value,
+                        warmup = warmup,
+                        callbacks = dash_utils.get_callbacks(callbacks, project),
+                        save_dir = os.path.join(os.getcwd(), save_dir),
+                        device=device,
+                    )
 
-            num_goals = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='future-goals',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
+                elif agent_type_dropdown_value == "HER_TD3":
+                    # Create TD3 agent
+                    algo = TD3(
+                        env = env,
+                        actor_model = actor_model,
+                        critic_model = critic_model,
+                        discount = discount,
+                        tau = tau,
+                        action_epsilon = epsilon,
+                        replay_buffer = replay_buffer,
+                        batch_size = batch_size,
+                        noise = noise,
+                        target_noise = target_noise_std,
+                        target_noise_clip = target_noise_clip,
+                        actor_update_delay = actor_delay,
+                        normalize_inputs = normalize_inputs,
+                        normalizer_clip = clip_value,
+                        warmup = warmup,
+                        callbacks = dash_utils.get_callbacks(callbacks, project),
+                        save_dir = os.path.join(os.getcwd(), save_dir),
+                        device=device,
+                    )
+                
 
-            tolerance = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='goal-tolerance',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            normalizer_clip = dash_utils.get_specific_value(
-                all_values = all_values,
-                all_ids = all_ids,
-                id_type = 'clip-value',
-                model_type = 'none',
-                agent_type = agent_type_dropdown_value,
-            )
-
-            save_dir = dash_utils.get_specific_value(
-                all_values=all_values,
-                all_ids=all_ids,
-                id_type='save-dir',
-                model_type='none',
-                agent_type=agent_type_dropdown_value,
-            )
-
-            # create HER object
-            agent = HER(
-                ddpg_agent,
-                strategy=strategy,
-                tolerance=tolerance,
-                num_goals=num_goals,
-                desired_goal=desired_goal_func,
-                achieved_goal=achieved_goal_func,
-                reward_fn=reward_func,
-                normalizer_clip=normalizer_clip,
-                device=device,
-                save_dir = os.path.join(os.getcwd(), save_dir),
-            )
+                # create HER object
+                agent = HER(
+                    agent=algo,
+                    strategy=strategy,
+                    tolerance=tolerance,
+                    num_goals=num_goals,
+                    normalizer_clip=normalizer_clip,
+                    device=device,
+                    save_dir = os.path.join(os.getcwd(), save_dir),
+                )
             
         # save agent
         agent.save()
