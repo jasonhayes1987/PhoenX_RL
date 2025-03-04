@@ -333,6 +333,12 @@ class GymnasiumWrapper(EnvWrapper):
             env = env.env
         return env
     
+    def close(self):
+        """
+        Close the environment.
+        """
+        self.env.close()
+    
     @property
     def observation_space(self):
         """

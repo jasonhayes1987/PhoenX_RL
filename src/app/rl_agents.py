@@ -232,21 +232,13 @@ class ActorCritic(Agent):
         actions = actions.detach().cpu().numpy() # Detach from graph, move to CPU and convert to numpy for Gym
         return actions, dist, logits
 
-    def train(self, num_episodes, num_envs: int, seed: int | None = None, render_freq: int = 0, save_dir: str | None =None, run_number=None):
+    def train(self, num_episodes, num_envs: int, seed: int | None = None, render_freq: int = 0):
         """Trains the model for 'episodes' number of episodes."""
         # set models to train mode
         self.policy_model.train()
         self.value_model.train()
 
         self.num_envs = num_envs
-
-        # Update save_dir if passed
-        if save_dir is not None and save_dir.split("/")[-2] != "actor_critic":
-            self.save_dir = save_dir + "/actor_critic/"
-            print(f'new save dir: {self.save_dir}')
-        elif save_dir is not None and save_dir.split("/")[-2] == "actor_critic":
-            self.save_dir = save_dir
-            print(f'new save dir: {self.save_dir}')
 
         if seed is None:
             seed = np.random.randint(100)
@@ -790,8 +782,7 @@ class Reinforce(Agent):
         self._train_step_config[f"action_probabilities"] = wandb.Histogram(dist.probs.detach().cpu().numpy())
         self._train_step_config["entropy"] = dist.entropy().mean().item()
 
-    def train(self, num_episodes: int, num_envs: int, trajectories_per_update: int=10, seed: int | None = None, render_freq: int = 0,
-              save_dir: str | None = None, run_number=None):
+    def train(self, num_episodes: int, num_envs: int, trajectories_per_update: int=10, seed: int | None = None, render_freq: int = 0):
         """Trains the model for 'episodes' number of episodes."""
 
         # set models to train mode
@@ -800,14 +791,6 @@ class Reinforce(Agent):
 
         # set num_envs as attribute
         self.num_envs = num_envs
-
-        # Update save_dir if passed
-        if save_dir is not None and save_dir.split("/")[-2] != "reinforce":
-            self.save_dir = save_dir + "/reinforce/"
-            print(f'new save dir: {self.save_dir}')
-        elif save_dir is not None and save_dir.split("/")[-2] == "reinforce":
-            self.save_dir = save_dir
-            print(f'new save dir: {self.save_dir}')
 
         if seed is None:
             seed = np.random.randint(100)
@@ -3836,14 +3819,18 @@ class HER(Agent):
             # self.replay_buffer_size = replay_buffer_size
             
             # Set save directory
+            # if save_dir is not None and "/her/" not in save_dir:
+            #     self.save_dir = os.path.join(save_dir, "her")
+            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
+            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
+            # elif save_dir is not None:
+            #     self.save_dir = save_dir
+            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
+            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
             if save_dir is not None and "/her/" not in save_dir:
-                self.save_dir = os.path.join(save_dir, "her")
-                agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-                self.agent.save_dir = os.path.join(self.save_dir, agent_name)
+                self.save_dir = save_dir + "/her/"
             elif save_dir is not None:
                 self.save_dir = save_dir
-                agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-                self.agent.save_dir = os.path.join(self.save_dir, agent_name)
 
         except Exception as e:
             logger.error(f"Error in HER init: {e}", exc_info=True)
@@ -4699,7 +4686,7 @@ class HER(Agent):
         # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
 
-        # writes and saves JSON file of DDPG agent config
+        # writes and saves JSON file of HER agent config
         with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
 
