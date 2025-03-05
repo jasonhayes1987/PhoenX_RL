@@ -1844,7 +1844,7 @@ def create_uniform_initializer_inputs(initializer_id, agent_params):
             type='number',
             min=-1.000,
             max=1.000,
-            step=0.001,
+            step=0.0001,
             value=agent_params.get(get_key(initializer_id, 'a'), -1.000)
         ),
 
@@ -1859,7 +1859,7 @@ def create_uniform_initializer_inputs(initializer_id, agent_params):
             type='number',
             min=-1.000,
             max=1.000,
-            step=0.001,
+            step=0.0001,
             value=agent_params.get(get_key(initializer_id, 'b'), 1.000)
         ),
         html.Hr(),
@@ -3282,7 +3282,7 @@ def get_kernel_params_map():
         "xavier_normal": ["gain"],
         "xavier_uniform": ["gain"],
         "truncated_normal": ["mean", "std-dev"],
-        "uniform": ["min", "max"],
+        "uniform": ["a", "b"],
         "normal": ["mean", "std-dev"],
         "constant": ["value"],
         "variance_scaling": ["scale", "mode", "distribution"]
