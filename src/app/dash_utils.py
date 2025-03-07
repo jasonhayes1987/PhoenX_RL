@@ -1427,6 +1427,8 @@ def create_td3_run_options(page):
 
 def create_her_run_options(page):
     components = []
+    components.append(create_num_epochs_component(page))
+    components.append(create_num_cycles_component(page))
     components.append(create_num_episodes_component(page))
     components.append(create_learning_epochs_component(page))
     return html.Div([
@@ -1545,6 +1547,28 @@ def create_render_episode_component(page):
             style={'margin-left': '10px', 'display':'none'}
         )
     ])
+
+def create_num_epochs_component(page):
+    return dcc.Input(
+            id={
+                'type': 'num-epochs',
+                'page': page,
+            },
+            type='number',
+            placeholder="Number of Epochs",
+            min=1,
+        )
+
+def create_num_cycles_component(page):
+    return dcc.Input(
+            id={
+                'type': 'num-cycles',
+                'page': page,
+            },
+            type='number',
+            placeholder="Number of Cycles",
+            min=1,
+        )
         
 
 def create_common_run_components(page):
@@ -1567,52 +1591,52 @@ def create_common_run_components(page):
     return common
 
 # Training settings component
-def run_agent_settings_component(page, agent_type=None):
-    return html.Div([
-        html.Div(
-            id={
-                'type': 'her-options',
-                'page': page,
-            },
-            style={'display': 'none'},
-            children=[
-                dcc.Input(
-                    id={
-                        'type': 'epochs',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Epochs",
-                    min=1,
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'cycles',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Cycles",
-                    min=1,
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'learning-cycles',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Learning Cycles",
-                    min=1,
-                ),
-            ]
-        ),
-        html.Div(
-            id={
-                'type':'hidden-div',
-                'page':page,
-            },
-            style={'display': 'none'}
-        ),
-    ])
+# def run_agent_settings_component(page, agent_type=None):
+#     return html.Div([
+#         html.Div(
+#             id={
+#                 'type': 'her-options',
+#                 'page': page,
+#             },
+#             style={'display': 'none'},
+#             children=[
+#                 dcc.Input(
+#                     id={
+#                         'type': 'epochs',
+#                         'page': page,
+#                     },
+#                     type='number',
+#                     placeholder="Number of Epochs",
+#                     min=1,
+#                 ),
+#                 dcc.Input(
+#                     id={
+#                         'type': 'cycles',
+#                         'page': page,
+#                     },
+#                     type='number',
+#                     placeholder="Number of Cycles",
+#                     min=1,
+#                 ),
+#                 dcc.Input(
+#                     id={
+#                         'type': 'learning-cycles',
+#                         'page': page,
+#                     },
+#                     type='number',
+#                     placeholder="Number of Learning Cycles",
+#                     min=1,
+#                 ),
+#             ]
+#         ),
+#         html.Div(
+#             id={
+#                 'type':'hidden-div',
+#                 'page':page,
+#             },
+#             style={'display': 'none'}
+#         ),
+#     ])
 
 # custom carousel for video playback
 # def video_carousel_component(page, video_files=[]):

@@ -55,8 +55,10 @@ def train_agent(agent_config, train_config):
                 agent.train(num_episodes, num_envs, trajectories_per_update, seed, render_freq)
 
             elif agent_type == 'HER':
+                num_epochs = train_config['num_epochs']
+                num_cycles = train_config['num_cycles']
                 num_updates = train_config['learning_epochs']
-                agent.train(num_episodes, num_updates, render_freq, num_envs, seed)
+                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
             
             elif agent_type == 'PPO':
                 timesteps = train_config['num_timesteps']
