@@ -1363,6 +1363,12 @@ def update_run_options(agent_type, page):
         return create_reinforce_run_options(page)
     elif agent_type == 'ActorCritic':
         return create_actor_critic_run_options(page)
+    elif agent_type == 'DDPG':
+        return create_ddpg_run_options(page)
+    elif agent_type == 'TD3':
+        return create_td3_run_options(page)
+    elif agent_type == 'HER':
+        return create_her_run_options(page)
     else:
         # return some default or "unknown agent type" message
         return html.Div([
@@ -1381,21 +1387,6 @@ def create_ppo_run_options(page):
         ],
     ),
 
-
-def create_her_run_options(page):
-    return html.Div([
-        dcc.Input(
-            id={'type': 'epochs', 'page': page},
-            type='number', min=1, placeholder="Number of Epochs"
-        ),
-        dcc.Input(
-            id={'type': 'cycles', 'page': page},
-            type='number', min=1, placeholder="Number of Cycles"
-        ),
-        # ...
-    ], style={'border': '1px solid #ccc', 'padding': '10px'})
-
-
 def create_reinforce_run_options(page):
     components = []
     components.append(create_num_episodes_component(page))
@@ -1411,6 +1402,35 @@ def create_actor_critic_run_options(page):
     components = []
     components.append(create_num_episodes_component(page))
     
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_ddpg_run_options(page):
+    components = []
+    components.append(create_num_episodes_component(page))
+    
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_td3_run_options(page):
+    components = []
+    components.append(create_num_episodes_component(page))
+    
+    return html.Div([
+        *components,
+        *create_common_run_components(page)
+    ])
+
+def create_her_run_options(page):
+    components = []
+    components.append(create_num_epochs_component(page))
+    components.append(create_num_cycles_component(page))
+    components.append(create_num_episodes_component(page))
+    components.append(create_learning_epochs_component(page))
     return html.Div([
         *components,
         *create_common_run_components(page)
@@ -1527,6 +1547,28 @@ def create_render_episode_component(page):
             style={'margin-left': '10px', 'display':'none'}
         )
     ])
+
+def create_num_epochs_component(page):
+    return dcc.Input(
+            id={
+                'type': 'num-epochs',
+                'page': page,
+            },
+            type='number',
+            placeholder="Number of Epochs",
+            min=1,
+        )
+
+def create_num_cycles_component(page):
+    return dcc.Input(
+            id={
+                'type': 'num-cycles',
+                'page': page,
+            },
+            type='number',
+            placeholder="Number of Cycles",
+            min=1,
+        )
         
 
 def create_common_run_components(page):
@@ -1549,52 +1591,52 @@ def create_common_run_components(page):
     return common
 
 # Training settings component
-def run_agent_settings_component(page, agent_type=None):
-    return html.Div([
-        html.Div(
-            id={
-                'type': 'her-options',
-                'page': page,
-            },
-            style={'display': 'none'},
-            children=[
-                dcc.Input(
-                    id={
-                        'type': 'epochs',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Epochs",
-                    min=1,
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'cycles',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Cycles",
-                    min=1,
-                ),
-                dcc.Input(
-                    id={
-                        'type': 'learning-cycles',
-                        'page': page,
-                    },
-                    type='number',
-                    placeholder="Number of Learning Cycles",
-                    min=1,
-                ),
-            ]
-        ),
-        html.Div(
-            id={
-                'type':'hidden-div',
-                'page':page,
-            },
-            style={'display': 'none'}
-        ),
-    ])
+# def run_agent_settings_component(page, agent_type=None):
+#     return html.Div([
+#         html.Div(
+#             id={
+#                 'type': 'her-options',
+#                 'page': page,
+#             },
+#             style={'display': 'none'},
+#             children=[
+#                 dcc.Input(
+#                     id={
+#                         'type': 'epochs',
+#                         'page': page,
+#                     },
+#                     type='number',
+#                     placeholder="Number of Epochs",
+#                     min=1,
+#                 ),
+#                 dcc.Input(
+#                     id={
+#                         'type': 'cycles',
+#                         'page': page,
+#                     },
+#                     type='number',
+#                     placeholder="Number of Cycles",
+#                     min=1,
+#                 ),
+#                 dcc.Input(
+#                     id={
+#                         'type': 'learning-cycles',
+#                         'page': page,
+#                     },
+#                     type='number',
+#                     placeholder="Number of Learning Cycles",
+#                     min=1,
+#                 ),
+#             ]
+#         ),
+#         html.Div(
+#             id={
+#                 'type':'hidden-div',
+#                 'page':page,
+#             },
+#             style={'display': 'none'}
+#         ),
+#     ])
 
 # custom carousel for video playback
 # def video_carousel_component(page, video_files=[]):
@@ -1826,7 +1868,7 @@ def create_uniform_initializer_inputs(initializer_id, agent_params):
             type='number',
             min=-1.000,
             max=1.000,
-            step=0.001,
+            step=0.0001,
             value=agent_params.get(get_key(initializer_id, 'a'), -1.000)
         ),
 
@@ -1841,7 +1883,7 @@ def create_uniform_initializer_inputs(initializer_id, agent_params):
             type='number',
             min=-1.000,
             max=1.000,
-            step=0.001,
+            step=0.0001,
             value=agent_params.get(get_key(initializer_id, 'b'), 1.000)
         ),
         html.Hr(),
@@ -1968,10 +2010,12 @@ def format_output_kernel_initializer_config(model_type, agent_type, agent_params
             config[param] = agent_params.get(get_key({'type':param, 'model':model_type, 'agent':agent_type, 'index':0}))
     
     # Get distribution type in order to format output correctly
-    distribution = agent_params.get(get_key({'type':'distribution', 'model':'none', 'agent':agent_type}))
+    distribution = agent_params.get(get_key({'type':'distribution', 'model':'none', 'agent':agent_type}), None)
     # format
-    if distribution == 'categorical':
+    if distribution is None or distribution == 'categorical':
         initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
+    # elif distribution == 'categorical':
+    #     initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
     elif distribution in ['beta','normal']:
         initializer_config = [{'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}},
                               {'type':'dense', 'params':{'kernel':initializer_type, 'kernel params':config}}]
@@ -2032,193 +2076,193 @@ def create_surrogate_loss_clip_input(agent_type, model_type):
                 step=0.01,
                 value=0.2,
             ),
-            create_surrogate_loss_clip_scheduler_input(agent_type, model_type)
+            create_scheduler_input('surrogate-clip', model_type, agent_type)
 
         ]
     )
 
-def create_surrogate_loss_clip_scheduler_input(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label(f'{model_type.capitalize()} Clip Scheduler', style={'text-decoration': 'underline'}),
-            dcc.Dropdown(
-                id={
-                    'type':'surrogate-clip-scheduler',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
-                placeholder=f"{model_type.capitalize()} Clip Scheduler",
-            ),
-            html.Div(
-                id={
-                    'type':'surrogate-clip-scheduler-options',
-                    'model':model_type,
-                    'agent':agent_type,
-                }
-            )
-        ]
-    )
+# def create_surrogate_loss_clip_scheduler_input(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label(f'{model_type.capitalize()} Clip Scheduler', style={'text-decoration': 'underline'}),
+#             dcc.Dropdown(
+#                 id={
+#                     'type':'surrogate-clip-scheduler',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
+#                 placeholder=f"{model_type.capitalize()} Clip Scheduler",
+#             ),
+#             html.Div(
+#                 id={
+#                     'type':'surrogate-clip-scheduler-options',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 }
+#             )
+#         ]
+#     )
 
-def update_surrogate_loss_clip_scheduler_options(agent_type, model_type, surr_clip_scheduler):
-    if surr_clip_scheduler == 'step':
-        return surrogate_loss_clip_step_scheduler_options(agent_type, model_type)
-    elif surr_clip_scheduler == 'exponential':
-        return surrogate_loss_clip_exponential_scheduler_options(agent_type, model_type)
-    elif surr_clip_scheduler == 'cosineannealing':
-        return surrogate_loss_clip_cosineannealing_scheduler_options(agent_type, model_type)
-    elif surr_clip_scheduler == 'linear':
-        return surrogate_loss_clip_linear_scheduler_options(agent_type, model_type)
-    return html.Div()
+# def update_surrogate_loss_clip_scheduler_options(agent_type, model_type, surr_clip_scheduler):
+#     if surr_clip_scheduler == 'step':
+#         return surrogate_loss_clip_step_scheduler_options(agent_type, model_type)
+#     elif surr_clip_scheduler == 'exponential':
+#         return surrogate_loss_clip_exponential_scheduler_options(agent_type, model_type)
+#     elif surr_clip_scheduler == 'cosineannealing':
+#         return surrogate_loss_clip_cosineannealing_scheduler_options(agent_type, model_type)
+#     elif surr_clip_scheduler == 'linear':
+#         return surrogate_loss_clip_linear_scheduler_options(agent_type, model_type)
+#     return html.Div()
 
-def surrogate_loss_clip_cosineannealing_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-t-max',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=1,
-                max=10000,
-                step=1,
-                value=1000,
-            ),
-            html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-eta-min',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.000001,
-                max=0.1,
-                step=0.000001,
-                value=0.0001,
-            ),
-        ]
-    )
+# def surrogate_loss_clip_cosineannealing_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-t-max',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=10000,
+#                 step=1,
+#                 value=1000,
+#             ),
+#             html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-eta-min',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.000001,
+#                 max=0.1,
+#                 step=0.000001,
+#                 value=0.0001,
+#             ),
+#         ]
+#     )
 
-def surrogate_loss_clip_exponential_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-gamma',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.01,
-                max=0.99,
-                step=0.01,
-                value=0.99,
-            ),
-        ]
-    )
+# def surrogate_loss_clip_exponential_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-gamma',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=0.99,
+#                 step=0.01,
+#                 value=0.99,
+#             ),
+#         ]
+#     )
 
-def surrogate_loss_clip_step_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('Step Size', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-step-size',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=1,
-                max=1000,
-                step=1,
-                value=100,
-            ),
-            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-gamma',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.01,
-                max=0.99,
-                step=0.01,
-                value=0.99,
-            ),
-        ]
-    )
+# def surrogate_loss_clip_step_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Step Size', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-step-size',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=1000,
+#                 step=1,
+#                 value=100,
+#             ),
+#             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-gamma',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=0.99,
+#                 step=0.01,
+#                 value=0.99,
+#             ),
+#         ]
+#     )
 
-def surrogate_loss_clip_linear_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('Start Factor', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-start-factor',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.01,
-                max=1.0,
-                step=0.01,
-                value=1.0,
-            ),
-            html.Label('End Factor', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-end-factor',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.0001,
-                max=1.0000,
-                step=0.0001,
-                value=0.0010,
-            ),
-            html.Label('Total Iterations', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'surrogate-clip-total-iters',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=1,
-                max=1e8,
-                step=1,
-                value=1e3,
-            ),
-        ]
-    )
+# def surrogate_loss_clip_linear_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Start Factor', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-start-factor',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=1.0,
+#                 step=0.01,
+#                 value=1.0,
+#             ),
+#             html.Label('End Factor', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-end-factor',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.0001,
+#                 max=1.0000,
+#                 step=0.0001,
+#                 value=0.0010,
+#             ),
+#             html.Label('Total Iterations', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'surrogate-clip-total-iters',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=1e8,
+#                 step=1,
+#                 value=1e3,
+#             ),
+#         ]
+#     )
 
-def get_surrogate_loss_clip_scheduler(model_type, agent_type, agent_params):
+# def get_surrogate_loss_clip_scheduler(model_type, agent_type, agent_params):
 
-    scheduler = agent_params.get(get_key({'type':'surrogate-clip-scheduler', 'model':model_type, 'agent':agent_type}))
-    if scheduler == 'none':
-        return None
-    params = {}
-    if scheduler == 'step':
-        params['step_size'] = agent_params.get(get_key({'type':'surrogate-clip-step-size', 'model':model_type, 'agent':agent_type}))
-        params['gamma'] = agent_params.get(get_key({'type':'surrogate-clip-gamma', 'model':model_type, 'agent':agent_type}))
-    elif scheduler == 'exponential':
-        params['gamma'] = agent_params.get(get_key({'type':'surrogate-clip-gamma', 'model':model_type, 'agent':agent_type}))
-    elif scheduler == 'cosineannealing':
-        params['T_max'] = agent_params.get(get_key({'type':'surrogate-clip-t-max', 'model':model_type, 'agent':agent_type}))
-        params['eta_min'] = agent_params.get(get_key({'type':'surrogate-clip-eta-min', 'model':model_type, 'agent':agent_type}))
-    elif scheduler == 'linear':
-        params['start_factor'] = agent_params.get(get_key({'type':'surrogate-clip-start-factor', 'model':model_type, 'agent':agent_type}))
-        params['end_factor'] = agent_params.get(get_key({'type':'surrogate-clip-end-factor', 'model':model_type, 'agent':agent_type}))
-        params['total_iters'] = agent_params.get(get_key({'type':'surrogate-clip-total-iters', 'model':model_type, 'agent':agent_type}))
+#     scheduler = agent_params.get(get_key({'type':'surrogate-clip-scheduler', 'model':model_type, 'agent':agent_type}))
+#     if scheduler == 'none':
+#         return None
+#     params = {}
+#     if scheduler == 'step':
+#         params['step_size'] = agent_params.get(get_key({'type':'surrogate-clip-step-size', 'model':model_type, 'agent':agent_type}))
+#         params['gamma'] = agent_params.get(get_key({'type':'surrogate-clip-gamma', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'exponential':
+#         params['gamma'] = agent_params.get(get_key({'type':'surrogate-clip-gamma', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'cosineannealing':
+#         params['T_max'] = agent_params.get(get_key({'type':'surrogate-clip-t-max', 'model':model_type, 'agent':agent_type}))
+#         params['eta_min'] = agent_params.get(get_key({'type':'surrogate-clip-eta-min', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'linear':
+#         params['start_factor'] = agent_params.get(get_key({'type':'surrogate-clip-start-factor', 'model':model_type, 'agent':agent_type}))
+#         params['end_factor'] = agent_params.get(get_key({'type':'surrogate-clip-end-factor', 'model':model_type, 'agent':agent_type}))
+#         params['total_iters'] = agent_params.get(get_key({'type':'surrogate-clip-total-iters', 'model':model_type, 'agent':agent_type}))
 
-    return {'type':scheduler, 'params':params}
+#     return {'type':scheduler, 'params':params}
 
 # def create_value_clip_input(agent_type):
 #     return html.Div(
@@ -2465,14 +2509,14 @@ def create_grad_clip_input(agent_type, model_type):
         ]
     )
 
-def create_entropy_input(agent_type):
+def create_entropy_input(model_type, agent_type):
     return html.Div(
         [
             html.Label('Entropy Coefficient', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
                     'type':'entropy-coeff',
-                    'model':'none',
+                    'model':model_type,
                     'agent':agent_type
                 },
                 type='number',
@@ -2481,51 +2525,50 @@ def create_entropy_input(agent_type):
                 step=0.0001,
                 value=0.001,
             ),
-            create_entropy_scheduler_input(agent_type)
+            create_scheduler_input('entropy', model_type, agent_type)
         ]
     )
 
-def create_entropy_scheduler_input(agent_type):
+def create_scheduler_input(name, model_type, agent_type):
     return html.Div(
         [
-            html.Label('Entropy Scheduler', style={'text-decoration': 'underline'}),
             dcc.Dropdown(
                 id={
-                    'type':'entropy-scheduler',
-                    'model':'none',
+                    'type':f'{name}-scheduler',
+                    'model':model_type,
                     'agent':agent_type,
                 },
                 options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
-                placeholder="Entropy Coefficient Scheduler",
+                placeholder=f"{name.capitalize()} Scheduler",
             ),
             html.Div(
                 id={
-                    'type':'entropy-scheduler-options',
-                    'model':'none',
+                    'type':f'{name}-scheduler-options',
+                    'model':model_type,
                     'agent':agent_type,
                 }
             )
         ]
     )
 
-def update_entropy_scheduler_options(agent_type, model_type, lr_scheduler):
+def update_scheduler_options(name, agent_type, model_type, lr_scheduler):
     if lr_scheduler == 'step':
-        return entropy_step_scheduler_options(agent_type, model_type)
+        return step_scheduler_options(name, agent_type, model_type)
     elif lr_scheduler == 'exponential':
-        return entropy_exponential_scheduler_options(agent_type, model_type)
+        return exponential_scheduler_options(name, agent_type, model_type)
     elif lr_scheduler == 'cosineannealing':
-        return entropy_cosineannealing_scheduler_options(agent_type, model_type)
+        return cosineannealing_scheduler_options(name, agent_type, model_type)
     elif lr_scheduler == 'linear':
-        return entropy_linear_scheduler_options(agent_type, model_type)
+        return linear_scheduler_options(name, agent_type, model_type)
     return html.Div()
 
-def entropy_cosineannealing_scheduler_options(agent_type, model_type):
+def cosineannealing_scheduler_options(name, agent_type, model_type):
     return html.Div(
         [
             html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-t-max',
+                    'type':f'{name}-t-max',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2538,7 +2581,7 @@ def entropy_cosineannealing_scheduler_options(agent_type, model_type):
             html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-eta-min',
+                    'type':f'{name}-eta-min',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2552,13 +2595,13 @@ def entropy_cosineannealing_scheduler_options(agent_type, model_type):
     )
 
 
-def entropy_exponential_scheduler_options(agent_type, model_type):
+def exponential_scheduler_options(name, agent_type, model_type):
     return html.Div(
         [
             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-gamma',
+                    'type':f'{name}-gamma',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2571,13 +2614,13 @@ def entropy_exponential_scheduler_options(agent_type, model_type):
         ]
     )
 
-def entropy_step_scheduler_options(agent_type, model_type):
+def step_scheduler_options(name, agent_type, model_type):
     return html.Div(
         [
             html.Label('Step Size', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-step-size',
+                    'type':f'{name}-step-size',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2590,7 +2633,7 @@ def entropy_step_scheduler_options(agent_type, model_type):
             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-gamma',
+                    'type':f'{name}-gamma',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2603,13 +2646,13 @@ def entropy_step_scheduler_options(agent_type, model_type):
         ]
     )
 
-def entropy_linear_scheduler_options(agent_type, model_type):
+def linear_scheduler_options(name, agent_type, model_type):
     return html.Div(
         [
             html.Label('Start Factor', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-start-factor',
+                    'type':f'{name}-start-factor',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2622,7 +2665,7 @@ def entropy_linear_scheduler_options(agent_type, model_type):
             html.Label('End Factor', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-end-factor',
+                    'type':f'{name}-end-factor',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2635,7 +2678,7 @@ def entropy_linear_scheduler_options(agent_type, model_type):
             html.Label('Total Iterations', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'entropy-total-iters',
+                    'type':f'{name}-total-iters',
                     'model':model_type,
                     'agent':agent_type,
                 },
@@ -2648,24 +2691,24 @@ def entropy_linear_scheduler_options(agent_type, model_type):
         ]
     )
 
-def get_entropy_scheduler(model_type, agent_type, agent_params):
+def get_scheduler(name, model_type, agent_type, agent_params):
 
-    scheduler = agent_params.get(get_key({'type':'entropy-scheduler', 'model':model_type, 'agent':agent_type}))
+    scheduler = agent_params.get(get_key({'type':f'{name}-scheduler', 'model':model_type, 'agent':agent_type}))
     if scheduler == 'none':
         return None
     params = {}
     if scheduler == 'step':
-        params['step_size'] = agent_params.get(get_key({'type':'entropy-step-size', 'model':model_type, 'agent':agent_type}))
-        params['gamma'] = agent_params.get(get_key({'type':'entropy-gamma', 'model':model_type, 'agent':agent_type}))
+        params['step_size'] = agent_params.get(get_key({'type':f'{name}-step-size', 'model':model_type, 'agent':agent_type}))
+        params['gamma'] = agent_params.get(get_key({'type':f'{name}-gamma', 'model':model_type, 'agent':agent_type}))
     elif scheduler == 'exponential':
-        params['gamma'] = agent_params.get(get_key({'type':'entropy-gamma', 'model':model_type, 'agent':agent_type}))
+        params['gamma'] = agent_params.get(get_key({'type':f'{name}-gamma', 'model':model_type, 'agent':agent_type}))
     elif scheduler == 'cosineannealing':
-        params['T_max'] = agent_params.get(get_key({'type':'entropy-t-max', 'model':model_type, 'agent':agent_type}))
-        params['eta_min'] = agent_params.get(get_key({'type':'entropy-eta-min', 'model':model_type, 'agent':agent_type}))
+        params['T_max'] = agent_params.get(get_key({'type':f'{name}-t-max', 'model':model_type, 'agent':agent_type}))
+        params['eta_min'] = agent_params.get(get_key({'type':f'{name}-eta-min', 'model':model_type, 'agent':agent_type}))
     elif scheduler == 'linear':
-        params['start_factor'] = agent_params.get(get_key({'type':'entropy-start-factor', 'model':model_type, 'agent':agent_type}))
-        params['end_factor'] = agent_params.get(get_key({'type':'entropy-end-factor', 'model':model_type, 'agent':agent_type}))
-        params['total_iters'] = agent_params.get(get_key({'type':'entropy-total-iters', 'model':model_type, 'agent':agent_type}))
+        params['start_factor'] = agent_params.get(get_key({'type':f'{name}-start-factor', 'model':model_type, 'agent':agent_type}))
+        params['end_factor'] = agent_params.get(get_key({'type':f'{name}-end-factor', 'model':model_type, 'agent':agent_type}))
+        params['total_iters'] = agent_params.get(get_key({'type':f'{name}-total-iters', 'model':model_type, 'agent':agent_type}))
 
     return {'type':scheduler, 'params':params}
 
@@ -3085,13 +3128,13 @@ def create_batch_size_input(agent_type):
         ]
     )
 
-def create_noise_function_input(agent_type):
+def create_noise_function_input(agent_type, model_type):
     return html.Div(
         [
             dcc.Dropdown(
             id={
                 'type':'noise-function',
-                'model':'none',
+                'model':model_type,
                 'agent':agent_type,
                 },
                 options=[{'label': i, 'value': i} for i in ["Ornstein-Uhlenbeck", "Normal", "Uniform"]],
@@ -3100,46 +3143,147 @@ def create_noise_function_input(agent_type):
             html.Div(
                 id={
                     'type':'noise-options',
-                    'model':'none',
+                    'model':model_type,
                     'agent':agent_type,
                 }
             ),
         ]
     )
 
-def create_target_noise_stddev_input(agent_type):
-    return html.Div(
-        [
-            html.Label('Target Noise Standard Deviation', style={'text-decoration': 'underline'}),
+def update_noise_inputs(noise_type, id):
+    agent_type = id['agent']
+    model_type = id['model']
+    if noise_type == "Ornstein-Uhlenbeck":
+        inputs = html.Div([
+            html.Label('Mean', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
-                    'type':'target-noise-stddev',
-                    'model':'actor',
-                    'agent':agent_type,
+                    'type':'ou-mean',
+                    'model':model_type,
+                    'agent': agent_type,
                 },
                 type='number',
-                min=0.1,
-                max=0.9,
-                step=0.1,
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=0.0,
+            ),
+            html.Label('Mean Reversion', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'ou-sigma',
+                    'model':model_type,
+                    'agent': agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=0.15,
+            ),
+            html.Label('Volatility', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'ou-theta',
+                    'model':model_type,
+                    'agent': agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
                 value=0.2,
             ),
-        ]
-    )
+            html.Label('Time Delta', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'ou-dt',
+                    'model':model_type,
+                    'agent': agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=1.0,
+            ),
+        ])
 
-def create_target_noise_clip_input(agent_type):
+    elif noise_type == "Normal":
+        inputs = html.Div([
+            html.Label('Mean', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'normal-mean',
+                    'model':model_type,
+                    'agent': agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=0.0,
+            ),
+            html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'normal-stddv',
+                    'model':model_type,
+                    'agent': agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=1.0,
+            ),
+        ])
+
+    elif noise_type == "Uniform":
+        inputs = html.Div([
+            html.Label('Minimum Value', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'uniform-min',
+                    'model':model_type,
+                    'agent': agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=0.1,
+            ),
+            html.Label('Maximum Value', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'uniform-max',
+                    'model':model_type,
+                    'agent': agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=1.0,
+            ),
+        ])
+    return inputs
+
+def create_target_noise_clip_input(agent_type, model_type):
     return html.Div(
         [
             html.Label('Target Noise Clip', style={'text-decoration': 'underline'}),
             dcc.Input(
                 id={
                     'type':'target-noise-clip',
-                    'model':'actor',
+                    'model':model_type,
                     'agent':agent_type,
                 },
                 type='number',
-                min=0.1,
+                min=0.01,
                 max=0.9,
-                step=0.1,
+                step=0.01,
                 value=0.5,
             ),
         ]
@@ -3262,7 +3406,7 @@ def get_kernel_params_map():
         "xavier_normal": ["gain"],
         "xavier_uniform": ["gain"],
         "truncated_normal": ["mean", "std-dev"],
-        "uniform": ["min", "max"],
+        "uniform": ["a", "b"],
         "normal": ["mean", "std-dev"],
         "constant": ["value"],
         "variance_scaling": ["scale", "mode", "distribution"]
@@ -3506,189 +3650,189 @@ def create_learning_rate_exponent_input(agent_type, model_type):
         ]
     )
 
-def create_lr_scheduler_input(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('Learning Rate Scheduler', style={'text-decoration': 'underline'}),
-            dcc.Dropdown(
-                id={
-                    'type':'lr-scheduler',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
-                placeholder="Learning Rate Scheduler",
-            ),
-            html.Div(
-                id={
-                    'type':'lr-scheduler-options',
-                    'model':model_type,
-                    'agent':agent_type,
-                }
-            )
-        ]
-    )
+# def create_lr_scheduler_input(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Learning Rate Scheduler', style={'text-decoration': 'underline'}),
+#             dcc.Dropdown(
+#                 id={
+#                     'type':'lr-scheduler',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 options=[{'label': i, 'value': i.lower()} for i in ['Step', 'Exponential', 'CosineAnnealing', 'Linear', 'None']],
+#                 placeholder="Learning Rate Scheduler",
+#             ),
+#             html.Div(
+#                 id={
+#                     'type':'lr-scheduler-options',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 }
+#             )
+#         ]
+#     )
 
-def update_lr_scheduler_options(agent_type, model_type, lr_scheduler):
-    if lr_scheduler == 'step':
-        return lr_step_scheduler_options(agent_type, model_type)
-    elif lr_scheduler == 'exponential':
-        return lr_exponential_scheduler_options(agent_type, model_type)
-    elif lr_scheduler == 'cosineannealing':
-        return lr_cosineannealing_scheduler_options(agent_type, model_type)
-    elif lr_scheduler == 'linear':
-        return lr_linear_scheduler_options(agent_type, model_type)
-    return html.Div()
+# def update_lr_scheduler_options(agent_type, model_type, lr_scheduler):
+#     if lr_scheduler == 'step':
+#         return lr_step_scheduler_options(agent_type, model_type)
+#     elif lr_scheduler == 'exponential':
+#         return lr_exponential_scheduler_options(agent_type, model_type)
+#     elif lr_scheduler == 'cosineannealing':
+#         return lr_cosineannealing_scheduler_options(agent_type, model_type)
+#     elif lr_scheduler == 'linear':
+#         return lr_linear_scheduler_options(agent_type, model_type)
+#     return html.Div()
 
-def lr_cosineannealing_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-t-max',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=1,
-                max=10000,
-                step=1,
-                value=1000,
-            ),
-            html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-eta-min',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.000001,
-                max=0.1,
-                step=0.000001,
-                value=0.0001,
-            ),
-        ]
-    )
+# def lr_cosineannealing_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('T max (max iters)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-t-max',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=10000,
+#                 step=1,
+#                 value=1000,
+#             ),
+#             html.Label('Eta min (min LR)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-eta-min',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.000001,
+#                 max=0.1,
+#                 step=0.000001,
+#                 value=0.0001,
+#             ),
+#         ]
+#     )
 
 
-def lr_exponential_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-gamma',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.01,
-                max=0.99,
-                step=0.01,
-                value=0.99,
-            ),
-        ]
-    )
+# def lr_exponential_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-gamma',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=0.99,
+#                 step=0.01,
+#                 value=0.99,
+#             ),
+#         ]
+#     )
 
-def lr_step_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('Step Size', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-step-size',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=1,
-                max=1000,
-                step=1,
-                value=100,
-            ),
-            html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-gamma',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.01,
-                max=0.99,
-                step=0.01,
-                value=0.99,
-            ),
-        ]
-    )
+# def lr_step_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Step Size', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-step-size',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=1000,
+#                 step=1,
+#                 value=100,
+#             ),
+#             html.Label('Gamma (decay)', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-gamma',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.01,
+#                 max=0.99,
+#                 step=0.01,
+#                 value=0.99,
+#             ),
+#         ]
+#     )
 
-def lr_linear_scheduler_options(agent_type, model_type):
-    return html.Div(
-        [
-            html.Label('Start Factor', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-start-factor',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.0001,
-                max=1.0000,
-                step=0.0001,
-                value=1.0,
-            ),
-            html.Label('End Factor', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-end-factor',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=0.0001,
-                max=1.0000,
-                step=0.0001,
-                value=0.0010,
-            ),
-            html.Label('Total Iterations', style={'text-decoration': 'underline'}),
-            dcc.Input(
-                id={
-                    'type':'lr-total-iters',
-                    'model':model_type,
-                    'agent':agent_type,
-                },
-                type='number',
-                min=1,
-                max=1e8,
-                step=1,
-                value=1e3,
-            ),
-        ]
-    )
+# def lr_linear_scheduler_options(agent_type, model_type):
+#     return html.Div(
+#         [
+#             html.Label('Start Factor', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-start-factor',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.0001,
+#                 max=1.0000,
+#                 step=0.0001,
+#                 value=1.0,
+#             ),
+#             html.Label('End Factor', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-end-factor',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=0.0001,
+#                 max=1.0000,
+#                 step=0.0001,
+#                 value=0.0010,
+#             ),
+#             html.Label('Total Iterations', style={'text-decoration': 'underline'}),
+#             dcc.Input(
+#                 id={
+#                     'type':'lr-total-iters',
+#                     'model':model_type,
+#                     'agent':agent_type,
+#                 },
+#                 type='number',
+#                 min=1,
+#                 max=1e8,
+#                 step=1,
+#                 value=1e3,
+#             ),
+#         ]
+#     )
 
-def get_lr_scheduler(model_type, agent_type, agent_params):
+# def get_lr_scheduler(model_type, agent_type, agent_params):
 
-    scheduler = agent_params.get(get_key({'type':'lr-scheduler', 'model':model_type, 'agent':agent_type}))
-    if scheduler == 'none':
-        return None
-    params = {}
-    if scheduler == 'step':
-        params['step_size'] = agent_params.get(get_key({'type':'lr-step-size', 'model':model_type, 'agent':agent_type}))
-        params['gamma'] = agent_params.get(get_key({'type':'lr-gamma', 'model':model_type, 'agent':agent_type}))
-    elif scheduler == 'exponential':
-        params['gamma'] = agent_params.get(get_key({'type':'lr-gamma', 'model':model_type, 'agent':agent_type}))
-    elif scheduler == 'cosineannealing':
-        params['T_max'] = agent_params.get(get_key({'type':'lr-t-max', 'model':model_type, 'agent':agent_type}))
-        params['eta_min'] = agent_params.get(get_key({'type':'lr-eta-min', 'model':model_type, 'agent':agent_type}))
-    elif scheduler == 'linear':
-        params['start_factor'] = agent_params.get(get_key({'type':'lr-start-factor', 'model':model_type, 'agent':agent_type}))
-        params['end_factor'] = agent_params.get(get_key({'type':'lr-end-factor', 'model':model_type, 'agent':agent_type}))
-        params['total_iters'] = agent_params.get(get_key({'type':'lr-total-iters', 'model':model_type, 'agent':agent_type}))
+#     scheduler = agent_params.get(get_key({'type':'lr-scheduler', 'model':model_type, 'agent':agent_type}))
+#     if scheduler == 'none':
+#         return None
+#     params = {}
+#     if scheduler == 'step':
+#         params['step_size'] = agent_params.get(get_key({'type':'lr-step-size', 'model':model_type, 'agent':agent_type}))
+#         params['gamma'] = agent_params.get(get_key({'type':'lr-gamma', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'exponential':
+#         params['gamma'] = agent_params.get(get_key({'type':'lr-gamma', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'cosineannealing':
+#         params['T_max'] = agent_params.get(get_key({'type':'lr-t-max', 'model':model_type, 'agent':agent_type}))
+#         params['eta_min'] = agent_params.get(get_key({'type':'lr-eta-min', 'model':model_type, 'agent':agent_type}))
+#     elif scheduler == 'linear':
+#         params['start_factor'] = agent_params.get(get_key({'type':'lr-start-factor', 'model':model_type, 'agent':agent_type}))
+#         params['end_factor'] = agent_params.get(get_key({'type':'lr-end-factor', 'model':model_type, 'agent':agent_type}))
+#         params['total_iters'] = agent_params.get(get_key({'type':'lr-total-iters', 'model':model_type, 'agent':agent_type}))
 
-    return {'type':scheduler, 'params':params}
+#     return {'type':scheduler, 'params':params}
 
 def create_goal_strategy_input(agent_type):
     return html.Div(
@@ -3936,7 +4080,7 @@ def create_policy_model_input(agent_type):
             create_optimizer_input(agent_type, 'policy'),
             create_learning_rate_constant_input(agent_type, 'policy'),
             create_learning_rate_exponent_input(agent_type, 'policy'),
-            create_lr_scheduler_input(agent_type, 'policy')
+            create_scheduler_input('lr', 'policy', agent_type)
         ]
     )
 
@@ -3955,7 +4099,7 @@ def create_value_model_input(agent_type):
             create_optimizer_input(agent_type, 'value'),
             create_learning_rate_constant_input(agent_type, 'value'),
             create_learning_rate_exponent_input(agent_type, 'value'),
-            create_lr_scheduler_input(agent_type, 'value')
+            create_scheduler_input('lr', 'value', agent_type)
         ]
     )
     
@@ -3974,7 +4118,7 @@ def create_actor_model_input(agent_type):
             create_optimizer_input(agent_type, 'actor'),
             create_learning_rate_constant_input(agent_type, 'actor'),
             create_learning_rate_exponent_input(agent_type, 'actor'),
-            create_lr_scheduler_input(agent_type, 'actor')
+            create_scheduler_input('lr', 'actor', agent_type)
         ]
     )
 
@@ -3992,7 +4136,7 @@ def create_critic_model_input(agent_type):
             create_optimizer_input(agent_type, 'critic'),
             create_learning_rate_constant_input(agent_type, 'critic'),
             create_learning_rate_exponent_input(agent_type, 'critic'),
-            create_lr_scheduler_input(agent_type, 'critic')
+            create_scheduler_input('lr', 'critic', agent_type)
         ]
     )
 
@@ -4084,20 +4228,6 @@ def create_actor_critic_parameter_inputs(agent_type):
 
 def create_ddpg_parameter_inputs(agent_type):
     """Adds inputs for DDPG Agent"""
-    # return html.Div(
-    #     id=f'{agent_type}-inputs',
-    #     children=[
-    #         create_device_input(agent_type),
-            
-    #         # Actor Model Configuration
-    #         ,
-    #         # Critic Model Configuration
-    #         html.H3("Critic Model Configuration"),
-            
-    #         # Save dir
-    #         create_save_dir_input(agent_type)
-    #     ]
-    # )
     return html.Div(
             id=f'{agent_type}-inputs',
             children=[
@@ -4110,7 +4240,9 @@ def create_ddpg_parameter_inputs(agent_type):
                             create_tau_input(agent_type),
                             create_epsilon_greedy_input(agent_type),
                             create_batch_size_input(agent_type),
-                            create_noise_function_input(agent_type),
+                            html.Label("Actor Noise"),
+                            create_noise_function_input(agent_type, 'actor'),
+                            create_scheduler_input('noise', 'actor', agent_type),
                             create_input_normalizer_input(agent_type),
                             create_warmup_input(agent_type),
                         ]
@@ -4147,53 +4279,167 @@ def create_ddpg_parameter_inputs(agent_type):
 def create_td3_parameter_inputs(agent_type):
     """Adds inputs for TD3 Agent"""
     return html.Div(
-        id=f'{agent_type}-inputs',
-        children=[
-            create_device_input(agent_type),
-            create_discount_factor_input(agent_type),
-            create_tau_input(agent_type),
-            create_epsilon_greedy_input(agent_type),
-            create_batch_size_input(agent_type),
-            create_noise_function_input(agent_type),
-            create_target_noise_stddev_input(agent_type),
-            create_target_noise_clip_input(agent_type),
-            create_input_normalizer_input(agent_type),
-            create_warmup_input(agent_type),
-            # Actor Model Configuration
-            create_actor_model_input(agent_type),
-            create_actor_delay_input(agent_type),
-            # Critic Model Configuration
-            html.H3("Critic Model Configuration"),
-            create_critic_model_input(agent_type),
-            # Save dir
-            create_save_dir_input(agent_type)
-        ]
-    )
+            id=f'{agent_type}-inputs',
+            children=[
+                dbc.Tabs([
+                    # Tab 1 Agent Parameters
+                    dbc.Tab(
+                        label="Agent Parameters",
+                        children=[
+                            create_discount_factor_input(agent_type),
+                            create_tau_input(agent_type),
+                            create_epsilon_greedy_input(agent_type),
+                            create_batch_size_input(agent_type),
+                            html.Label("Actor Noise"),
+                            create_noise_function_input(agent_type, 'actor'),
+                            create_scheduler_input('noise', 'actor', agent_type),
+                            html.Label("Target Actor Noise"),
+                            create_noise_function_input(agent_type, 'target-actor'),
+                            create_scheduler_input('noise', 'target-actor', agent_type),
+                            create_target_noise_clip_input(agent_type, 'target-actor'),
+                            create_input_normalizer_input(agent_type),
+                            create_warmup_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 2 Policy Model
+                    dbc.Tab(
+                        label="Actor Model",
+                        children=[
+                            create_actor_model_input(agent_type),
+                            create_actor_delay_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 3 Value Model
+                    dbc.Tab(
+                        label="Critic Model",
+                        children=[
+                            create_critic_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 4 Agent Options
+                    dbc.Tab(
+                        label="Agent Options",
+                        children=[
+                            create_device_input(agent_type),
+                            create_save_dir_input(agent_type),
+                        ]
+                    ),
+                ])
+            ]
+        )
 
 
 def create_her_ddpg_parameter_inputs(agent_type):
     """Adds inputs for Hindsight Experience Replay w/DDPG Agent"""
     return html.Div(
-        id=f'{agent_type}-inputs',
-        children=[
-            create_device_input(agent_type),
-            create_goal_strategy_input(agent_type),
-            create_tolerance_input(agent_type),
-            create_discount_factor_input(agent_type),
-            create_tau_input(agent_type),
-            create_epsilon_greedy_input(agent_type),
-            create_batch_size_input(agent_type),
-            create_noise_function_input(agent_type),
-            html.H6("Input Normalizers"),
-            create_input_normalizer_options_input(agent_type),
-            # Actor Model Configuration
-            create_actor_model_input(agent_type),
-            # Critic Model Configuration
-            create_critic_model_input(agent_type),
-            # Save dir
-            create_save_dir_input(agent_type),
-        ]
-    )
+            id=f'{agent_type}-inputs',
+            children=[
+                dbc.Tabs([
+                    # Tab 1 Agent Parameters
+                    dbc.Tab(
+                        label="Agent Parameters",
+                        children=[
+                            create_goal_strategy_input(agent_type),
+                            create_tolerance_input(agent_type),
+                            create_discount_factor_input(agent_type),
+                            create_tau_input(agent_type),
+                            create_epsilon_greedy_input(agent_type),
+                            create_batch_size_input(agent_type),
+                            html.Label("Actor Noise"),
+                            create_noise_function_input(agent_type, 'actor'),
+                            create_scheduler_input('noise', 'actor', agent_type),
+                            create_input_normalizer_input(agent_type),
+                            create_warmup_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 2 Policy Model
+                    dbc.Tab(
+                        label="Actor Model",
+                        children=[
+                            create_actor_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 3 Value Model
+                    dbc.Tab(
+                        label="Critic Model",
+                        children=[
+                            create_critic_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 4 Agent Options
+                    dbc.Tab(
+                        label="Agent Options",
+                        children=[
+                            create_device_input(agent_type),
+                            create_save_dir_input(agent_type),
+                        ]
+                    ),
+                ])
+            ]
+        )
+
+def create_her_td3_parameter_inputs(agent_type):
+    """Adds inputs for Hindsight Experience Replay w/TD3 Agent"""
+    return html.Div(
+            id=f'{agent_type}-inputs',
+            children=[
+                dbc.Tabs([
+                    # Tab 1 Agent Parameters
+                    dbc.Tab(
+                        label="Agent Parameters",
+                        children=[
+                            create_goal_strategy_input(agent_type),
+                            create_tolerance_input(agent_type),
+                            create_discount_factor_input(agent_type),
+                            create_tau_input(agent_type),
+                            create_epsilon_greedy_input(agent_type),
+                            create_batch_size_input(agent_type),
+                            html.Label("Actor Noise"),
+                            create_noise_function_input(agent_type, 'actor'),
+                            create_scheduler_input('noise', 'actor', agent_type),
+                            html.Label("Target Actor Noise"),
+                            create_noise_function_input(agent_type, 'target-actor'),
+                            create_scheduler_input('noise', 'target-actor', agent_type),
+                            create_target_noise_clip_input(agent_type, 'target-actor'),
+                            create_input_normalizer_input(agent_type),
+                            create_warmup_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 2 Policy Model
+                    dbc.Tab(
+                        label="Actor Model",
+                        children=[
+                            create_actor_model_input(agent_type),
+                            create_actor_delay_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 3 Value Model
+                    dbc.Tab(
+                        label="Critic Model",
+                        children=[
+                            create_critic_model_input(agent_type),
+                        ]
+                    ),
+
+                    # Tab 4 Agent Options
+                    dbc.Tab(
+                        label="Agent Options",
+                        children=[
+                            create_device_input(agent_type),
+                            create_save_dir_input(agent_type),
+                        ]
+                    ),
+                ])
+            ]
+        )
 
 def create_ppo_parameter_inputs(agent_type):
     """Adds inputs for PPO Agent"""
@@ -4266,6 +4512,9 @@ def create_agent_parameter_inputs(agent_type):
     
     elif agent_type == 'HER_DDPG':
         return create_her_ddpg_parameter_inputs(agent_type)
+    
+    elif agent_type == 'HER_TD3':
+        return create_her_td3_parameter_inputs(agent_type)
     
     elif agent_type == 'PPO':
         return create_ppo_parameter_inputs(agent_type)

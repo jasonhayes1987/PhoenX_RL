@@ -1,5 +1,6 @@
 import torch as T
 import numpy as np
+from torch_utils import get_device
 
 class Normalizer:
     """
@@ -11,11 +12,11 @@ class Normalizer:
         clip_range (float): Range to clip normalized values.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
     """
-    def __init__(self, size: int, eps: float = 1e-2, clip_range: float = 5.0, device: str = 'cpu'):
+    def __init__(self, size: int, eps: float = 1e-2, clip_range: float = 5.0, device: str = None):
         self.size = size
-        self.eps = T.tensor(eps, device=device)
-        self.clip_range = clip_range
-        self.device = device
+        self.device = get_device(device)
+        self.eps = T.tensor(eps, device=self.device)
+        self.clip_range = T.tensor(clip_range, device=self.device)
 
         # Local statistics
         self.local_sum = T.zeros(self.size, dtype=T.float32, device=self.device)
@@ -39,6 +40,10 @@ class Normalizer:
         Returns:
             T.Tensor: Normalized tensor.
         """
+        # Ensure input tensor is on the same device as normalizer
+        if v.device != self.device:
+            v = v.to(self.device)
+        
         return T.clamp((v - self.running_mean) / self.running_std,
                        -self.clip_range, self.clip_range).float()
 
@@ -62,8 +67,8 @@ class Normalizer:
             new_data (T.Tensor): New data to update local statistics.
         """
         try:
-            self.local_sum += new_data.sum(dim=0)
-            self.local_sum_sq += (new_data**2).sum(dim=0)
+            self.local_sum += new_data.sum(dim=0).to(self.device)
+            self.local_sum_sq += (new_data**2).sum(dim=0).to(self.device)
             self.local_cnt += new_data.size(0)
         except Exception as e:
             print(f"Error during local stats update: {e}")
@@ -81,10 +86,11 @@ class Normalizer:
         self.local_sum.zero_()
         self.local_sum_sq.zero_()
 
-        self.running_mean = self.running_sum / self.running_cnt
-        tmp = self.running_sum_sq / self.running_cnt -\
-            (self.running_sum / self.running_cnt)**2
-        self.running_std = T.sqrt(T.maximum(self.eps**2, tmp))
+        # Ensure all calculations remain on the correct device
+        self.running_mean = (self.running_sum / self.running_cnt).to(self.device)
+        tmp = (self.running_sum_sq / self.running_cnt - (self.running_sum / self.running_cnt)**2).to(self.device)
+        eps_squared = self.eps**2
+        self.running_std = T.sqrt(T.maximum(eps_squared, tmp)).to(self.device)
 
     def get_config(self) -> dict:
         """
@@ -142,15 +148,19 @@ class Normalizer:
             Normalizer: A Normalizer instance with the loaded state.
         """
         state = T.load(file_path)
-        normalizer = cls(size=state['running_mean'].shape, device=device)
-        normalizer.local_sum = state['local_sum']
-        normalizer.local_sum_sq = state['local_sum_sq']
-        normalizer.local_cnt = state['local_cnt']
-        normalizer.running_mean = state['running_mean']
-        normalizer.running_std = state['running_std']
-        normalizer.running_sum = state['running_sum']
-        normalizer.running_sum_sq = state['running_sum_sq']
-        normalizer.running_cnt = state['running_cnt']
+        normalizer = cls(size=state['running_mean'].shape[0], device=device)
+        target_device = normalizer.device
+        
+        # Ensure all loaded tensors are moved to the correct device
+        normalizer.local_sum = state['local_sum'].to(target_device)
+        normalizer.local_sum_sq = state['local_sum_sq'].to(target_device)
+        normalizer.local_cnt = state['local_cnt'].to(target_device)
+        normalizer.running_mean = state['running_mean'].to(target_device)
+        normalizer.running_std = state['running_std'].to(target_device)
+        normalizer.running_sum = state['running_sum'].to(target_device)
+        normalizer.running_sum_sq = state['running_sum_sq'].to(target_device)
+        normalizer.running_cnt = state['running_cnt'].to(target_device)
+        
         return normalizer
 
     

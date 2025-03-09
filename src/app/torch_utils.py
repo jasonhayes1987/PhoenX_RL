@@ -4,6 +4,26 @@ from torch import optim
 import numpy as np
 
 
+def get_device(device_spec=None):
+    """
+    Convert any valid device specification to a torch.device object.
+    
+    Args:
+        device_spec: Can be a string ('cuda', 'cpu'), a torch.device object, 
+                    or None (defaults to 'cuda' if available, else 'cpu')
+                    
+    Returns:
+        torch.device: The corresponding device object
+    """
+    if device_spec is None:
+        return T.device('cuda' if T.cuda.is_available() else 'cpu')
+    elif isinstance(device_spec, str):
+        return T.device('cuda' if device_spec == 'cuda' and T.cuda.is_available() else 'cpu')
+    elif isinstance(device_spec, T.device):
+        return device_spec
+    else:
+        raise ValueError(f"Unsupported device specification: {device_spec}")
+
 def set_seed(seed: int):
     """
     Set the random seed for reproducibility in PyTorch and NumPy.
