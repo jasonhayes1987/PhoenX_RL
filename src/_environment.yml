@@ -1,7 +1,5 @@
 name: rl_env
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
   - defaults
 dependencies:
@@ -41,21 +39,16 @@ dependencies:
   - mpi4py
   - cupy
   - dash-bootstrap-components
-  - mujoco>=2.2.0,<3.2.0
-  - python-dotenv
-  - python-dotenv-with-cli
-  - pytorch
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.4
+  # - jaxlib=0.4.26  # If needed
+  # - mujoco         # If needed
   - pip:
     - expecttest!=0.2.0
     - optree>=0.9.1
     - ale-py
     - autorom
+    # - dash-bootstrap-components
     - wandb
     - types-dataclasses
-    - gymnasium[mujoco,jax,atari,box2d,classic-control,toy-text]==1.0.0
-    # - gymnasium-robotics
+    - gymnasium[all]==1.0.0
+    - gymnasium-robotics
     - decorator==4.0.2
-    - mcp
