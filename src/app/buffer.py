@@ -3,6 +3,7 @@ import numpy as np
 import gymnasium as gym
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import build_env_wrapper_obj
+from torch_utils import get_device
 from typing import Optional, Tuple, Any, Dict
 
 class Buffer():
@@ -92,7 +93,7 @@ class ReplayBuffer:
         self.env = env
         self.buffer_size = buffer_size
         self.goal_shape = goal_shape
-        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+        self.device = get_device(device)
         
         # Determine observation space shape
         if isinstance(self.env.single_observation_space, gym.spaces.Dict):

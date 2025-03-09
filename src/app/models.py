@@ -19,7 +19,7 @@ import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
 import cnn_models
-import torch_utils
+from torch_utils import get_device, VarianceScaling_
 from logging_config import logger
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import check_for_inf_or_NaN
@@ -57,7 +57,7 @@ class Model(nn.Module):
         self.layers = nn.ModuleDict()
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
         self.scheduler_params = scheduler_params
-        self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+        self.device = get_device(device)
 
         # Build the layers dynamically based on config
         for i, layer_info in enumerate(self.layer_config):
@@ -220,7 +220,7 @@ class Model(nn.Module):
                 nn.init.zeros_(layer.weight, **kernel_params)
                 # nn.init.zeros_(layer.bias, **config['params']['kernel params'])
             elif kernel == 'variance_scaling':
-                torch_utils.VarianceScaling_(layer.weight, **kernel_params)
+                VarianceScaling_(layer.weight, **kernel_params)
             elif kernel == 'default':
                 # Use PyTorch's default initialization (skip)
                 pass
@@ -347,7 +347,7 @@ class StochasticDiscretePolicy(Model):
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         scheduler_params:dict = None,
         distribution: str = 'categorical',
-        device: str = 'cuda'
+        device: str = None
     ):
         """
         Initialize the policy model.
@@ -542,7 +542,7 @@ class StochasticContinuousPolicy(Model):
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         scheduler_params:dict = None,
         distribution: str = 'beta',
-        device: str = 'cuda'
+        device: str = None
     ):
         """
         Initialize the policy model.
@@ -735,7 +735,7 @@ class ValueModel(Model):
         output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         scheduler_params = None,
-        device = 'cuda'
+        device = None
     ):
         """
         Initialize the value model.
@@ -898,15 +898,14 @@ class ActorModel(Model):
                  output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  scheduler_params: dict=None,
-                 device: str='cuda'
+                 device: str=None
                  ):
-        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
         self.output_config = output_layer_kernel
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
-            'actor_mu': nn.LazyLinear(1),
+            'actor_mu': nn.LazyLinear(self.env.single_action_space.shape[-1]),
             'actor_pi': nn.Tanh()
         })
 
@@ -1034,9 +1033,8 @@ class CriticModel(Model):
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  scheduler_params: dict=None,
-                 device: str='cuda'
+                 device: str=None
                  ):
-        self.device = device if device else T.device('cuda' if T.cuda.is_available() else 'cpu')
         super().__init__(env, state_layers, optimizer_params, scheduler_params, device)
         self.env = env
         # self.state_config = state_layers # Stored as layer config in parent

@@ -38,40 +38,27 @@ def train_agent(agent_config, train_config):
         #DEBUG
         # print(f'training save dir: {save_dir}')
         num_envs = train_config['num_envs']
-        seed = train_config['seed']
+        seed = train_config.get('seed', np.random.randint(1000))
         run_number = train_config.get('run_number', None)
-        # num_runs = train_config.get('num_runs', 1)
+        num_episodes = train_config['num_episodes']
 
         assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
             agent = load_agent_from_config(agent_config, load_weights)
-            # print('agent config loaded')
-            # print(f'env:{agent.env.spec}')
 
-            if agent_type == 'Reinforce':
-                agent.train(train_config['num_episodes'], num_envs, train_config['batch_size'], seed, render_freq, save_dir)
+            if agent_type in ['ActorCritic', 'DDPG', 'TD3']:
+                agent.train(num_episodes, num_envs, seed, render_freq)
 
-            elif agent_type == 'ActorCritic':
-                agent.train(train_config['num_episodes'], num_envs, seed, render_freq, save_dir)
-
+            elif agent_type == 'Reinforce':
+                trajectories_per_update = train_config['trajectories_per_update']
+                agent.train(num_episodes, num_envs, trajectories_per_update, seed, render_freq)
 
             elif agent_type == 'HER':
-                num_episodes = train_config['num_episodes']
                 num_epochs = train_config['num_epochs']
                 num_cycles = train_config['num_cycles']
-                num_updates = train_config['num_updates']
-                # for i in range(num_runs):
-                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, save_dir, run_number)
-                # print(f'training run {i+1} initiated')
-            
-            elif agent_type == 'DDPG':
-                num_episodes = train_config['num_episodes']
-                agent.train(num_episodes, render_freq)
-
-            elif agent_type == 'TD3':
-                num_episodes = train_config['num_episodes']
-                agent.train(num_episodes, render_freq, run_number=run_number)
+                num_updates = train_config['learning_epochs']
+                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
             
             elif agent_type == 'PPO':
                 timesteps = train_config['num_timesteps']

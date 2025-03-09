@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y \
     swig \
     cmake \
     gcc \
+    curl \
+    nodejs \
+    npm \
     libglfw3-dev \
     libglew-dev \
     libopengl0 \
@@ -53,21 +56,24 @@ ENV CONDA_DEFAULT_ENV=rl_env
 SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 
 # Install PyTorch with CUDA support
-RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+# RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
-# Install MuJoCo
-RUN mkdir -p /root/.mujoco && \
-    wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz && \
-    tar -xf mujoco.tar.gz -C /root/.mujoco && \
-    rm mujoco.tar.gz && \
-    ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1.4 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 && \
-    ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so
+# Install Gymnasium Robotics directly from Repo for Mujoco v4 support
+RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git
 
-# Set environment variables for MuJoCo
-ENV MUJOCO_GL="egl"
-ENV PYOPENGL_PLATFORM="egl"
-ENV LD_LIBRARY_PATH="/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}"
-ENV MUJOCO_PATH="/root/.mujoco/mujoco-3.1.4"
+# # Install MuJoCo
+# RUN mkdir -p /root/.mujoco && \
+#     wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz && \
+#     tar -xf mujoco.tar.gz -C /root/.mujoco && \
+#     rm mujoco.tar.gz && \
+#     ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1.4 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 && \
+#     ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so
+
+# # Set environment variables for MuJoCo
+# ENV MUJOCO_GL="egl"
+# ENV PYOPENGL_PLATFORM="egl"
+# ENV LD_LIBRARY_PATH="/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}"
+# ENV MUJOCO_PATH="/root/.mujoco/mujoco-3.1.4"
 
 # Add app directory to python path
 ENV PYTHONPATH="${PYTHONPATH}:/workspaces/RL_Agents/src/app"
@@ -82,7 +88,7 @@ WORKDIR /app
 COPY src/ /app/
 
 # Verify CUDA installation with nvcc
-# RUN nvcc --version
+RUN nvcc --version
 
 # Verify CUDA availability in PyTorch
 # RUN python -c "import torch; print(f'CUDA version: {torch.version.cuda}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Number of CUDA devices: {torch.cuda.device_count()}')"
