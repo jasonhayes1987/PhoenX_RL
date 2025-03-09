@@ -1315,7 +1315,7 @@ class DDPG(Agent):
                 goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 goal = goal_normalizer.normalize(goal)
             # use self.state_normalizer if self.normalize_inputs
-            elif self.normalize_inputs:
+            elif self.normalize_inputs and not self._use_her:
                 state = self.state_normalizer.normalize(state)
             
             _, pi = self.target_actor_model(state, goal)
@@ -1334,7 +1334,7 @@ class DDPG(Agent):
                 goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 goal = goal_normalizer.normalize(goal)
             # use self.state_normalizer if self.normalize_inputs
-            elif self.normalize_inputs:
+            elif self.normalize_inputs and not self._use_her:
                 state = self.state_normalizer.normalize(state)
             
             noise = self.noise()
@@ -1381,7 +1381,7 @@ class DDPG(Agent):
             next_states = self.state_normalizer.normalize(next_states)
 
         # (HER) Use passed normalizers to normalize states and goals
-        if self._use_her:
+        elif self._use_her:
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
@@ -1424,8 +1424,9 @@ class DDPG(Agent):
         self.actor_model.optimizer.step()
 
         # perform soft update on target networks
-        self.soft_update(self.actor_model, self.target_actor_model)
-        self.soft_update(self.critic_model, self.target_critic_model)
+        if not self._use_her:
+            self.soft_update(self.actor_model, self.target_actor_model)
+            self.soft_update(self.critic_model, self.target_critic_model)
 
         # add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
@@ -1966,6 +1967,7 @@ class DDPG(Agent):
                 "action_epsilon": self.action_epsilon,
                 "batch_size": self.batch_size,
                 "noise": self.noise.get_config(),
+                "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
                 'normalize_inputs': self.normalize_inputs,
                 'normalizer_clip': self.normalizer_clip,
                 'normalizer_eps': self.normalizer_eps,
@@ -2037,6 +2039,7 @@ class DDPG(Agent):
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             noise=noise,
+            noise_schedule=ScheduleWrapper(config["noise_schedule"]),
             normalize_inputs = normalize_inputs,
             normalizer_clip = normalizer_clip,
             warmup = config['warmup'],
@@ -2065,7 +2068,9 @@ class TD3(Agent):
         replay_buffer: ReplayBuffer = None,
         batch_size: int = 256,
         noise: Noise = None,
+        noise_schedule: ScheduleWrapper=None,
         target_noise: Noise = None,
+        target_noise_schedule: ScheduleWrapper=None,
         target_noise_clip: float = 0.5,
         actor_update_delay: int = 2,
         normalize_inputs: bool = False,
@@ -2092,10 +2097,12 @@ class TD3(Agent):
             self.action_epsilon = action_epsilon
             self.replay_buffer = replay_buffer
             self.batch_size = batch_size
-            self.   noise = noise
+            self.noise = noise
+            self.noise_schedule = noise_schedule
             if target_noise == None:
                 target_noise = NormalNoise(self.env.single_action_space.shape, stddev=0.2, device=device)
             self.target_noise = target_noise
+            self.target_noise_schedule = target_noise_schedule
             self.target_noise_clip = target_noise_clip
             self.actor_update_delay = actor_update_delay
             self.normalize_inputs = normalize_inputs
@@ -2339,7 +2346,7 @@ class TD3(Agent):
         if test:
             with T.no_grad():
                 # normalize state if self.normalize_inputs
-                if self.normalize_inputs:
+                if self.normalize_inputs and not self._use_her:
                     state = self.state_normalizer.normalize(state)
                 # (HER) else if using HER, normalize using passed normalizer
                 elif self._use_her:
@@ -2355,19 +2362,22 @@ class TD3(Agent):
             # check if using epsilon greedy
             if np.random.random() < self.action_epsilon or self._step <= self.warmup:
                 action_np = self.env.action_space.sample()
-                noise_np = np.zeros(action_np.shape[-1])
+                noise_np = np.zeros((1,action_np.shape[-1]))
             
             else:
-                # normalize state if self.normalize_inputs
-                if self.normalize_inputs:
-                    state = self.state_normalizer.normalize(state)
-                # (HER) use passed state and goal normalizer if using HER
-                elif self._use_her:
+                if self._use_her:
                     state = state_normalizer.normalize(state)
+                    # make sure goal is a tensor and on correct device
+                    goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                     goal = goal_normalizer.normalize(goal)
+                # use self.state_normalizer if self.normalize_inputs
+                elif self.normalize_inputs and not self._use_her:
+                    state = self.state_normalizer.normalize(state)
                 
                 # Create noise
                 noise = self.noise()
+                if self.noise_schedule:
+                    noise *= self.noise_schedule.get_factor()
 
                 _, pi = self.actor_model(state, goal)
                 # print(f'pi: {pi}')
@@ -2389,7 +2399,7 @@ class TD3(Agent):
             #     self._train_step_config[f'action_{i}'] = a
             for i in range(action_np.shape[-1]):
                 # Log the values to wandb
-                self._train_step_config[f'action_{i}'] = action_np[:,i].mean()
+                self._test_step_config[f'action_{i}'] = action_np[:,i].mean()
                 # self._train_step_config[f'action_{i}_noise'] = noise_np[i]
 
         else:
@@ -2399,10 +2409,12 @@ class TD3(Agent):
             #     self._train_step_config[f'action_{i}'] = a
             #     self._train_step_config[f'noise_{i}'] = n
 
+            # Loop over the noise and action values and log them to wandb
             for i in range(action_np.shape[-1]):
                 # Log the values to wandb
+                # self._train_step_config[f'action_{i}'] = a
                 self._train_step_config[f'action_{i}'] = action_np[:,i].mean()
-                self._train_step_config[f'action_{i}_noise'] = noise_np[i]
+                self._train_step_config[f'action_{i}_noise'] = noise_np[:,i].mean()
         
         # print(f'pi: {pi}; noise: {noise}; action_np: {action_np}')
 
@@ -2665,10 +2677,10 @@ class TD3(Agent):
         # print(f"dones device: {dones.device}")
         
         # Normalize states if self.normalize_inputs
-        if self.normalize_inputs==True:
+        if self.normalize_inputs and not self._use_her:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
-        if self._use_her==True:
+        elif self._use_her:
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
@@ -2683,7 +2695,9 @@ class TD3(Agent):
         with T.no_grad():
             _, target_actions = self.target_actor_model(next_states, desired_goals)
             noise = self.target_noise().clamp(-self.target_noise_clip, self.target_noise_clip)
-            target_actions = (target_actions + noise).clamp(float(self.env.action_space.low[0]), float(self.env.action_space.high[0]))
+            if self.target_noise_schedule:
+                noise *= self.target_noise_schedule.get_factor()
+            target_actions = (target_actions + noise).clamp(float(self.env.action_space.low.min()), float(self.env.action_space.high.max()))
             target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
             target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
             target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
@@ -2712,22 +2726,24 @@ class TD3(Agent):
         pre_act_values, action_values = self.actor_model(states, desired_goals)
         critic_values = self.critic_model_a(states, action_values, desired_goals)
         actor_loss = -T.mean(critic_values)
-        if self._use_her==True:
+        if self._use_her:
             actor_loss += pre_act_values.pow(2).mean()
 
         # Backward pass and optimization for the actor
         if self._step % self.actor_update_delay == 0:
             actor_loss.backward()
             self.actor_model.optimizer.step()
-            self.soft_update(self.actor_model, self.target_actor_model)
-            self.soft_update(self.critic_model_a, self.target_critic_model_a)
-            self.soft_update(self.critic_model_b, self.target_critic_model_b)
+            if not self._use_her:
+                self.soft_update(self.actor_model, self.target_actor_model)
+                self.soft_update(self.critic_model_a, self.target_critic_model_a)
+                self.soft_update(self.critic_model_b, self.target_critic_model_b)
 
         # Add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
         self._train_step_config['critic_predictions'] = critic_values.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
         self._train_step_config['target_critic_predictions'] = target_critic_values_a.mean()
+        self._train_step_config['target_noise'] = noise.mean()
 
         return actor_loss.item(), critic_loss.item()
         
@@ -3296,6 +3312,13 @@ class TD3(Agent):
                 self._train_step_config["critic_loss"] = critic_loss
                 if actor_loss is not None:
                     self._train_step_config["actor_loss"] = actor_loss
+                # Step schedulers if not None
+                if self.noise_schedule:
+                    self.noise_schedule.step()
+                    self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
+                if self.target_noise_schedule:
+                    self.target_noise_schedule.step()
+                    self._train_step_config["target_noise_anneal"] = self.target_noise_schedule.get_factor()
                 if self.callbacks:
                     for callback in self.callbacks:
                         callback.on_train_step_end(step=self._step, logs=self._train_step_config)
@@ -3480,7 +3503,9 @@ class TD3(Agent):
             "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
             "batch_size": self.batch_size,
             "noise": self.noise.get_config() if self.noise is not None else None,
+            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
             "target_noise": self.target_noise.get_config() if self.target_noise is not None else None,
+            "target_noise_schedule": self.target_noise_schedule.get_config() if self.target_noise_schedule is not None else None,
             "target_noise_clip": self.target_noise_clip,
             "actor_update_delay": self.actor_update_delay,
             "normalize_inputs": self.normalize_inputs,
@@ -3609,6 +3634,7 @@ class TD3(Agent):
             replay_buffer = None
         noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
         target_noise = Noise.create_instance(config["target_noise"]["class_name"], **config["target_noise"]["config"])
+
         normalize_inputs = config['normalize_inputs']
         normalizer_clip = config['normalizer_clip']
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
@@ -3624,7 +3650,9 @@ class TD3(Agent):
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             noise=noise,
+            noise_schedule=ScheduleWrapper(config["noise_schedule"]),
             target_noise=target_noise,
+            target_noise_schedule=ScheduleWrapper(config["target_noise_schedule"]),
             target_noise_clip=config["target_noise_clip"],
             actor_update_delay=config["actor_update_delay"],
             normalize_inputs=config["normalize_inputs"],
@@ -4383,8 +4411,9 @@ class HER(Agent):
             if self.agent.callbacks:
                 for callback in self.agent.callbacks:
                     if isinstance(callback, WandbCallback):
-                        models = (self.agent.critic_model, self.agent.actor_model)
-                        if isinstance(self.agent, TD3):
+                        if isinstance(self.agent, DDPG):
+                            models = (self.agent.critic_model, self.agent.actor_model)
+                        elif isinstance(self.agent, TD3):
                             models = (self.agent.critic_model_a, self.agent.critic_model_b, self.agent.actor_model)
                         callback.on_train_begin(models, logs=self.agent._config)
                     else:
@@ -4544,12 +4573,23 @@ class HER(Agent):
                                     "actor_loss": actor_loss,
                                     "critic_loss": critic_loss
                                 })
-                                #DEBUG
-                                print(f'actor_loss: {actor_loss}, critic_loss: {critic_loss}')
+                            # Update target networks
+                            if isinstance(self.agent, DDPG):
+                                self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
+                                self.agent.soft_update(self.agent.critic_model, self.agent.target_critic_model)
+                            elif isinstance(self.agent, TD3):
+                                self.agent.soft_update(self.agent.actor_model, self.agent.target_actor_model)
+                                self.agent.soft_update(self.agent.critic_model_a, self.agent.target_critic_model_a)
+                                self.agent.soft_update(self.agent.critic_model_b, self.agent.target_critic_model_b)
 
+                            # Step noise scheduler if not None
                             if self.agent.noise_schedule:
                                 self.agent.noise_schedule.step()
                                 self.agent._train_step_config["noise_anneal"] = self.agent.noise_schedule.get_factor()
+                            # Step target noise scheduler if is attr and not None
+                            if hasattr(self.agent, 'target_noise_schedule') and self.agent.target_noise_schedule:
+                                self.agent.target_noise_schedule.step()
+                                self.agent._train_step_config["target_noise_anneal"] = self.agent.target_noise_schedule.get_factor()
 
                 if self.agent.callbacks:
                     for callback in self.agent.callbacks:

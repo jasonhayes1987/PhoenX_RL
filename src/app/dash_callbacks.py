@@ -1015,123 +1015,10 @@ def register_callbacks(app, shared_data):
     )
     def update_noise_inputs(noise_type, id):
         if noise_type is not None:
-            agent_type = id['agent']
-            if noise_type == "Ornstein-Uhlenbeck":
-                inputs = html.Div([
-                    html.Label('Mean', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'ou-mean',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=0.0,
-                    ),
-                    html.Label('Mean Reversion', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'ou-sigma',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=0.15,
-                    ),
-                    html.Label('Volatility', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'ou-theta',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=0.2,
-                    ),
-                    html.Label('Time Delta', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'ou-dt',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=1.0,
-                    ),
-                ])
-
-            elif noise_type == "Normal":
-                inputs = html.Div([
-                    html.Label('Mean', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'normal-mean',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=0.0,
-                    ),
-                    html.Label('Standard Deviation', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'normal-stddv',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=1.0,
-                    ),
-                ])
-
-            elif noise_type == "Uniform":
-                inputs = html.Div([
-                    html.Label('Minimum Value', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'uniform-min',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=0.1,
-                    ),
-                    html.Label('Maximum Value', style={'text-decoration': 'underline'}),
-                    dcc.Input(
-                        id={
-                            'type':'uniform-max',
-                            'model':'none',
-                            'agent': agent_type,
-                        },
-                        type='number',
-                        min=0.0,
-                        max=1.0,
-                        step=0.01,
-                        value=1.0,
-                    ),
-                ])
+            inputs = dash_utils.update_noise_inputs(noise_type, id)
             return inputs
+        else:
+            return None
         
     # # Callback that updates the placeholder div based on the selected kernel initializer
     # @app.callback(
@@ -1360,7 +1247,18 @@ def register_callbacks(app, shared_data):
     def update_learning_rate_scheduler_options(lr_scheduler, lr_scheduler_id):
         agent_type = lr_scheduler_id['agent']
         model_type = lr_scheduler_id['model']
-        return dash_utils.update_lr_scheduler_options(agent_type, model_type, lr_scheduler)
+        return dash_utils.update_scheduler_options('lr', agent_type, model_type, lr_scheduler)
+
+    @app.callback(
+        Output({'type': 'noise-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'noise-scheduler', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'noise-scheduler', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_noise_scheduler_options(noise_scheduler, noise_scheduler_id):
+        agent_type = noise_scheduler_id['agent']
+        model_type = noise_scheduler_id['model']
+        return dash_utils.update_scheduler_options('noise', agent_type, model_type, noise_scheduler)
 
     @app.callback(
         Output({'type': 'entropy-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -1371,7 +1269,7 @@ def register_callbacks(app, shared_data):
     def update_entropy_scheduler_options(entropy_scheduler, entropy_scheduler_id):
         agent_type = entropy_scheduler_id['agent']
         model_type = entropy_scheduler_id['model']
-        return dash_utils.update_entropy_scheduler_options(agent_type, model_type, entropy_scheduler)
+        return dash_utils.update_scheduler_options('entropy', agent_type, model_type, entropy_scheduler)
     
     @app.callback(
         Output({'type': 'surrogate-clip-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -1382,7 +1280,7 @@ def register_callbacks(app, shared_data):
     def update_surrogate_loss_clip_scheduler_options(surrogate_clip_scheduler, surrogate_clip_scheduler_id):
         agent_type = surrogate_clip_scheduler_id['agent']
         model_type = surrogate_clip_scheduler_id['model']
-        return dash_utils.update_surrogate_loss_clip_scheduler_options(agent_type, model_type, surrogate_clip_scheduler)
+        return dash_utils.update_scheduler_options('surrogate-clip', agent_type, model_type, surrogate_clip_scheduler)
     
     # @app.callback(
     #     Output({'type': 'value-clip-scheduler-options', 'model': MATCH, 'agent': MATCH}, 'children'),
@@ -1531,7 +1429,7 @@ def register_callbacks(app, shared_data):
         # set params if agent is reinforce/actor critic/PPO
         if agent_type_dropdown_value in ["Reinforce", "ActorCritic", "PPO"]:
 
-            policy_learning_rate_schedule = dash_utils.get_lr_scheduler('policy', agent_type_dropdown_value, agent_params)
+            policy_learning_rate_schedule = dash_utils.get_scheduler('lr', 'policy', agent_type_dropdown_value, agent_params)
             policy_optimizer = dash_utils.get_optimizer('policy', agent_type_dropdown_value, agent_params)
             policy_layers = dash_utils.format_layers('policy', agent_type_dropdown_value, agent_params)
             policy_output_kernel = dash_utils.format_output_kernel_initializer_config('policy', agent_type_dropdown_value, agent_params)
@@ -1575,7 +1473,7 @@ def register_callbacks(app, shared_data):
                         device=device,
                 )
 
-            value_learning_rate_schedule = dash_utils.get_lr_scheduler('value', agent_type_dropdown_value, agent_params)
+            value_learning_rate_schedule = dash_utils.get_scheduler('lr', 'value', agent_type_dropdown_value, agent_params)
             value_optimizer = dash_utils.get_optimizer('value', agent_type_dropdown_value, agent_params)
             value_layers = dash_utils.format_layers('value', agent_type_dropdown_value, agent_params)
             value_output_kernel = dash_utils.format_output_kernel_initializer_config('value', agent_type_dropdown_value, agent_params)
@@ -1622,12 +1520,12 @@ def register_callbacks(app, shared_data):
                 
                 gae_coeff = agent_params.get(dash_utils.get_key({'type':'advantage-coeff', 'model':'none', 'agent':agent_type_dropdown_value}))
                 policy_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'policy', 'agent':agent_type_dropdown_value}))
-                policy_clip_schedule = ScheduleWrapper(dash_utils.get_surrogate_loss_clip_scheduler('policy', agent_type_dropdown_value, agent_params))
+                policy_clip_schedule = ScheduleWrapper(dash_utils.get_scheduler('surrogate-clip', 'policy', agent_type_dropdown_value, agent_params))
                 value_clip = agent_params.get(dash_utils.get_key({'type':'surrogate-clip', 'model':'value', 'agent':agent_type_dropdown_value}))
-                value_clip_schedule = ScheduleWrapper(dash_utils.get_surrogate_loss_clip_scheduler('value', agent_type_dropdown_value, agent_params))
+                value_clip_schedule = ScheduleWrapper(dash_utils.get_scheduler('surrogate-clip', 'value', agent_type_dropdown_value, agent_params))
                 value_loss_coeff = agent_params.get(dash_utils.get_key({'type':'value-model-coeff', 'model':'value', 'agent':agent_type_dropdown_value}))
                 entropy_coeff = agent_params.get(dash_utils.get_key({'type':'entropy-coeff', 'model':'none', 'agent':agent_type_dropdown_value}))
-                entropy_schedule = ScheduleWrapper(dash_utils.get_entropy_scheduler('none', agent_type_dropdown_value, agent_params))
+                entropy_schedule = ScheduleWrapper(dash_utils.get_scheduler('entropy', 'none', agent_type_dropdown_value, agent_params))
                 kl_coeff = agent_params.get(dash_utils.get_key({'type':'kl-coeff', 'model':'none', 'agent':agent_type_dropdown_value}))
                 kl_adapter_params = dash_utils.get_kl_adapter('none', agent_type_dropdown_value, agent_params)
                 if kl_adapter_params is None:
@@ -1670,7 +1568,7 @@ def register_callbacks(app, shared_data):
 
         elif agent_type_dropdown_value in ["DDPG", "TD3", "HER_DDPG", "HER_TD3"]:
 
-            actor_learning_rate_schedule = dash_utils.get_lr_scheduler('actor', agent_type_dropdown_value, agent_params)
+            actor_learning_rate_schedule = dash_utils.get_scheduler('lr', 'actor', agent_type_dropdown_value, agent_params)
             actor_optimizer = dash_utils.get_optimizer('actor', agent_type_dropdown_value, agent_params)
             actor_layers = dash_utils.format_layers('actor', agent_type_dropdown_value, agent_params)
             actor_output_kernel = dash_utils.format_output_kernel_initializer_config('actor', agent_type_dropdown_value, agent_params)
@@ -1687,7 +1585,7 @@ def register_callbacks(app, shared_data):
             
             # Set critic params
 
-            critic_learning_rate_schedule = dash_utils.get_lr_scheduler('critic', agent_type_dropdown_value, agent_params)
+            critic_learning_rate_schedule = dash_utils.get_scheduler('lr', 'critic', agent_type_dropdown_value, agent_params)
             critic_optimizer = dash_utils.get_optimizer('critic', agent_type_dropdown_value, agent_params)
             critic_state_layers = dash_utils.format_layers('critic-state', agent_type_dropdown_value, agent_params)
             critic_merged_layers = dash_utils.format_layers('critic-merged', agent_type_dropdown_value, agent_params)
@@ -1709,9 +1607,9 @@ def register_callbacks(app, shared_data):
             epsilon = agent_params.get(dash_utils.get_key({'type':'epsilon-greedy', 'model':'none', 'agent':agent_type_dropdown_value}))
             replay_buffer = ReplayBuffer(env, 100000, device=device)
             batch_size = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
-            noise = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
-            noise = dash_utils.create_noise_object(env, model_type='none', agent_type=agent_type_dropdown_value, agent_params=agent_params)
-            
+            noise = agent_params.get(dash_utils.get_key({'type':'noise-function', 'model':'actor', 'agent':agent_type_dropdown_value}))
+            noise = dash_utils.create_noise_object(env, model_type='actor', agent_type=agent_type_dropdown_value, agent_params=agent_params)
+            noise_schedule = ScheduleWrapper(dash_utils.get_scheduler('noise', 'actor', agent_type_dropdown_value, agent_params))
             normalize_inputs = agent_params.get(dash_utils.get_key({'type':'normalize-input', 'model':'none', 'agent':agent_type_dropdown_value}))
 
             clip_value = agent_params.get(dash_utils.get_key({'type':'clip-value', 'model':'none', 'agent':agent_type_dropdown_value}))
@@ -1729,6 +1627,7 @@ def register_callbacks(app, shared_data):
                     replay_buffer = replay_buffer,
                     batch_size = batch_size,
                     noise = noise,
+                    noise_schedule = noise_schedule,
                     normalize_inputs = normalize_inputs,
                     normalizer_clip = clip_value,
                     warmup = warmup,
@@ -1740,9 +1639,10 @@ def register_callbacks(app, shared_data):
 
             elif agent_type_dropdown_value == "TD3":
                 # Set TD3 params
-                target_noise_std = agent_params.get(dash_utils.get_key({'type':'target-noise-stddev', 'model':'none', 'agent':agent_type_dropdown_value}))
-                target_noise = dash_utils.create_noise_object(env, model_type='none', agent_type=agent_type_dropdown_value, agent_params=agent_params)
-                target_noise_clip = agent_params.get(dash_utils.get_key({'type':'target-noise-clip', 'model':'actor', 'agent':agent_type_dropdown_value}))
+                target_noise = agent_params.get(dash_utils.get_key({'type':'noise-function', 'model':'target-actor', 'agent':agent_type_dropdown_value}))
+                target_noise = dash_utils.create_noise_object(env, model_type='target-actor', agent_type=agent_type_dropdown_value, agent_params=agent_params)
+                target_noise_schedule = ScheduleWrapper(dash_utils.get_scheduler('noise', 'target-actor', agent_type_dropdown_value, agent_params))
+                target_noise_clip = agent_params.get(dash_utils.get_key({'type':'target-noise-clip', 'model':'target-actor', 'agent':agent_type_dropdown_value}))
                 actor_delay = agent_params.get(dash_utils.get_key({'type':'actor-update-delay', 'model':'actor', 'agent':agent_type_dropdown_value}))
             
                 agent = TD3(
@@ -1755,7 +1655,9 @@ def register_callbacks(app, shared_data):
                     replay_buffer = replay_buffer,
                     batch_size = batch_size,
                     noise = noise,
+                    noise_schedule = noise_schedule,
                     target_noise = target_noise,
+                    target_noise_schedule = target_noise_schedule,
                     target_noise_clip = target_noise_clip,
                     actor_update_delay = actor_delay,
                     normalize_inputs = normalize_inputs,
@@ -1788,6 +1690,7 @@ def register_callbacks(app, shared_data):
                         replay_buffer = replay_buffer,
                         batch_size = batch_size,
                         noise = noise,
+                        noise_schedule = noise_schedule,
                         normalize_inputs = normalize_inputs,
                         normalizer_clip = clip_value,
                         warmup = warmup,
@@ -1797,6 +1700,11 @@ def register_callbacks(app, shared_data):
                     )
 
                 elif agent_type_dropdown_value == "HER_TD3":
+                    target_noise = agent_params.get(dash_utils.get_key({'type':'noise-function', 'model':'target-actor', 'agent':agent_type_dropdown_value}))
+                    target_noise = dash_utils.create_noise_object(env, model_type='target-actor', agent_type=agent_type_dropdown_value, agent_params=agent_params)
+                    target_noise_schedule = ScheduleWrapper(dash_utils.get_scheduler('noise', 'target-actor', agent_type_dropdown_value, agent_params))
+                    target_noise_clip = agent_params.get(dash_utils.get_key({'type':'target-noise-clip', 'model':'target-actor', 'agent':agent_type_dropdown_value}))
+                    actor_delay = agent_params.get(dash_utils.get_key({'type':'actor-update-delay', 'model':'actor', 'agent':agent_type_dropdown_value}))
                     # Create TD3 agent
                     algo = TD3(
                         env = env,
@@ -1808,7 +1716,9 @@ def register_callbacks(app, shared_data):
                         replay_buffer = replay_buffer,
                         batch_size = batch_size,
                         noise = noise,
-                        target_noise = target_noise_std,
+                        noise_schedule = noise_schedule,
+                        target_noise = target_noise,
+                        target_noise_schedule = target_noise_schedule,
                         target_noise_clip = target_noise_clip,
                         actor_update_delay = actor_delay,
                         normalize_inputs = normalize_inputs,
