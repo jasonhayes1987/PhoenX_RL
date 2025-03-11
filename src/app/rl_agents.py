@@ -20,7 +20,7 @@ from rl_callbacks import load as callback_load
 from models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, CriticModel, ActorModel
 from schedulers import ScheduleWrapper
 from adaptive_kl import AdaptiveKL
-from buffer import Buffer, ReplayBuffer, SharedReplayBuffer
+from buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, Buffer
 from normalizer import Normalizer, SharedNormalizer
 from noise import Noise, NormalNoise, UniformNoise, OUNoise
 import wandb
@@ -417,7 +417,6 @@ class ActorCritic(Agent):
         self._train_step_config[f"log_probabilities"] = wandb.Histogram(log_probs.detach().cpu().numpy())
         self._train_step_config[f"action_probabilities"] = wandb.Histogram(dist.probs.detach().cpu().numpy())
         self._train_step_config["entropy"] = dist.entropy().mean().item()
-
 
     def test(self, num_episodes:int, num_envs: int=1, seed: int=None, render_freq: int=0, training: bool=False):
         """Runs a test over 'num_episodes'."""
@@ -1177,7 +1176,7 @@ class DDPG(Agent):
         self, env: EnvWrapper,
         actor_model: ActorModel,
         critic_model: CriticModel,
-        replay_buffer: ReplayBuffer = None,
+        replay_buffer: Buffer = None,
         discount: float=0.99,
         tau: float=0.001,
         action_epsilon: float = 0.0,
@@ -1370,11 +1369,23 @@ class DDPG(Agent):
     def learn(self, state_normalizer: Normalizer=None, goal_normalizer: Normalizer=None):
 
         # sample a batch of experiences from the replay buffer
-        if self._use_her: # if using HER
-            states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
-        else:
-            states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
-        
+        #DEBUG
+        # print(f"Getting batch from buffer: {self.replay_buffer.counter}")
+        if hasattr(self.replay_buffer, 'update_priorities'):  # Check if using prioritized replay
+            if self._use_her:  # HER with prioritized replay
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, indices = self.replay_buffer.sample(self.batch_size)
+            else:  # Just prioritized replay
+                states, actions, rewards, next_states, dones, weights, indices = self.replay_buffer.sample(self.batch_size)
+        else:  # Standard replay buffer
+            if self._use_her:
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
+            else:
+                states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+                weights = None
+                indices = None
+        #DEBUG
+        # print(f"Batch received from buffer: {self.replay_buffer.counter}")
+
         # normalize states if self.normalize_inputs
         if self.normalize_inputs and not self._use_her:
             states = self.state_normalizer.normalize(states)
@@ -1403,8 +1414,13 @@ class DDPG(Agent):
             targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
 
         # get current critic values and calculate critic loss
-        prediction = self.critic_model(states, actions, desired_goals)
-        critic_loss = F.mse_loss(prediction, targets)
+        predictions = self.critic_model(states, actions, desired_goals)
+        error = targets - predictions
+        if weights is not None:
+            critic_loss = weights * (targets - predictions).pow(2)
+            critic_loss = critic_loss.mean()
+        else:
+            critic_loss = (targets - predictions).pow(2)
         
         # update critic
         self.critic_model.optimizer.zero_grad()
@@ -1427,6 +1443,17 @@ class DDPG(Agent):
         if not self._use_her:
             self.soft_update(self.actor_model, self.target_actor_model)
             self.soft_update(self.critic_model, self.target_critic_model)
+
+        # Update priorities if using prioritized replay
+        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:
+            if self._step % self.replay_buffer.update_freq == 0:
+                #DEBUG
+                print(f"Updating priorities in buffer: {self.replay_buffer.counter}")
+                abs_error = error.abs().detach()
+                self.replay_buffer.update_priorities(indices, abs_error)
+                #DEBUG
+                print(f"Updated priorities in buffer: {self.replay_buffer.counter}")
+            
 
         # add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
@@ -1816,6 +1843,9 @@ class DDPG(Agent):
                     if self.noise_schedule:
                         self.noise_schedule.step()
                         self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
+                    # Update beta if using prioritized replay
+                    if hasattr(self.replay_buffer, 'update_beta'):
+                        self.replay_buffer.update_beta(self._step)
 
 
             self._train_step_config["step_reward"] = rewards.mean()
@@ -2065,7 +2095,7 @@ class TD3(Agent):
         discount: float = 0.99,
         tau: float = 0.005,
         action_epsilon: float = 0.0,
-        replay_buffer: ReplayBuffer = None,
+        replay_buffer: Buffer = None,
         batch_size: int = 256,
         noise: Noise = None,
         noise_schedule: ScheduleWrapper=None,
@@ -2665,17 +2695,19 @@ class TD3(Agent):
     def learn(self, state_normalizer: Normalizer = None, goal_normalizer: Normalizer = None):
         
         # Sample a batch of experiences from the replay buffer
-        if self._use_her:  # if using HER
-            states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
-        else:
-            states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
-        #DEBUG
-        # print(f"states device: {states.device}")
-        # print(f"actions device: {actions.device}")
-        # print(f"rewards device: {rewards.device}")
-        # print(f"next_states device: {next_states.device}")
-        # print(f"dones device: {dones.device}")
-        
+        if hasattr(self.replay_buffer, 'update_priorities'):  # Check if using prioritized replay
+            if self._use_her:  # HER with prioritized replay
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, indices = self.replay_buffer.sample(self.batch_size)
+            else:  # Just prioritized replay
+                states, actions, rewards, next_states, dones, weights, indices = self.replay_buffer.sample(self.batch_size)
+        else:  # Standard replay buffer
+            if self._use_her:
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
+            else:
+                states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+                weights = None
+                indices = None
+
         # Normalize states if self.normalize_inputs
         if self.normalize_inputs and not self._use_her:
             states = self.state_normalizer.normalize(states)
@@ -2712,7 +2744,20 @@ class TD3(Agent):
         # Get current critic values and calculate critic losses
         predictions_a = self.critic_model_a(states, actions, desired_goals)
         predictions_b = self.critic_model_b(states, actions, desired_goals)
-        critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
+
+        # Calculate TD errors for priority updates - use minimum for stability
+        error_a = targets - predictions_a
+        error_b = targets - predictions_b
+        error = (error_a.abs() + error_b.abs()) / 2
+
+        # Apply importance sampling weights if using prioritized replay
+        if weights is not None:
+            critic_loss = weights * ((targets - predictions_a).pow(2) + (targets - predictions_b).pow(2))
+            critic_loss = critic_loss.mean()
+        else:
+            critic_loss = ((targets - predictions_a).pow(2) + (targets - predictions_b).pow(2)).mean()
+
+        # critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
 
         # Backward pass and optimization for critics
         critic_loss.backward()
@@ -2737,6 +2782,11 @@ class TD3(Agent):
                 self.soft_update(self.actor_model, self.target_actor_model)
                 self.soft_update(self.critic_model_a, self.target_critic_model_a)
                 self.soft_update(self.critic_model_b, self.target_critic_model_b)
+
+        # Update priorities if using prioritized replay
+        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:
+            abs_error = error.detach().cpu().numpy().flatten()
+            self.replay_buffer.update_priorities(indices, abs_error)
 
         # Add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
@@ -3319,6 +3369,9 @@ class TD3(Agent):
                 if self.target_noise_schedule:
                     self.target_noise_schedule.step()
                     self._train_step_config["target_noise_anneal"] = self.target_noise_schedule.get_factor()
+                # Update beta if using prioritized replay
+                    if hasattr(self.replay_buffer, 'update_beta'):
+                        self.replay_buffer.update_beta(self._step)
                 if self.callbacks:
                     for callback in self.callbacks:
                         callback.on_train_step_end(step=self._step, logs=self._train_step_config)
@@ -3678,7 +3731,6 @@ class HER(Agent):
         num_goals: int = 4,
         normalizer_clip: float = 5.0,
         normalizer_eps: float = 0.01,
-        # replay_buffer_size: int = 1_000_000,
         device: str = None,
         save_dir: str = "models",
         # callbacks: Optional[list[Callback]] = None
@@ -4590,6 +4642,10 @@ class HER(Agent):
                             if hasattr(self.agent, 'target_noise_schedule') and self.agent.target_noise_schedule:
                                 self.agent.target_noise_schedule.step()
                                 self.agent._train_step_config["target_noise_anneal"] = self.agent.target_noise_schedule.get_factor()
+                    
+                    # Update beta if using prioritized replay
+                    if hasattr(self.agent.replay_buffer, 'update_beta'):
+                        self.agent.replay_buffer.update_beta(self.agent._step)
 
                 if self.agent.callbacks:
                     for callback in self.agent.callbacks:
@@ -7686,3 +7742,4 @@ def init_sweep(config):
         agent.sweep_train(config, env_spec, callbacks, run_number)
     except Exception as e:
         logger.error(f"Error in init_sweep: {e}", exc_info=True)
+
