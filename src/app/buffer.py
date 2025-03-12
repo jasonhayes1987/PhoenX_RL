@@ -5,6 +5,8 @@ from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import build_env_wrapper_obj
 from torch_utils import get_device
 from typing import Optional, Tuple, List, Any, Dict
+from collections import defaultdict
+import math
 
 
 class SumTree:
@@ -17,27 +19,66 @@ class SumTree:
         self.tree = T.zeros(2 * capacity - 1, dtype=T.float32, device=self.device)
         self.next_idx = 0
         self.size = 0
-        self.max_priority = T.tensor(1.0, dtype=T.float32, device=device)
+        self.max_priority = T.tensor(0, dtype=T.float32, device=self.device)
     
-    def update(self, idx: int, priority: float) -> None:
-        """Update priority of data at idx."""
-        # Convert data index to tree index
-        tree_idx = idx + self.capacity - 1
-        # Calculate change (keep on device)
-        old_priority = self.tree[tree_idx].item()
-        change = priority - old_priority
-        # Update leaf node
-        self.tree[tree_idx] = priority
-        # Propagate change upward
-        self._propagate(tree_idx, change)
-    
-    def _propagate(self, idx: int, change: float) -> None:
-        """Propagate priority change upward through tree."""
-        parent = (idx - 1) // 2
-        self.tree[parent] += change
+    def update(self, data_indices, priorities):
+        """Update the priorities of the given data indices."""
+        #DEBUG
+        # print(f'data indices: {data_indices}')
+        # print(f'priorities: {priorities}')
         
-        if parent != 0:
-            self._propagate(parent, change)
+        # Safety check for NaN values
+        if T.isnan(priorities).any():
+            print("WARNING: NaN values detected in SumTree.update priorities. Replacing with 1.0")
+            priorities = T.nan_to_num(priorities, nan=1.0)
+        
+        tree_indices = T.tensor([idx + self.capacity - 1 for idx in data_indices], dtype=T.long, device=self.device)
+        old_values = self.tree[tree_indices].clone()
+        new_values = T.tensor(priorities, dtype=T.float32, device=self.device)
+        self.tree[tree_indices] = new_values
+        changes = new_values - old_values
+        
+        # Safety check for NaN values in changes
+        if T.isnan(changes).any():
+            print("WARNING: NaN values detected in changes. Replacing with 0.0")
+            changes = T.nan_to_num(changes, nan=0.0)
+        
+        # Propagate the batch of changes up the tree
+        self._propagate(tree_indices, changes)
+        
+        # Update max_priority
+        if not T.isnan(new_values).all():  # Ensure we're not using all NaN values
+            valid_values = new_values[~T.isnan(new_values)]
+            if valid_values.numel() > 0:  # Check if there are any valid values
+                max_new = T.max(valid_values)
+                if max_new > self.max_priority:
+                    self.max_priority = max_new
+
+    def _propagate(self, indices, changes):
+        node_changes = defaultdict(float)
+        for idx, change in zip(indices, changes):
+            # Skip NaN values
+            if T.isnan(change):
+                continue
+                
+            current_idx = idx
+            while current_idx >= 0:
+                change_value = change.item()
+                # Skip if change is NaN
+                if math.isnan(change_value):
+                    break
+                    
+                node_changes[current_idx] += change_value
+                if current_idx == 0:
+                    break
+                current_idx = (current_idx - 1) // 2
+    
+        # Only proceed if we have valid changes
+        if node_changes:
+            # Convert to tensor and apply updates
+            nodes = T.tensor(list(node_changes.keys()), dtype=T.long, device=self.device)
+            total_changes = T.tensor(list(node_changes.values()), dtype=T.float32, device=self.device)
+            self.tree[nodes] += total_changes
     
     def get(self, p: float) -> Tuple[int, float]:
         """Find sample based on a value p in range [0, total_priority)."""
@@ -193,43 +234,53 @@ class ReplayBuffer(Buffer):
         
     def add(
         self,
-        state: np.ndarray,
-        action: np.ndarray,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        state_achieved_goal: Optional[np.ndarray] = None,
-        next_state_achieved_goal: Optional[np.ndarray] = None,
-        desired_goal: Optional[np.ndarray] = None,
+        states: np.ndarray,
+        actions: np.ndarray,
+        rewards: float,
+        next_states: np.ndarray,
+        dones: bool,
+        state_achieved_goals: Optional[np.ndarray] = None,
+        next_state_achieved_goals: Optional[np.ndarray] = None,
+        desired_goals: Optional[np.ndarray] = None,
     ) -> None:
         """
         Add a transition to the replay buffer.
 
         Args:
-            state (np.ndarray): Current state.
-            action (np.ndarray): Action taken.
-            reward (float): Reward received.
-            next_state (np.ndarray): Next state.
-            done (bool): Whether the episode is done.
-            state_achieved_goal (Optional[np.ndarray]): Achieved goal in the current state.
-            next_state_achieved_goal (Optional[np.ndarray]): Achieved goal in the next state.
-            desired_goal (Optional[np.ndarray]): Desired goal.
+            states (np.ndarray): Current states.
+            actions (np.ndarray): Actions taken.
+            rewards (float): Rewards received.
+            next_states (np.ndarray): Next states.
+            dones (bool): Whether the episode is done.
+            state_achieved_goals (Optional[np.ndarray]): Achieved goals in the current state.
+            next_state_achieved_goals (Optional[np.ndarray]): Achieved goals in the next state.
+            desired_goals (Optional[np.ndarray]): Desired goals.
         """
-        index = self.counter % self.buffer_size
-        self.states[index] = T.tensor(state, device=self.device)
-        self.actions[index] = T.tensor(action, device=self.device)
-        self.rewards[index] = T.tensor(reward, device=self.device)
-        self.next_states[index] = T.tensor(next_state, device=self.device)
-        self.dones[index] = T.tensor(done, device=self.device)
-        
+        batch_size = len(states)
+        start_idx = self.counter % self.buffer_size
+        end_idx = (self.counter + batch_size) % self.buffer_size
+
+        # Compute indices with wrapping
+        if end_idx > start_idx:
+            indices = np.arange(start_idx, end_idx)
+        else:
+            indices = np.concatenate([np.arange(start_idx, self.buffer_size), np.arange(0, end_idx)])
+
+        # Convert lists to numpy arrays and then to tensors in one operation
+        self.states[indices] = T.tensor(np.array(states), dtype=T.float32, device=self.device)
+        self.actions[indices] = T.tensor(np.array(actions), dtype=T.float32, device=self.device)
+        self.rewards[indices] = T.tensor(np.array(rewards), dtype=T.float32, device=self.device)
+        self.next_states[indices] = T.tensor(np.array(next_states), dtype=T.float32, device=self.device)
+        self.dones[indices] = T.tensor(np.array(dones), dtype=T.int8, device=self.device)
+
         if self.goal_shape is not None:
-            if desired_goal is None or state_achieved_goal is None or next_state_achieved_goal is None:
-                raise ValueError("Desired goal, state achieved goal, and next state achieved goal must be provided when use_goals is True.")
-            self.state_achieved_goals[index] = T.tensor(state_achieved_goal, device=self.device)
-            self.next_state_achieved_goals[index] = T.tensor(next_state_achieved_goal, device=self.device)
-            self.desired_goals[index] = T.tensor(desired_goal, device=self.device)
-        
-        self.counter += 1
+            if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
+                raise ValueError("Goal data must be provided when using goals")
+            self.state_achieved_goals[indices] = T.tensor(np.array(state_achieved_goals), dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals[indices] = T.tensor(np.array(next_state_achieved_goals), dtype=T.float32, device=self.device)
+            self.desired_goals[indices] = T.tensor(np.array(desired_goals), dtype=T.float32, device=self.device)
+
+        self.counter += batch_size
         
     def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
         """
@@ -316,12 +367,12 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             raise ValueError(f"Invalid priority type: {priority} (must be 'proportional' or 'rank')")
 
         super().__init__(env, buffer_size, goal_shape, device)
-        self.alpha = alpha
-        self.beta_start = beta_start
-        self.beta_iter = beta_iter
+        self.alpha = T.tensor(alpha, dtype=T.float32, device=self.device)
+        self.beta_start = T.tensor(beta_start, dtype=T.float32, device=self.device)
+        self.beta_iter = T.tensor(beta_iter, dtype=T.int32, device=self.device)
         self.priority = priority
         self.goal_shape = goal_shape
-        self.epsilon = epsilon
+        self.epsilon = T.tensor(epsilon, dtype=T.float32, device=self.device)
         self.update_freq = update_freq
         # Set initial self.beta value
         self.beta = self.beta_start
@@ -380,42 +431,48 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
     def add(
         self,
-        state: np.ndarray,
-        action: np.ndarray,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        state_achieved_goal: Optional[np.ndarray] = None,
-        next_state_achieved_goal: Optional[np.ndarray] = None,
-        desired_goal: Optional[np.ndarray] = None,
+        states: np.ndarray,
+        actions: np.ndarray,
+        rewards: float,
+        next_states: np.ndarray,
+        dones: bool,
+        state_achieved_goals: Optional[np.ndarray] = None,
+        next_state_achieved_goals: Optional[np.ndarray] = None,
+        desired_goals: Optional[np.ndarray] = None,
     ) -> None:
         """Adds a transition to the buffer and sets priority to max"""
 
-        idx = self.counter % self.buffer_size
+        batch_size = len(states)
+        start_idx = self.counter % self.buffer_size
+        end_idx = (self.counter + batch_size) % self.buffer_size
 
-        self.states[idx] = T.tensor(state, device=self.device)
-        self.actions[idx] = T.tensor(action, device=self.device)
-        self.rewards[idx] = T.tensor(reward, device=self.device)
-        self.next_states[idx] = T.tensor(next_state, device=self.device)
-        self.dones[idx] = T.tensor(done, device=self.device)
+        # Compute indices with wrapping
+        if end_idx > start_idx:
+            indices = T.arange(start_idx, end_idx)
+        else:
+            indices = T.concatenate([T.arange(start_idx, self.buffer_size), T.arange(0, end_idx)])
+
+        # Add to buffer tensors
+        self.states[indices] = T.tensor(np.array(states), dtype=T.float32, device=self.device)
+        self.actions[indices] = T.tensor(np.array(actions), dtype=T.float32, device=self.device)
+        self.rewards[indices] = T.tensor(np.array(rewards), dtype=T.float32, device=self.device)
+        self.next_states[indices] = T.tensor(np.array(next_states), dtype=T.float32, device=self.device)
+        self.dones[indices] = T.tensor(np.array(dones), dtype=T.int8, device=self.device)
 
         if self.goal_shape is not None:
-            if state_achieved_goal is None or next_state_achieved_goal is None or desired_goal is None:
+            if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
-            self.state_achieved_goals[idx] = T.tensor(state_achieved_goal, device=self.device)
-            self.next_state_achieved_goals[idx] = T.tensor(next_state_achieved_goal, device=self.device)
-            self.desired_goals[idx] = T.tensor(desired_goal, device=self.device)
+            self.state_achieved_goals[indices] = T.tensor(np.array(state_achieved_goals), dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals[indices] = T.tensor(np.array(next_state_achieved_goals), dtype=T.float32, device=self.device)
+            self.desired_goals[indices] = T.tensor(np.array(desired_goals), dtype=T.float32, device=self.device)
 
-        # Set transition to max priority to ensure it gets sampled
-        if self.priority == "proportional":
-            max_priority = float(self.sum_tree.max_priority.item()) if self.counter > 0 else 1.0
-            self.sum_tree.update(idx, max_priority ** self.alpha)
-        else: # rank
-            max_priority = T.max(self.priorities).item() if self.counter > 0 else 1.0
-            self.priorities[idx] = max_priority
-            self.sorted_indices = None
+        # Set priorities to max_priority for new transitions
+        max_priority = self.sum_tree.max_priority if self.counter > 0 else T.tensor(1.0, device=self.device)
+        priority_value = max_priority ** self.alpha
+        priorities = priority_value.expand(batch_size)
+        self.sum_tree.update(indices, priorities)
 
-        self.counter += 1
+        self.counter += batch_size
 
     def update_beta(self, iter: int) -> None:
         """Anneal beta param"""
@@ -430,15 +487,26 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         # if isinstance(priorities, np.ndarray):
         #     priorities = T.tensor(priorities, device=self.device)
 
-        for i, idx in enumerate(indices):
-            priority = max(abs(priorities[i].item()), self.epsilon)
+        # Check for NaN values in priorities
+        if T.isnan(priorities).any():
+            nan_count = T.isnan(priorities).sum().item()
+            print(f"WARNING: Found {nan_count} NaN values in priorities. Replacing with 1.0")
+            # Create a mask for NaN values
+            nan_mask = T.isnan(priorities)
+            # Clone priorities to avoid modifying the original tensor
+            priorities = priorities.clone()
+            # Replace NaN values with 1.0
+            priorities[nan_mask] = 1.0
+        
+        # for i, idx in enumerate(indices):
+        priorities = T.max(priorities.abs(), self.epsilon)
 
-            if self.priority == "proportional":
-                self.sum_tree.update(idx, priority ** self.alpha)
-                self.sum_tree.max_priority = max(self.sum_tree.max_priority, T.tensor(priority, device=self.device))
-            else: # rank
-                self.priorities[idx] = priority
-                self.sorted_indices = None
+        if self.priority == "proportional":
+            self.sum_tree.update(indices, priorities ** self.alpha)
+            # self.sum_tree.max_priority = max(self.sum_tree.max_priority, T.tensor(priority, device=self.device))
+        else: # rank
+            self.priorities[indices] = priorities
+            self.sorted_indices = None
 
     def _prepare_rank_based(self) -> None:
         """Sorts priorities for rank-based sampling"""
@@ -537,12 +605,12 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             'config': {
                 "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,
-                "alpha": self.alpha,
-                "beta_start": self.beta_start,
-                "beta_iter": self.beta_iter,
+                "alpha": self.alpha.item(),
+                "beta_start": self.beta_start.item(),
+                "beta_iter": self.beta_iter.item(),
                 "priority": self.priority,
                 "goal_shape": self.goal_shape,
-                "epsilon": self.epsilon,
+                "epsilon": self.epsilon.item(),
                 "update_freq": self.update_freq,
                 "device": self.device.type
             }
