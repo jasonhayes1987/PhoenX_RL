@@ -1406,21 +1406,47 @@ class DDPG(Agent):
         dones = dones.unsqueeze(1)
 
         # get target values 
-        _, target_actions = self.target_actor_model(next_states, desired_goals)
-        target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
-        targets = rewards + (1 - dones) * self.discount * target_critic_values
+        with T.no_grad():
+            _, target_actions = self.target_actor_model(next_states, desired_goals)
+            target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
+            
+            # Check for NaN values in target critic values
+            if T.isnan(target_critic_values).any():
+                print("WARNING: NaN detected in target_critic_values. Replacing with zeros.")
+                target_critic_values = T.nan_to_num(target_critic_values, nan=0.0)
+                
+            targets = rewards + (1 - dones) * self.discount * target_critic_values
 
-        if self._use_her:
-            targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
+            if self._use_her:
+                targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
+                
+            # Check for NaN in targets
+            if T.isnan(targets).any():
+                print("WARNING: NaN detected in targets. Replacing with zeros.")
+                targets = T.nan_to_num(targets, nan=0.0)
 
         # get current critic values and calculate critic loss
         predictions = self.critic_model(states, actions, desired_goals)
+        
+        # Check for NaN values in predictions
+        if T.isnan(predictions).any():
+            print("WARNING: NaN detected in predictions. Replacing with zeros.")
+            predictions = T.nan_to_num(predictions, nan=0.0)
+            
         error = targets - predictions
+        #DEBUG
+        # print(f'error: {error}')
+        
+        # Check for NaN in error before passing to buffer
+        if T.isnan(error).any():
+            print("WARNING: NaN detected in error. Replacing with zeros.")
+            error = T.nan_to_num(error, nan=0.0)
+
         if weights is not None:
             critic_loss = weights * (targets - predictions).pow(2)
             critic_loss = critic_loss.mean()
         else:
-            critic_loss = (targets - predictions).pow(2)
+            critic_loss = (targets - predictions).pow(2).mean()
         
         # update critic
         self.critic_model.optimizer.zero_grad()
@@ -1449,7 +1475,17 @@ class DDPG(Agent):
             if self._step % self.replay_buffer.update_freq == 0:
                 #DEBUG
                 print(f"Updating priorities in buffer: {self.replay_buffer.counter}")
-                abs_error = error.abs().detach()
+                abs_error = error.abs().flatten().detach()
+                
+                # Final safeguard against NaN values before updating priorities
+                if T.isnan(abs_error).any():
+                    print(f"WARNING: NaN detected in abs_error before priority update. Count: {T.isnan(abs_error).sum().item()}")
+                    print(f"Original values: {abs_error}")
+                    
+                    # Replace NaNs with a small positive value (epsilon)
+                    abs_error = T.nan_to_num(abs_error, nan=1.0)
+                    print(f"Fixed values: {abs_error}")
+                
                 self.replay_buffer.update_priorities(indices, abs_error)
                 #DEBUG
                 print(f"Updated priorities in buffer: {self.replay_buffer.counter}")
@@ -1757,16 +1793,14 @@ class DDPG(Agent):
         self._step = 0
         best_reward = -np.inf
         score_history = deque(maxlen=100) # Keeps track of last 100 episode scores
+        trajectories = [[] for _ in range(self.num_envs)] # Keeps track of trajectories per env
         episode_scores = np.zeros(self.num_envs) # Keeps track of current scores per env
         self.completed_episodes = np.zeros(self.num_envs) # Keeps track of completed episodes per env
         # Initialize environments
         states, _ = self.env.reset()
         while self.completed_episodes.sum() < num_episodes:
-            #DEBUG
-            # print(f'completed episodes:{episodes.sum()}')
             self._step += 1
-            #DEBUG
-            # print(f'completed steps:{self._step}')
+
             rendered = False # Flag to keep track of render status to avoid rendering multiple times per step
             if self.callbacks:
                 for callback in self.callbacks:
@@ -1780,56 +1814,60 @@ class DDPG(Agent):
             next_states, rewards, terms, truncs, _ = self.env.step(actions)
             episode_scores += rewards
             dones = np.logical_or(terms, truncs)
-            # self.completed_episodes += dones # Increments completed episodes per env by dones flag
-
+            
+            # Store transitions in the env trajectory
             for i in range(self.num_envs):
-                # store trajectory in replay buffer
-                self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i])
-                if dones[i]:
-                    # Increment completed episodes for env by 1
-                    self.completed_episodes[i] += 1
-                    score_history.append(episode_scores[i]) 
-                    avg_reward = sum(score_history) / len(score_history)
-                    self._train_episode_config['episode'] = self.completed_episodes.sum()
-                    self._train_episode_config["episode_reward"] = episode_scores[i]
+                trajectories[i].append((states[i], actions[i], rewards[i], next_states[i], dones[i]))
 
-                    # check if best reward
-                    if avg_reward > best_reward:
-                        best_reward = avg_reward
-                        self._train_episode_config["best"] = 1
-                        # save model
-                        self.save()
-                    else:
-                        self._train_episode_config["best"] = 0
+            completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
+            for i in completed_episodes:
+                self.replay_buffer.add(*zip(*trajectories[i]))
+                trajectories[i] = []
 
+                # Increment completed episodes for env by 1
+                self.completed_episodes[i] += 1
+                score_history.append(episode_scores[i]) 
+                avg_reward = sum(score_history) / len(score_history)
+                self._train_episode_config['episode'] = self.completed_episodes.sum()
+                self._train_episode_config["episode_reward"] = episode_scores[i]
+
+                # check if best reward
+                if avg_reward > best_reward:
+                    best_reward = avg_reward
+                    self._train_episode_config["best"] = 1
+                    # save model
+                    self.save()
+                else:
+                    self._train_episode_config["best"] = 0
+
+                if self.callbacks:
+                    for callback in self.callbacks:
+                        callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+
+                # Check if number of completed episodes should trigger render
+                if self.completed_episodes.sum() % render_freq == 0 and not rendered:
+                    print(f"Rendering episode {self.completed_episodes.sum()} during training...")
+                    # Call the test function to render an episode
+                    self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
+                    # Add render to wandb log
+                    video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes.sum()}.mp4")
+                    # Log the video to wandb
                     if self.callbacks:
                         for callback in self.callbacks:
-                            callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+                            if isinstance(callback, WandbCallback):
+                                wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self._step)
+                    rendered = True
+                    # Switch models back to train mode after rendering
+                    self.actor_model.train()
+                    self.critic_model.train()
+                # else:
+                #     rendered = False
 
-                    # Check if number of completed episodes should trigger render
-                    if self.completed_episodes.sum() % render_freq == 0 and not rendered:
-                        print(f"Rendering episode {self.completed_episodes.sum()} during training...")
-                        # Call the test function to render an episode
-                        self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
-                        # Add render to wandb log
-                        video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes.sum()}.mp4")
-                        # Log the video to wandb
-                        if self.callbacks:
-                            for callback in self.callbacks:
-                                if isinstance(callback, WandbCallback):
-                                    wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self._step)
-                        rendered = True
-                        # Switch models back to train mode after rendering
-                        self.actor_model.train()
-                        self.critic_model.train()
-                    # else:
-                    #     rendered = False
+                print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {episode_scores[i]}, Avg_Score {avg_reward}")
 
-                    print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {episode_scores[i]}, Avg_Score {avg_reward}")
-
-                    # Reset score of episode to 0
-                    episode_scores[i] = 0
-            
+                # Reset score of episode to 0
+                episode_scores[i] = 0
+                    
             states = next_states
             
             # Check if past warmup
@@ -3516,32 +3554,6 @@ class TD3(Agent):
             for callback in self.callbacks:
                 callback.on_test_end(logs=self._test_episode_config)
 
-
-    # def get_config(self):
-    #     return {
-    #             "agent_type": self.__class__.__name__,
-    #             "env": serialize_env_spec(self.env.spec),
-    #             "actor_model": self.actor_model.get_config(),
-    #             "critic_model": self.critic_model_a.get_config(),
-    #             "discount": self.discount,
-    #             "tau": self.tau,
-    #             "action_epsilon": self.action_epsilon,
-    #             "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
-    #             "batch_size": self.batch_size,
-    #             "noise": self.noise.get_config(),
-    #             "target_noise": self.target_noise.get_config(),
-    #             "target_noise_clip": self.target_noise_clip,
-    #             "actor_update_delay": self.actor_update_delay,
-    #             'normalize_inputs': self.normalize_inputs,
-    #             # 'normalize_kwargs': self.normalize_kwargs,
-    #             'normalizer_clip': self.normalizer_clip,
-    #             'normalizer_eps': self.normalizer_eps,
-    #             'warmup': self.warmup,
-    #             "callbacks": [callback.get_config() for callback in self.callbacks if self.callbacks is not None],
-    #             "save_dir": self.save_dir,
-    #             "use_mpi": self.use_mpi,
-    #             "device": self.device,
-    #         }
 
     def get_config(self):
         return {
