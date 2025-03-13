@@ -1443,6 +1443,8 @@ class DDPG(Agent):
             error = T.nan_to_num(error, nan=0.0)
 
         if weights is not None:
+            #DEBUG
+            # print(f"Weights: {weights}")
             critic_loss = weights * (targets - predictions).pow(2)
             critic_loss = critic_loss.mean()
         else:
@@ -1472,23 +1474,23 @@ class DDPG(Agent):
 
         # Update priorities if using prioritized replay
         if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:
-            if self._step % self.replay_buffer.update_freq == 0:
-                #DEBUG
-                print(f"Updating priorities in buffer: {self.replay_buffer.counter}")
-                abs_error = error.abs().flatten().detach()
+            # if self._step % self.replay_buffer.update_freq == 0:
+            #DEBUG
+            print(f"Updating priorities in buffer: step {self._step}, counter {self.replay_buffer.counter}")
+            abs_error = error.abs().flatten().detach()
+            
+            # Final safeguard against NaN values before updating priorities
+            if T.isnan(abs_error).any():
+                print(f"WARNING: NaN detected in abs_error before priority update. Count: {T.isnan(abs_error).sum().item()}")
+                print(f"Original values: {abs_error}")
                 
-                # Final safeguard against NaN values before updating priorities
-                if T.isnan(abs_error).any():
-                    print(f"WARNING: NaN detected in abs_error before priority update. Count: {T.isnan(abs_error).sum().item()}")
-                    print(f"Original values: {abs_error}")
-                    
-                    # Replace NaNs with a small positive value (epsilon)
-                    abs_error = T.nan_to_num(abs_error, nan=1.0)
-                    print(f"Fixed values: {abs_error}")
-                
-                self.replay_buffer.update_priorities(indices, abs_error)
-                #DEBUG
-                print(f"Updated priorities in buffer: {self.replay_buffer.counter}")
+                # Replace NaNs with a small positive value (epsilon)
+                abs_error = T.nan_to_num(abs_error, nan=1.0)
+                print(f"Fixed values: {abs_error}")
+            
+            self.replay_buffer.update_priorities(indices, abs_error)
+            #DEBUG
+            print(f"Updated priorities in buffer: step {self._step}, counter {self.replay_buffer.counter}")
             
 
         # add metrics to step_logs
@@ -1822,6 +1824,8 @@ class DDPG(Agent):
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
                 self.replay_buffer.add(*zip(*trajectories[i]))
+                #DEBUG
+                print(f"Adding trajectory to replay buffer: step {self._step}, counter {self.replay_buffer.counter}")
                 trajectories[i] = []
 
                 # Increment completed episodes for env by 1

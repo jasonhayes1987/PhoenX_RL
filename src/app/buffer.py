@@ -24,8 +24,8 @@ class SumTree:
     def update(self, data_indices, priorities):
         """Update the priorities of the given data indices."""
         #DEBUG
-        # print(f'data indices: {data_indices}')
-        # print(f'priorities: {priorities}')
+        print(f'SumTree.update() data indices: {data_indices}')
+        print(f'SumTree.update() priorities: {priorities}')
         
         # Safety check for NaN values
         if T.isnan(priorities).any():
@@ -34,9 +34,14 @@ class SumTree:
         
         tree_indices = T.tensor([idx + self.capacity - 1 for idx in data_indices], dtype=T.long, device=self.device)
         old_values = self.tree[tree_indices].clone()
-        new_values = T.tensor(priorities, dtype=T.float32, device=self.device)
-        self.tree[tree_indices] = new_values
-        changes = new_values - old_values
+        # new_values = T.tensor(priorities, dtype=T.float32, device=self.device)
+        self.tree[tree_indices] = priorities
+        changes = priorities - old_values
+        #DEBUG
+        print(f"SumTree.update() Tree indices: {tree_indices}")
+        print(f"SumTree.update() Old values: {old_values}")
+        print(f"SumTree.update() New values: {priorities}")
+        print(f"SumTree.update() Changes: {changes}")
         
         # Safety check for NaN values in changes
         if T.isnan(changes).any():
@@ -47,12 +52,14 @@ class SumTree:
         self._propagate(tree_indices, changes)
         
         # Update max_priority
-        if not T.isnan(new_values).all():  # Ensure we're not using all NaN values
-            valid_values = new_values[~T.isnan(new_values)]
+        if not T.isnan(priorities).all():  # Ensure we're not using all NaN values
+            valid_values = priorities[~T.isnan(priorities)]
             if valid_values.numel() > 0:  # Check if there are any valid values
                 max_new = T.max(valid_values)
                 if max_new > self.max_priority:
                     self.max_priority = max_new
+                    #DEBUG
+                    print(f"SumTree.update() New max priority: {self.max_priority}")
 
     def _propagate(self, indices, changes):
         node_changes = defaultdict(float)
@@ -62,23 +69,42 @@ class SumTree:
                 continue
                 
             current_idx = idx
+            #DEBUG
+            print(f"SumTree._propagate() Current index: {current_idx}")
             while current_idx >= 0:
                 change_value = change.item()
+                #DEBUG
+                print(f"SumTree._propagate() Change value: {change_value}")
                 # Skip if change is NaN
                 if math.isnan(change_value):
                     break
-                    
+                
+                #DEBUG
+                print(f"SumTree._propagate() Node change before: {node_changes[current_idx]}")
                 node_changes[current_idx] += change_value
+                #DEBUG
+                print(f"SumTree._propagate() Node change after: {node_changes[current_idx]}")
                 if current_idx == 0:
                     break
                 current_idx = (current_idx - 1) // 2
+                #DEBUG
+                print(f"SumTree._propagate() New index: {current_idx}")
     
+
         # Only proceed if we have valid changes
         if node_changes:
             # Convert to tensor and apply updates
             nodes = T.tensor(list(node_changes.keys()), dtype=T.long, device=self.device)
+            #DEBUG
+            print(f"SumTree._propagate() Nodes: {nodes}")
             total_changes = T.tensor(list(node_changes.values()), dtype=T.float32, device=self.device)
+            #DEBUG
+            print(f"SumTree._propagate() Total changes: {total_changes}")
+            #DEBUG
+            print(f"SumTree._propagate() Tree before: {self.tree[nodes]}")
             self.tree[nodes] += total_changes
+            #DEBUG
+            print(f"SumTree._propagate() Tree after: {self.tree[nodes]}")
     
     def get(self, p: float) -> Tuple[int, float]:
         """Find sample based on a value p in range [0, total_priority)."""
@@ -90,15 +116,28 @@ class SumTree:
         """Traverse tree to find leaf node containing value s."""
         left = 2 * idx + 1
         right = left + 1
+        #DEBUG
+        # print(f"PER._retrieve() idx: {idx}, p: {p}, left idx: {left}, right idx: {right}")
+        # if left >= len(self.tree):
+        #     print(f"PER._retrieve() Leaf node reached")
+        # else:
+        #     print(f"PER._retrieve() left val: {self.tree[left].item()}")
+        #     print(f"PER._retrieve() right val: {self.tree[right].item()}")
         
         # If at leaf node, return idx
         if left >= len(self.tree):
+            #DEBUG
+            # print(f"PER._retrieve() returning idx: {idx}")
             return idx
         
         # Otherwise, traverse down
         if p <= self.tree[left].item():
+            #DEBUG
+            # print(f"PER._retrieve() traversing left")
             return self._retrieve(left, p)
         else:
+            #DEBUG
+            # print(f"PER._retrieve() traversing right")
             return self._retrieve(right, p - self.tree[left].item())
     
     @property
@@ -498,8 +537,10 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             # Replace NaN values with 1.0
             priorities[nan_mask] = 1.0
         
-        # for i, idx in enumerate(indices):
+        # Set priorities to be max between abs of priority or epsilon
         priorities = T.max(priorities.abs(), self.epsilon)
+        #DEBUG
+        # print(f"Priorities: {priorities}")
 
         if self.priority == "proportional":
             self.sum_tree.update(indices, priorities ** self.alpha)
@@ -530,45 +571,48 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         weights = T.zeros(batch_size, dtype=T.float32, device=self.device)
 
         if self.priority == "proportional":
+            #DEBUG
+            print(f"PER.sample() Total priority: {self.sum_tree.total_priority}")
+            # Calculate segment boundaries
             segment_size = self.sum_tree.total_priority / batch_size
-
-            for i in range(batch_size):
-                a = segment_size * i
-                b = segment_size * (i + 1)
-                p = T.rand(1, device=self.device) * (b-a) + a
-
-                # Sample from tree
+            segment_starts = T.arange(0, batch_size, device=self.device) * segment_size
+            segment_ends = segment_starts + segment_size
+            
+            # Generate random values within each segment
+            random_values = T.rand(batch_size, device=self.device) * (segment_ends - segment_starts) + segment_starts
+            #DEBUG
+            print(f"PER.sample() p: {random_values}")
+            # Sample indices from sum tree for each segment
+            for i, p in enumerate(random_values):
                 idx, priority = self.sum_tree.get(p)
                 indices[i] = idx
-
-                # Determine IS weight
-                prob = (priority / self.sum_tree.total_priority) + self.epsilon
-                weights[i] = (size * prob) ** -self.beta
+            
+            # Get corresponding priorities for all indices
+            tree_indices = indices + self.buffer_size - 1
+            priorities = self.sum_tree.tree[tree_indices]
+            
+            # Calculate weights (fully vectorized)
+            probs = (priorities / self.sum_tree.total_priority).clamp(min=self.epsilon)
+            weights = (size * probs).pow(-self.beta)
 
         else:  # rank
             # sort priorities
             self._prepare_rank_based()
             
-            for i in range(batch_size):
-                # Generate power-law rank based on alpha
-                # Use inverse transform sampling
-                u = T.rand(1, device=self.device).item()  # Uniform random in [0, 1)
-                rank_idx = int((u ** (1 / self.alpha)) * size)
-                rank_idx = min(rank_idx, size - 1)  # Ensure valid index
-                
-                # Get actual index from sorted indices
-                idx = int(self.sorted_indices[rank_idx].item())
-                indices[i] = idx
-                
-                # Calculate probability based on rank: P(rank) ~ 1/(rank+1)^alpha
-                sample_prob = 1 / ((rank_idx + 1) ** self.alpha)
-                weights[i] = (size * sample_prob) ** (-self.beta)
+            # Inverse transform sampling
+            u = T.rand(batch_size, device=self.device)
+            rank_indices = (u.pow(1 / self.alpha) * size).long().clamp(max=size-1)
+                    
+            # Get actual indices from sorted indices
+            indices = self.sorted_indices[rank_indices]
+                    
+            # Calculate probabilities and weights
+            sample_probs = 1 / ((rank_indices + 1).float().pow(self.alpha))
+            weights = (size * sample_probs).pow(-self.beta)
         
         # Normalize weights by max weight for stability
         if weights.numel() > 0:
-            max_weight = T.max(weights)
-            if max_weight > 0:
-                weights = weights / max_weight
+            weights = weights / T.max(weights)
         
         # Convert indices to Python list for later use in update_priorities
         # indices_list = indices.cpu().tolist()
