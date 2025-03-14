@@ -20,36 +20,28 @@ class SumTree:
         self.next_idx = 0
         self.size = 0
         self.max_priority = T.tensor(0, dtype=T.float32, device=self.device)
+        # self.epsilon = T.tensor(1e-6, dtype=T.float32, device=self.device)
     
     def update(self, data_indices, priorities):
         """Update the priorities of the given data indices."""
         #DEBUG
-        print(f'SumTree.update() data indices: {data_indices}')
-        print(f'SumTree.update() priorities: {priorities}')
+        # print(f'SumTree.update() data indices: {data_indices}')
+        # print(f'SumTree.update() priorities: {priorities}')
+        # print(f'SumTree.update() updating priorities')
         
         # Safety check for NaN values
         if T.isnan(priorities).any():
             print("WARNING: NaN values detected in SumTree.update priorities. Replacing with 1.0")
             priorities = T.nan_to_num(priorities, nan=1.0)
         
+        # Compute tree indices (leaf nodes) from data indices
         tree_indices = T.tensor([idx + self.capacity - 1 for idx in data_indices], dtype=T.long, device=self.device)
-        old_values = self.tree[tree_indices].clone()
-        # new_values = T.tensor(priorities, dtype=T.float32, device=self.device)
+        
+        # Update leaf nodes with new priorities
         self.tree[tree_indices] = priorities
-        changes = priorities - old_values
-        #DEBUG
-        print(f"SumTree.update() Tree indices: {tree_indices}")
-        print(f"SumTree.update() Old values: {old_values}")
-        print(f"SumTree.update() New values: {priorities}")
-        print(f"SumTree.update() Changes: {changes}")
         
-        # Safety check for NaN values in changes
-        if T.isnan(changes).any():
-            print("WARNING: NaN values detected in changes. Replacing with 0.0")
-            changes = T.nan_to_num(changes, nan=0.0)
-        
-        # Propagate the batch of changes up the tree
-        self._propagate(tree_indices, changes)
+        # Update parent nodes to maintain the sum tree property
+        self._update_tree(tree_indices)
         
         # Update max_priority
         if not T.isnan(priorities).all():  # Ensure we're not using all NaN values
@@ -61,83 +53,100 @@ class SumTree:
                     #DEBUG
                     print(f"SumTree.update() New max priority: {self.max_priority}")
 
-    def _propagate(self, indices, changes):
-        node_changes = defaultdict(float)
-        for idx, change in zip(indices, changes):
-            # Skip NaN values
-            if T.isnan(change):
-                continue
-                
-            current_idx = idx
-            #DEBUG
-            print(f"SumTree._propagate() Current index: {current_idx}")
-            while current_idx >= 0:
-                change_value = change.item()
-                #DEBUG
-                print(f"SumTree._propagate() Change value: {change_value}")
-                # Skip if change is NaN
-                if math.isnan(change_value):
-                    break
-                
-                #DEBUG
-                print(f"SumTree._propagate() Node change before: {node_changes[current_idx]}")
-                node_changes[current_idx] += change_value
-                #DEBUG
-                print(f"SumTree._propagate() Node change after: {node_changes[current_idx]}")
-                if current_idx == 0:
-                    break
-                current_idx = (current_idx - 1) // 2
-                #DEBUG
-                print(f"SumTree._propagate() New index: {current_idx}")
-    
+        # print(f'SumTree.update() updated priorities')
 
-        # Only proceed if we have valid changes
-        if node_changes:
-            # Convert to tensor and apply updates
-            nodes = T.tensor(list(node_changes.keys()), dtype=T.long, device=self.device)
-            #DEBUG
-            print(f"SumTree._propagate() Nodes: {nodes}")
-            total_changes = T.tensor(list(node_changes.values()), dtype=T.float32, device=self.device)
-            #DEBUG
-            print(f"SumTree._propagate() Total changes: {total_changes}")
-            #DEBUG
-            print(f"SumTree._propagate() Tree before: {self.tree[nodes]}")
-            self.tree[nodes] += total_changes
-            #DEBUG
-            print(f"SumTree._propagate() Tree after: {self.tree[nodes]}")
-    
-    def get(self, p: float) -> Tuple[int, float]:
-        """Find sample based on a value p in range [0, total_priority)."""
-        idx = self._retrieve(0, p)
-        data_idx = idx - self.capacity + 1
-        return int(data_idx), float(self.tree[idx].item())
+    def _update_tree(self, indices):
+        """Update parent nodes in the tree to maintain the sum property."""
+        # Find all unique parent levels that need updating
+        parent_indices = set()
+        for idx in indices:
+            # Get parent index
+            parent_idx = (idx - 1) // 2
+            while parent_idx >= 0:
+                parent_indices.add(int(parent_idx))
+                parent_idx = (parent_idx - 1) // 2
+        
+        # Sort parent indices in reverse order (bottom-up)
+        parent_indices = sorted(list(parent_indices), reverse=True)
+        
+        # Update each parent node based on its children
+        for parent_idx in parent_indices:
+            left_child = 2 * parent_idx + 1
+            right_child = left_child + 1
+            
+            # Ensure we don't go out of bounds
+            if right_child < len(self.tree):
+                # Sum the children
+                self.tree[parent_idx] = self.tree[left_child] + self.tree[right_child]
+            else:
+                # If right child is out of bounds, use only left child
+                self.tree[parent_idx] = self.tree[left_child]
+
+    # def get(self, p: float) -> Tuple[int, float]:
+    #     """Find sample based on a value p in range [0, total_priority)."""
+    #     idx = self._retrieve(0, p)
+    #     data_idx = idx - self.capacity + 1
+    #     return int(data_idx), float(self.tree[idx].item())
+
+    def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
+        """
+        Vectorized batch sampling from the SumTree.
+        
+        Args:
+            p_values: Tensor of probability values to sample with [batch_size]
+            
+        Returns:
+            Tuple of (data_indices, priorities)
+        """
+        batch_size = p_values.size(0)
+        
+        # Pre-allocate space for resulting indices
+        tree_indices = T.zeros(batch_size, dtype=T.long, device=self.device)
+        
+        # Use an iterative approach for each sample in the batch
+        for i in range(batch_size):
+            p = p_values[i].item()
+            idx = 0  # Start at root
+            
+            # Iterative traversal without recursion
+            while True:
+                left = 2 * idx + 1
+                right = left + 1
+                
+                # If at leaf node, store index and break
+                if left >= len(self.tree):
+                    tree_indices[i] = idx
+                    break
+                
+                # Get the left child value just once per iteration
+                left_val = self.tree[left].item()
+                
+                # Determine direction
+                if p <= left_val:
+                    idx = left
+                else:
+                    p = p - left_val
+                    idx = right
+        
+        # Convert tree indices to data indices and get priorities in one batch operation
+        data_indices = tree_indices - (self.capacity - 1)
+        priorities = self.tree[tree_indices]
+        
+        return data_indices, priorities
     
     def _retrieve(self, idx: int, p: float) -> int:
         """Traverse tree to find leaf node containing value s."""
         left = 2 * idx + 1
         right = left + 1
-        #DEBUG
-        # print(f"PER._retrieve() idx: {idx}, p: {p}, left idx: {left}, right idx: {right}")
-        # if left >= len(self.tree):
-        #     print(f"PER._retrieve() Leaf node reached")
-        # else:
-        #     print(f"PER._retrieve() left val: {self.tree[left].item()}")
-        #     print(f"PER._retrieve() right val: {self.tree[right].item()}")
         
         # If at leaf node, return idx
         if left >= len(self.tree):
-            #DEBUG
-            # print(f"PER._retrieve() returning idx: {idx}")
             return idx
         
         # Otherwise, traverse down
         if p <= self.tree[left].item():
-            #DEBUG
-            # print(f"PER._retrieve() traversing left")
             return self._retrieve(left, p)
         else:
-            #DEBUG
-            # print(f"PER._retrieve() traversing right")
             return self._retrieve(right, p - self.tree[left].item())
     
     @property
@@ -559,40 +568,66 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             else:
                 self.sorted_indices = T.tensor([], dtype=T.long, device=self.device)
 
+    # def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
+    #     """Samples a batch of transitions based on priority"""
+
+    #     size = min(self.counter, self.buffer_size)
+    #     if size == 0:
+    #         raise ValueError("Cannot sample from empty buffer")
+
+    #     batch_size = min(batch_size, size)
+    #     indices = T.zeros(batch_size, dtype=T.long, device=self.device)
+    #     weights = T.zeros(batch_size, dtype=T.float32, device=self.device)
+
+    #     if self.priority == "proportional":
+    #         #DEBUG
+    #         # print(f"PER.sample() Total priority: {self.sum_tree.total_priority}")
+    #         # Calculate segment boundaries
+    #         segment_size = self.sum_tree.total_priority / batch_size
+    #         segment_starts = T.arange(0, batch_size, device=self.device) * segment_size
+    #         segment_ends = segment_starts + segment_size
+            
+    #         # Generate random values within each segment
+    #         random_values = T.rand(batch_size, device=self.device) * (segment_ends - segment_starts) + segment_starts
+    #         #DEBUG
+    #         # print(f"PER.sample() p: {random_values}")
+    #         # Sample indices from sum tree for each segment
+    #         for i, p in enumerate(random_values):
+    #             idx, priority = self.sum_tree.get(p)
+    #             indices[i] = idx
+            
+    #         # Get corresponding priorities for all indices
+    #         tree_indices = indices + self.buffer_size - 1
+    #         priorities = self.sum_tree.tree[tree_indices]
+            
+    #         # Calculate weights (fully vectorized)
+    #         probs = (priorities / self.sum_tree.total_priority).clamp(min=self.epsilon)
+    #         weights = (size * probs).pow(-self.beta)
+
     def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
         """Samples a batch of transitions based on priority"""
-
+        
         size = min(self.counter, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
 
         batch_size = min(batch_size, size)
-        indices = T.zeros(batch_size, dtype=T.long, device=self.device)
-        weights = T.zeros(batch_size, dtype=T.float32, device=self.device)
-
+        
         if self.priority == "proportional":
-            #DEBUG
-            print(f"PER.sample() Total priority: {self.sum_tree.total_priority}")
             # Calculate segment boundaries
-            segment_size = self.sum_tree.total_priority / batch_size
-            segment_starts = T.arange(0, batch_size, device=self.device) * segment_size
-            segment_ends = segment_starts + segment_size
+            total_priority = self.sum_tree.tree[0].item()
+            segment_size = total_priority / batch_size
             
-            # Generate random values within each segment
-            random_values = T.rand(batch_size, device=self.device) * (segment_ends - segment_starts) + segment_starts
-            #DEBUG
-            print(f"PER.sample() p: {random_values}")
-            # Sample indices from sum tree for each segment
-            for i, p in enumerate(random_values):
-                idx, priority = self.sum_tree.get(p)
-                indices[i] = idx
+            # Generate stratified random samples efficiently 
+            segment_boundaries = T.arange(0, batch_size, device=self.device) * segment_size
+            random_offsets = T.rand(batch_size, device=self.device) * segment_size
+            p_values = segment_boundaries + random_offsets
             
-            # Get corresponding priorities for all indices
-            tree_indices = indices + self.buffer_size - 1
-            priorities = self.sum_tree.tree[tree_indices]
+            # Get indices and priorities in a single batch operation
+            indices, priorities = self.sum_tree.get(p_values)
             
-            # Calculate weights (fully vectorized)
-            probs = (priorities / self.sum_tree.total_priority).clamp(min=self.epsilon)
+            # Calculate weights fully vectorized
+            probs = (priorities / total_priority).clamp(min=self.epsilon)
             weights = (size * probs).pow(-self.beta)
 
         else:  # rank
