@@ -307,7 +307,8 @@ def format_layers(model, agent, agent_params):
             elif layer_entry["type"] == "conv2d":
                 layer_entry["params"] = format_cnn_layer(model, agent, index, relevant_keys)
 
-            # elif layer_entry["type"] == 
+            elif layer_entry["type"] == "layernorm":
+                layer_entry["params"] = format_layernorm_layer(model, agent, index, relevant_keys)
 
 
             # Handle layers with no params
@@ -343,6 +344,12 @@ def format_dense_layer(model, agent, index, keys):
             if param_key in keys:
                 params["kernel params"][param] = keys[param_key]
     return params
+
+def format_layernorm_layer(model, agent, index, keys):
+    normalized_shape_key = f"type:normalized-shape_model:{model}_agent:{agent}_index:{index}"
+    return {
+        "normalized_shape": keys.get(normalized_shape_key, None)
+    }
 
 def format_cnn_layer(model, agent, index, keys):
     out_channels_key = f"type:out-channels_model:{model}_agent:{agent}_index:{index}"
@@ -3084,7 +3091,7 @@ def create_warmup_input(agent_type):
             },
             type='number',
             min=0,
-            max=1000,
+            max=10000,
             value=0,
             step=500,
         )
@@ -3856,6 +3863,146 @@ def create_goal_strategy_input(agent_type):
         ]
     )
 
+def create_replay_buffer_input(agent_type):
+    return html.Div(
+        [
+            dcc.Dropdown(
+                id={
+                    'type':'replay-buffer',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                options=[{'label': i, 'value': i.lower()} for i in ['PER', 'Standard']],
+                placeholder="Replay Buffer",
+            ),
+            html.Div(
+                id={
+                    'type':'replay-buffer-options',
+                    'model':'none',
+                    'agent':agent_type,
+                }
+            )
+        ]
+    )
+
+def update_replay_buffer_options(agent_type, replay_buffer):
+    if replay_buffer == 'per':
+        return per_replay_buffer_options(agent_type)
+    return standard_replay_buffer_options(agent_type)
+
+def per_replay_buffer_options(agent_type):
+    return html.Div(
+        [
+            html.Label('Buffer Size', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'buffer-size',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1000,
+                max=1000000,
+                step=1000,
+                value=100000,
+            ),
+            html.Label('Priority Exponent', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'per-priority-exponent',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=0.5,
+            ),
+            html.Label('Beta Start', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'per-beta-start',    
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                value=0.5,
+            ),
+            html.Label('Beta Iter', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'per-beta-iter',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1000,
+                max=1000000,
+                step=1000,
+                value=100000,
+            ),
+            html.Label('Update Frequency', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'per-update-freq',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1,
+                max=1000,
+                step=1,
+                value=100,
+            ),
+        ]
+    )
+
+def standard_replay_buffer_options(agent_type):
+    return html.Div(
+        [
+            html.Label('Buffer Size', style={'text-decoration': 'underline'}),
+            dcc.Input(
+                id={
+                    'type':'buffer-size',
+                    'model':'none',
+                    'agent':agent_type,
+                },
+                type='number',
+                min=1000,
+                max=1000000,
+                step=1000,
+                value=100000,
+            ),
+        ]
+    )
+
+def get_replay_buffer(env, agent_type, model_type, agent_params):
+    replay_buffer = agent_params.get(get_key({'type':'replay-buffer', 'model':model_type, 'agent':agent_type}))
+    device = agent_params.get(get_key({'type':'device', 'model':model_type, 'agent':agent_type}))
+    buffer_size = agent_params.get(get_key({'type':'buffer-size', 'model':model_type, 'agent':agent_type}))
+    #DEBUG
+    print(f'replay_buffer: {replay_buffer}')
+    print(f"buffer_size: {buffer_size}")
+    print(f"device: {device}")
+    if agent_type in ['HER_DDPG', 'HER_TD3']:
+        goal_shape = (env.observation_space['desired_goal'].shape[-1],)
+        #DEBUG
+        print(f"goal_shape: {goal_shape}")
+    else:
+        goal_shape = None
+
+    if replay_buffer == 'per':
+        priority_exponent = agent_params.get(get_key({'type':'per-priority-exponent', 'model':model_type, 'agent':agent_type}))
+        beta_start = agent_params.get(get_key({'type':'per-beta-start', 'model':model_type, 'agent':agent_type}))
+        beta_iter = agent_params.get(get_key({'type':'per-beta-iter', 'model':model_type, 'agent':agent_type}))
+        update_freq = agent_params.get(get_key({'type':'per-update-freq', 'model':model_type, 'agent':agent_type}))
+        return PrioritizedReplayBuffer(env, buffer_size, priority_exponent, beta_start, beta_iter, goal_shape=goal_shape, update_freq=update_freq, device=device)
+    return ReplayBuffer(env, buffer_size, goal_shape, device)
+
 def update_goal_strategy_options(agent_type, goal_strategy):
     if goal_strategy == 'future':
         return future_goal_strategy_options(agent_type)
@@ -4342,6 +4489,7 @@ def create_her_ddpg_parameter_inputs(agent_type):
                     dbc.Tab(
                         label="Agent Parameters",
                         children=[
+                            create_replay_buffer_input(agent_type),
                             create_goal_strategy_input(agent_type),
                             create_tolerance_input(agent_type),
                             create_discount_factor_input(agent_type),
