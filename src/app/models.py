@@ -158,6 +158,9 @@ class Model(nn.Module):
         elif layer_type == 'batchnorm2d':
             return nn.LazyBatchNorm2d()
 
+        elif layer_type == 'layernorm':
+            return nn.LayerNorm(**params)
+
         elif layer_type == 'flatten':
             return nn.Flatten()
 
