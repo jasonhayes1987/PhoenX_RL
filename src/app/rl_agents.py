@@ -1367,15 +1367,34 @@ class DDPG(Agent):
 
 
     def learn(self, state_normalizer: Normalizer=None, goal_normalizer: Normalizer=None):
-
-        # sample a batch of experiences from the replay buffer
-        #DEBUG
-        # print(f"Getting batch from buffer: {self.replay_buffer.counter}")
+        # Sample a batch of experiences from the replay buffer
         if hasattr(self.replay_buffer, 'update_priorities'):  # Check if using prioritized replay
             if self._use_her:  # HER with prioritized replay
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
                 states, actions, rewards, next_states, dones, weights, indices = self.replay_buffer.sample(self.batch_size)
+                
+            # Log PER-specific metrics
+            if self._wandb:
+                # Get priorities for sampled indices
+                if self.replay_buffer.priority == 'proportional':
+                    sampled_priorities = self.replay_buffer.sum_tree.tree[self.replay_buffer.sum_tree.capacity-1+indices].cpu().numpy()
+                    buffer_priorities = self.replay_buffer.sum_tree.tree[self.replay_buffer.sum_tree.capacity-1:].cpu().numpy()
+                    buffer_priorities = buffer_priorities[buffer_priorities > 0]  # Filter out zero priorities
+                else:  # rank-based
+                    sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
+                    buffer_priorities = self.replay_buffer.priorities[:min(self.replay_buffer.counter, self.replay_buffer.buffer_size)].cpu().numpy()
+                
+                # Log priority distributions
+                self._train_step_config.update({
+                    'PER/sampled_priorities': wandb.Histogram(sampled_priorities),
+                    'PER/buffer_priorities': wandb.Histogram(buffer_priorities),
+                    'PER/weights': wandb.Histogram(weights.cpu().numpy()),
+                    'PER/mean_sampled_priority': float(sampled_priorities.mean()),
+                    'PER/mean_buffer_priority': float(buffer_priorities.mean()),
+                    'PER/weight_mean': float(weights.mean()),
+                    'PER/weight_std': float(weights.std())
+                })
         else:  # Standard replay buffer
             if self._use_her:
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
@@ -1383,125 +1402,119 @@ class DDPG(Agent):
                 states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
                 weights = None
                 indices = None
-        #DEBUG
-        # print(f"Batch received from buffer: {self.replay_buffer.counter}")
 
-        # normalize states if self.normalize_inputs
+        # Normalize states if self.normalize_inputs
         if self.normalize_inputs and not self._use_her:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
-
-        # (HER) Use passed normalizers to normalize states and goals
         elif self._use_her:
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
-        
-        if not self._use_her:
+        else:
             desired_goals = None
 
-
-        # convert rewards and dones to 2d tensors
+        # Convert rewards and dones to 2D tensors
         rewards = rewards.unsqueeze(1)
         dones = dones.unsqueeze(1)
 
-        # get target values 
+        # Get target values
         with T.no_grad():
             _, target_actions = self.target_actor_model(next_states, desired_goals)
-            target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
+            # noise = self.target_noise()
             
-            # Check for NaN values in target critic values
-            if T.isnan(target_critic_values).any():
-                print("WARNING: NaN detected in target_critic_values. Replacing with zeros.")
-                target_critic_values = T.nan_to_num(target_critic_values, nan=0.0)
+            # Apply noise clipping if needed
+            # if hasattr(self, 'target_noise_clip') and self.target_noise_clip > 0:
+            #     noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
                 
+            # Apply noise scaling if scheduled
+            # if hasattr(self, 'target_noise_schedule') and self.target_noise_schedule is not None:
+            #     noise *= self.target_noise_schedule.get_factor()
+                
+            # Add noise to target actions and clamp to action space
+            # target_actions = (target_actions + noise).clamp(float(self.env.action_space.low.min()), float(self.env.action_space.high.max()))
+            
+            # Get target critic values from both critic networks
+            target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
+            # target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
+            
+            # Take minimum of both critic values for stability
+            # target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
+            
+            # Calculate target Q-values
             targets = rewards + (1 - dones) * self.discount * target_critic_values
-
+            
+            # Apply HER-specific clamping if needed
             if self._use_her:
                 targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
-                
-            # Check for NaN in targets
-            if T.isnan(targets).any():
-                print("WARNING: NaN detected in targets. Replacing with zeros.")
-                targets = T.nan_to_num(targets, nan=0.0)
 
-        # get current critic values and calculate critic loss
+        # Get current critic predictions
         predictions = self.critic_model(states, actions, desired_goals)
-        
-        # Check for NaN values in predictions
-        if T.isnan(predictions).any():
-            print("WARNING: NaN detected in predictions. Replacing with zeros.")
-            predictions = T.nan_to_num(predictions, nan=0.0)
-            
-        error = targets - predictions
-        #DEBUG
-        # print(f'error: {error}')
-        
-        # Check for NaN in error before passing to buffer
-        if T.isnan(error).any():
-            print("WARNING: NaN detected in error. Replacing with zeros.")
-            error = T.nan_to_num(error, nan=0.0)
+        # predictions_b = self.critic_model_b(states, actions, desired_goals)
 
+        # Calculate TD errors
+        error = targets - predictions
+        # error_b = targets - predictions_b
+        # error = (error_a.abs() + error_b.abs()) / 2  # Average of absolute errors for priorities
+
+        # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            #DEBUG
-            # print(f"DDPG.learn() Weights: {weights}")
-            critic_loss = weights * (targets - predictions).pow(2)
-            critic_loss = critic_loss.mean()
+            critic_loss = (weights * error.pow(2)).mean()
+            # critic_loss_b = (weights * error_b.pow(2)).mean()
+            # critic_loss = critic_loss_a + critic_loss_b
         else:
-            critic_loss = (targets - predictions).pow(2).mean()
-        
-        # update critic
+            critic_loss = F.mse_loss(predictions, targets)
+
+        # Update critic
         self.critic_model.optimizer.zero_grad()
         critic_loss.backward()
-
         self.critic_model.optimizer.step()
 
-        # update actor
+        # Only update actor every actor_update_delay steps
+        # if self._step % self.actor_update_delay == 0:
+        # Get actor's action predictions
         pre_act_values, action_values = self.actor_model(states, desired_goals)
+        
+        # Calculate actor loss based on critic
         critic_values = self.critic_model(states, action_values, desired_goals)
-        actor_loss = -critic_values.mean()
+        actor_loss = -T.mean(critic_values)
+        
+        # Add HER-specific regularization if needed
         if self._use_her:
             actor_loss += pre_act_values.pow(2).mean()
 
+        # Update actor
         self.actor_model.optimizer.zero_grad()
         actor_loss.backward()
         self.actor_model.optimizer.step()
 
-        # perform soft update on target networks
+        # Perform soft update on target networks
         if not self._use_her:
             self.soft_update(self.actor_model, self.target_actor_model)
             self.soft_update(self.critic_model, self.target_critic_model)
 
-        # Update priorities if using prioritized replay
-        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:
+        # Update priorities if using prioritized replay - only on update_freq steps
+        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None and hasattr(self.replay_buffer, 'update_freq'):
             if self._step % self.replay_buffer.update_freq == 0:
-                #DEBUG
-                print(f"Updating priorities in buffer: step {self._step}, counter {self.replay_buffer.counter}")
-                abs_error = error.abs().flatten().detach()
-                #DEBUG
-                # print(f"DDPG.learn() abs_error: {abs_error}")
-                
-                # Final safeguard against NaN values before updating priorities
+                # Get the absolute values of the TD errors
+                abs_error = error.abs().detach().flatten()
+                # Handle NaN values if they occur
                 if T.isnan(abs_error).any():
-                    print(f"WARNING: NaN detected in abs_error before priority update. Count: {T.isnan(abs_error).sum().item()}")
-                    print(f"Original values: {abs_error}")
-                    
-                    # Replace NaNs with a small positive value (epsilon)
                     abs_error = T.nan_to_num(abs_error, nan=1.0)
-                    print(f"Fixed values: {abs_error}")
-                
+                if self._use_her:
+                    # Add goal distance regularization (Euclidean distance between achieved and desired)
+                    goal_distance = T.norm(achieved_goals - desired_goals, dim=-1)
+                    abs_error = abs_error + 0.1 * goal_distance
+                # Update priorities
                 self.replay_buffer.update_priorities(indices, abs_error)
-                #DEBUG
-                # print(f"Updated priorities in buffer: step {self._step}, counter {self.replay_buffer.counter}")
-            
 
-        # add metrics to step_logs
+        # Add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
-        self._train_step_config['critic_predictions'] = critic_values.mean()
+        self._train_step_config['critic_predictions'] = critic_values.mean() if 'critic_values' in locals() else predictions.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
         self._train_step_config['target_critic_predictions'] = target_critic_values.mean()
-        
-        return actor_loss.item(), critic_loss.item()
+
+        return actor_loss.item() if actor_loss is not None else 0.0, critic_loss.item()
         
     
     def soft_update(self, current, target):
@@ -2089,7 +2102,10 @@ class DDPG(Agent):
         # load replay buffer if not None
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
-            replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
+            if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
+                replay_buffer = PrioritizedReplayBuffer(**config["replay_buffer"]["config"])
+            else:
+                replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
         # load noise
@@ -2495,249 +2511,7 @@ class TD3(Agent):
         return action_np
 
 
-    # def learn(self, replay_buffer:Buffer=None,
-    #           state_normalizer:Union[Normalizer, SharedNormalizer]=None,
-    #           goal_normalizer:Union[Normalizer, SharedNormalizer]=None,
-    #           ):
-    #     # time batch sampling
-    #     # timer = time.time()
-    #     # sample a batch of experiences from the replay buffer
-    #     if self._use_her: # if using HER
-    #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = replay_buffer.sample(self.batch_size)
-    #     else:
-    #         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
-    #     # print time taking to batch sample
-    #     # print(f'time to sample batch: {time.time() - timer}')
-    #     # normalize states if self.normalize_inputs
-    #     if self.normalize_inputs:
-    #         states = self.state_normalizer.normalize(states)
-    #         next_states = self.state_normalizer.normalize(next_states)
-
-    #     # (HER) Use passed normalizers to normalize states and goals
-    #     if self._use_her:
-    #         states = state_normalizer.normalize(states)
-    #         next_states = state_normalizer.normalize(next_states)
-    #         desired_goals = goal_normalizer.normalize(desired_goals)
-        
-    #     # time conversion to tensors
-    #     # timer = time.time()
-    #     # Convert to tensors
-    #     # states = T.tensor(states, dtype=T.float32, device=self.actor_model.device)
-    #     # actions = T.tensor(actions, dtype=T.float32, device=self.actor_model.device)
-    #     # rewards = T.tensor(rewards, dtype=T.float32, device=self.actor_model.device)
-    #     # next_states = T.tensor(next_states, dtype=T.float32, device=self.actor_model.device)
-    #     # dones = T.tensor(dones, dtype=T.int8, device=self.actor_model.device)
-    #     # logger.debug(f"states: {states}")
-    #     # logger.debug(f"actions: {actions}")
-    #     # logger.debug(f"rewards: {rewards}")
-    #     # logger.debug(f"next states: {next_states}")
-    #     # logger.debug(f"dones: {dones}")
-    #     # if using HER, convert desired goals to tensors
-    #     # if self._use_her:
-    #     #     desired_goals = T.tensor(desired_goals, dtype=T.float32, device=self.actor_model.device)
-    #     # else:
-    #     #     # set desired goals to None
-    #     #     desired_goals = None
-    #     if not self._use_her:
-    #         desired_goals = None
-    #     # print time to convert to tensors
-    #     # print(f'time to convert to tensors: {time.time() - timer}')
-
-    #     # permute states and next states if using cnn
-    #     if self.actor_model.cnn_model:
-    #         states = states.permute(0, 3, 1, 2)
-    #         next_states = next_states.permute(0, 3, 1, 2)
-
-    #     # convert rewards and dones to 2d tensors
-    #     rewards = rewards.unsqueeze(1)
-    #     dones = dones.unsqueeze(1)
-
-    #     # with T.no_grad():
-    #     # get target values
-    #     # timer = time.time()
-    #     _, target_actions = self.target_actor_model(next_states, desired_goals)
-    #     # print(f'time to get target actions: {time.time() - timer}')
-    #     logger.debug(f"target actions: {target_actions}")
-    #     # Add gaussian noise to target actions
-    #     # timer = time.time()
-    #     noise = self.target_action_noise()
-    #     # print(f'time to get noise: {time.time() - timer}')
-    #     logger.debug(f"target action noise: {noise}")
-    #     # timer = time.time()
-    #     target_actions = target_actions + T.clamp(noise, min=-self.target_action_clip, max=self.target_action_clip)
-    #     # print(f'time add noise: {time.time() - timer}')
-    #     logger.debug(f"target actions after added noise: {target_actions}")
-    #     # Clamp targets between target action clip values
-    #     # timer = time.time()
-    #     target_actions = T.clamp(target_actions, min=T.tensor(self.env.action_space.low[0], dtype=T.float, device=self.device), max=T.tensor(self.env.action_space.high[0], dtype=T.float, device=self.device))
-    #     # print(f'time to clamp target actions: {time.time() - timer}')
-    #     logger.debug(f"target actions after clamped: {target_actions}")
-    #     # print(f'Agent {dist.get_rank()}: target_actions: {target_actions}')
-    #     # timer = time.time()
-    #     target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
-    #     # print(f'time to get critic a values: {time.time() - timer}')
-    #     logger.debug(f"target critic a values: {target_critic_values_a}")
-    #     # print(f'Agent {dist.get_rank()}: target_critic_values_a: {target_critic_values_a}')
-    #     # timer = time.time()
-    #     target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
-    #     # print(f'time to get critic b values: {time.time() - timer}')
-    #     logger.debug(f"target critic b values: {target_critic_values_b}")
-    #     # Take minimum target critic value and set it as critic value
-    #     # timer = time.time()
-    #     target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
-    #     # print(f'time to get min of critic values: {time.time() - timer}')
-    #     logger.debug(f"minimum target critic values: {target_critic_values}")
-    #     # print(f'Agent {dist.get_rank()}: target_critic_values_b: {target_critic_values_b}')
-    #     # timer = time.time()
-    #     targets = rewards + self.discount * target_critic_values * (1 - dones)
-    #     # print(f'time to calc targets: {time.time() - timer}')
-    #     logger.debug(f"target: {targets}")
-
-    #     if self._use_her:
-    #         targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
-
-    #     self.critic_model_a.optimizer.zero_grad()
-    #     self.critic_model_b.optimizer.zero_grad()
-
-    #     # get current critic values and calculate critic losses
-    #     # timer = time.time()
-    #     predictions_a = self.critic_model_a(states, actions, desired_goals)
-    #     # print(f'time for predictions a: {time.time() - timer}')
-    #     logger.debug(f"predictions a: {predictions_a}")
-    #     # timer = time.time()
-    #     predictions_b = self.critic_model_b(states, actions, desired_goals)
-    #     # print(f'time for predictions b: {time.time() - timer}')
-    #     logger.debug(f"predictions b: {predictions_b}")
-    #     # timer = time.time()
-    #     critic_loss_a = F.mse_loss(targets, predictions_a)
-    #     # print(f'time for critic loss a: {time.time() - timer}')
-    #     logger.debug(f"critic loss a: {critic_loss_a}")
-    #     # timer = time.time()
-    #     critic_loss_b = F.mse_loss(targets, predictions_b)
-    #     # print(f'time for critic loss b: {time.time() - timer}')
-    #     logger.debug(f"critic loss b: {critic_loss_b}")
-        
-    #     # add losses to get total critic loss
-    #     critic_loss = critic_loss_a + critic_loss_b
-    #     logger.debug(f"combined loss: {critic_loss}")
-        
-    #     # update critics
-    #     # critic_loss_a.backward(retain_graph=True)
-    #     # critic_loss_b.backward()
-    #     # timer = time.time()
-    #     critic_loss.backward()
-    #     # print(f'time for critics backwards pass: {time.time() - timer}')
-
-    #     # Print gradients
-    #     for name, param in self.critic_model_a.named_parameters():
-    #         if param.grad is not None:
-    #             logger.debug(f"Gradient for {name}: {param.grad}")
-    #         else:
-    #             logger.degub(f"No gradient calculated for {name}")
-    #     for name, param in self.critic_model_b.named_parameters():
-    #         if param.grad is not None:
-    #             logger.debug(f"Gradient for {name}: {param.grad}")
-    #         else:
-    #             logger.debug(f"No gradient calculated for {name}")
-
-    #     # if self._use_her:
-    #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached critic optimization')
-    #         # Synchronize gradients
-    #         ## T.DIST CUDA ##
-    #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
-    #         # for param in self.critic_model.parameters():
-    #         #     if param.grad is not None:
-    #         #         # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
-    #         #         print(param.grad)
-    #         #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-    #                 # print(f'agent {dist.get_rank()} param grad after all reduce:')
-    #                 # print(param.grad)
-    #         #         # param.grad.data /= dist.get_world_size()
-    #         #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
-    #         #         # print(param.grad)
-
-    #     ## MPI CPU ##
-    #     if self.use_mpi:
-    #         helper.sync_grads_sum(self.critic_model_a, self.comm)
-    #         helper.sync_grads_sum(self.critic_model_b, self.comm)
-        
-    #     # timer = time.time()
-    #     self.critic_model_a.optimizer.step()
-    #     self.critic_model_b.optimizer.step()
-    #     # print(f'time to optimize critics: {time.time() - timer}')
-
-    #     self.actor_model.optimizer.zero_grad()
-    #     # timer = time.time()
-    #     pre_act_values, action_values = self.actor_model(states, desired_goals)
-    #     # print(f'time for action values: {time.time() - timer}')
-    #     # logger.debug(f"action values: {action_values}")
-    #     # print(f'Agent {dist.get_rank()}: action_values: {action_values}')
-    #     # timer = time.time()
-    #     critic_values = self.critic_model_a(states, action_values, desired_goals)
-    #     # print(f'time for critic values: {time.time() - timer}')
-    #     # logger.debug(f"critic values: {critic_values}")
-    #     # Calculate actor loss
-    #     # timer = time.time()
-    #     actor_loss = -T.mean(critic_values)
-    #     # print(f'time for actor loss: {time.time() - timer}')
-    #     # logger.debug(f"actor loss: {actor_loss}")
-    #     if self._use_her:
-    #         actor_loss += pre_act_values.pow(2).mean()
-        
-    #     # Update actor if actor update delay mod self._step = 0
-    #     if self._step % self.actor_update_delay == 0:
-    #         # logger.debug(f"updating actor: step {self._step}")
-    #         # timer = time.time()
-    #         actor_loss.backward()
-
-    #         # print gradients
-    #         for name, param in self.actor_model.named_parameters():
-    #             if param.grad is not None:
-    #                 logger.debug(f"Gradient for {name}: {param.grad}")
-    #             else:
-    #                 logger.debug(f"No gradient calculated for {name}")
-    #         # print(f'time for actor loss: {time.time() - timer}')
-    #         # if self._use_her:
-    #             # Synchronize Gradients
-    #             ## T.DIST CUDA ##
-    #             # print(f'agent {MPI.COMM_WORLD.Get_rank()} reached actor optimization')
-    #             # print(f'agent {MPI.COMM_WORLD.Get_rank()} param grad before all reduce:')
-    #             # for param in self.actor_model.parameters():
-    #             #     if param.grad is not None:
-    #                     # print(f'agent {MPI.COMM_WORLD.Get_rank()} param shape: {param.shape}')
-    #                     # print(param.grad)
-    #             #         dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-    #             #         # print(f'agent {dist.get_rank()} param grad after reduce:')
-    #             #         # print(param.grad)
-    #             #         # print(f'agent {dist.get_rank()} world size {dist.get_world_size()}')
-    #             #         param.grad.data /= dist.get_world_size()
-    #             #         # print(f'agent {dist.get_rank()} param grad after divide by world size')
-    #             #         # print(param.grad)
-    #         ## MPI CPU ##
-    #         if self.use_mpi:
-    #             helper.sync_grads_sum(self.actor_model, self.comm)
-            
-    #         # timer = time.time()
-    #         self.actor_model.optimizer.step()
-    #         # print(f'time to optimize actor: {time.time() - timer}')
-
-    #         # perform soft update on target networks
-    #         # timer = time.time()
-    #         self.soft_update(self.actor_model, self.target_actor_model)
-    #         self.soft_update(self.critic_model_a, self.target_critic_model_a)
-    #         self.soft_update(self.critic_model_b, self.target_critic_model_b)
-    #         # print(f'time to perform soft update: {time.time() - timer}')
-
-    #     # add metrics to step_logs
-    #     self._train_step_config['actor_predictions'] = action_values.mean()
-    #     self._train_step_config['critic_predictions'] = critic_values.mean()
-    #     self._train_step_config['target_actor_predictions'] = target_actions.mean()
-    #     self._train_step_config['target_critic_predictions'] = target_critic_values_a.mean()
-        
-    #     return actor_loss.item(), critic_loss_a.item()
-
     def learn(self, state_normalizer: Normalizer = None, goal_normalizer: Normalizer = None):
-        
         # Sample a batch of experiences from the replay buffer
         if hasattr(self.replay_buffer, 'update_priorities'):  # Check if using prioritized replay
             if self._use_her:  # HER with prioritized replay
@@ -2770,74 +2544,101 @@ class TD3(Agent):
         # Get target values
         with T.no_grad():
             _, target_actions = self.target_actor_model(next_states, desired_goals)
-            noise = self.target_noise().clamp(-self.target_noise_clip, self.target_noise_clip)
-            if self.target_noise_schedule:
+            noise = self.target_noise()
+            
+            # Apply noise clipping if needed
+            if hasattr(self, 'target_noise_clip') and self.target_noise_clip > 0:
+                noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
+                
+            # Apply noise scaling if scheduled
+            if hasattr(self, 'target_noise_schedule') and self.target_noise_schedule is not None:
                 noise *= self.target_noise_schedule.get_factor()
+                
+            # Add noise to target actions and clamp to action space
             target_actions = (target_actions + noise).clamp(float(self.env.action_space.low.min()), float(self.env.action_space.high.max()))
+            
+            # Get target critic values from both critic networks
             target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
             target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
+            
+            # Take minimum of both critic values for stability
             target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
+            
+            # Calculate target Q-values
             targets = rewards + (1 - dones) * self.discount * target_critic_values
+            
+            # Apply HER-specific clamping if needed
             if self._use_her:
                 targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
 
-        # Zero gradients for the optimizers
-        self.critic_model_a.optimizer.zero_grad()
-        self.critic_model_b.optimizer.zero_grad()
-
-        # Get current critic values and calculate critic losses
+        # Get current critic predictions
         predictions_a = self.critic_model_a(states, actions, desired_goals)
         predictions_b = self.critic_model_b(states, actions, desired_goals)
 
-        # Calculate TD errors for priority updates - use minimum for stability
+        # Calculate TD errors (use average of both critic networks for PER)
         error_a = targets - predictions_a
         error_b = targets - predictions_b
-        error = (error_a.abs() + error_b.abs()) / 2
+        error = (error_a.abs() + error_b.abs()) / 2  # Average of absolute errors for priorities
 
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            critic_loss = weights * ((targets - predictions_a).pow(2) + (targets - predictions_b).pow(2))
-            critic_loss = critic_loss.mean()
+            critic_loss_a = (weights * error_a.pow(2)).mean()
+            critic_loss_b = (weights * error_b.pow(2)).mean()
+            critic_loss = critic_loss_a + critic_loss_b
         else:
-            critic_loss = ((targets - predictions_a).pow(2) + (targets - predictions_b).pow(2)).mean()
+            critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
 
-        # critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
-
-        # Backward pass and optimization for critics
+        # Update critics
+        self.critic_model_a.optimizer.zero_grad()
+        self.critic_model_b.optimizer.zero_grad()
         critic_loss.backward()
         self.critic_model_a.optimizer.step()
         self.critic_model_b.optimizer.step()
 
-        # Zero gradients for the actor optimizer
-        self.actor_model.optimizer.zero_grad()
-
-        # Get current actor values and calculate actor loss
-        pre_act_values, action_values = self.actor_model(states, desired_goals)
-        critic_values = self.critic_model_a(states, action_values, desired_goals)
-        actor_loss = -T.mean(critic_values)
-        if self._use_her:
-            actor_loss += pre_act_values.pow(2).mean()
-
-        # Backward pass and optimization for the actor
+        # Only update actor every actor_update_delay steps
         if self._step % self.actor_update_delay == 0:
+            # Get actor's action predictions
+            pre_act_values, action_values = self.actor_model(states, desired_goals)
+            
+            # Calculate actor loss based on critic A
+            critic_values = self.critic_model_a(states, action_values, desired_goals)
+            actor_loss = -T.mean(critic_values)
+            
+            # Add HER-specific regularization if needed
+            if self._use_her:
+                actor_loss += pre_act_values.pow(2).mean()
+
+            # Update actor
+            self.actor_model.optimizer.zero_grad()
             actor_loss.backward()
             self.actor_model.optimizer.step()
-            if not self._use_her:
-                self.soft_update(self.actor_model, self.target_actor_model)
-                self.soft_update(self.critic_model_a, self.target_critic_model_a)
-                self.soft_update(self.critic_model_b, self.target_critic_model_b)
 
-        # Update priorities if using prioritized replay
-        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:
-            abs_error = error.detach().cpu().numpy().flatten()
-            self.replay_buffer.update_priorities(indices, abs_error)
+            # Perform soft update on target networks
+            self.soft_update(self.actor_model, self.target_actor_model)
+            self.soft_update(self.critic_model_a, self.target_critic_model_a)
+            self.soft_update(self.critic_model_b, self.target_critic_model_b)
+        else:
+            actor_loss = None
+            action_values = actions  # Use original actions for metrics
+
+        # Update priorities if using prioritized replay - only on update_freq steps
+        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None and hasattr(self.replay_buffer, 'update_freq'):
+            if self._step % self.replay_buffer.update_freq == 0:
+                # Use the combined error for priority updates
+                abs_error = error.detach().flatten()
+                # Handle NaN values if they occur
+                if T.isnan(abs_error).any():
+                    abs_error = T.nan_to_num(abs_error, nan=1.0)
+                # Update priorities directly
+                self.replay_buffer.update_priorities(indices, abs_error)
 
         # Add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
-        self._train_step_config['critic_predictions'] = critic_values.mean()
+        self._train_step_config['critic_predictions'] = critic_values.mean() if 'critic_values' in locals() else predictions_a.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
-        self._train_step_config['target_critic_predictions'] = target_critic_values_a.mean()
-        self._train_step_config['target_noise'] = noise.mean()
+        self._train_step_config['target_critic_predictions'] = target_critic_values.mean()
+        if 'noise' in locals():
+            self._train_step_config['target_noise'] = noise.mean()
 
         return actor_loss.item(), critic_loss.item()
         
@@ -4467,6 +4268,8 @@ class HER(Agent):
             # Update agent config
             if self.agent.callbacks:
                 self.agent._config.update({
+                    'strategy': self.strategy,
+                    'num_goals': self.num_goals if self.strategy == 'future' else None,
                     'num_epochs': num_epochs,
                     'num_cycles': num_cycles,
                     'num_episodes_per_cycle': num_episodes_per_cycle,
@@ -4533,21 +4336,8 @@ class HER(Agent):
                         next_states, rewards, terms, truncs, _ = self.agent.env.step(formatted_actions)
                         dones = np.logical_or(terms, truncs)
                         episode_scores += rewards
-
+                        # Store transitions in the env trajectory
                         for i in range(num_envs):
-                            # Add original transition to replay buffer
-                            self.agent.replay_buffer.add(
-                                states['observation'][i],
-                                actions[i],
-                                rewards[i],
-                                next_states['observation'][i],
-                                dones[i],
-                                states['achieved_goal'][i],
-                                next_states['achieved_goal'][i],
-                                states['desired_goal'][i]
-                            )
-
-                            # Append transition to trajectory buffer
                             trajectory_buffers[i].append({
                                 'state': states['observation'][i],
                                 'action': actions[i],
@@ -4567,69 +4357,91 @@ class HER(Agent):
                                 T.tensor(states['achieved_goal'][i], dtype=T.float32, device=self.goal_normalizer.device.type)
                             )
 
+                        completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
+                        for i in completed_episodes:
+                        # for i in range(num_envs):
+                            self.store_hindsight_trajectory(trajectory_buffers[i])
                             # Calculate success rate
                             goal_distance = np.linalg.norm(states['achieved_goal'][i] - states['desired_goal'][i], axis=-1)
                             success = (goal_distance <= self.tolerance).astype(np.float32)
                             success_counter += success
-                            success_perc = (success_counter / num_envs) / self.agent._step
+                            success_perc = (success_counter / self.completed_episodes.sum())
                             self.agent._train_step_config.update({
                                 "success rate": success_perc,
                                 "goal distance": goal_distance,
                                 "step_reward": rewards.mean()
                             })
+                            trajectory_buffers[i] = []
+                            self.completed_episodes[i] += 1
+                            # Add original transition to replay buffer
+                            # self.agent.replay_buffer.add(
+                            #     states['observation'][i],
+                            #     actions[i],
+                            #     rewards[i],
+                            #     next_states['observation'][i],
+                            #     dones[i],
+                            #     states['achieved_goal'][i],
+                            #     next_states['achieved_goal'][i],
+                            #     states['desired_goal'][i]
+                            # )
 
-                            if dones[i]:
-                                # Apply hindsight to the completed trajectory
-                                self.store_hindsight_trajectory(trajectory_buffers[i])
-                                trajectory_buffers[i] = []
-                                self.completed_episodes[i] += 1
-                                score_history.append(episode_scores[i])
-                                avg_reward = np.mean(score_history) if score_history else 0
-                                self.agent._train_episode_config.update({
-                                    'episode': int(self.completed_episodes.sum()),
-                                    'episode_reward': episode_scores[i],
-                                })
+                            # Append transition to trajectory buffer
+                            score_history.append(episode_scores[i])
+                            avg_reward = np.mean(score_history) if score_history else 0
+                            self.agent._train_episode_config.update({
+                                'episode': int(self.completed_episodes.sum()),
+                                'episode_reward': episode_scores[i],
+                            })
 
-                                if avg_reward > best_reward:
-                                    best_reward = avg_reward
-                                    self.agent._train_episode_config["best"] = 1
-                                    self.save()
-                                else:
-                                    self.agent._train_episode_config["best"] = 0
+                            if avg_reward > best_reward:
+                                best_reward = avg_reward
+                                self.agent._train_episode_config["best"] = 1
+                                self.save()
+                            else:
+                                self.agent._train_episode_config["best"] = 0
 
+                            if self.agent.callbacks:
+                                for callback in self.agent.callbacks:
+                                    callback.on_train_epoch_end(epoch=self.agent._step, logs=self.agent._train_episode_config)
+
+                            if self.completed_episodes.sum() % render_freq == 0 and not rendered:
+                                print(f"Rendering episode {self.completed_episodes.sum()} during training...")
+                                self.test(num_episodes=1, seed=None, render_freq=1, training=True)
+                                video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes.sum()}.mp4")
                                 if self.agent.callbacks:
                                     for callback in self.agent.callbacks:
-                                        callback.on_train_epoch_end(epoch=self.agent._step, logs=self.agent._train_episode_config)
+                                        if isinstance(callback, WandbCallback):
+                                            wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self.agent._step)
+                                rendered = True
+                                # Reset models to train mode
+                                self.agent.actor_model.train()
+                                if hasattr(self.agent, 'critic_model'):
+                                    self.agent.critic_model.train()
+                                if hasattr(self.agent, 'critic_model_a'):
+                                    self.agent.critic_model_a.train()
+                                if hasattr(self.agent, 'critic_model_b'):
+                                    self.agent.critic_model_b.train()
 
-                                if self.completed_episodes.sum() % render_freq == 0 and not rendered:
-                                    print(f"Rendering episode {self.completed_episodes.sum()} during training...")
-                                    self.test(num_episodes=1, seed=None, render_freq=1, training=True)
-                                    video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes.sum()}.mp4")
-                                    if self.agent.callbacks:
-                                        for callback in self.agent.callbacks:
-                                            if isinstance(callback, WandbCallback):
-                                                wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self.agent._step)
-                                    rendered = True
-                                    # Reset models to train mode
-                                    self.agent.actor_model.train()
-                                    if hasattr(self.agent, 'critic_model'):
-                                        self.agent.critic_model.train()
-                                    if hasattr(self.agent, 'critic_model_a'):
-                                        self.agent.critic_model_a.train()
-                                    if hasattr(self.agent, 'critic_model_b'):
-                                        self.agent.critic_model_b.train()
+                            print(f"Environment {i}: episode {int(self.completed_episodes[i])}, score {episode_scores[i]}, avg_score {avg_reward}")
+                            episode_scores[i] = 0
 
-                                print(f"Environment {i}: episode {int(self.completed_episodes[i])}, score {episode_scores[i]}, avg_score {avg_reward}")
-                                episode_scores[i] = 0
 
-                        # Update normalizers and states
-                        self.state_normalizer.update_global_stats()
-                        self.goal_normalizer.update_global_stats()
-                        states = next_states
+                        
+
+                            # if dones[i]:
+                            #     # Apply hindsight to the completed trajectory
+                            #     self.store_hindsight_trajectory(trajectory_buffers[i])
+                            #     trajectory_buffers[i] = []
+                            #     self.completed_episodes[i] += 1
 
                         if self.agent.callbacks:
                             for callback in self.agent.callbacks:
                                 callback.on_train_step_end(step=self.agent._step, logs=self.agent._train_step_config)
+                                
+                    # Update normalizers and states
+                    self.state_normalizer.update_global_stats()
+                    self.goal_normalizer.update_global_stats()
+                    states = next_states
 
                     # Perform optimization after collecting episodes
                     if self.agent._step > self.agent.warmup:
@@ -4661,9 +4473,10 @@ class HER(Agent):
                                 self.agent.target_noise_schedule.step()
                                 self.agent._train_step_config["target_noise_anneal"] = self.agent.target_noise_schedule.get_factor()
                     
-                    # Update beta if using prioritized replay
-                    if hasattr(self.agent.replay_buffer, 'update_beta'):
-                        self.agent.replay_buffer.update_beta(self.agent._step)
+                            # Update beta if using prioritized replay
+                            if hasattr(self.agent.replay_buffer, 'update_beta'):
+                                # self.agent.replay_buffer.update_beta(self.agent._step)
+                                self.agent._train_step_config["beta"] = self.agent.replay_buffer.beta
 
                 if self.agent.callbacks:
                     for callback in self.agent.callbacks:
@@ -4805,7 +4618,11 @@ class HER(Agent):
         next_achieved_goals = np.array(next_achieved_goals)
         desired_goals = np.array(desired_goals)
 
+        # Add actual experiences to the replay buffer
+        self.agent.replay_buffer.add(states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals)
+
         tol_count = 0
+        experiences = [] # Store experiences for hindsight
 
         # loop over each step in the trajectory to set new achieved goals, calculate new reward, and save to replay buffer
         for idx, (state, action, next_state, done, state_achieved_goal, next_state_achieved_goal, desired_goal) in enumerate(zip(states, actions, next_states, dones, achieved_goals, next_achieved_goals, desired_goals)):
@@ -4819,7 +4636,7 @@ class HER(Agent):
                 tol_count += within_tol
 
                 # store non normalized trajectory
-                self.agent.replay_buffer.add(state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal)
+                experiences.append((state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal))
 
             elif self.strategy == 'future':
                 for i in range(self.num_goals):
@@ -4832,10 +4649,12 @@ class HER(Agent):
                     within_tol = self.agent.env.get_base_env()._is_success(state_achieved_goal, new_desired_goal)
                     tol_count += within_tol
                     # store non normalized trajectory
-                    self.agent.replay_buffer.add(state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal)
+                    experiences.append((state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal))
 
             elif self.strategy == 'none':
                 break
+
+        self.agent.replay_buffer.add(*zip(*experiences))
 
         # add tol count to train step config for callbacks
         if self.agent.callbacks:

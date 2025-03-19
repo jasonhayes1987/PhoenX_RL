@@ -16,143 +16,115 @@ class SumTree:
     def __init__(self, capacity: int, device: T.device):
         self.capacity = capacity
         self.device = get_device(device)
+        # Initialize the tree with zeros
         self.tree = T.zeros(2 * capacity - 1, dtype=T.float32, device=self.device)
         self.next_idx = 0
         self.size = 0
-        self.max_priority = T.tensor(0, dtype=T.float32, device=self.device)
-        # self.epsilon = T.tensor(1e-6, dtype=T.float32, device=self.device)
+        self.max_recorded_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
     
     def update(self, data_indices, priorities):
         """Update the priorities of the given data indices."""
-        #DEBUG
-        # print(f'SumTree.update() data indices: {data_indices}')
-        # print(f'SumTree.update() priorities: {priorities}')
-        # print(f'SumTree.update() updating priorities')
-        
         # Safety check for NaN values
         if T.isnan(priorities).any():
-            print("WARNING: NaN values detected in SumTree.update priorities. Replacing with 1.0")
             priorities = T.nan_to_num(priorities, nan=1.0)
         
+        # Update max recorded priority if needed (before normalization)
+        if priorities.numel() > 0 and not T.isnan(priorities).all():
+            new_max = T.max(priorities)
+            if new_max > self.max_recorded_priority:
+                self.max_recorded_priority = new_max
+        
+        # Normalize priorities globally using max_recorded_priority
+        priorities = priorities / self.max_recorded_priority
+        
         # Compute tree indices (leaf nodes) from data indices
-        tree_indices = T.tensor([idx + self.capacity - 1 for idx in data_indices], dtype=T.long, device=self.device)
+        tree_indices = data_indices + self.capacity - 1
         
         # Update leaf nodes with new priorities
         self.tree[tree_indices] = priorities
         
-        # Update parent nodes to maintain the sum tree property
-        self._update_tree(tree_indices)
+        # Update parent nodes efficiently without using Python sets/lists
+        # Directly update all parents in a bottom-up fashion
+        parent_indices = (tree_indices - 1) // 2
         
-        # Update max_priority
-        if not T.isnan(priorities).all():  # Ensure we're not using all NaN values
-            valid_values = priorities[~T.isnan(priorities)]
-            if valid_values.numel() > 0:  # Check if there are any valid values
-                max_new = T.max(valid_values)
-                if max_new > self.max_priority:
-                    self.max_priority = max_new
-                    #DEBUG
-                    print(f"SumTree.update() New max priority: {self.max_priority}")
-
-        # print(f'SumTree.update() updated priorities')
-
-    def _update_tree(self, indices):
-        """Update parent nodes in the tree to maintain the sum property."""
-        # Find all unique parent levels that need updating
-        parent_indices = set()
-        for idx in indices:
-            # Get parent index
-            parent_idx = (idx - 1) // 2
-            while parent_idx >= 0:
-                parent_indices.add(int(parent_idx))
-                parent_idx = (parent_idx - 1) // 2
-        
-        # Sort parent indices in reverse order (bottom-up)
-        parent_indices = sorted(list(parent_indices), reverse=True)
-        
-        # Update each parent node based on its children
-        for parent_idx in parent_indices:
-            left_child = 2 * parent_idx + 1
-            right_child = left_child + 1
+        # Handle case where parent_indices might be empty
+        while parent_indices.numel() > 0:
+            # For each parent, calculate the sum of its children
+            left_children = 2 * parent_indices + 1
+            right_children = left_children + 1
             
-            # Ensure we don't go out of bounds
-            if right_child < len(self.tree):
-                # Sum the children
-                self.tree[parent_idx] = self.tree[left_child] + self.tree[right_child]
-            else:
-                # If right child is out of bounds, use only left child
-                self.tree[parent_idx] = self.tree[left_child]
-
-    # def get(self, p: float) -> Tuple[int, float]:
-    #     """Find sample based on a value p in range [0, total_priority)."""
-    #     idx = self._retrieve(0, p)
-    #     data_idx = idx - self.capacity + 1
-    #     return int(data_idx), float(self.tree[idx].item())
+            # Update parents with sum of children
+            # Handle edge cases where right child might not exist
+            right_valid = right_children < len(self.tree)
+            self.tree[parent_indices] = self.tree[left_children] + \
+                                       T.where(right_valid, self.tree[right_children], 
+                                              T.zeros_like(self.tree[right_children]))
+            
+            # Move up to next level of parents, removing duplicates
+            parent_indices = (parent_indices - 1) // 2
+            
+            # Use unique values but handle potential empty tensor
+            if parent_indices.numel() > 0:
+                parent_indices = T.unique(parent_indices)
+            
+            # Stop when we reach the root
+            if parent_indices.numel() == 0 or (parent_indices < 0).all():
+                break
 
     def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
         """
-        Vectorized batch sampling from the SumTree.
-        
-        Args:
-            p_values: Tensor of probability values to sample with [batch_size]
-            
-        Returns:
-            Tuple of (data_indices, priorities)
+        Optimized vectorized batch sampling from the SumTree.
         """
         batch_size = p_values.size(0)
         
         # Pre-allocate space for resulting indices
         tree_indices = T.zeros(batch_size, dtype=T.long, device=self.device)
         
-        # Use an iterative approach for each sample in the batch
-        for i in range(batch_size):
-            p = p_values[i].item()
-            idx = 0  # Start at root
+        # Use an iterative approach for batch traversal
+        # This is still sequential per sample but avoids Python loop overhead
+        @T.jit.script
+        def traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:
+            batch_size = p_values.size(0)
+            tree_indices = T.zeros(batch_size, dtype=T.long, device=p_values.device)
             
-            # Iterative traversal without recursion
-            while True:
-                left = 2 * idx + 1
-                right = left + 1
+            for i in range(batch_size):
+                idx = 0  # Start at root
+                p = p_values[i].item()
                 
-                # If at leaf node, store index and break
-                if left >= len(self.tree):
-                    tree_indices[i] = idx
-                    break
+                # Traverse down the tree
+                while idx < capacity - 1:  # Not a leaf node
+                    left = 2 * idx + 1
+                    
+                    # If we would access beyond tree bounds, we've reached a leaf
+                    if left >= tree.size(0):
+                        break
+                    
+                    left_val = tree[left].item()
+                    
+                    # Choose direction
+                    if p <= left_val:
+                        idx = left
+                    else:
+                        p -= left_val
+                        idx = left + 1
                 
-                # Get the left child value just once per iteration
-                left_val = self.tree[left].item()
-                
-                # Determine direction
-                if p <= left_val:
-                    idx = left
-                else:
-                    p = p - left_val
-                    idx = right
+                tree_indices[i] = idx
+            
+            return tree_indices
+            
+        # Traverse tree for each sample in batch
+        tree_indices = traverse_tree(p_values, self.tree, self.capacity)
         
-        # Convert tree indices to data indices and get priorities in one batch operation
+        # Convert tree indices to data indices and get priorities
         data_indices = tree_indices - (self.capacity - 1)
         priorities = self.tree[tree_indices]
         
         return data_indices, priorities
     
-    def _retrieve(self, idx: int, p: float) -> int:
-        """Traverse tree to find leaf node containing value s."""
-        left = 2 * idx + 1
-        right = left + 1
-        
-        # If at leaf node, return idx
-        if left >= len(self.tree):
-            return idx
-        
-        # Otherwise, traverse down
-        if p <= self.tree[left].item():
-            return self._retrieve(left, p)
-        else:
-            return self._retrieve(right, p - self.tree[left].item())
-    
     @property
     def total_priority(self) -> float:
-        """Get total priority (stored at root node)."""
-        return float(self.tree[0].item())
+        """Return the total priority (value at root)."""
+        return self.tree[0].item() if self.tree.size(0) > 0 else 0.0
 
 class Buffer():
     """
@@ -249,10 +221,14 @@ class ReplayBuffer(Buffer):
         else:
             self._obs_space_shape = self.env.single_observation_space.shape
 
-        self.states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
+        #DEBUG
+        shape = (buffer_size,) + self._obs_space_shape
+        print(f"shape: {shape}")
+
+        self.states = T.zeros(shape, dtype=T.float32, device=self.device)
         self.actions = T.zeros((buffer_size, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
         self.rewards = T.zeros((buffer_size,), dtype=T.float32, device=self.device)
-        self.next_states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
+        self.next_states = T.zeros(shape, dtype=T.float32, device=self.device)
         self.dones = T.zeros((buffer_size,), dtype=T.int8, device=self.device)
         
         if self.goal_shape is not None:
@@ -402,80 +378,34 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         buffer_size: int = 100_000,
         alpha: float = 0.6,
         beta_start: float = 0.4,
-        beta_iter: int = 100_000, # Num iters to anneal beta from start to 1.0
-        priority: str = 'proportional', # or 'rank'
+        beta_iter: int = 100_000,
+        priority: str = 'proportional',
         goal_shape: Optional[Tuple[int]] = None,
         epsilon: float = 1e-6,
         update_freq: int = 10,
         device: Optional[str] = None
     ):
-        """ Initialize the PrioritizedReplayBuffer."""
-
         if priority not in ['proportional', 'rank']:
             raise ValueError(f"Invalid priority type: {priority} (must be 'proportional' or 'rank')")
 
         super().__init__(env, buffer_size, goal_shape, device)
-        self.alpha = T.tensor(alpha, dtype=T.float32, device=self.device)
-        self.beta_start = T.tensor(beta_start, dtype=T.float32, device=self.device)
-        self.beta_iter = T.tensor(beta_iter, dtype=T.int32, device=self.device)
+        self.alpha = alpha
+        self.beta_start = beta_start
+        self.beta_iter = beta_iter
         self.priority = priority
         self.goal_shape = goal_shape
-        self.epsilon = T.tensor(epsilon, dtype=T.float32, device=self.device)
+        self.epsilon = epsilon
         self.update_freq = update_freq
-        # Set initial self.beta value
         self.beta = self.beta_start
+        self._total_steps = 0
 
-        # Determine observation space shape
-        if isinstance(self.env.single_observation_space, gym.spaces.Dict):
-            self._obs_space_shape = self.env.single_observation_space['observation'].shape
-        else:
-            self._obs_space_shape = self.env.single_observation_space.shape
-
-        # Initialize transition storage
-        self.states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
-        self.actions = T.zeros((buffer_size, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
-        self.rewards = T.zeros((buffer_size,), dtype=T.float32, device=self.device)
-        self.next_states = T.zeros((buffer_size, *self._obs_space_shape), dtype=T.float32, device=self.device)
-        self.dones = T.zeros((buffer_size,), dtype=T.int8, device=self.device)
-        
-        # Handle goal-related data if needed
-        if self.goal_shape is not None:
-            self.desired_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
-            self.state_achieved_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
-        
-        # Initialize prioritization data structures
         if self.priority == "proportional":
             self.sum_tree = SumTree(buffer_size, self.device)
         else:  # rank-based
             self.priorities = T.zeros(buffer_size, dtype=T.float32, device=self.device)
-            self.sorted_indices = None  # Will be computed when needed
+            self.sorted_indices = None
         
         self.counter = 0
-
-    def reset(self) -> None:
-        """Resets the buffer to it's initial state, all zeros
-
-        """
-        self.states.zero_()
-        self.actions.zero_()
-        self.rewards.zero_()
-        self.next_states.zero_()
-        self.dones.zero_()
-
-        if self.goal_shape is not None:
-            self.desired_goals.zero_()
-            self.state_achieved_goals.zero_()
-            self.next_state_achieved_goals.zero_()
-
-        if self.priority == "proportional":
-            self.sum_tree = SumTree(self.buffer_size, self.device)
-        else:
-            self.priorities.zero_()
-            self.sorted_indices = None
-
-        self.counter = 0
-        self.beta = self.beta_start
 
     def add(
         self,
@@ -488,73 +418,71 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         next_state_achieved_goals: Optional[np.ndarray] = None,
         desired_goals: Optional[np.ndarray] = None,
     ) -> None:
-        """Adds a transition to the buffer and sets priority to max"""
-
         batch_size = len(states)
         start_idx = self.counter % self.buffer_size
         end_idx = (self.counter + batch_size) % self.buffer_size
 
-        # Compute indices with wrapping
         if end_idx > start_idx:
-            indices = T.arange(start_idx, end_idx)
+            indices = T.arange(start_idx, end_idx, device=self.device)
         else:
-            indices = T.concatenate([T.arange(start_idx, self.buffer_size), T.arange(0, end_idx)])
+            indices = T.cat([T.arange(start_idx, self.buffer_size, device=self.device), 
+                             T.arange(0, end_idx, device=self.device)])
 
         # Add to buffer tensors
-        self.states[indices] = T.tensor(np.array(states), dtype=T.float32, device=self.device)
-        self.actions[indices] = T.tensor(np.array(actions), dtype=T.float32, device=self.device)
-        self.rewards[indices] = T.tensor(np.array(rewards), dtype=T.float32, device=self.device)
-        self.next_states[indices] = T.tensor(np.array(next_states), dtype=T.float32, device=self.device)
-        self.dones[indices] = T.tensor(np.array(dones), dtype=T.int8, device=self.device)
+        self.states[indices] = T.tensor(states, dtype=T.float32, device=self.device)
+        self.actions[indices] = T.tensor(actions, dtype=T.float32, device=self.device)
+        self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
+        self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
+        self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
 
         if self.goal_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
-            self.state_achieved_goals[indices] = T.tensor(np.array(state_achieved_goals), dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals[indices] = T.tensor(np.array(next_state_achieved_goals), dtype=T.float32, device=self.device)
-            self.desired_goals[indices] = T.tensor(np.array(desired_goals), dtype=T.float32, device=self.device)
+            self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals[indices] = T.tensor(next_state_achieved_goals, dtype=T.float32, device=self.device)
+            self.desired_goals[indices] = T.tensor(desired_goals, dtype=T.float32, device=self.device)
 
-        # Set priorities to max_priority for new transitions
-        max_priority = self.sum_tree.max_priority if self.counter > 0 else T.tensor(1.0, device=self.device)
-        priority_value = max_priority ** self.alpha
-        priorities = priority_value.expand(batch_size)
-        self.sum_tree.update(indices, priorities)
+        # Set initial priorities (will be normalized in update)
+        if self.priority == "proportional":
+            priorities = T.ones(len(indices), device=self.device)
+            self.sum_tree.update(indices, priorities)
+        else:  # rank-based
+            self.priorities[indices] = T.ones(len(indices), device=self.device)
+            self.sorted_indices = None
 
         self.counter += batch_size
+        self._total_steps += 1
+        
+        if self._total_steps % 100 == 0:
+            self.update_beta(self._total_steps)
 
-    def update_beta(self, iter: int) -> None:
-        """Anneal beta param"""
-
-        progress = min(iter / self.beta_iter, 1.0)
+    def update_beta(self, step: int) -> None:
+        """Anneal beta param more efficiently"""
+        progress = min(step / self.beta_iter, 1.0)
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
 
     def update_priorities(self, indices: T.Tensor, priorities: T.Tensor) -> None:
         """Updates priorities of sampled transitions"""
-
-        # Check if priorities is numpy or tensor and handle accordingly
-        # if isinstance(priorities, np.ndarray):
-        #     priorities = T.tensor(priorities, device=self.device)
-
-        # Check for NaN values in priorities
-        if T.isnan(priorities).any():
-            nan_count = T.isnan(priorities).sum().item()
-            print(f"WARNING: Found {nan_count} NaN values in priorities. Replacing with 1.0")
-            # Create a mask for NaN values
-            nan_mask = T.isnan(priorities)
-            # Clone priorities to avoid modifying the original tensor
-            priorities = priorities.clone()
-            # Replace NaN values with 1.0
-            priorities[nan_mask] = 1.0
+        if not isinstance(indices, T.Tensor):
+            indices = T.tensor(indices, device=self.device)
         
-        # Set priorities to be max between abs of priority or epsilon
-        priorities = T.max(priorities.abs(), self.epsilon)
-        #DEBUG
-        # print(f"Priorities: {priorities}")
+        if not isinstance(priorities, T.Tensor):
+            priorities = T.tensor(priorities, device=self.device)
+            
+        # Handle NaN and zero values
+        priorities = T.where(
+            T.isnan(priorities) | (priorities == 0),
+            T.ones_like(priorities) * self.epsilon,
+            priorities
+        )
+        
+        # Apply minimum epsilon and ensure abs values
+        priorities = T.clamp(T.abs(priorities), min=self.epsilon)
 
         if self.priority == "proportional":
+            # Apply alpha and update the tree (normalization handled in SumTree)
             self.sum_tree.update(indices, priorities ** self.alpha)
-            # self.sum_tree.max_priority = max(self.sum_tree.max_priority, T.tensor(priority, device=self.device))
-        else: # rank
+        else:  # rank-based
             self.priorities[indices] = priorities
             self.sorted_indices = None
 
@@ -568,45 +496,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             else:
                 self.sorted_indices = T.tensor([], dtype=T.long, device=self.device)
 
-    # def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
-    #     """Samples a batch of transitions based on priority"""
-
-    #     size = min(self.counter, self.buffer_size)
-    #     if size == 0:
-    #         raise ValueError("Cannot sample from empty buffer")
-
-    #     batch_size = min(batch_size, size)
-    #     indices = T.zeros(batch_size, dtype=T.long, device=self.device)
-    #     weights = T.zeros(batch_size, dtype=T.float32, device=self.device)
-
-    #     if self.priority == "proportional":
-    #         #DEBUG
-    #         # print(f"PER.sample() Total priority: {self.sum_tree.total_priority}")
-    #         # Calculate segment boundaries
-    #         segment_size = self.sum_tree.total_priority / batch_size
-    #         segment_starts = T.arange(0, batch_size, device=self.device) * segment_size
-    #         segment_ends = segment_starts + segment_size
-            
-    #         # Generate random values within each segment
-    #         random_values = T.rand(batch_size, device=self.device) * (segment_ends - segment_starts) + segment_starts
-    #         #DEBUG
-    #         # print(f"PER.sample() p: {random_values}")
-    #         # Sample indices from sum tree for each segment
-    #         for i, p in enumerate(random_values):
-    #             idx, priority = self.sum_tree.get(p)
-    #             indices[i] = idx
-            
-    #         # Get corresponding priorities for all indices
-    #         tree_indices = indices + self.buffer_size - 1
-    #         priorities = self.sum_tree.tree[tree_indices]
-            
-    #         # Calculate weights (fully vectorized)
-    #         probs = (priorities / self.sum_tree.total_priority).clamp(min=self.epsilon)
-    #         weights = (size * probs).pow(-self.beta)
-
     def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
-        """Samples a batch of transitions based on priority"""
-        
+        """Samples a batch of transitions based on priority - optimized version"""
         size = min(self.counter, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
@@ -615,44 +506,50 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         
         if self.priority == "proportional":
             # Calculate segment boundaries
-            total_priority = self.sum_tree.tree[0].item()
-            segment_size = total_priority / batch_size
+            total_priority = self.sum_tree.tree[0].item() if self.sum_tree.tree.numel() > 0 else 0
             
-            # Generate stratified random samples efficiently 
-            segment_boundaries = T.arange(0, batch_size, device=self.device) * segment_size
-            random_offsets = T.rand(batch_size, device=self.device) * segment_size
-            p_values = segment_boundaries + random_offsets
-            
-            # Get indices and priorities in a single batch operation
-            indices, priorities = self.sum_tree.get(p_values)
-            
-            # Calculate weights fully vectorized
-            probs = (priorities / total_priority).clamp(min=self.epsilon)
-            weights = (size * probs).pow(-self.beta)
-
-        else:  # rank
-            # sort priorities
+            if total_priority <= 0:
+                # If tree has no meaningful priorities, fall back to uniform sampling
+                indices = T.randint(0, size, (batch_size,), device=self.device)
+                weights = T.ones(batch_size, device=self.device)
+            else:
+                # Vectorized stratified sampling
+                segment_size = total_priority / batch_size
+                segment_boundaries = T.arange(0, batch_size, device=self.device) * segment_size
+                random_offsets = T.rand(batch_size, device=self.device) * segment_size
+                p_values = segment_boundaries + random_offsets
+                
+                # Get indices and priorities in a single batch operation
+                indices, priorities = self.sum_tree.get(p_values)
+                
+                # Ensure indices are valid (in case of numerical errors)
+                indices = T.clamp(indices, 0, size - 1)
+                
+                # Calculate importance sampling weights
+                probs = priorities.clamp(min=self.epsilon) / total_priority
+                weights = (size * probs) ** (-self.beta)
+        else:  # rank-based
+            # Prepare ranks for sampling
             self._prepare_rank_based()
             
-            # Inverse transform sampling
+            # Efficient inverse transform sampling
             u = T.rand(batch_size, device=self.device)
-            rank_indices = (u.pow(1 / self.alpha) * size).long().clamp(max=size-1)
-                    
+            rank_indices = (u ** (1 / self.alpha) * size).long().clamp(max=size-1)
+            
             # Get actual indices from sorted indices
             indices = self.sorted_indices[rank_indices]
-                    
-            # Calculate probabilities and weights
-            sample_probs = 1 / ((rank_indices + 1).float().pow(self.alpha))
-            weights = (size * sample_probs).pow(-self.beta)
+            
+            # Calculate weights directly
+            sample_probs = 1 / ((rank_indices + 1).float() ** self.alpha)
+            weights = (size * sample_probs) ** (-self.beta)
         
-        # Normalize weights by max weight for stability
+        # Normalize weights
         if weights.numel() > 0:
-            weights = weights / T.max(weights)
+            max_weight = weights.max()
+            if max_weight > 0:  # Prevent division by zero
+                weights = weights / max_weight
         
-        # Convert indices to Python list for later use in update_priorities
-        # indices_list = indices.cpu().tolist()
-        
-        # Return transition batch with importance weights
+        # Return batch with weights
         if self.goal_shape is not None:
             return (
                 self.states[indices],
@@ -684,12 +581,12 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             'config': {
                 "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,
-                "alpha": self.alpha.item(),
-                "beta_start": self.beta_start.item(),
-                "beta_iter": self.beta_iter.item(),
+                "alpha": self.alpha,
+                "beta_start": self.beta_start,
+                "beta_iter": self.beta_iter,
                 "priority": self.priority,
                 "goal_shape": self.goal_shape,
-                "epsilon": self.epsilon.item(),
+                "epsilon": self.epsilon,
                 "update_freq": self.update_freq,
                 "device": self.device.type
             }
@@ -703,8 +600,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.buffer_size, 
             self.alpha, 
             self.beta_start, 
-            self.beta_frames, 
-            self.prioritization_type, 
+            self.beta_iter, 
+            self.priority, 
             self.goal_shape, 
             self.device.type, 
             self.epsilon
