@@ -21,21 +21,44 @@ class SumTree:
         self.next_idx = 0
         self.size = 0
         self.max_recorded_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
+        # Add tracking for debugging
+        self.debug_last_large_priority = None
+        self.debug_last_large_priority_idx = None
     
     def update(self, data_indices, priorities):
         """Update the priorities of the given data indices."""
+        # Debug large priorities
+        if priorities.numel() > 0:
+            max_val = T.max(priorities)
+            if max_val > 1e6:  # Track suspiciously large priorities
+                large_idx = T.argmax(priorities)
+                self.debug_last_large_priority = max_val.item()
+                self.debug_last_large_priority_idx = data_indices[large_idx].item()
+                print(f"WARNING: Large priority detected: {max_val.item():.2e} at buffer index {data_indices[large_idx].item()}")
+        
         # Safety check for NaN values
         if T.isnan(priorities).any():
             priorities = T.nan_to_num(priorities, nan=1.0)
+            print("WARNING: NaN priorities detected and replaced with 1.0")
         
         # Update max recorded priority if needed (before normalization)
         if priorities.numel() > 0 and not T.isnan(priorities).all():
             new_max = T.max(priorities)
             if new_max > self.max_recorded_priority:
+                old_max = self.max_recorded_priority.item()
                 self.max_recorded_priority = new_max
+                if new_max > old_max * 10:  # Log significant jumps
+                    print(f"WARNING: Large max priority increase: {old_max:.2e} -> {new_max.item():.2e}")
+        
+        # Store original priorities for debugging
+        orig_priorities = priorities.clone()
         
         # Normalize priorities globally using max_recorded_priority
         priorities = priorities / self.max_recorded_priority
+        
+        # Debug normalization
+        if T.max(priorities) > 1.0:
+            print(f"WARNING: Post-normalization priorities > 1.0: max = {T.max(priorities).item():.2e}")
         
         # Compute tree indices (leaf nodes) from data indices
         tree_indices = data_indices + self.capacity - 1
@@ -398,6 +421,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.update_freq = update_freq
         self.beta = self.beta_start
         self._total_steps = 0
+        
+        # Add debug tracking
+        self.debug_last_td_error = None
+        self.debug_last_priority = None
+        self.debug_last_indices = None
 
         if self.priority == "proportional":
             self.sum_tree = SumTree(buffer_size, self.device)
@@ -468,6 +496,10 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         
         if not isinstance(priorities, T.Tensor):
             priorities = T.tensor(priorities, device=self.device)
+        
+        # Store for debugging
+        self.debug_last_td_error = priorities.clone()
+        self.debug_last_indices = indices.clone()
             
         # Handle NaN and zero values
         priorities = T.where(
@@ -478,9 +510,29 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         
         # Apply minimum epsilon and ensure abs values
         priorities = T.clamp(T.abs(priorities), min=self.epsilon)
+        
+        # Store processed priorities for debugging
+        self.debug_last_priority = priorities.clone()
+        
+        # Debug large TD errors
+        if T.max(priorities) > 1e6:
+            max_idx = T.argmax(priorities)
+            print(f"WARNING: Large TD error detected in update_priorities:")
+            print(f"  Index: {indices[max_idx].item()}")
+            print(f"  Original TD error: {self.debug_last_td_error[max_idx].item():.2e}")
+            print(f"  Processed priority: {priorities[max_idx].item():.2e}")
 
         if self.priority == "proportional":
-            # Apply alpha and update the tree (normalization handled in SumTree)
+            # Get current priorities from tree for these indices
+            tree_indices = indices + self.sum_tree.capacity - 1
+            current_priorities = self.sum_tree.tree[tree_indices]
+            
+            # Scale new priorities relative to current priorities
+            if T.max(current_priorities) > 0:
+                scale_factor = T.max(current_priorities) / T.max(priorities)
+                priorities = priorities * scale_factor
+            
+            # Apply alpha and update the tree
             self.sum_tree.update(indices, priorities ** self.alpha)
         else:  # rank-based
             self.priorities[indices] = priorities
