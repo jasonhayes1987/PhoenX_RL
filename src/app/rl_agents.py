@@ -1376,25 +1376,40 @@ class DDPG(Agent):
                 
             # Log PER-specific metrics
             if self._wandb:
-                # Get priorities for sampled indices
-                if self.replay_buffer.priority == 'proportional':
-                    sampled_priorities = self.replay_buffer.sum_tree.tree[self.replay_buffer.sum_tree.capacity-1+indices].cpu().numpy()
-                    buffer_priorities = self.replay_buffer.sum_tree.tree[self.replay_buffer.sum_tree.capacity-1:].cpu().numpy()
-                    buffer_priorities = buffer_priorities[buffer_priorities > 0]  # Filter out zero priorities
-                else:  # rank-based
-                    sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
-                    buffer_priorities = self.replay_buffer.priorities[:min(self.replay_buffer.counter, self.replay_buffer.buffer_size)].cpu().numpy()
-                
-                # Log priority distributions
-                self._train_step_config.update({
-                    'PER/sampled_priorities': wandb.Histogram(sampled_priorities),
-                    'PER/buffer_priorities': wandb.Histogram(buffer_priorities),
-                    'PER/weights': wandb.Histogram(weights.cpu().numpy()),
-                    'PER/mean_sampled_priority': float(sampled_priorities.mean()),
-                    'PER/mean_buffer_priority': float(buffer_priorities.mean()),
-                    'PER/weight_mean': float(weights.mean()),
-                    'PER/weight_std': float(weights.std())
-                })
+                # Get priority info for logging
+                if hasattr(self.replay_buffer, 'sum_tree'):
+                    indices_tensor = T.tensor(indices, device=self.device)
+                    # Get tree indices for sampled transitions
+                    tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
+                    # Get priorities for sampled transitions
+                    sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
+                    
+                    # IMPORTANT: Only consider valid entries in the buffer
+                    # Get the actual size of used buffer (not the full capacity)
+                    actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
+                    # Only get priorities for actual entries in the buffer
+                    valid_indices = T.arange(actual_size, device=self.device)
+                    valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
+                    buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
+                    
+                    # Debug prints
+                    # print(f"Max recorded priority: {self.replay_buffer.sum_tree.max_recorded_priority.item():.2f}")
+                    # print(f"Raw buffer priorities - max: {np.max(buffer_priorities):.2e}, mean: {np.mean(buffer_priorities):.2e}")
+                    # print(f"Raw sampled priorities - max: {np.max(sampled_priorities):.2e}, mean: {np.mean(sampled_priorities):.2e}")
+                    
+                    # Log metrics
+                    wandb.log({
+                        'PER/beta': self.replay_buffer.beta,
+                        'PER/sampled_priorities': sampled_priorities,
+                        'PER/buffer_priorities': buffer_priorities,
+                        'PER/weights': weights,
+                        'PER/mean_sampled_priority': np.mean(sampled_priorities),
+                        'PER/mean_buffer_priority': np.mean(buffer_priorities),
+                        'PER/max_sampled_priority': np.max(sampled_priorities),
+                        'PER/max_buffer_priority': np.max(buffer_priorities),
+                        'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
+                        'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
+                    }, step=self._step)
         else:  # Standard replay buffer
             if self._use_her:
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
