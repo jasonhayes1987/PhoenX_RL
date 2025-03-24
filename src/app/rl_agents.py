@@ -1422,6 +1422,7 @@ class DDPG(Agent):
         if self.normalize_inputs and not self._use_her:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
+            desired_goals = None
         elif self._use_her:
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
@@ -1516,10 +1517,10 @@ class DDPG(Agent):
                 # Handle NaN values if they occur
                 if T.isnan(abs_error).any():
                     abs_error = T.nan_to_num(abs_error, nan=1.0)
-                if self._use_her:
-                    # Add goal distance regularization (Euclidean distance between achieved and desired)
-                    goal_distance = T.norm(achieved_goals - desired_goals, dim=-1)
-                    abs_error = abs_error + 0.1 * goal_distance
+                # if self._use_her:
+                #     # Add goal distance regularization (Euclidean distance between achieved and desired)
+                #     goal_distance = T.norm(achieved_goals - desired_goals, dim=-1)
+                #     abs_error = abs_error + 0.1 * goal_distance
                 # Update priorities
                 self.replay_buffer.update_priorities(indices, abs_error)
 
@@ -1854,8 +1855,6 @@ class DDPG(Agent):
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
                 self.replay_buffer.add(*zip(*trajectories[i]))
-                #DEBUG
-                print(f"Adding trajectory to replay buffer: step {self._step}, counter {self.replay_buffer.counter}")
                 trajectories[i] = []
 
                 # Increment completed episodes for env by 1
@@ -4489,9 +4488,9 @@ class HER(Agent):
                                 self.agent._train_step_config["target_noise_anneal"] = self.agent.target_noise_schedule.get_factor()
                     
                             # Update beta if using prioritized replay
-                            if hasattr(self.agent.replay_buffer, 'update_beta'):
-                                # self.agent.replay_buffer.update_beta(self.agent._step)
-                                self.agent._train_step_config["beta"] = self.agent.replay_buffer.beta
+                            # if hasattr(self.agent.replay_buffer, 'update_beta'):
+                            #     # self.agent.replay_buffer.update_beta(self.agent._step)
+                            #     self.agent._train_step_config["beta"] = self.agent.replay_buffer.beta
 
                 if self.agent.callbacks:
                     for callback in self.agent.callbacks:

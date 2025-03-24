@@ -19,8 +19,8 @@ class SumTree:
         # Initialize the tree with zeros
         self.tree = T.zeros(2 * capacity - 1, dtype=T.float32, device=self.device)
         self.next_idx = 0
-        self.size = 0
-        self.max_recorded_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
+        # self.size = 0
+        self.max_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
         # Add tracking for debugging
         self.debug_last_large_priority = None
         self.debug_last_large_priority_idx = None
@@ -44,21 +44,18 @@ class SumTree:
         # Update max recorded priority if needed (before normalization)
         if priorities.numel() > 0 and not T.isnan(priorities).all():
             new_max = T.max(priorities)
-            if new_max > self.max_recorded_priority:
-                old_max = self.max_recorded_priority.item()
-                self.max_recorded_priority = new_max
+            if new_max > self.max_priority:
+                old_max = self.max_priority.item()
+                self.max_priority = new_max
                 if new_max > old_max * 10:  # Log significant jumps
                     print(f"WARNING: Large max priority increase: {old_max:.2e} -> {new_max.item():.2e}")
         
-        # Store original priorities for debugging
-        orig_priorities = priorities.clone()
-        
         # Normalize priorities globally using max_recorded_priority
-        priorities = priorities / self.max_recorded_priority
+        # priorities = priorities / self.max_priority
         
         # Debug normalization
-        if T.max(priorities) > 1.0:
-            print(f"WARNING: Post-normalization priorities > 1.0: max = {T.max(priorities).item():.2e}")
+        # if T.max(priorities) > 1.0:
+        #     print(f"WARNING: Post-normalization priorities > 1.0: max = {T.max(priorities).item():.2e}")
         
         # Compute tree indices (leaf nodes) from data indices
         tree_indices = data_indices + self.capacity - 1
@@ -472,7 +469,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
         # Set initial priorities (will be normalized in update)
         if self.priority == "proportional":
-            priorities = T.ones(len(indices), device=self.device)
+            priorities = T.ones(len(indices), device=self.device) * self.sum_tree.max_priority
             self.sum_tree.update(indices, priorities)
         else:  # rank-based
             self.priorities[indices] = T.ones(len(indices), device=self.device)
@@ -480,9 +477,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
         self.counter += batch_size
         self._total_steps += 1
-        
-        if self._total_steps % 100 == 0:
-            self.update_beta(self._total_steps)
 
     def update_beta(self, step: int) -> None:
         """Anneal beta param more efficiently"""
@@ -502,11 +496,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.debug_last_indices = indices.clone()
             
         # Handle NaN and zero values
-        priorities = T.where(
-            T.isnan(priorities) | (priorities == 0),
-            T.ones_like(priorities) * self.epsilon,
-            priorities
-        )
+        # priorities = T.where(
+        #     T.isnan(priorities) | (priorities == 0),
+        #     T.ones_like(priorities) * self.epsilon,
+        #     priorities
+        # )
         
         # Apply minimum epsilon and ensure abs values
         priorities = T.clamp(T.abs(priorities), min=self.epsilon)
@@ -523,14 +517,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             print(f"  Processed priority: {priorities[max_idx].item():.2e}")
 
         if self.priority == "proportional":
-            # Get current priorities from tree for these indices
-            tree_indices = indices + self.sum_tree.capacity - 1
-            current_priorities = self.sum_tree.tree[tree_indices]
+            # # Get current priorities from tree for these indices
+            # tree_indices = indices + self.sum_tree.capacity - 1
+            # current_priorities = self.sum_tree.tree[tree_indices]
             
-            # Scale new priorities relative to current priorities
-            if T.max(current_priorities) > 0:
-                scale_factor = T.max(current_priorities) / T.max(priorities)
-                priorities = priorities * scale_factor
+            # # Scale new priorities relative to current priorities
+            # if T.max(current_priorities) > 0:
+            #     scale_factor = T.max(current_priorities) / T.max(priorities)
+            #     priorities = priorities * scale_factor
             
             # Apply alpha and update the tree
             self.sum_tree.update(indices, priorities ** self.alpha)
@@ -550,6 +544,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
     def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
         """Samples a batch of transitions based on priority - optimized version"""
+
+        # Anneal beta
+        if self._total_steps % self.update_freq == 0:
+            self.update_beta(self._total_steps)
+            
         size = min(self.counter, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
@@ -558,7 +557,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         
         if self.priority == "proportional":
             # Calculate segment boundaries
-            total_priority = self.sum_tree.tree[0].item() if self.sum_tree.tree.numel() > 0 else 0
+            # total_priority = self.sum_tree.tree[0].item() if self.sum_tree.tree.numel() > 0 else 0
+            total_priority = self.sum_tree.total_priority
             
             if total_priority <= 0:
                 # If tree has no meaningful priorities, fall back to uniform sampling
