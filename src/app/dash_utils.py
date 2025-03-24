@@ -4383,6 +4383,7 @@ def create_ddpg_parameter_inputs(agent_type):
                     dbc.Tab(
                         label="Agent Parameters",
                         children=[
+                            create_replay_buffer_input(agent_type),
                             create_discount_factor_input(agent_type),
                             create_tau_input(agent_type),
                             create_epsilon_greedy_input(agent_type),

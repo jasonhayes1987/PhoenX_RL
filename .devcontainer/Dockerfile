@@ -1,4 +1,4 @@
-# Use the CUDA 12.4.1 devel base image
+# Use the CUDA 12.6.2 devel base image
 FROM nvidia/cuda:12.6.2-cudnn-devel-ubuntu22.04
 
 # Install necessary system packages
