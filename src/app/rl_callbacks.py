@@ -97,8 +97,6 @@ class WandbCallback(Callback):
             )
             self.run_name = run.name
         wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
-        #DEBUG
-        print("WandbCallback.on_train_begin called")
 
     def on_train_end(self, logs=None):
         wandb.finish()

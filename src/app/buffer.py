@@ -25,30 +25,30 @@ class SumTree:
         self.debug_last_large_priority = None
         self.debug_last_large_priority_idx = None
     
-    def update(self, data_indices, priorities):
-        """Update the priorities of the given data indices."""
+    # def update(self, data_indices, priorities):
+    #     """Update the priorities of the given data indices."""
         # Debug large priorities
-        if priorities.numel() > 0:
-            max_val = T.max(priorities)
-            if max_val > 1e6:  # Track suspiciously large priorities
-                large_idx = T.argmax(priorities)
-                self.debug_last_large_priority = max_val.item()
-                self.debug_last_large_priority_idx = data_indices[large_idx].item()
-                print(f"WARNING: Large priority detected: {max_val.item():.2e} at buffer index {data_indices[large_idx].item()}")
+        # if priorities.numel() > 0:
+        #     max_val = T.max(priorities)
+        #     if max_val > 1e6:  # Track suspiciously large priorities
+        #         large_idx = T.argmax(priorities)
+        #         self.debug_last_large_priority = max_val.item()
+        #         self.debug_last_large_priority_idx = data_indices[large_idx].item()
+        #         print(f"WARNING: Large priority detected: {max_val.item():.2e} at buffer index {data_indices[large_idx].item()}")
         
         # Safety check for NaN values
-        if T.isnan(priorities).any():
-            priorities = T.nan_to_num(priorities, nan=1.0)
-            print("WARNING: NaN priorities detected and replaced with 1.0")
+        # if T.isnan(priorities).any():
+        #     priorities = T.nan_to_num(priorities, nan=1.0)
+        #     print("WARNING: NaN priorities detected and replaced with 1.0")
         
         # Update max recorded priority if needed (before normalization)
-        if priorities.numel() > 0 and not T.isnan(priorities).all():
-            new_max = T.max(priorities)
-            if new_max > self.max_priority:
-                old_max = self.max_priority.item()
-                self.max_priority = new_max
-                if new_max > old_max * 10:  # Log significant jumps
-                    print(f"WARNING: Large max priority increase: {old_max:.2e} -> {new_max.item():.2e}")
+        # if priorities.numel() > 0 and not T.isnan(priorities).all():
+        #     new_max = T.max(priorities)
+        #     if new_max > self.max_priority:
+        #         old_max = self.max_priority.item()
+        #         self.max_priority = new_max
+        #         if new_max > old_max * 10:  # Log significant jumps
+        #             print(f"WARNING: Large max priority increase: {old_max:.2e} -> {new_max.item():.2e}")
         
         # Normalize priorities globally using max_recorded_priority
         # priorities = priorities / self.max_priority
@@ -58,86 +58,170 @@ class SumTree:
         #     print(f"WARNING: Post-normalization priorities > 1.0: max = {T.max(priorities).item():.2e}")
         
         # Compute tree indices (leaf nodes) from data indices
-        tree_indices = data_indices + self.capacity - 1
+        # tree_indices = data_indices + self.capacity - 1
         
         # Update leaf nodes with new priorities
-        self.tree[tree_indices] = priorities
+        # self.tree[tree_indices] = priorities
         
         # Update parent nodes efficiently without using Python sets/lists
         # Directly update all parents in a bottom-up fashion
-        parent_indices = (tree_indices - 1) // 2
+        # parent_indices = (tree_indices - 1) // 2
         
         # Handle case where parent_indices might be empty
-        while parent_indices.numel() > 0:
-            # For each parent, calculate the sum of its children
-            left_children = 2 * parent_indices + 1
-            right_children = left_children + 1
+        # while parent_indices.numel() > 0:
+        #     # For each parent, calculate the sum of its children
+        #     left_children = 2 * parent_indices + 1
+        #     right_children = left_children + 1
             
             # Update parents with sum of children
             # Handle edge cases where right child might not exist
-            right_valid = right_children < len(self.tree)
-            self.tree[parent_indices] = self.tree[left_children] + \
-                                       T.where(right_valid, self.tree[right_children], 
-                                              T.zeros_like(self.tree[right_children]))
+            # right_valid = right_children < len(self.tree)
+            # self.tree[parent_indices] = self.tree[left_children] + \
+            #                            T.where(right_valid, self.tree[right_children], 
+            #                                   T.zeros_like(self.tree[right_children]))
             
-            # Move up to next level of parents, removing duplicates
-            parent_indices = (parent_indices - 1) // 2
+            # # Move up to next level of parents, removing duplicates
+            # parent_indices = (parent_indices - 1) // 2
             
-            # Use unique values but handle potential empty tensor
-            if parent_indices.numel() > 0:
-                parent_indices = T.unique(parent_indices)
+            # # Use unique values but handle potential empty tensor
+            # if parent_indices.numel() > 0:
+            #     parent_indices = T.unique(parent_indices)
             
-            # Stop when we reach the root
-            if parent_indices.numel() == 0 or (parent_indices < 0).all():
-                break
+            # # Stop when we reach the root
+            # if parent_indices.numel() == 0 or (parent_indices < 0).all():
+            #     break
+
+    def update(self, data_indices, priorities):
+        # Cap priorities to prevent extreme values
+        priorities = T.clamp(priorities, min=1e-6)
+        
+        # Track maximum priority only once
+        if priorities.numel() > 0:
+            self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
+        
+        # Compute tree indices once
+        tree_indices = data_indices + self.capacity - 1
+        
+        # Update leaf nodes in one operation
+        self.tree[tree_indices] = priorities
+        
+        # Pre-compute all parent indices at once instead of loop
+        nodes_to_update = tree_indices
+        while nodes_to_update.numel() > 0 and T.min(nodes_to_update) > 0:
+            # Get parent indices directly without loop
+            parent_indices = (nodes_to_update - 1) // 2
+            unique_parents = T.unique(parent_indices)
+            
+            # Update all parents in parallel using vectorized operations
+            for level_start in range(0, unique_parents.numel(), 1024):  # Process in chunks to avoid memory issues
+                level_end = min(level_start + 1024, unique_parents.numel())
+                current_parents = unique_parents[level_start:level_end]
+                
+                left_children = 2 * current_parents + 1
+                right_children = left_children + 1
+                
+                # Create mask for valid right children
+                valid_right = right_children < self.tree.size(0)
+                
+                # Get left and right values
+                left_values = self.tree[left_children]
+                right_values = T.zeros_like(left_values)
+                right_values[valid_right] = self.tree[right_children[valid_right]]
+                
+                # Update parents in one operation
+                self.tree[current_parents] = left_values + right_values
+            
+            nodes_to_update = unique_parents
+
+    # def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
+    #     """
+    #     Optimized vectorized batch sampling from the SumTree.
+    #     """
+    #     batch_size = p_values.size(0)
+        
+    #     # Pre-allocate space for resulting indices
+    #     tree_indices = T.zeros(batch_size, dtype=T.long, device=self.device)
+        
+    #     # Use an iterative approach for batch traversal
+    #     # This is still sequential per sample but avoids Python loop overhead
+    #     @T.jit.script
+    #     def traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:
+    #         batch_size = p_values.size(0)
+    #         tree_indices = T.zeros(batch_size, dtype=T.long, device=p_values.device)
+            
+    #         for i in range(batch_size):
+    #             idx = 0  # Start at root
+    #             p = p_values[i].item()
+                
+    #             # Traverse down the tree
+    #             while idx < capacity - 1:  # Not a leaf node
+    #                 left = 2 * idx + 1
+                    
+    #                 # If we would access beyond tree bounds, we've reached a leaf
+    #                 if left >= tree.size(0):
+    #                     break
+                    
+    #                 left_val = tree[left].item()
+                    
+    #                 # Choose direction
+    #                 if p <= left_val:
+    #                     idx = left
+    #                 else:
+    #                     p -= left_val
+    #                     idx = left + 1
+                
+    #             tree_indices[i] = idx
+            
+    #         return tree_indices
+            
+    #     # Traverse tree for each sample in batch
+    #     tree_indices = traverse_tree(p_values, self.tree, self.capacity)
+        
+    #     # Convert tree indices to data indices and get priorities
+    #     data_indices = tree_indices - (self.capacity - 1)
+    #     priorities = self.tree[tree_indices]
+        
+    #     return data_indices, priorities
+
+    @T.jit.script
+    def _traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:
+        batch_size = p_values.size(0)
+        indices = T.zeros(batch_size, dtype=T.long, device=p_values.device)
+        
+        for i in range(batch_size):
+            idx = 0  # Start at root
+            p = p_values[i]
+            
+            # Binary search through the tree
+            for _ in range(int(T.log2(T.tensor(capacity)).ceil().item())):
+                left = 2 * idx + 1
+                if left >= tree.size(0):
+                    break
+                    
+                left_val = tree[left]
+                if p <= left_val:
+                    idx = left
+                else:
+                    p = p - left_val
+                    idx = left + 1
+                    
+                if idx >= capacity - 1:  # Reached leaf nodes
+                    break
+                    
+            indices[i] = idx
+        
+        return indices
 
     def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
-        """
-        Optimized vectorized batch sampling from the SumTree.
-        """
-        batch_size = p_values.size(0)
+        """Optimized sampling with JIT acceleration"""
+        indices = self._traverse_tree(p_values, self.tree, self.capacity)
         
-        # Pre-allocate space for resulting indices
-        tree_indices = T.zeros(batch_size, dtype=T.long, device=self.device)
+        # Ensure leaf node validity and get priorities
+        indices = T.clamp(indices, 0, self.tree.size(0) - 1)
+        priorities = self.tree[indices]
         
-        # Use an iterative approach for batch traversal
-        # This is still sequential per sample but avoids Python loop overhead
-        @T.jit.script
-        def traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:
-            batch_size = p_values.size(0)
-            tree_indices = T.zeros(batch_size, dtype=T.long, device=p_values.device)
-            
-            for i in range(batch_size):
-                idx = 0  # Start at root
-                p = p_values[i].item()
-                
-                # Traverse down the tree
-                while idx < capacity - 1:  # Not a leaf node
-                    left = 2 * idx + 1
-                    
-                    # If we would access beyond tree bounds, we've reached a leaf
-                    if left >= tree.size(0):
-                        break
-                    
-                    left_val = tree[left].item()
-                    
-                    # Choose direction
-                    if p <= left_val:
-                        idx = left
-                    else:
-                        p -= left_val
-                        idx = left + 1
-                
-                tree_indices[i] = idx
-            
-            return tree_indices
-            
-        # Traverse tree for each sample in batch
-        tree_indices = traverse_tree(p_values, self.tree, self.capacity)
-        
-        # Convert tree indices to data indices and get priorities
-        data_indices = tree_indices - (self.capacity - 1)
-        priorities = self.tree[tree_indices]
+        # Convert to data indices
+        data_indices = T.clamp(indices - (self.capacity - 1), 0, self.capacity - 1)
         
         return data_indices, priorities
     
@@ -206,6 +290,8 @@ class Buffer():
             return buffer_classes[buffer_class_name](**kwargs)
         else:
             raise ValueError(f"{buffer_class_name} is not a subclass of Buffer")
+        
+
 class ReplayBuffer(Buffer):
     """
     Replay buffer for storing transitions during reinforcement learning.
@@ -399,10 +485,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         alpha: float = 0.6,
         beta_start: float = 0.4,
         beta_iter: int = 100_000,
+        beta_update_freq: int = 10,
         priority: str = 'proportional',
+        normalize: bool = False,
         goal_shape: Optional[Tuple[int]] = None,
         epsilon: float = 1e-6,
-        update_freq: int = 10,
         device: Optional[str] = None
     ):
         if priority not in ['proportional', 'rank']:
@@ -413,9 +500,10 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.beta_start = beta_start
         self.beta_iter = beta_iter
         self.priority = priority
+        self.normalize = normalize
         self.goal_shape = goal_shape
         self.epsilon = epsilon
-        self.update_freq = update_freq
+        self.beta_update_freq = beta_update_freq
         self.beta = self.beta_start
         self._total_steps = 0
         
@@ -429,6 +517,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         else:  # rank-based
             self.priorities = T.zeros(buffer_size, dtype=T.float32, device=self.device)
             self.sorted_indices = None
+
         
         self.counter = 0
 
@@ -478,9 +567,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.counter += batch_size
         self._total_steps += 1
 
-    def update_beta(self, step: int) -> None:
+    def update_beta(self) -> None:
         """Anneal beta param more efficiently"""
-        progress = min(step / self.beta_iter, 1.0)
+        progress = min(self._total_steps / self.beta_iter, 1.0)
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
 
     def update_priorities(self, indices: T.Tensor, priorities: T.Tensor) -> None:
@@ -490,44 +579,37 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         
         if not isinstance(priorities, T.Tensor):
             priorities = T.tensor(priorities, device=self.device)
-        
-        # Store for debugging
-        self.debug_last_td_error = priorities.clone()
-        self.debug_last_indices = indices.clone()
-            
-        # Handle NaN and zero values
-        # priorities = T.where(
-        #     T.isnan(priorities) | (priorities == 0),
-        #     T.ones_like(priorities) * self.epsilon,
-        #     priorities
-        # )
-        
-        # Apply minimum epsilon and ensure abs values
-        priorities = T.clamp(T.abs(priorities), min=self.epsilon)
-        
-        # Store processed priorities for debugging
-        self.debug_last_priority = priorities.clone()
-        
-        # Debug large TD errors
-        if T.max(priorities) > 1e6:
-            max_idx = T.argmax(priorities)
-            print(f"WARNING: Large TD error detected in update_priorities:")
-            print(f"  Index: {indices[max_idx].item()}")
-            print(f"  Original TD error: {self.debug_last_td_error[max_idx].item():.2e}")
-            print(f"  Processed priority: {priorities[max_idx].item():.2e}")
+
+        # Ensure absolute value
+        priorities = T.abs(priorities)
 
         if self.priority == "proportional":
-            # # Get current priorities from tree for these indices
-            # tree_indices = indices + self.sum_tree.capacity - 1
-            # current_priorities = self.sum_tree.tree[tree_indices]
-            
-            # # Scale new priorities relative to current priorities
-            # if T.max(current_priorities) > 0:
-            #     scale_factor = T.max(current_priorities) / T.max(priorities)
-            #     priorities = priorities * scale_factor
-            
-            # Apply alpha and update the tree
-            self.sum_tree.update(indices, priorities ** self.alpha)
+            # Z-score normalization for extreme values
+            if priorities.numel() > 1 and self.normalize:
+                mean = priorities.mean()
+                std = priorities.std() + 1e-6  # Avoid division by zero
+                normalized = (priorities - mean) / std
+                priorities = T.clamp(normalized, -3.0, 3.0)  # Limit to 3 standard deviations
+                # Convert back to positive range
+                priorities = ((normalized + 3.0) / 6.0) + self.epsilon
+            else:
+                # Just apply clipping
+                priorities = T.clamp(priorities, min=self.epsilon)
+
+            priorities = priorities ** self.alpha
+
+            # If NaN values, replace with mean of non-NaN values
+            if T.isnan(priorities).any():
+                nan_mask = T.isnan(priorities)
+                mean_non_nan = priorities[~nan_mask].mean()
+                priorities = T.where(nan_mask, mean_non_nan, priorities)
+
+            #DEBUG
+            # print(f"Priorities: {priorities}")
+    
+            # Apply alpha power and update the tree
+            self.sum_tree.update(indices, priorities)
+        
         else:  # rank-based
             self.priorities[indices] = priorities
             self.sorted_indices = None
@@ -546,14 +628,20 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         """Samples a batch of transitions based on priority - optimized version"""
 
         # Anneal beta
-        if self._total_steps % self.update_freq == 0:
-            self.update_beta(self._total_steps)
+        if self._total_steps % self.beta_update_freq == 0:
+            self.update_beta()
             
         size = min(self.counter, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
 
         batch_size = min(batch_size, size)
+
+        # create these tensors if don't exist to avoid repeated creation
+        if not hasattr(self, '_segment_boundaries'):
+            self._segment_boundaries = T.zeros(batch_size, device=self.device)  # For most common batch sizes
+            self._random_offsets = T.zeros(batch_size, device=self.device)
+            self._weights_buffer = T.zeros(batch_size, device=self.device)
         
         if self.priority == "proportional":
             # Calculate segment boundaries
@@ -564,22 +652,40 @@ class PrioritizedReplayBuffer(ReplayBuffer):
                 # If tree has no meaningful priorities, fall back to uniform sampling
                 indices = T.randint(0, size, (batch_size,), device=self.device)
                 weights = T.ones(batch_size, device=self.device)
+                probs = T.ones(batch_size, device=self.device) / size
             else:
-                # Vectorized stratified sampling
+                # Prepare segment boundaries
                 segment_size = total_priority / batch_size
-                segment_boundaries = T.arange(0, batch_size, device=self.device) * segment_size
-                random_offsets = T.rand(batch_size, device=self.device) * segment_size
-                p_values = segment_boundaries + random_offsets
+                self._segment_boundaries[:batch_size] = T.arange(0, batch_size, device=self.device) * segment_size
                 
-                # Get indices and priorities in a single batch operation
+                # Generate random offsets with pre-allocated tensor
+                self._random_offsets[:batch_size].uniform_(0, 1)
+                self._random_offsets[:batch_size].mul_(segment_size)
+                
+                # Compute p_values reusing memory
+                p_values = self._segment_boundaries[:batch_size] + self._random_offsets[:batch_size]
+                
+                # Get indices and priorities
                 indices, priorities = self.sum_tree.get(p_values)
                 
-                # Ensure indices are valid (in case of numerical errors)
-                indices = T.clamp(indices, 0, size - 1)
+                # Fast priority to probability calculation
+                probs = priorities / total_priority
                 
-                # Calculate importance sampling weights
-                probs = priorities.clamp(min=self.epsilon) / total_priority
-                weights = (size * probs) ** (-self.beta)
+                # Compute weights with vectorized operations
+                self._weights_buffer[:batch_size] = (size * probs) ** (-self.beta)
+                weights = self._weights_buffer[:batch_size] / self._weights_buffer[:batch_size].max()
+
+                #DEBUG
+                # print(f"Weights: {weights}")
+                # print(f"Probs: {probs}")
+                # print(f"Priorities: {priorities}")
+                # print(f"Total priority: {total_priority}")
+                # print(f"Segment size: {segment_size}")
+                # print(f"Indices: {indices}")
+                # print(f"P_values: {p_values}")
+
+                
+                
         else:  # rank-based
             # Prepare ranks for sampling
             self._prepare_rank_based()
@@ -592,37 +698,38 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             indices = self.sorted_indices[rank_indices]
             
             # Calculate weights directly
-            sample_probs = 1 / ((rank_indices + 1).float() ** self.alpha)
-            weights = (size * sample_probs) ** (-self.beta)
+            probs = 1 / ((rank_indices + 1).float() ** self.alpha)
+            weights = (size * probs) ** (-self.beta)
+            weights = weights / weights.max()
         
-        # Normalize weights
-        if weights.numel() > 0:
-            max_weight = weights.max()
-            if max_weight > 0:  # Prevent division by zero
-                weights = weights / max_weight
-        
-        # Return batch with weights
+        return self._create_batch_outputs(indices, weights, probs)
+    
+    def _create_batch_outputs(self, indices, weights, probs):
+        """Helper to avoid duplicating return logic"""
+        # Use advanced indexing to fetch all tensors at once
         if self.goal_shape is not None:
             return (
-                self.states[indices],
-                self.actions[indices],
-                self.rewards[indices],
-                self.next_states[indices],
-                self.dones[indices],
-                self.state_achieved_goals[indices],
-                self.next_state_achieved_goals[indices],
-                self.desired_goals[indices],
+                self.states.index_select(0, indices),
+                self.actions.index_select(0, indices),
+                self.rewards.index_select(0, indices),
+                self.next_states.index_select(0, indices),
+                self.dones.index_select(0, indices),
+                self.state_achieved_goals.index_select(0, indices),
+                self.next_state_achieved_goals.index_select(0, indices),
+                self.desired_goals.index_select(0, indices),
                 weights,
+                probs,
                 indices
             )
         else:
             return (
-                self.states[indices],
-                self.actions[indices],
-                self.rewards[indices],
-                self.next_states[indices],
-                self.dones[indices],
+                self.states.index_select(0, indices),
+                self.actions.index_select(0, indices),
+                self.rewards.index_select(0, indices),
+                self.next_states.index_select(0, indices), 
+                self.dones.index_select(0, indices),
                 weights,
+                probs,
                 indices
             )
 
@@ -636,10 +743,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
                 "alpha": self.alpha,
                 "beta_start": self.beta_start,
                 "beta_iter": self.beta_iter,
+                "beta_update_freq": self.beta_update_freq,
                 "priority": self.priority,
+                "normalize": self.normalize,
                 "goal_shape": self.goal_shape,
                 "epsilon": self.epsilon,
-                "update_freq": self.update_freq,
                 "device": self.device.type
             }
         }
@@ -652,11 +760,13 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.buffer_size, 
             self.alpha, 
             self.beta_start, 
-            self.beta_iter, 
+            self.beta_iter,
+            self.beta_update_freq,
             self.priority, 
-            self.goal_shape, 
+            self.normalize,
+            self.goal_shape,
             self.device.type, 
-            self.epsilon
+            self.epsilon,
         )
 
 #TODO Dont think shared replay buffer is needed.  If needed, update to EnvWrapper
