@@ -1376,6 +1376,10 @@ class DDPG(Agent):
                 
             # Log PER-specific metrics
             if self._wandb:
+                # Get the actual size of used buffer (not the full capacity)
+                actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
+                # Get indices for all actual entries in the buffer
+                valid_indices = T.arange(actual_size, device=self.device)
                 # Get priority info for logging
                 if hasattr(self.replay_buffer, 'sum_tree'):
                     indices_tensor = T.tensor(indices, device=self.device)
@@ -1383,33 +1387,28 @@ class DDPG(Agent):
                     tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
                     # Get priorities for sampled transitions
                     sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
-                    
-                    # IMPORTANT: Only consider valid entries in the buffer
-                    # Get the actual size of used buffer (not the full capacity)
-                    actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
-                    # Only get priorities for actual entries in the buffer
-                    valid_indices = T.arange(actual_size, device=self.device)
                     valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
                     buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
+
+                else:
+                    buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
+                    sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
                     
-                    # print("sampled_priorities contains NaN:", np.isnan(sampled_priorities).any())
-                    # print("buffer_priorities contains NaN:", np.isnan(buffer_priorities).any())
-                    # print("weights contains NaN:", np.isnan(weights.cpu().numpy()).any() if weights is not None else False)
                     
-                    # Log metrics
-                    wandb.log({
-                        'PER/beta': self.replay_buffer.beta,
-                        'PER/sampled_priorities': sampled_priorities,
-                        'PER/buffer_priorities': buffer_priorities,
-                        'PER/weights': weights,
-                        'PER/probs': probs,
-                        'PER/mean_sampled_priority': np.mean(sampled_priorities),
-                        'PER/mean_buffer_priority': np.mean(buffer_priorities),
-                        'PER/max_sampled_priority': np.max(sampled_priorities),
-                        'PER/max_buffer_priority': np.max(buffer_priorities),
-                        'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
-                        'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
-                    }, step=self._step)
+                # Log metrics
+                wandb.log({
+                    'PER/beta': self.replay_buffer.beta,
+                    'PER/sampled_priorities': sampled_priorities,
+                    'PER/buffer_priorities': buffer_priorities,
+                    'PER/weights': weights,
+                    'PER/probs': probs,
+                    'PER/mean_sampled_priority': np.mean(sampled_priorities),
+                    'PER/mean_buffer_priority': np.mean(buffer_priorities),
+                    'PER/max_sampled_priority': np.max(sampled_priorities),
+                    'PER/max_buffer_priority': np.max(buffer_priorities),
+                    'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
+                    'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
+                }, step=self._step)
         else:  # Standard replay buffer
             if self._use_her:
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
