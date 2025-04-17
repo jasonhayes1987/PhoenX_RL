@@ -1,4 +1,5 @@
 import os
+import ray
 import json
 import numpy as np
 import torch as T
@@ -174,6 +175,56 @@ class WandbCallback(Callback):
     @classmethod
     def load(cls, config):
         return cls(**config)
+    
+class RayWandbCallback(WandbCallback):
+    """
+    A W&B callback that works with Ray distributed training.
+    Only the main worker (worker_id=0) logs to W&B.
+    """
+    def __init__(self, project_name, run_name=None, chkpt_freq=100, worker_id=0, _sweep=False):
+        super().__init__(project_name, run_name, chkpt_freq, _sweep)
+        self.worker_id = worker_id
+        self.is_main_worker = (worker_id == 0)
+    
+    def on_train_begin(self, models, logs=None):
+        if not self.is_main_worker:
+            return  # Only the main worker initializes W&B
+        super().on_train_begin(models, logs)
+    
+    def on_train_end(self, logs=None):
+        if not self.is_main_worker:
+            return  # Only the main worker finalizes W&B
+        super().on_train_end(logs)
+    
+    def on_train_epoch_end(self, epoch, logs=None):
+        if not self.is_main_worker:
+            return  # Only the main worker logs to W&B
+        super().on_train_epoch_end(epoch, logs)
+    
+    def on_train_step_end(self, step, logs=None):
+        if not self.is_main_worker:
+            return  # Only the main worker logs to W&B
+        super().on_train_step_end(step, logs)
+    
+    def on_test_begin(self, logs=None, run_number=None):
+        if not self.is_main_worker:
+            return  # Only the main worker logs to W&B
+        super().on_test_begin(logs, run_number)
+    
+    def on_test_end(self, logs=None):
+        if not self.is_main_worker:
+            return  # Only the main worker logs to W&B
+        super().on_test_end(logs)
+    
+    def on_test_epoch_end(self, epoch, logs=None):
+        if not self.is_main_worker:
+            return  # Only the main worker logs to W&B
+        super().on_test_epoch_end(epoch, logs)
+    
+    def on_test_step_end(self, step, logs=None):
+        if not self.is_main_worker:
+            return  # Only the main worker logs to W&B
+        super().on_test_step_end(step, logs)
 
     
 class DashCallback(Callback):

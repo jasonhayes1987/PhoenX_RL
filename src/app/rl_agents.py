@@ -44,6 +44,8 @@ import pandas as pd
 import random
 import torch.profiler
 
+from agent_utils import load_agent_from_config, get_agent_class_from_type
+
 
 # Agent class
 class Agent:
@@ -817,15 +819,10 @@ class Reinforce(Agent):
 
         # set step counter
         self._step = 0
-        # set current learning steps
-        # self._cur_learning_steps = []
-        # Instantiate counter to keep track of number of episodes completed
-        self.completed_episodes = 0
-        # Instantiate array to keep track of current episode scores
-        episode_scores = np.zeros(self.num_envs)
-        # instantiate 
-        # set best reward
         best_reward = -np.inf
+        self.completed_episodes = 0
+        episode_scores = np.zeros(self.num_envs)
+
         # Instantiate a deque to track last 10 scores for computing avg
         completed_scores = deque(maxlen=10)
         # Instantiate a list of num_envs lists to store trajectories
@@ -1173,7 +1170,8 @@ class DDPG(Agent):
     """Deep Deterministic Policy Gradient Agent."""
 
     def __init__(
-        self, env: EnvWrapper,
+        self,
+        env: EnvWrapper,
         actor_model: ActorModel,
         critic_model: CriticModel,
         replay_buffer: Buffer = None,
@@ -1235,9 +1233,14 @@ class DDPG(Agent):
             elif save_dir is not None:
                 self.save_dir = save_dir
 
-            # instantiate internal attribute use_her to be switched by HER class if using DDPG
+            # Instantiate internal attribute use_her to be switched by HER class if using DDPG
             self._use_her = False
-            # logger.debug(f"rank {self.rank} DDPG init: internal attributes set")
+
+            # Set distributed to False (flag for distributed training)
+            self._distributed = False
+            # Set sync_gradients to None (assigned in distributed training Worker)
+            self._sync_gradients = None
+            
         except Exception as e:
             logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
 
@@ -1299,6 +1302,12 @@ class DDPG(Agent):
 
     def _init_her(self):
             self._use_her = True
+
+    def _apply_gradients(self, model, gradients):
+        """Apply gradients to a model. Used in distributed training."""
+        for param, grad in zip(model.parameters(), gradients):
+            if grad is not None:
+                param.grad = grad.clone().detach()
 
     def get_action(self, state, goal=None, test=False,
                    state_normalizer:Normalizer=None,
@@ -1368,10 +1377,15 @@ class DDPG(Agent):
 
     def learn(self, state_normalizer: Normalizer=None, goal_normalizer: Normalizer=None):
         # Sample a batch of experiences from the replay buffer
-        if hasattr(self.replay_buffer, 'update_priorities'):  # Check if using prioritized replay
+        # if hasattr(self.replay_buffer, 'update_priorities'):  # Check if using prioritized replay
+        if self.replay_buffer.get_config()['class_name'] == 'PrioritizedReplayBuffer':
             if self._use_her:  # HER with prioritized replay
+                #DEBUG
+                print(f"HER with prioritized replay")
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
+                #DEBUG
+                print(f"Just prioritized replay")
                 states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
@@ -1379,10 +1393,10 @@ class DDPG(Agent):
                 # Get the actual size of used buffer (not the full capacity)
                 actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
                 # Get indices for all actual entries in the buffer
-                valid_indices = T.arange(actual_size, device=self.device)
+                valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
                 # Get priority info for logging
-                if hasattr(self.replay_buffer, 'sum_tree'):
-                    indices_tensor = T.tensor(indices, device=self.device)
+                if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
+                    indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
                     # Get tree indices for sampled transitions
                     tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
                     # Get priorities for sampled transitions
@@ -1411,8 +1425,12 @@ class DDPG(Agent):
                 }, step=self._step)
         else:  # Standard replay buffer
             if self._use_her:
+                #DEBUG
+                print(f"HER with standard replay")
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
             else:
+                #DEBUG
+                print(f"Standard replay")
                 states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
             
             weights = None
@@ -1431,71 +1449,45 @@ class DDPG(Agent):
             desired_goals = None
 
         # Convert rewards and dones to 2D tensors
-        rewards = rewards.unsqueeze(1)
-        dones = dones.unsqueeze(1)
+        rewards = rewards.unsqueeze(1).to(self.target_critic_model.device)
+        dones = dones.unsqueeze(1).to(self.target_critic_model.device)
 
         # Get target values
         with T.no_grad():
             _, target_actions = self.target_actor_model(next_states, desired_goals)
-            # noise = self.target_noise()
-            
-            # Apply noise clipping if needed
-            # if hasattr(self, 'target_noise_clip') and self.target_noise_clip > 0:
-            #     noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
-                
-            # Apply noise scaling if scheduled
-            # if hasattr(self, 'target_noise_schedule') and self.target_noise_schedule is not None:
-            #     noise *= self.target_noise_schedule.get_factor()
-                
-            # Add noise to target actions and clamp to action space
-            # target_actions = (target_actions + noise).clamp(float(self.env.action_space.low.min()), float(self.env.action_space.high.max()))
-            
-            # Get target critic values from both critic networks
             target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
-            # target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
-            
-            # Take minimum of both critic values for stability
-            # target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
-            
             # Calculate target Q-values
             targets = rewards + (1 - dones) * self.discount * target_critic_values
-            
             # Apply HER-specific clamping if needed
             if self._use_her:
                 targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
 
         # Get current critic predictions
         predictions = self.critic_model(states, actions, desired_goals)
-        # predictions_b = self.critic_model_b(states, actions, desired_goals)
-
         # Calculate TD errors
         error = targets - predictions
-        # error_b = targets - predictions_b
-        # error = (error_a.abs() + error_b.abs()) / 2  # Average of absolute errors for priorities
 
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            critic_loss = (weights * error.pow(2)).mean()
-            # critic_loss_b = (weights * error_b.pow(2)).mean()
-            # critic_loss = critic_loss_a + critic_loss_b
+            critic_loss = (weights.to(self.critic_model.device) * error.pow(2)).mean()
         else:
-            # critic_loss = F.mse_loss(predictions, targets)
             critic_loss = error.pow(2).mean()
 
         # Update critic
         self.critic_model.optimizer.zero_grad()
         critic_loss.backward()
+        if self._distributed:
+            gradients = [param.grad.to('cpu') for param in self.critic_model.parameters() if param.grad is not None]
+            self._sync_gradients('critic', gradients)
         self.critic_model.optimizer.step()
 
-        # Only update actor every actor_update_delay steps
-        # if self._step % self.actor_update_delay == 0:
         # Get actor's action predictions
         pre_act_values, action_values = self.actor_model(states, desired_goals)
         
         # Calculate actor loss based on critic
         critic_values = self.critic_model(states, action_values, desired_goals)
         if weights is not None:
-            actor_loss = -(weights * critic_values).mean()
+            actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:
             actor_loss = -critic_values.mean()
         
@@ -1506,6 +1498,9 @@ class DDPG(Agent):
         # Update actor
         self.actor_model.optimizer.zero_grad()
         actor_loss.backward()
+        if self._distributed:
+            gradients = [param.grad.to('cpu') for param in self.actor_model.parameters() if param.grad is not None]
+            self._sync_gradients('actor', gradients)
         self.actor_model.optimizer.step()
 
         # Perform soft update on target networks
@@ -1514,22 +1509,8 @@ class DDPG(Agent):
             self.soft_update(self.critic_model, self.target_critic_model)
 
         # Update priorities if using prioritized replay - only on update_freq steps
-        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None and hasattr(self.replay_buffer, 'beta_update_freq'):
-            #DEBUG
-            # print(f"Update priorities: {self._step}")
-            # Get the absolute values of the TD errors
-            # abs_error = error.abs().detach().flatten()
-            # Handle NaN values if they occur
-            # if T.isnan(abs_error).any():
-            #     abs_error = T.nan_to_num(abs_error, nan=1.0)
-            # if self._use_her:
-            #     # Add goal distance regularization (Euclidean distance between achieved and desired)
-            #     goal_distance = T.norm(achieved_goals - desired_goals, dim=-1)
-            #     abs_error = abs_error + 0.1 * goal_distance
-            # Update priorities
-            #DEBUG
-            # print(f"priorities:{error.detach().flatten()}")
-            self.replay_buffer.update_priorities(indices, error.detach().flatten())
+        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
+            self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
 
         # Add metrics to step_logs
         self._train_step_config['td_error'] = error
@@ -1833,10 +1814,10 @@ class DDPG(Agent):
         # initialize step counter (for logging)
         self._step = 0
         best_reward = -np.inf
-        score_history = deque(maxlen=100) # Keeps track of last 100 episode scores
-        trajectories = [[] for _ in range(self.num_envs)] # Keeps track of trajectories per env
-        episode_scores = np.zeros(self.num_envs) # Keeps track of current scores per env
-        self.completed_episodes = np.zeros(self.num_envs) # Keeps track of completed episodes per env
+        score_history = deque(maxlen=100)
+        trajectories = [[] for _ in range(self.num_envs)]
+        episode_scores = np.zeros(self.num_envs)
+        self.completed_episodes = np.zeros(self.num_envs)
         # Initialize environments
         states, _ = self.env.reset()
         while self.completed_episodes.sum() < num_episodes:
@@ -2063,25 +2044,25 @@ class DDPG(Agent):
 
     def get_config(self):
         return {
-                "agent_type": self.__class__.__name__,
-                "env": self.env.to_json(),
-                "actor_model": self.actor_model.get_config(),
-                "critic_model": self.critic_model.get_config(),
-                "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
-                "discount": self.discount,
-                "tau": self.tau,
-                "action_epsilon": self.action_epsilon,
-                "batch_size": self.batch_size,
-                "noise": self.noise.get_config(),
-                "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
-                'normalize_inputs': self.normalize_inputs,
-                'normalizer_clip': self.normalizer_clip,
-                'normalizer_eps': self.normalizer_eps,
-                'warmup': self.warmup,
-                "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
-                "save_dir": self.save_dir,
+            "agent_type": self.__class__.__name__,
+            "env": self.env.to_json(),
+            "actor_model": self.actor_model.get_config(),
+            "critic_model": self.critic_model.get_config(),
+            "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
+            "discount": self.discount,
+            "tau": self.tau,
+            "action_epsilon": self.action_epsilon,
+            "batch_size": self.batch_size,
+            "noise": self.noise.get_config(),
+            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
+            'normalize_inputs': self.normalize_inputs,
+            'normalizer_clip': self.normalizer_clip,
+            'normalizer_eps': self.normalizer_eps,
+            'warmup': self.warmup,
+            "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
+            "save_dir": self.save_dir,
                 "device": self.device.type,
-            }
+        }
 
 
     def save(self):
@@ -2096,6 +2077,9 @@ class DDPG(Agent):
         # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
 
+        #DEBUG
+        logger.info(f"Saving config: {config}")
+
         # writes and saves JSON file of DDPG agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
@@ -2103,7 +2087,7 @@ class DDPG(Agent):
         # saves policy and value model
         self.actor_model.save(self.save_dir)
         self.critic_model.save(self.save_dir)
-
+        
         if self.normalize_inputs:
             self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
 
@@ -2115,9 +2099,9 @@ class DDPG(Agent):
         env_wrapper = EnvWrapper.from_json(config["env"])
             
         # load policy model
-        actor_model = ActorModel.load(config['save_dir'], load_weights)
+        actor_model = ActorModel.load(config['actor_model'], load_weights)
         # load value model
-        critic_model = CriticModel.load(config['save_dir'], load_weights)
+        critic_model = CriticModel.load(config['critic_model'], load_weights)
         # load replay buffer if not None
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
@@ -3409,10 +3393,10 @@ class TD3(Agent):
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
-            }
+        }
 
     def save(self):
-
+            
         config = self.get_config()
         os.makedirs(self.save_dir, exist_ok=True)
         with open(os.path.join(self.save_dir, "config.json"), "w", encoding="utf-8") as f:
@@ -6066,7 +6050,7 @@ class PPO(Agent):
                 "agent_type": self.__class__.__name__,
                 # "env": serialize_env_spec(self.env.spec),
                 "env": self.env.to_json(),
-                "policy": self.policy_model.get_config(),
+                "policy_model": self.policy_model.get_config(),
                 "value_model": self.value_model.get_config(),
                 "discount": self.discount,
                 "gae_coefficient": self.gae_coefficient,
@@ -7345,38 +7329,38 @@ class PPO(Agent):
 
 #     raise ValueError(f"Unknown agent type: {agent_type}")
 
-def load_agent_from_config(config, load_weights=True):
-    """Loads an agent from a loaded config file."""
-    agent_type = config["agent_type"]
+# def load_agent_from_config(config, load_weights=True):
+#     """Loads an agent from a loaded config file."""
+#     agent_type = config["agent_type"]
 
-    # Use globals() to get a reference to the class
-    agent_class = globals().get(agent_type)
+#     # Use globals() to get a reference to the class
+#     agent_class = globals().get(agent_type)
 
-    if agent_class:
-        return agent_class.load(config, load_weights)
+#     if agent_class:
+#         return agent_class.load(config, load_weights)
 
-    raise ValueError(f"Unknown agent type: {agent_type}")
+#     raise ValueError(f"Unknown agent type: {agent_type}")
 
 
-def get_agent_class_from_type(agent_type: str):
-    """Builds an agent from a passed agent type str."""
+# def get_agent_class_from_type(agent_type: str):
+#     """Builds an agent from a passed agent type str."""
 
-    types = {"Actor Critic": "ActorCritic",
-             "Reinforce": "Reinforce",
-             "DDPG": "DDPG",
-             "HER_DDPG": "HER",
-             "HER": "HER",
-             "TD3": "TD3",
-             "PPO": "PPO",
-            }
+#     types = {"Actor Critic": "ActorCritic",
+#              "Reinforce": "Reinforce",
+#              "DDPG": "DDPG",
+#              "HER_DDPG": "HER",
+#              "HER": "HER",
+#              "TD3": "TD3",
+#              "PPO": "PPO",
+#             }
 
-    # Use globals() to get a reference to the class
-    agent_class = globals().get(types[agent_type])
+#     # Use globals() to get a reference to the class
+#     agent_class = globals().get(types[agent_type])
 
-    if agent_class:
-        return agent_class
+#     if agent_class:
+#         return agent_class
 
-    raise ValueError(f"Unknown agent type: {agent_type}")
+#     raise ValueError(f"Unknown agent type: {agent_type}")
 
 # def init_sweep(sweep_config, comm=None):
 #     # rank = MPI.COMM_WORLD.Get_rank()
