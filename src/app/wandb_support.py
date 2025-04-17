@@ -14,8 +14,6 @@ import gymnasium as gym
 import wandb
 from scipy.stats import zscore
 import plotly.graph_objs as go
-
-import rl_agents
 import utils
 
 
@@ -52,6 +50,7 @@ def load_model_from_artifact(artifact, load_weights: bool = True):
     Returns:
         rl_agents.Agent: Loaded RL agent object.
     """
+    import rl_agents
     # Download the artifact files to a directory
     artifact_dir = Path(artifact.download())
 
@@ -438,6 +437,7 @@ def _run_sweep(sweep_config, train_config):
     Returns:
         dict: The sweep configuration.
     """
+    import rl_agents
     try:
         from rl_callbacks import WandbCallback
         wandb.init()

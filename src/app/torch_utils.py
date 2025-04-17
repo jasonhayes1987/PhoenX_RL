@@ -15,6 +15,7 @@ def get_device(device_spec=None):
     Returns:
         torch.device: The corresponding device object
     """
+
     if device_spec is None:
         return T.device('cuda' if T.cuda.is_available() else 'cpu')
     elif isinstance(device_spec, str):

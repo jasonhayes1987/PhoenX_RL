@@ -988,7 +988,7 @@ class ActorModel(Model):
 
 
     @classmethod
-    def load(cls, config_path, load_weights=True):
+    def load(cls, config, load_weights=True):
         """
         Load an actor model from a saved configuration.
 
@@ -999,15 +999,15 @@ class ActorModel(Model):
         Returns:
             ActorModel: Loaded actor model instance.
         """
-        model_dir = Path(config_path) / "actor_model"
-        config_path = model_dir / "config.json"
-        model_path = model_dir / 'pytorch_model.onnx'
+        # model_dir = Path(config_path) / "actor_model"
+        # config_path = model_dir / "config.json"
+        # model_path = model_dir / 'pytorch_model.onnx'
 
-        if config_path.is_file():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            raise FileNotFoundError(f"No configuration file found in {config_path}")
+        # if config_path.is_file():
+        #     with open(config_path, "r", encoding="utf-8") as f:
+        #         config = json.load(f)
+        # else:
+        #     raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         env = EnvWrapper.from_json(config.get("env"))
 
@@ -1022,7 +1022,11 @@ class ActorModel(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path))
+            try:
+                model_path = Path(config.get("save_dir")) / "actor_model" / "pytorch_model.pt"
+                model.load_state_dict(T.load(model_path))
+            except Exception as e:
+                print(f"Error loading model: {e}")
 
         return model
 
@@ -1166,7 +1170,7 @@ class CriticModel(Model):
 
 
     @classmethod
-    def load(cls, config_path, load_weights=True):
+    def load(cls, config, load_weights=True):
         """
         Load a critic model from a saved configuration.
 
@@ -1177,15 +1181,15 @@ class CriticModel(Model):
         Returns:
             CriticModel: Loaded critic model instance.
         """
-        model_dir = Path(config_path) / "critic_model"
-        config_path = model_dir / "config.json"
-        model_path = model_dir / 'pytorch_model.onnx'
+        # model_dir = Path(config_path) / "critic_model"
+        # config_path = model_dir / "config.json"
+        # model_path = model_dir / 'pytorch_model.onnx'
 
-        if config_path.is_file():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            raise FileNotFoundError(f"No configuration file found in {config_path}")
+        # if config_path.is_file():
+        #     with open(config_path, "r", encoding="utf-8") as f:
+        #         config = json.load(f)
+        # else:
+        #     raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         env = EnvWrapper.from_json(config.get("env"))
 
@@ -1201,7 +1205,11 @@ class CriticModel(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path))
+            try:
+                model_path = Path(config.get("save_dir")) / "critic_model" / "pytorch_model.pt"
+                model.load_state_dict(T.load(model_path))
+            except Exception as e:
+                print(f"Error loading model: {e}")
 
         return model
 
