@@ -1,7 +1,7 @@
 import sys
 import json
 import time
-from logging_config import logger
+from logging_config import get_logger
 import argparse
 import subprocess
 
@@ -13,7 +13,7 @@ import wandb
 from rl_agents import load_agent_from_config
 
 # Configure logging
-# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = get_logger(__name__, 'info')
 
 parser = argparse.ArgumentParser(description='Train Agent')
 parser.add_argument('--agent_config', type=str, required=True, help='Path to the agent configuration file')

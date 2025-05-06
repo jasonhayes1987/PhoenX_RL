@@ -391,6 +391,9 @@ class ReplayBuffer(Buffer):
             Tuple[T.Tensor, ...]: Sampled transitions.
         """
         size = min(self.counter, self.buffer_size)
+        if size == 0:
+            raise ValueError("Cannot sample from empty buffer")
+        
         indices = self.gen.integers(0, size, (batch_size,))
         
         if self.goal_shape is not None:
@@ -430,15 +433,20 @@ class ReplayBuffer(Buffer):
             }
         }
     
-    def clone(self) -> 'ReplayBuffer':
+    def clone(self, device: Optional[str] = None) -> 'ReplayBuffer':
         """
         Clone the replay buffer.
 
         Returns:
             ReplayBuffer: A new instance of the replay buffer with the same configuration.
         """
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
         env = build_env_wrapper_obj(self.env.config)
-        return ReplayBuffer(env, self.buffer_size, self.goal_shape, self.device)
+        return ReplayBuffer(env, self.buffer_size, self.goal_shape, device)
 
 class PrioritizedReplayBuffer(ReplayBuffer):
     """
@@ -706,8 +714,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             }
         }
     
-    def clone(self) -> 'PrioritizedReplayBuffer':
+    def clone(self, device: Optional[str] = None) -> 'PrioritizedReplayBuffer':
         """Create a new instance with the same configuration."""
+        # Set device if not None
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device.type
+
         env = build_env_wrapper_obj(self.env.config)
         return PrioritizedReplayBuffer(
             env, 
@@ -718,7 +732,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.beta_update_freq,
             self.priority, 
             self.normalize,
-            self.goal_shape,
-            self.device.type, 
+            self.goal_shape, 
             self.epsilon,
+            device
         )

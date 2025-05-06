@@ -2,6 +2,7 @@ import torch as T
 from torch.distributions import uniform, normal
 import numpy as np
 from torch_utils import get_device
+from typing import Optional
 
 class Noise:
     """
@@ -35,7 +36,7 @@ class Noise:
         """
         pass
 
-    def clone(self):
+    def clone(self, device: Optional[str | T.device] = None):
         """
         Clone the noise process.
 
@@ -112,14 +113,19 @@ class UniformNoise(Noise):
             }
         }
     
-    def clone(self) -> 'UniformNoise':
+    def clone(self, device: Optional[str | T.device] = None) -> 'UniformNoise':
         """
         Clone the UniformNoise instance.
 
         Returns:
             UniformNoise: A new instance with the same configuration.
         """
-        return UniformNoise(self.shape, self.minval.item(), self.maxval.item(), self.device)
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
+        return UniformNoise(self.shape, self.minval.item(), self.maxval.item(), device)
 
 class NormalNoise(Noise):
     """
@@ -177,14 +183,19 @@ class NormalNoise(Noise):
             }
         }
     
-    def clone(self) -> 'NormalNoise':
+    def clone(self, device: Optional[str | T.device] = None) -> 'NormalNoise':
         """
         Clone the NormalNoise instance.
 
         Returns:
             NormalNoise: A new instance with the same configuration.
         """
-        return NormalNoise(self.shape, self.mean.item(), self.stddev.item(), self.device)
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
+        return NormalNoise(self.shape, self.mean.item(), self.stddev.item(), device)
     
 class OUNoise(Noise):
     """
@@ -246,11 +257,16 @@ class OUNoise(Noise):
             }
         }
         
-    def clone(self) -> 'OUNoise':
+    def clone(self, device: Optional[str | T.device] = None) -> 'OUNoise':
         """
         Clone the OUNoise instance.
 
         Returns:
             OUNoise: A new instance with the same configuration.
         """
-        return OUNoise(self.shape, self.mean.item(), self.theta.item(), self.sigma.item(), self.dt.item(), self.device)
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
+        return OUNoise(self.shape, self.mean.item(), self.theta.item(), self.sigma.item(), self.dt.item(), device)
