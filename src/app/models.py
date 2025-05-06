@@ -4,7 +4,7 @@
 from abc import abstractmethod
 import json
 import os
-from typing import List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict
 from pathlib import Path
 # import time
 
@@ -20,7 +20,7 @@ from gymnasium.envs.registration import EnvSpec
 import numpy as np
 import cnn_models
 from torch_utils import get_device, VarianceScaling_
-from logging_config import logger
+# from logging_config import logger
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import check_for_inf_or_NaN
 
@@ -91,12 +91,12 @@ class Model(nn.Module):
         if isinstance(obs_space, gym.spaces.Dict):
             obs_shape = obs_space['observation'].shape
             goal_shape = obs_space['desired_goal'].shape
-            state_input = T.ones((1, *obs_shape), device=self.device, dtype=T.float)
-            goal_input = T.ones((1, *goal_shape), device=self.device, dtype=T.float)
+            state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
+            goal_input = T.ones((32, *goal_shape), device=self.device, dtype=T.float)
             # Check if CriticModel instance to pass action dummy values
             if isinstance(self, CriticModel):
                 action_shape = self.env.single_action_space.shape
-                action_input = T.ones((1, *action_shape), device=self.device, dtype=T.float)
+                action_input = T.ones((32, *action_shape), device=self.device, dtype=T.float)
                 with T.no_grad():
                     _ = self.forward(state_input, action_input, goal_input)
             else:
@@ -106,12 +106,12 @@ class Model(nn.Module):
             obs_shape = obs_space.shape
             #DEBUG
             # print(f'init model obs_shape:{obs_shape}')
-            state_input = T.ones((1, *obs_shape), device=self.device, dtype=T.float)
+            state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
             #DEBUG
             # print(f'state input shape:{state_input.shape}')
             if isinstance(self, CriticModel):
                 action_shape = self.env.single_action_space.shape
-                action_input = T.ones((1, *action_shape), device=self.device, dtype=T.float)
+                action_input = T.ones((32, *action_shape), device=self.device, dtype=T.float)
                 with T.no_grad():
                     _ = self.forward(state_input, action_input)
             else:
@@ -154,6 +154,9 @@ class Model(nn.Module):
 
         elif layer_type == 'dropout':
             return nn.Dropout(**params)
+
+        elif layer_type == 'batchnorm1d':
+            return nn.LazyBatchNorm1d()
 
         elif layer_type == 'batchnorm2d':
             return nn.LazyBatchNorm2d()
@@ -948,8 +951,13 @@ class ActorModel(Model):
         return config
 
 
-    def get_clone(self, weights=True):
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         # Reconstruct the model from its configuration
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
         env = GymnasiumWrapper(self.env.env_spec, self.env.wrappers)
         cloned_model = ActorModel(
             env=env,
@@ -957,10 +965,10 @@ class ActorModel(Model):
             output_layer_kernel=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             scheduler_params=self.scheduler_params.copy() if self.scheduler_params else None,
-            device=self.device.type
+            device=device
         )
         
-        if weights:
+        if copy_weights:
             # Copy the model weights
             cloned_model.load_state_dict(self.state_dict())
 
@@ -993,7 +1001,7 @@ class ActorModel(Model):
         Load an actor model from a saved configuration.
 
         Args:
-            config_path (str): Path to the configuration file.
+            config (dict): Configuration dictionary.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
@@ -1124,8 +1132,13 @@ class CriticModel(Model):
 
         return config
     
-    def get_clone(self, weights=True):
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         # Reconstruct the model from its configuration
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
         env = GymnasiumWrapper(self.env.env_spec)
         cloned_model = CriticModel(
             env=env,
@@ -1135,10 +1148,10 @@ class CriticModel(Model):
             # goal_shape=self.goal_shape.copy(),
             optimizer_params=self.optimizer_params.copy(),
             scheduler_params=self.scheduler_params.copy() if self.scheduler_params else None,
-            device=self.device.type
+            device=device
         )
         
-        if weights:
+        if copy_weights:
             # Copy the model weights
             cloned_model.load_state_dict(self.state_dict())
             
