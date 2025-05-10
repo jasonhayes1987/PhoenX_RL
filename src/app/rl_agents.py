@@ -1661,6 +1661,13 @@ class DDPG(Agent):
             for current_params, target_params in zip(current.parameters(), target.parameters()):
                 target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
 
+            # Copy buffers (running_mean, running_var)
+            main_buffers = dict(current.named_buffers())
+            target_buffers = dict(target.named_buffers())
+            for name in main_buffers:
+                if name in target_buffers:
+                    target_buffers[name].copy_(main_buffers[name])
+
     # @classmethod
     # def sweep_train(
     #     cls,
@@ -2848,6 +2855,13 @@ class TD3(Agent):
         with T.no_grad():
             for current_params, target_params in zip(current.parameters(), target.parameters()):
                 target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
+
+        # Copy buffers (running_mean, running_var)
+        main_buffers = dict(current.named_buffers())
+        target_buffers = dict(target.named_buffers())
+        for name in main_buffers:
+            if name in target_buffers:
+                target_buffers[name].copy_(main_buffers[name])
         
     # @classmethod
     # def sweep_train(
@@ -3416,7 +3430,7 @@ class TD3(Agent):
                     print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {episode_scores[i]}, Avg Score {avg_reward}")
                     episode_scores[i] = 0
             states = next_states
-            if self.replay_buffer.counter > self.batch_size:
+            if self._step > self.warmup and self.replay_buffer.counter > self.batch_size:
                 actor_loss, critic_loss = self.learn()
                 self._train_step_config["critic_loss"] = critic_loss
                 if actor_loss is not None:
