@@ -93,7 +93,8 @@ def move_to_device(obj, device: T.device | str, visited=None) -> object:
                     setattr(obj, attr_name, attr_value.to(device))
                 # Handle device attribute
                 elif attr_name == 'device' and isinstance(attr_value, (T.device, str)):
-                    setattr(obj, attr_name, device if isinstance(attr_value, T.device) else device_str)
+                    # setattr(obj, attr_name, device if isinstance(attr_value, T.device) else device_str)
+                    setattr(obj, attr_name, get_device(device_str))
                 # Recursively process containers and custom objects
                 elif isinstance(attr_value, (dict, list, tuple)) or (hasattr(attr_value, '__dict__') and not isinstance(attr_value, type)):
                     setattr(obj, attr_name, move_to_device(attr_value, device, visited))
