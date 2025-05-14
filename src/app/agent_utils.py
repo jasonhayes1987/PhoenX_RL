@@ -36,6 +36,7 @@ def convert_to_distributed_callbacks(callbacks, role: str, worker_id=0):
     
     Args:
         callbacks (list): List of callback objects
+        role (str): 'learner' or 'worker'
         worker_id (int): Worker ID for this process
         
     Returns:
