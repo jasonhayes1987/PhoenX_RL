@@ -1,7 +1,7 @@
 import ray
 import asyncio
 import torch as T
-from typing import Dict, List
+from typing import Dict, List, Optional
 import logging
 from rl_agents import Agent
 from agent_utils import load_agent_from_config, convert_to_distributed_callbacks
@@ -9,6 +9,7 @@ from buffer import Buffer
 from env_wrapper import EnvWrapper
 from logging_config import get_logger
 from rl_callbacks import RayWandbCallback
+from torch_utils import get_device
 # import ray.logger as logger
 
 # Use correct Ray logger import
@@ -256,12 +257,13 @@ class SumTreeWrapper:
 #         }
 @ray.remote(num_cpus=1, num_gpus=1)
 class Learner:
-    def __init__(self, agent: Agent, buffer: BufferWrapper = None, log_level='info'):
+    def __init__(self, agent: Agent, buffer: BufferWrapper = None, learn_freq: int = 1000, log_level='info'):
         self.agent = agent
         self.buffer = buffer
         # Replace buffer from agent with buffer wrapper if using shared buffer
         if self.buffer:
             self.agent.replay_buffer = self.buffer
+        self.learn_freq = learn_freq
         self.logger = get_logger(__name__, level=log_level)
         self.log_level = logging.getLevelName(self.logger.getEffectiveLevel()).lower()
 
@@ -280,10 +282,11 @@ class Learner:
         self._learn_step += 1
         
         try:
-            if gradients:
-                self.agent._distributed_learn(step, run_number, gradients)
-            else:
-                self.agent._distributed_learn(step, run_number)
+            if self._learn_step % self.learn_freq == 0:
+                if gradients:
+                    self.agent._distributed_learn(step, run_number, gradients)
+                else:
+                    self.agent._distributed_learn(step, run_number)
             
         except Exception as e:
             self.logger.error(f"Error in learn: {e}", exc_info=True)
@@ -299,17 +302,49 @@ class Learner:
         self._learn_step = 0
 
 class DistributedAgents:
-    def __init__(self, agent_config, num_workers, learner_device: str = None, worker_device: str = None, log_level='info'):
-        """Initialize distributed agents with the given configuration"""
+    def __init__(self,
+                 agent_config,
+                 num_workers,
+                 learner_device: Optional[str] = 'cuda',
+                 learner_num_cpus: int = 1,
+                 learner_num_gpus: int = 1,
+                 worker_device: Optional[str] = 'cpu',
+                 worker_num_cpus: int = 1,
+                 worker_num_gpus: int = 0,
+                 learn_freq: int = 1000,
+                 log_level='info'
+                ):
+        """
+        Initialize distributed agents with the given configuration
+
+        Args:
+            agent_config: Dict[str, Any] - The configuration for the agent
+            num_workers: int - The number of workers to create
+            learner_device: Optional[str] - The device to use for the learner
+            learner_num_cpus: int - The number of CPUs to use for the learner
+            learner_num_gpus: int - The number of GPUs to use for the learner
+            worker_device: Optional[str] - The device to use for the workers
+            worker_num_cpus: int - The number of CPUs to use for the workers
+            worker_num_gpus: int - The number of GPUs to use for the workers
+            learn_freq: int - The frequency of learning (learn steps)
+            log_level: str - The log level to use for the logger
+
+        Returns:
+            DistributedAgents - The distributed agents
+        """
         try:
             self.logger = get_logger(__name__, level=log_level)
             self.logger.info(f"Initializing DistributedAgents with {num_workers} workers")
             self.agent_config = agent_config
             self.num_workers = num_workers
             self.workers = []
-            self.learner_device = learner_device
-            self.worker_device = worker_device
-            
+            self.learner_device = get_device(learner_device)
+            self.worker_device = get_device(worker_device)
+            self.learner_num_cpus = learner_num_cpus
+            self.learner_num_gpus = learner_num_gpus
+            self.worker_num_cpus = worker_num_cpus
+            self.worker_num_gpus = worker_num_gpus
+            self.learn_freq = learn_freq
             # # Initialize GradientSynchronizer
             # try:
             #     self.logger.info("Creating GradientSynchronizer actor")
@@ -346,10 +381,9 @@ class DistributedAgents:
                 ray.init(ignore_reinit_error=True, log_to_driver=True, dashboard_host='127.0.0.1', dashboard_port=8265)
             
             RESOURCES = ray.available_resources()
-            CPUS = RESOURCES['CPU'] - 4 # Leave 2 for buffer class and learner and 2 as a buffer zone
+            CPUS = RESOURCES['CPU']
             GPUS = RESOURCES.get('GPU', 0)
             self.logger.info(f'Ray initialized with {CPUS} CPUs and {GPUS} GPUs available')
-            num_cpus_per_worker = max(1, CPUS // self.num_workers)
             
             # Create base agent - explicitly force to CPU
             self.logger.info(f'Creating base agent with device=cpu for safe cloning')
@@ -375,8 +409,8 @@ class DistributedAgents:
                 buffer = BufferWrapper(self.shared_buffer, prioritized, log_level)
             else:
                 buffer = None
-            self.learner = Learner.options(num_cpus=1, num_gpus=(1 if GPUS > 0 else 0)).remote(
-                base_agent, buffer, log_level)
+            self.learner = Learner.options(num_cpus=self.learner_num_cpus, num_gpus=self.learner_num_gpus).remote(
+                base_agent, buffer, self.learn_freq, log_level)
             self.logger.info(f'Learner initialized successfully')
             
             # Get the learner's ID in a way that works with current Ray versions
@@ -388,7 +422,7 @@ class DistributedAgents:
             # ray.util.register_actor(self.learner, learner_id)
             # self.logger.info(f'Registered learner with ID: {learner_id}')
             
-            self.logger.info(f'Setting up {self.num_workers} workers with {num_cpus_per_worker} CPUs each')
+            self.logger.info(f'Setting up {self.num_workers} workers with {self.worker_num_cpus} CPUs and {self.worker_num_gpus} GPUs each')
             
             for i in range(self.num_workers):
                 try:
@@ -399,13 +433,13 @@ class DistributedAgents:
                         buffer = None
                     
                     # Create a fresh CPU-only clone for each worker
-                    self.logger.info(f'Creating worker {i} agent with device=cpu')
-                    worker_agent = learner_agent.clone(device='cpu')
+                    self.logger.info(f'Creating worker {i} agent with device={self.worker_device}')
+                    worker_agent = learner_agent.clone(device=self.worker_device)
                     
                     self.logger.info(f'Creating Worker {i} actor')
                     worker = Worker.options(
-                        num_cpus=num_cpus_per_worker,
-                        num_gpus=0,
+                        num_cpus=self.worker_num_cpus,
+                        num_gpus=self.worker_num_gpus,
                         max_restarts=3,
                         max_task_retries=3
                     ).remote(worker_agent, self.learner, buffer, i, log_level)
@@ -431,11 +465,25 @@ class DistributedAgents:
                     self.logger.error(f"Worker {i} is not responding: {e}", exc_info=True)
                     raise
             
+            # Get the base seed from kwargs, if provided
+            base_seed = kwargs.get('seed', None)
+            self.logger.info(f"Using base seed: {base_seed}")
+            
             # Submit training tasks to all workers
             futures = []
             for i, worker in enumerate(self.workers):
                 try:
-                    future = worker.train.remote(sync_interval=sync_interval, **kwargs)
+                    # Create a copy of kwargs for this worker
+                    worker_kwargs = kwargs.copy()
+                    
+                    # If a seed was provided, create a worker-specific seed
+                    if base_seed is not None:
+                        # Add worker_id to the base seed to create a unique but reproducible seed
+                        worker_seed = base_seed + i
+                        worker_kwargs['seed'] = worker_seed
+                        self.logger.info(f"Worker {i} using seed: {worker_seed}")
+                    
+                    future = worker.train.remote(sync_interval=sync_interval, **worker_kwargs)
                     futures.append(future)
                     self.logger.info(f"Submitted training task to worker {i}")
                 except Exception as e:
@@ -495,11 +543,12 @@ class Worker:
 
     def train(self, **kwargs):
         try:
-            self.logger.info("Starting worker training")
+            seed = kwargs.get('seed', None)
+            self.logger.info(f"Worker {self.worker_id} starting training with seed: {seed}")
             self.agent.train(**kwargs)
-            self.logger.info("Worker training completed")
+            self.logger.info(f"Worker {self.worker_id} training completed")
         except Exception as e:
-            self.logger.error(f"Error in worker training: {e}", exc_info=True)
+            self.logger.error(f"Error in worker {self.worker_id} training: {e}", exc_info=True)
             raise
 
     def get_agent_config(self):
