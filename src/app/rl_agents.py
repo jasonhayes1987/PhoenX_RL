@@ -1965,7 +1965,7 @@ class DDPG(Agent):
         self._step = 0
         best_reward = -np.inf
         score_history = deque(maxlen=100)
-        trajectories = [[] for _ in range(self.num_envs)]
+        # trajectories = [[] for _ in range(self.num_envs)]
         episode_scores = np.zeros(self.num_envs)
         self.completed_episodes = np.zeros(self.num_envs)
         # Initialize environments
@@ -1993,12 +1993,13 @@ class DDPG(Agent):
             
             # Store transitions in the env trajectory
             for i in range(self.num_envs):
-                trajectories[i].append((states[i], actions[i], rewards[i], next_states[i], dones[i]))
+                self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i])
+                # trajectories[i].append((states[i], actions[i], rewards[i], next_states[i], dones[i]))
 
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
-                self.replay_buffer.add(*zip(*trajectories[i]))
-                trajectories[i] = []
+                # self.replay_buffer.add(*zip(*trajectories[i]))
+                # trajectories[i] = []
 
                 # Increment completed episodes for env by 1
                 self.completed_episodes[i] += 1
@@ -2238,9 +2239,6 @@ class DDPG(Agent):
         # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
 
-        #DEBUG
-        self.logger.info(f"Saving config: {config}")
-
         # writes and saves JSON file of DDPG agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
@@ -2290,6 +2288,7 @@ class DDPG(Agent):
             batch_size=config["batch_size"],
             noise=noise,
             noise_schedule=ScheduleWrapper(config["noise_schedule"]),
+            grad_clip=config['grad_clip'],
             warmup = config['warmup'],
             callbacks=callbacks,
             save_dir=config["save_dir"],
@@ -2680,7 +2679,7 @@ class TD3(Agent):
                 #DEBUG
                 # print(f"Just prioritized replay")
                 states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-                
+
             # Log PER-specific metrics
             if self._wandb:
                 # Get the actual size of used buffer (not the full capacity)
@@ -2831,15 +2830,8 @@ class TD3(Agent):
         #     action_values = actions  # Use original actions for metrics
 
         # Update priorities if using prioritized replay - only on update_freq steps
-        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None and hasattr(self.replay_buffer, 'update_freq'):
-            if self._step % self.replay_buffer.update_freq == 0:
-                # Use the combined error for priority updates
-                abs_error = error.detach().flatten()
-                # Handle NaN values if they occur
-                if T.isnan(abs_error).any():
-                    abs_error = T.nan_to_num(abs_error, nan=1.0)
-                # Update priorities directly
-                self.replay_buffer.update_priorities(indices, abs_error)
+        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:
+            self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
 
         # Add metrics to step_logs
         self._train_step_config['actor_predictions'] = action_values.mean()
@@ -3386,7 +3378,7 @@ class TD3(Agent):
             actions = self.get_action(states)
             actions = self.env.format_actions(actions)
             next_states, rewards, terms, truncs, _ = self.env.step(actions)
-            self._train_step_config["step_reward"] = rewards
+            self._train_step_config["step_reward"] = rewards.mean()
             episode_scores += rewards
             dones = np.logical_or(terms, truncs)
             for i in range(self.num_envs):
