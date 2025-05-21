@@ -240,10 +240,17 @@ class GymnasiumWrapper(EnvWrapper):
     This wrapper supports initialization, resetting, stepping, rendering,
     and JSON-based serialization of Gymnasium environments.
     """
-    def __init__(self, env_spec: EnvSpec, wrappers: list[dict] = None):
+    def __init__(self, env_spec: EnvSpec, wrappers: list[dict] = None, worker_id: int = 0):
         self.env_spec = env_spec
         self.wrappers = wrappers
+        self.worker_id = worker_id
+        self.traj_counters = []  # Per-environment counters
+        self.unique_env_ids = []  # Unique IDs for each env
+        self.num_envs = 1
+        self.traj_ids = []
+        self.step_indices = []
         self.env = self._initialize_env()
+        
 
     def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
         """
@@ -284,30 +291,40 @@ class GymnasiumWrapper(EnvWrapper):
 
         vec_env = SyncVectorEnv(env_fns)
 
+        # Initialize self.num_envs and internal env tracking
+        self.num_envs = num_envs
+        self.traj_counters = [0] * num_envs
+        self.unique_env_ids = [(self.worker_id * num_envs) + i for i in range(num_envs)]
+        self.traj_ids = [self._compute_traj_id(i) for i in range(num_envs)]
+        self.step_indices = [0] * num_envs
+
         return vec_env
+    
+    def _compute_traj_id(self, env_idx):
+        return (self.unique_env_ids[env_idx] << 32) + self.traj_counters[env_idx]
 
     def reset(self):
-        """
-        Reset the environment.
-
-        Returns:
-            Any: Initial observation of the environment.
-        """
+        self.traj_counters = [0] * self.num_envs
+        self.traj_ids = [self._compute_traj_id(i) for i in range(self.num_envs)]
+        self.step_indices = [0] * self.num_envs
         if self.seed is not None:
             return self.env.reset(seed=self.seed)
         return self.env.reset()
-    
-    def step(self, action):
-        """
-        Take an action in the environment.
 
-        Args:
-            action: The action to be taken.
-
-        Returns:
-            Tuple: Observation, reward, done flag, and additional info.
-        """
-        return self.env.step(action)
+    def step(self, action, testing=False):
+        states, rewards, terms, truncs, infos = self.env.step(action)
+        dones = np.logical_or(terms, truncs)
+        if testing:
+            return states, rewards, dones, infos
+        else:
+            for i in range(self.num_envs):
+                if dones[i]:
+                    self.traj_counters[i] += 1
+                    self.traj_ids[i] = self._compute_traj_id(i)
+                    self.step_indices[i] = 0
+                else:
+                    self.step_indices[i] += 1
+            return states, rewards, dones, infos, self.traj_ids, self.step_indices
     
     def render(self, mode="rgb_array"):
         """
@@ -396,7 +413,8 @@ class GymnasiumWrapper(EnvWrapper):
         return {
             "type": self.__class__.__name__,
             "env": self.env_spec.to_json(),
-            "wrappers": self.wrappers
+            "wrappers": self.wrappers,
+            "worker_id": self.worker_id
         }
     
     def to_json(self):
@@ -429,7 +447,7 @@ class GymnasiumWrapper(EnvWrapper):
         #DEBUG
         # print(f'wrappers in gym from json:{config["wrappers"]}')
         try:
-            return cls(env_spec, config["wrappers"])
+            return cls(env_spec, config["wrappers"], config["worker_id"])
         except Exception as e:
             raise ValueError(f"Environment wrapper error: {config}, {e}")
     

@@ -257,13 +257,13 @@ class SumTreeWrapper:
 #         }
 @ray.remote(num_cpus=1, num_gpus=1)
 class Learner:
-    def __init__(self, agent: Agent, buffer: BufferWrapper = None, learn_freq: int = 1000, log_level='info'):
+    def __init__(self, agent: Agent, buffer: BufferWrapper = None, learn_iter: int = 1000, log_level='info'):
         self.agent = agent
         self.buffer = buffer
         # Replace buffer from agent with buffer wrapper if using shared buffer
         if self.buffer:
             self.agent.replay_buffer = self.buffer
-        self.learn_freq = learn_freq
+        self.learn_iter = learn_iter
         self.logger = get_logger(__name__, level=log_level)
         self.log_level = logging.getLevelName(self.logger.getEffectiveLevel()).lower()
 
@@ -282,11 +282,13 @@ class Learner:
         self._learn_step += 1
         
         try:
-            if self._learn_step % self.learn_freq == 0:
+            if self._learn_step % self.learn_iter == 0:
                 if gradients:
-                    self.agent._distributed_learn(step, run_number, gradients)
+                    self.agent._distributed_learn(step, run_number, gradients, self.learn_iter)
                 else:
-                    self.agent._distributed_learn(step, run_number)
+                    self.agent._distributed_learn(step, run_number, self.learn_iter)
+            else:
+                pass
             
         except Exception as e:
             self.logger.error(f"Error in learn: {e}", exc_info=True)
@@ -311,7 +313,7 @@ class DistributedAgents:
                  worker_device: Optional[str] = 'cpu',
                  worker_num_cpus: int = 1,
                  worker_num_gpus: int = 0,
-                 learn_freq: int = 1000,
+                 learn_iter: int = 1000,
                  log_level='info'
                 ):
         """
@@ -326,7 +328,7 @@ class DistributedAgents:
             worker_device: Optional[str] - The device to use for the workers
             worker_num_cpus: int - The number of CPUs to use for the workers
             worker_num_gpus: int - The number of GPUs to use for the workers
-            learn_freq: int - The frequency of learning (learn steps)
+            learn_iter: int - The frequency of learning (learn steps)
             log_level: str - The log level to use for the logger
 
         Returns:
@@ -344,7 +346,7 @@ class DistributedAgents:
             self.learner_num_gpus = learner_num_gpus
             self.worker_num_cpus = worker_num_cpus
             self.worker_num_gpus = worker_num_gpus
-            self.learn_freq = learn_freq
+            self.learn_iter = learn_iter
             # # Initialize GradientSynchronizer
             # try:
             #     self.logger.info("Creating GradientSynchronizer actor")
@@ -410,7 +412,7 @@ class DistributedAgents:
             else:
                 buffer = None
             self.learner = Learner.options(num_cpus=self.learner_num_cpus, num_gpus=self.learner_num_gpus).remote(
-                base_agent, buffer, self.learn_freq, log_level)
+                base_agent, buffer, self.learn_iter, log_level)
             self.logger.info(f'Learner initialized successfully')
             
             # Get the learner's ID in a way that works with current Ray versions
@@ -452,18 +454,18 @@ class DistributedAgents:
             self.logger.error(f"Error setting up workers: {e}", exc_info=True)
             raise
 
-    def train(self, sync_interval: int = 1, **kwargs):
+    def train(self, sync_iter: int = 1, **kwargs):
         """Train the agent in a distributed manner"""
         try:
             self.logger.info("Starting distributed training")
             
             # Verify all workers are still alive
-            for i, worker in enumerate(self.workers):
-                try:
-                    ray.get(worker.get_agent_config.remote())
-                except Exception as e:
-                    self.logger.error(f"Worker {i} is not responding: {e}", exc_info=True)
-                    raise
+            # for i, worker in enumerate(self.workers):
+            #     try:
+            #         ray.get(worker.get_agent_config.remote())
+            #     except Exception as e:
+            #         self.logger.error(f"Worker {i} is not responding: {e}", exc_info=True)
+            #         raise
             
             # Get the base seed from kwargs, if provided
             base_seed = kwargs.get('seed', None)
@@ -483,7 +485,7 @@ class DistributedAgents:
                         worker_kwargs['seed'] = worker_seed
                         self.logger.info(f"Worker {i} using seed: {worker_seed}")
                     
-                    future = worker.train.remote(sync_interval=sync_interval, **worker_kwargs)
+                    future = worker.train.remote(sync_iter=sync_iter, **worker_kwargs)
                     futures.append(future)
                     self.logger.info(f"Submitted training task to worker {i}")
                 except Exception as e:
@@ -510,7 +512,7 @@ class Worker:
             self.logger.info("Initializing Worker")
             self.worker_id = id
             self.agent = agent
-            # Log the device information to debug
+            self.agent.env.worker_id = id  # Pass worker_id to GymnasiumWrapper
             self.logger.info(f"Worker agent using device: {self.agent.device}")
             self.learner = learner
             self.logger.info(f"Successfully obtained learner reference")
