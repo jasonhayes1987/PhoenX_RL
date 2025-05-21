@@ -41,7 +41,7 @@ import numpy as np
 
 
 
-from agent_utils import load_agent_from_config, get_agent_class_from_type
+from agent_utils import load_agent_from_config, get_agent_class_from_type, compute_n_step_return, compute_full_return
 
 
 # Agent class
@@ -1282,6 +1282,7 @@ class DDPG(Agent):
         noise_schedule: ScheduleWrapper=None,
         grad_clip: float=None,
         warmup: int=1000,
+        N: int=1, # N-steps
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: str = None,
@@ -1303,6 +1304,7 @@ class DDPG(Agent):
             self.noise_schedule = noise_schedule
             self.grad_clip = grad_clip
             self.warmup = warmup
+            self.N = N
             # logger.debug(f"rank {self.rank} DDPG init attributes set")
         except Exception as e:
             self.logger.error(f"Error in DDPG init: {e}", exc_info=True)
@@ -1326,9 +1328,10 @@ class DDPG(Agent):
             # Instantiate internal attribute use_her to be switched by HER class if using DDPG
             self._use_her = False
 
-            # Set learn iter to 0.  For Debugging.  Ensures distributed sync
+            # Set learn_iter and sync_iter to 0. For distributed training
             self._learn_iter = 0
-            
+            self._sync_iter = 0
+
         except Exception as e:
             self.logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
 
@@ -1378,7 +1381,7 @@ class DDPG(Agent):
 
         return model.clone(copy_weights, device)
     
-    def _initialize_wandb(self, run_number:str=None, run_name_prefix:str=None):
+    def _initialize_wandb(self, run_number:str=None, run_name_prefix:str=None, learn_iter:int=None):
         """Initialize WandbCallback if using WandbCallback"""
         try:
             if self._wandb:
@@ -1387,6 +1390,9 @@ class DDPG(Agent):
                         if not callback.initialized:
                             models = (self.actor_model, self.critic_model)
                             config = self.get_config()
+                            if learn_iter:
+                                self._learn_iter = learn_iter
+                                config['learn_interval'] = learn_iter
                             callback.initialize_run(models, config, run_number=run_number, run_name_prefix=run_name_prefix)
         except Exception as e:
             self.logger.error(f"Error in _initialize_wandb: {e}", exc_info=True)
@@ -1394,17 +1400,16 @@ class DDPG(Agent):
     def _init_her(self):
             self._use_her = True
 
-    def _distributed_learn(self, step: int, run_number:str=None):
+    def _distributed_learn(self, step: int, run_number:str=None, learn_iter:int=None):
         """Used in distributed training to update the shared models.
         This function is overridden by the Worker class to point to the Learner class.
         """
-        self.logger.debug(f"DDPG distributed learn iteration: {step}")
         previous_step = self._step
         # Set current step to step if greater than current step
         if step > previous_step:
             self._step = step
             # Initialize wandb check
-            self._initialize_wandb(run_number=run_number, run_name_prefix="train")
+            self._initialize_wandb(run_number=run_number, run_name_prefix="train", learn_iter=learn_iter)
             actor_loss, critic_loss = self.learn()
             # Only store log if current step greater than previous and self._wandb
             if self._wandb:
@@ -1416,29 +1421,30 @@ class DDPG(Agent):
         else:
             actor_loss, critic_loss = self.learn()
 
+    # def get_parameters(self):
+    #     """Get the parameters of all models."""
+    #     return {
+    #         'actor_model': self.actor_model.state_dict(),
+    #         'critic_model': self.critic_model.state_dict(),
+    #         'target_actor_model': self.target_actor_model.state_dict(),
+    #         'target_critic_model': self.target_critic_model.state_dict(),
+    #     }
+
     def get_parameters(self):
-        """Get the parameters of all models."""
+        """Get the parameters of all models, ensuring they are on CPU for Ray serialization."""
         return {
-            'actor_model': [param.data.clone().to('cpu') for param in self.actor_model.parameters()],
-            'critic_model': [param.data.clone().to('cpu') for param in self.critic_model.parameters()],
-            'target_actor_model': [param.data.clone().to('cpu') for param in self.target_actor_model.parameters()],
-            'target_critic_model': [param.data.clone().to('cpu') for param in self.target_critic_model.parameters()],
+            'actor_model': {k: v.cpu() for k, v in self.actor_model.state_dict().items()},
+            'critic_model': {k: v.cpu() for k, v in self.critic_model.state_dict().items()},
+            'target_actor_model': {k: v.cpu() for k, v in self.target_actor_model.state_dict().items()},
+            'target_critic_model': {k: v.cpu() for k, v in self.target_critic_model.state_dict().items()},
         }
 
-    def apply_parameters(self, params:Dict[str, List[T.Tensor]]):
+    def apply_parameters(self, params:Dict[str, Dict[str, T.Tensor]]):
         """Apply params to a model. Used in distributed training."""
-        for param, new_param in zip(self.actor_model.parameters(), params['actor_model']):
-            if new_param is not None:
-                param.data.copy_(new_param.to('cpu'))
-        for param, new_param in zip(self.critic_model.parameters(), params['critic_model']):
-            if new_param is not None:
-                param.data.copy_(new_param.to('cpu'))
-        for param, new_param in zip(self.target_actor_model.parameters(), params['target_actor_model']):
-            if new_param is not None:
-                param.data.copy_(new_param.to('cpu'))
-        for param, new_param in zip(self.target_critic_model.parameters(), params['target_critic_model']):
-            if new_param is not None:
-                param.data.copy_(new_param.to('cpu'))
+        self.actor_model.load_state_dict(params['actor_model'])
+        self.critic_model.load_state_dict(params['critic_model'])
+        self.target_actor_model.load_state_dict(params['target_actor_model'])
+        self.target_critic_model.load_state_dict(params['target_critic_model'])
 
     def get_action(self, state, goal=None, test=False,
                    state_normalizer:Normalizer=None,
@@ -1520,11 +1526,11 @@ class DDPG(Agent):
             if self._use_her:  # HER with prioritized replay
                 #DEBUG
                 # print(f"HER with prioritized replay")
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                (states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals), weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
                 #DEBUG
                 # print(f"Just prioritized replay")
-                states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                (states, actions, rewards, next_states, dones), weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
             if self._wandb:
@@ -1567,14 +1573,26 @@ class DDPG(Agent):
             if self._use_her:
                 #DEBUG
                 # print(f"HER with standard replay")
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
+                (states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals) = self.replay_buffer.sample(self.batch_size)
             else:
                 #DEBUG
                 # print(f"Standard replay")
-                states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+                (states, actions, rewards, next_states, dones) = self.replay_buffer.sample(self.batch_size)
             
             weights = None
             indices = None
+
+        #DEBUG
+        # print(f'states shape: {states.shape}')
+        # print(f'states: {states}')
+        # print(f'actions shape: {actions.shape}')
+        # print(f'actions: {actions}')
+        # print(f'rewards shape: {rewards.shape}')
+        # print(f'rewards: {rewards}')
+        # print(f'next_states shape: {next_states.shape}')
+        # print(f'next_states: {next_states}')
+        # print(f'dones shape: {dones.shape}')
+        # print(f'dones: {dones}')
 
         # Normalize states if self.normalize_inputs
         if self._use_her:
@@ -1585,23 +1603,56 @@ class DDPG(Agent):
             desired_goals = None
 
         # Convert rewards and dones to 2D tensors
-        rewards = rewards.unsqueeze(1).to(self.target_critic_model.device)
-        dones = dones.unsqueeze(1).to(self.target_critic_model.device)
+        # rewards = rewards.unsqueeze(1).to(self.target_critic_model.device)
+        # dones = dones.unsqueeze(1).to(self.target_critic_model.device)
+        # Don't unsqueeze when using N-step
+        rewards = rewards.to(self.target_critic_model.device)
+        dones = dones.to(self.target_critic_model.device)
 
         # Get target values
         with T.no_grad():
-            _, target_actions = self.target_actor_model(next_states, desired_goals)
-            target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
+            # _, target_actions = self.target_actor_model(next_states, desired_goals)
+            _, target_actions = self.target_actor_model(
+                next_states[:,-1,:],
+                desired_goals[:,-1,:] if desired_goals is not None else None
+            ) # N-step
+            # target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
             # Calculate target Q-values
-            targets = rewards + (1 - dones) * self.discount * target_critic_values
+            # targets = rewards + (1 - dones) * self.discount * target_critic_values
+            targets = compute_n_step_return(
+                rewards,
+                dones,
+                self.discount,
+                self.N,
+                next_states[:,-1,:],
+                target_actions,
+                desired_goals[:,-1,:] if desired_goals is not None else None,
+                self.target_critic_model,
+                bootstrap=True,
+                device=self.target_critic_model.device
+            )
             # Apply HER-specific clamping if needed
             if self._use_her:
                 targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
+            #DEBUG
+            # print(f'targets shape: {targets.shape}')
+            # print(f'targets: {targets}')
 
         # Get current critic predictions
-        predictions = self.critic_model(states, actions, desired_goals)
+        predictions = self.critic_model(
+            states[:,0,:],
+            actions[:,0,:],
+            desired_goals[:,0,:] if desired_goals is not None else None
+        ).flatten()
+        #DEBUG
+        # print(f'predictions shape: {predictions.shape}')
+        # print(f'predictions: {predictions}')
         # Calculate TD errors
         error = targets - predictions
+        #DEBUG
+        # print(f'error shape: {error.shape}')
+        # print(f'error: {error}')
+
 
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
@@ -1617,10 +1668,13 @@ class DDPG(Agent):
         self.critic_model.optimizer.step()
 
         # Get actor's action predictions
-        pre_act_values, action_values = self.actor_model(states, desired_goals)
+        pre_act_values, action_values = self.actor_model(
+            states[:,0,:],
+            desired_goals[:,0,:] if desired_goals is not None else None
+        )
         
         # Calculate actor loss based on critic
-        critic_values = self.critic_model(states, action_values, desired_goals)
+        critic_values = self.critic_model(states[:,0,:], action_values, desired_goals[:,0,:] if desired_goals is not None else None)
         if weights is not None:
             actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:
@@ -1644,14 +1698,17 @@ class DDPG(Agent):
 
         # Update priorities if using prioritized replay - only on update_freq steps
         if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
+            #DEBUG
+            # print(f'indices shape: {indices.shape}')
+            # print(f'error shape: {error.flatten().shape}')
             self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
 
         # Add metrics to step_logs
         self._train_step_config['td_error'] = error
         self._train_step_config['actor_predictions'] = action_values.mean()
-        self._train_step_config['critic_predictions'] = critic_values.mean() if 'critic_values' in locals() else predictions.mean()
+        self._train_step_config['critic_predictions'] = critic_values.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
-        self._train_step_config['target_critic_predictions'] = target_critic_values.mean()
+        self._train_step_config['target_critic_predictions'] = targets.mean()
 
         return actor_loss.item() if actor_loss is not None else 0.0, critic_loss.item()
         
@@ -1918,7 +1975,7 @@ class DDPG(Agent):
     #     except Exception as e:
     #         logger.error(f"An error occurred: {e}", exc_info=True)
 
-    def train(self, num_episodes: int, num_envs: int, seed: int | None = None, render_freq: int = 0, sync_interval: int = 1):
+    def train(self, num_episodes: int, num_envs: int, seed: int | None = None, render_freq: int = 0, sync_iter: int = 1):
         """Trains the model for 'episodes' number of episodes."""
 
         # set models to train mode
@@ -1942,7 +1999,7 @@ class DDPG(Agent):
         set_seed(seed)
 
         # Set sync_interval (for distributed learning)
-        self._sync_interval = sync_interval
+        self._sync_iter = sync_iter
 
         if self.callbacks:
             for callback in self.callbacks:
@@ -1952,6 +2009,7 @@ class DDPG(Agent):
                     config['seed'] = seed
                     config['num_envs'] = self.num_envs
                     config['distributed'] = self._distributed
+                    config['sync_interval'] = self._sync_iter
                     callback.on_train_begin((self.actor_model, self.critic_model,), logs=config)
                     run_number = callback.run_name.split("-")[-1]
         
@@ -1972,7 +2030,7 @@ class DDPG(Agent):
         states, _ = self.env.reset()
         while self.completed_episodes.sum() < num_episodes:
             # If distributed, sync to shared agent
-            if self._distributed and self._step % self._sync_interval == 0:
+            if self._distributed and self._step % self._sync_iter == 0:
                 params = self.get_parameters()
                 self.apply_parameters(params)
             self._step += 1
@@ -1987,14 +2045,15 @@ class DDPG(Agent):
             actions = self.get_action(states)
             # Format actions
             actions = self.env.format_actions(actions)
-            next_states, rewards, terms, truncs, _ = self.env.step(actions)
+            next_states, rewards, dones, _, traj_ids, step_indices = self.env.step(actions)
             episode_scores += rewards
-            dones = np.logical_or(terms, truncs)
+            # dones = np.logical_or(terms, truncs)
             
             # Store transitions in the env trajectory
-            for i in range(self.num_envs):
-                self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i])
+            # for i in range(self.num_envs):
+            #     self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i], traj_ids[i], step_indices[i])
                 # trajectories[i].append((states[i], actions[i], rewards[i], next_states[i], dones[i]))
+            self.replay_buffer.add(states, actions, rewards, next_states, dones, traj_ids, step_indices)
 
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
@@ -2037,8 +2096,8 @@ class DDPG(Agent):
                                     wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self._step)
                     rendered = True
                     # Switch models back to train mode after rendering
-                    self.actor_model.train()
-                    self.critic_model.train()
+                    # self.actor_model.train()
+                    # self.critic_model.train()
                 # else:
                 #     rendered = False
 
@@ -2083,8 +2142,8 @@ class DDPG(Agent):
         """Runs a test over 'num_episodes'."""
 
         # set model in eval mode
-        self.actor_model.eval()
-        self.critic_model.eval()
+        # self.actor_model.eval()
+        # self.critic_model.eval()
 
         if seed is None:
             seed = np.random.randint(100)
@@ -2098,7 +2157,9 @@ class DDPG(Agent):
 
         try:
             # instantiate new vec environment
-            env = self.env._initialize_env(render_freq, num_envs, seed)
+            # env = self.env._initialize_env(render_freq, num_envs, seed)
+            env = EnvWrapper.from_json(self.env.to_json())
+            env.env = env._initialize_env(render_freq, 1, seed)
         except Exception as e:
             self.logger.error(f"Error in ddpg.test agent._initialize_env process: {e}", exc_info=True)
 
@@ -2135,10 +2196,16 @@ class DDPG(Agent):
             actions = self.get_action(states, test=True)
             # Format actions
             actions = self.env.format_actions(actions, testing=True)
-            next_states, rewards, terms, truncs, _ = env.step(actions)
+            next_states, rewards, dones, _ = env.step(actions, testing=True)
             self._test_step_config["step_reward"] = rewards
             episode_scores += rewards
-            dones = np.logical_or(terms, truncs)
+            # dones = np.logical_or(terms, truncs)
+
+            if render_freq > 0:
+                # Capture the frame
+                frame = env.env.render()[0]
+                # print(f'frame:{frame}')
+                frames.append(frame)
 
             for i in range(num_envs):
                 if dones[i]:
@@ -2180,12 +2247,6 @@ class DDPG(Agent):
                     if not training:
                         # Print episode update to console
                         print(f"Environment {i}: Episode {int(completed_episodes.sum())}/{num_episodes} Score: {completed_scores[-1]} Avg Score: {avg_reward}")
-                
-            if render_freq > 0:
-                # Capture the frame
-                frame = env.render()[0]
-                # print(f'frame:{frame}')
-                frames.append(frame)
 
             states = next_states
 
@@ -2220,6 +2281,7 @@ class DDPG(Agent):
             "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
             'grad_clip': self.grad_clip,
             'warmup': self.warmup,
+            'N': self.N,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
@@ -2290,6 +2352,7 @@ class DDPG(Agent):
             noise_schedule=ScheduleWrapper(config["noise_schedule"]),
             grad_clip=config['grad_clip'],
             warmup = config['warmup'],
+            N = config['N'],
             callbacks=callbacks,
             save_dir=config["save_dir"],
             device=config["device"],
@@ -2324,6 +2387,7 @@ class TD3(Agent):
         actor_update_delay: int = 2,
         grad_clip: float = 40.0,
         warmup: int = 1000,
+        N: int=1, # N-steps
         callbacks: list = None,
         save_dir: str = "models",
         device: str = None,
@@ -2356,6 +2420,7 @@ class TD3(Agent):
             self.actor_update_delay = actor_update_delay
             self.grad_clip = grad_clip
             self.warmup = warmup
+            self.N = N
 
         except Exception as e:
             self.logger.error(f"Error in TD3 init: {e}", exc_info=True)
@@ -2378,6 +2443,9 @@ class TD3(Agent):
         self._use_her = False
         self._opt_step = 0 # number of times optimizer (learn()) has run
 
+        # Set learn iter to 0. For distributed training
+        self._learn_iter = 0
+
     def clone_model(self, model, copy_weights: bool = True, device: Optional[str | T.device] = None):
         """Clones a model."""
         if device:
@@ -2386,6 +2454,19 @@ class TD3(Agent):
             device = self.device
 
         return model.clone(copy_weights, device)
+    
+    def _initialize_wandb(self, run_number:str=None, run_name_prefix:str=None):
+        """Initialize WandbCallback if using WandbCallback"""
+        try:
+            if self._wandb:
+                for callback in self.callbacks:
+                    if isinstance(callback, WandbCallback):
+                        if not callback.initialized:
+                            models = (self.actor_model, self.critic_model_a, self.critic_model_b)
+                            config = self.get_config()
+                            callback.initialize_run(models, config, run_number=run_number, run_name_prefix=run_name_prefix)
+        except Exception as e:
+            self.logger.error(f"Error in _initialize_wandb: {e}", exc_info=True)
 
     def _distributed_learn(self, step: int, run_number:str=None):
         """Used in distributed training to update the shared models.

@@ -592,7 +592,7 @@ class StochasticContinuousPolicy(Model):
             x (Tensor): Input tensor (e.g., observation from the environment).
 
         Returns:
-            Tuple[Distribution, Tensor, Tensor]: Action distribution and its parameters.
+            Distribution, Tensor, Tensor: Action distribution and its parameters.
         """
         #DEBUG
         # print(f'state shape sent to policy forward:{x.shape}')
