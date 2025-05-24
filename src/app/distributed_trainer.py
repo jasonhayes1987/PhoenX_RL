@@ -400,19 +400,29 @@ class DistributedAgents:
             self.logger.info(f'Creating Learner agent with device={self.learner_device}')
             learner_agent = base_agent.clone(device=self.learner_device)
             # Convert learner agent WandbCallback to DistributedCallback
-            learner_agent.callbacks = convert_to_distributed_callbacks(learner_agent.callbacks, "learner", 0)
+            if self.agent_config['agent_type'] == 'HER':
+                learner_agent.agent.callbacks = convert_to_distributed_callbacks(learner_agent.agent.callbacks, "learner", 0)
+            else:
+                learner_agent.callbacks = convert_to_distributed_callbacks(learner_agent.callbacks, "learner", 0)
             # Initialize DistributedCallback with the learner agent
             for callback in learner_agent.callbacks:
                 if isinstance(callback, RayWandbCallback):
-                    learner_agent._config = callback._config(learner_agent)
+                    if self.agent_config['agent_type'] == 'HER':
+                        learner_agent.agent._config = callback._config(learner_agent.agent)
+                    else:
+                        learner_agent._config = callback._config(learner_agent)
             # Initialize Learner with its own copy of the agent
             if self.shared_buffer:
-                prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
+                if self.agent_config['agent_type'] == 'HER':
+                    agent_type = self.agent_config['agent']['agent_type']
+                    prioritized = self.agent_config[agent_type]['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
+                else:
+                    prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                 buffer = BufferWrapper(self.shared_buffer, prioritized, log_level)
             else:
                 buffer = None
             self.learner = Learner.options(num_cpus=self.learner_num_cpus, num_gpus=self.learner_num_gpus).remote(
-                base_agent, buffer, self.learn_iter, log_level)
+                learner_agent, buffer, self.learn_iter, log_level)
             self.logger.info(f'Learner initialized successfully')
             
             # Get the learner's ID in a way that works with current Ray versions
@@ -528,7 +538,10 @@ class Worker:
 
             # Set the _distributed_learn function on the agent to point to Learner
             if self.buffer:
-                self.agent._distributed_learn = lambda step, run_number: self.learner.learn.remote(step, run_number)
+                if self.agent.__class__.__name__ == 'HER':
+                    self.agent._distributed_learn = lambda step, run_number, num_updates: self.learner.learn.remote(step, run_number, num_updates)
+                else:
+                    self.agent._distributed_learn = lambda step, run_number: self.learner.learn.remote(step, run_number)
             else:
                 self.agent._distributed_learn = lambda step, run_number, gradients: self.learner.learn.remote(step, run_number, gradients)
 
