@@ -14,11 +14,6 @@ def compute_n_step_return(
     dones: T.Tensor,            # [batch_size, N]
     gamma: float,
     N: int,
-    last_states: T.Tensor,      # [batch_size, state_dim]
-    target_actions: T.Tensor,   # [batch_size, action_dim]
-    last_desired_goals: Optional[T.Tensor] = None,  # [batch_size, goal_dim]
-    critic: Optional[nn.Module] = None,
-    bootstrap: bool = True,
     device: str = "cpu"
 ) -> T.Tensor:
     """
@@ -29,11 +24,6 @@ def compute_n_step_return(
         dones: Tensor of done flags [batch_size, N].
         gamma: Discount factor.
         N: Number of steps for the return.
-        last_states: Last states in the sequences [batch_size, state_dim].
-        target_actions: Target actions for bootstrapping [batch_size, action_dim].
-        last_desired_goals: Last desired goals for HER [batch_size, goal_dim], optional.
-        critic: Target critic model for bootstrapping, optional.
-        bootstrap: Whether to bootstrap from the N-th step.
         device: Device for tensor operations.
 
     Returns:
@@ -52,20 +42,9 @@ def compute_n_step_return(
 
     # Compute masked discounted rewards
     masked_rewards = rewards * discount_factors * include_mask
-    return_t = masked_rewards.sum(dim=1)
+    return_ = masked_rewards.sum(dim=1)
 
-    # Bootstrap only if no 'done' in the sequence (full length N)
-    if bootstrap and critic is not None:
-        no_done_in_sequence = ~dones.any(dim=1)
-        bootstrap_mask = no_done_in_sequence.float()
-        with T.no_grad():
-            if last_desired_goals is not None:
-                bootstrap_values = critic(last_states, target_actions, last_desired_goals).squeeze()
-            else:
-                bootstrap_values = critic(last_states, target_actions).squeeze()
-        return_t += bootstrap_mask * (gamma ** N) * bootstrap_values
-
-    return return_t
+    return return_
 
 def compute_full_return(rewards, gamma):
     """
