@@ -361,7 +361,7 @@ class Buffer:
     #     )
 
     def _get_sequence(self, start_idx: int) -> Tuple[List[T.Tensor], ...]:
-        sequence_states, sequence_actions, sequence_rewards, sequence_next_states, sequence_dones = [], [], [], [], []
+        sequence_states, sequence_actions, sequence_rewards, sequence_next_states, sequence_dones, sequence_traj_ids, sequence_step_indices = [], [], [], [], [], [], []
         if self.goal_shape is not None:
             sequence_sag, sequence_nsag, sequence_dg = [], [], []
 
@@ -412,13 +412,15 @@ class Buffer:
             sequence_rewards.append(self.rewards[current_idx])
             sequence_next_states.append(self.next_states[current_idx])
             sequence_dones.append(self.dones[current_idx])
+            sequence_traj_ids.append(self.traj_ids[current_idx])
+            sequence_step_indices.append(self.step_indices[current_idx])
             if self.goal_shape is not None:
                 sequence_sag.append(self.state_achieved_goals[current_idx])
                 sequence_nsag.append(self.next_state_achieved_goals[current_idx])
                 sequence_dg.append(self.desired_goals[current_idx])
 
             # Search for the next step
-            mask = (self.traj_ids == traj_id) & (self.step_indices == start_step_idx + i + 1)
+            mask = (self.traj_ids == traj_id) & (self.step_indices == abs(start_step_idx) + i + 1)
             idx = T.where(mask)[0]
             if len(idx) == 0:
                 break
@@ -442,6 +444,8 @@ class Buffer:
             sequence_states.extend([T.zeros(state_dim, device=self.device)] * pad_len)
             sequence_actions.extend([T.zeros(action_dim, device=self.device)] * pad_len)
             sequence_next_states.extend([T.zeros(state_dim, device=self.device)] * pad_len)
+            sequence_traj_ids.extend([T.tensor(traj_id, device=self.device)] * pad_len)
+            sequence_step_indices.extend([T.tensor(start_step_idx + i + 1, device=self.device)] * pad_len)
 
         #DEBUG
         # print(f'sequence_states: {sequence_states}')
@@ -454,11 +458,13 @@ class Buffer:
             return (
                 T.stack(sequence_states), T.stack(sequence_actions), T.stack(sequence_rewards),
                 T.stack(sequence_next_states), T.stack(sequence_dones),
-                T.stack(sequence_sag), T.stack(sequence_nsag), T.stack(sequence_dg)
+                T.stack(sequence_sag), T.stack(sequence_nsag), T.stack(sequence_dg),
+                T.stack(sequence_traj_ids), T.stack(sequence_step_indices)
             )
         return (
             T.stack(sequence_states), T.stack(sequence_actions), T.stack(sequence_rewards),
-            T.stack(sequence_next_states), T.stack(sequence_dones)
+            T.stack(sequence_next_states), T.stack(sequence_dones),
+            T.stack(sequence_traj_ids), T.stack(sequence_step_indices)
         )
 
     def get_config(self) -> Dict[str, Any]:
@@ -744,8 +750,11 @@ class ReplayBuffer(Buffer):
 
         # indices = T.randint(0, size, (batch_size,), device=self.device)
         indices = self.gen.integers(0, size, (batch_size,))
+        # Retrieve N-step sequences for each sampled starting index
         sequences = [self._get_sequence(idx.item()) for idx in indices]
-        return sequences
+        sorted_sequences = zip(*sequences) # zips metrics together
+        sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
+        return sequence_stack
     
     def reset(self) -> None:
         """
