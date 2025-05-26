@@ -1657,19 +1657,15 @@ class DDPG(Agent):
 
         # Get current critic predictions
         predictions = self.critic_model(
-            states[:,0,:],
-            actions[:,0,:],
-            desired_goals[:,0,:] if desired_goals is not None else None
+            states[:,-1,:],
+            actions[:,-1,:],
+            desired_goals[:,-1,:] if desired_goals is not None else None
         ).flatten()
         #DEBUG
         # print(f'predictions shape: {predictions.shape}')
         # print(f'predictions: {predictions}')
         # Calculate TD errors
         error = targets - predictions
-        #DEBUG
-        # print(f'error shape: {error.shape}')
-        # print(f'error: {error}')
-
 
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
@@ -1686,12 +1682,12 @@ class DDPG(Agent):
 
         # Get actor's action predictions
         pre_act_values, action_values = self.actor_model(
-            states[:,0,:],
-            desired_goals[:,0,:] if desired_goals is not None else None
+            states[:,-1,:],
+            desired_goals[:,-1,:] if desired_goals is not None else None
         )
         
         # Calculate actor loss based on critic
-        critic_values = self.critic_model(states[:,0,:], action_values, desired_goals[:,0,:] if desired_goals is not None else None)
+        critic_values = self.critic_model(states[:,-1,:], action_values, desired_goals[:,-1,:] if desired_goals is not None else None)
         if weights is not None:
             actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:
@@ -2877,7 +2873,7 @@ class TD3(Agent):
                 next_states[:,-1,:],
                 target_actions,
                 last_desired_goals).squeeze()
-            target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
+            target_critic_values = T.minimum(target_critic_values_a, target_critic_values_b)
 
             targets += bootstrap_mask * (self.discount ** self.N) * target_critic_values
 
@@ -2897,15 +2893,15 @@ class TD3(Agent):
 
         # Get current critic predictions
         predictions_a = self.critic_model_a(
-            states[:,0,:],
-            actions[:,0,:],
-            desired_goals[:,0,:] if desired_goals is not None else None
+            states[:,-1,:],
+            actions[:,-1,:],
+            desired_goals[:,-1,:] if desired_goals is not None else None
         ).flatten()
 
         predictions_b = self.critic_model_b(
-            states[:,0,:],
-            actions[:,0,:],
-            desired_goals[:,0,:] if desired_goals is not None else None
+            states[:,-1,:],
+            actions[:,-1,:],
+            desired_goals[:,-1,:] if desired_goals is not None else None
         ).flatten()
 
         # Calculate TD errors (use average of both critic networks for PER)
@@ -2919,7 +2915,8 @@ class TD3(Agent):
             critic_loss_b = (weights.to(self.critic_model_b.device) * error_b.pow(2)).mean()
             critic_loss = critic_loss_a + critic_loss_b
         else:
-            critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
+            # critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
+            critic_loss = error_a.pow(2).mean() + error_b.pow(2).mean()
 
         # Update critics
         self.critic_model_a.optimizer.zero_grad()
@@ -2933,15 +2930,15 @@ class TD3(Agent):
         
          # Get actor's action predictions
         pre_act_values, action_values = self.actor_model(
-            states[:,0,:],
-            desired_goals[:,0,:] if desired_goals is not None else None
+            states[:,-1,:],
+            desired_goals[:,-1,:] if desired_goals is not None else None
         )
         
         # Calculate actor loss based on critic A
         critic_values = self.critic_model_a(
-            states[:,0,:],
+            states[:,-1,:],
             action_values,
-            desired_goals[:,0,:] if desired_goals is not None else None)
+            desired_goals[:,-1,:] if desired_goals is not None else None)
         if weights is not None:
             actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:

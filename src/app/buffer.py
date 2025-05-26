@@ -369,44 +369,7 @@ class Buffer:
         start_step_idx = self.step_indices[start_idx]
         current_idx = start_idx
 
-        #DEBUG
-        # print(f'traj_id: {traj_id}')
-        # print(f'start_step_idx: {start_step_idx}')
-        # print(f'current_idx: {current_idx}')
-
         for i in range(self.N):
-            #DEBUG
-            # print(f'current_idx: {current_idx}')
-            # print(f'self.dones[current_idx]: {self.dones[current_idx]}')
-            # print(f'self.traj_ids[current_idx]: {self.traj_ids[current_idx]}')
-            # print(f'self.step_indices[current_idx]: {self.step_indices[current_idx]}')
-            # print(f'start_step_idx: {start_step_idx}')
-            # print(f'i: {i}')
-            if (current_idx >= self.buffer_size or 
-                self.dones[current_idx] == 1 or 
-                self.traj_ids[current_idx] != traj_id or 
-                self.step_indices[current_idx] != start_step_idx + i):
-                #DEBUG
-                # print(f'BREAK')
-                break
-            # Search for the next step
-            #     mask = (self.traj_ids == traj_id) & (self.step_indices == start_step_idx + i)
-            #     #DEBUG
-            #     # print(f'mask: {mask}')
-            #     idx = T.where(mask)[0]
-            #     #DEBUG
-            #     # print(f'idx: {idx}')
-            #     if len(idx) == 0 or self.dones[idx[0]] == 1:
-            #         #DEBUG
-            #         # print(f'BREAK')
-            #         break
-            #     current_idx = idx[0].item()
-            #     #DEBUG
-            #     # print(f'current_idx: {current_idx}')
-            # else:
-            #     # If current_idx is still valid, proceed; we'll update it after appending
-            #     pass
-
             sequence_states.append(self.states[current_idx])
             sequence_actions.append(self.actions[current_idx])
             sequence_rewards.append(self.rewards[current_idx])
@@ -414,10 +377,21 @@ class Buffer:
             sequence_dones.append(self.dones[current_idx])
             sequence_traj_ids.append(self.traj_ids[current_idx])
             sequence_step_indices.append(self.step_indices[current_idx])
+            
             if self.goal_shape is not None:
                 sequence_sag.append(self.state_achieved_goals[current_idx])
                 sequence_nsag.append(self.next_state_achieved_goals[current_idx])
                 sequence_dg.append(self.desired_goals[current_idx])
+            
+            # if (current_idx >= self.buffer_size or 
+            #     self.dones[current_idx] == 1 or 
+            #     self.traj_ids[current_idx] != traj_id or 
+            #     self.step_indices[current_idx] != start_step_idx + i):
+            #     break
+            
+            # Stop if done or last step
+            if self.dones[current_idx] == 1 or i == self.N - 1:
+                break
 
             # Search for the next step
             mask = (self.traj_ids == traj_id) & (self.step_indices == abs(start_step_idx) + i + 1)
@@ -426,16 +400,10 @@ class Buffer:
                 break
             current_idx = idx[0].item()
 
-            #DEBUG
-            # print(f'sequence_states: {sequence_states}')
-            # print(f'sequence_actions: {sequence_actions}')
-            # print(f'sequence_rewards: {sequence_rewards}')
-            # print(f'sequence_next_states: {sequence_next_states}')
-            # print(f'sequence_dones: {sequence_dones}')
-
-        # Padding logic remains the same
         seq_len = len(sequence_states)
+        num_padded = 0
         if seq_len < self.N:
+            num_padded += 1
             pad_len = self.N - seq_len
             state_dim = self.states.shape[1:]
             action_dim = self.actions.shape[1:]
@@ -447,12 +415,6 @@ class Buffer:
             sequence_traj_ids.extend([T.tensor(traj_id, device=self.device)] * pad_len)
             sequence_step_indices.extend([T.tensor(start_step_idx + i + 1, device=self.device)] * pad_len)
 
-        #DEBUG
-        # print(f'sequence_states: {sequence_states}')
-        # print(f'sequence_actions: {sequence_actions}')
-        # print(f'sequence_rewards: {sequence_rewards}')
-        # print(f'sequence_next_states: {sequence_next_states}')
-        # print(f'sequence_dones: {sequence_dones}')
 
         if self.goal_shape is not None:
             return (
