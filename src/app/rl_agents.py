@@ -1523,11 +1523,11 @@ class DDPG(Agent):
             if self._use_her:  # HER with prioritized replay
                 #DEBUG
                 # print(f"HER with prioritized replay")
-                (states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, traj_ids, step_indices), weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
                 #DEBUG
                 # print(f"Just prioritized replay")
-                (states, actions, rewards, next_states, dones, traj_ids, step_indices), weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
             if self._wandb:
@@ -1570,11 +1570,11 @@ class DDPG(Agent):
             if self._use_her:
                 #DEBUG
                 # print(f"HER with standard replay")
-                (states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, traj_ids, step_indices) = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
             else:
                 #DEBUG
                 # print(f"Standard replay")
-                (states, actions, rewards, next_states, dones, traj_ids, step_indices) = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
             
             weights = None
             indices = None
@@ -1594,16 +1594,16 @@ class DDPG(Agent):
         # Normalize states if self.normalize_inputs
         if self._use_her:
             # Update rewards for hindsight experiences if using n-step (N>1)
-            if self.N > 1:
-                is_hindsight = step_indices[:, 0] < 0  # Shape: (batch_size,)
-                g_prime = desired_goals[is_hindsight, 0, :]  # Shape: (num_hindsight, goal_dim)
-                not_done_mask = T.cumprod(1 - dones.float(), dim=1) > 0  # Shape: (batch_size, N, 1)
-                g_prime_expanded = g_prime.unsqueeze(1).expand(-1, self.N, -1)
-                desired_goals[is_hindsight] = g_prime_expanded
-                new_rewards = self.env.get_base_env().compute_reward(achieved_goals[is_hindsight], desired_goals[is_hindsight], {})  # Shape: (num_hindsight, N, 1)
-                hindsight_mask = is_hindsight.unsqueeze(1).unsqueeze(2)  # Shape: (batch_size, 1, 1)
-                not_done_hindsight_mask = hindsight_mask & not_done_mask  # Shape: (batch_size, N, 1)
-                rewards[not_done_hindsight_mask] = new_rewards[not_done_hindsight_mask[is_hindsight]]
+            # if self.N > 1:
+            #     is_hindsight = step_indices[:, 0] < 0  # Shape: (batch_size,)
+            #     g_prime = desired_goals[is_hindsight, 0, :]  # Shape: (num_hindsight, goal_dim)
+            #     not_done_mask = T.cumprod(1 - dones.float(), dim=1) > 0  # Shape: (batch_size, N, 1)
+            #     g_prime_expanded = g_prime.unsqueeze(1).expand(-1, self.N, -1)
+            #     desired_goals[is_hindsight] = g_prime_expanded
+            #     new_rewards = self.env.get_base_env().compute_reward(achieved_goals[is_hindsight], desired_goals[is_hindsight], {})  # Shape: (num_hindsight, N, 1)
+            #     hindsight_mask = is_hindsight.unsqueeze(1).unsqueeze(2)  # Shape: (batch_size, 1, 1)
+            #     not_done_hindsight_mask = hindsight_mask & not_done_mask  # Shape: (batch_size, N, 1)
+            #     rewards[not_done_hindsight_mask] = new_rewards[not_done_hindsight_mask[is_hindsight]]
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
@@ -1621,8 +1621,8 @@ class DDPG(Agent):
         with T.no_grad():
             # _, target_actions = self.target_actor_model(next_states, desired_goals)
             _, target_actions = self.target_actor_model(
-                next_states[:,-1,:],
-                desired_goals[:,-1,:] if desired_goals is not None else None
+                next_states[:,0,:],
+                desired_goals[:,0,:] if desired_goals is not None else None
             ) # N-step
             # target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
             # Calculate target Q-values
@@ -1638,14 +1638,14 @@ class DDPG(Agent):
             no_done_in_sequence = ~dones.any(dim=1)
             bootstrap_mask = no_done_in_sequence.float()
             if desired_goals is not None:
-                last_desired_goals = desired_goals[:,-1,:]
+                last_desired_goals = desired_goals[:,0,:]
                 bootstrap_values = self.target_critic_model(
-                    next_states[:,-1,:],
+                    next_states[:,0,:],
                     target_actions,
                     last_desired_goals).squeeze()
             else:
                 bootstrap_values = self.target_critic_model(
-                    next_states[:,-1,:], target_actions).squeeze()
+                    next_states[:,0,:], target_actions).squeeze()
 
             targets += bootstrap_mask * (self.discount ** self.N) * bootstrap_values
             # Apply HER-specific clamping if needed
@@ -1657,9 +1657,9 @@ class DDPG(Agent):
 
         # Get current critic predictions
         predictions = self.critic_model(
-            states[:,-1,:],
-            actions[:,-1,:],
-            desired_goals[:,-1,:] if desired_goals is not None else None
+            states[:,0,:],
+            actions[:,0,:],
+            desired_goals[:,0,:] if desired_goals is not None else None
         ).flatten()
         #DEBUG
         # print(f'predictions shape: {predictions.shape}')
@@ -1682,12 +1682,12 @@ class DDPG(Agent):
 
         # Get actor's action predictions
         pre_act_values, action_values = self.actor_model(
-            states[:,-1,:],
-            desired_goals[:,-1,:] if desired_goals is not None else None
+            states[:,0,:],
+            desired_goals[:,0,:] if desired_goals is not None else None
         )
         
         # Calculate actor loss based on critic
-        critic_values = self.critic_model(states[:,-1,:], action_values, desired_goals[:,-1,:] if desired_goals is not None else None)
+        critic_values = self.critic_model(states[:,0,:], action_values, desired_goals[:,0,:] if desired_goals is not None else None)
         if weights is not None:
             actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:
@@ -2060,7 +2060,7 @@ class DDPG(Agent):
             actions = self.get_action(states)
             # Format actions
             actions = self.env.format_actions(actions)
-            next_states, rewards, dones, _, traj_ids, step_indices = self.env.step(actions)
+            next_states, rewards, dones, infos = self.env.step(actions)
             episode_scores += rewards
             # dones = np.logical_or(terms, truncs)
             
@@ -2068,7 +2068,13 @@ class DDPG(Agent):
             # for i in range(self.num_envs):
             #     self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i], traj_ids[i], step_indices[i])
                 # trajectories[i].append((states[i], actions[i], rewards[i], next_states[i], dones[i]))
-            self.replay_buffer.add(states, actions, rewards, next_states, dones, traj_ids, step_indices)
+            self.replay_buffer.add(
+                infos['n-step trajectory']['states'],
+                infos['n-step trajectory']['actions'],
+                infos['n-step trajectory']['rewards'],
+                infos['n-step trajectory']['next_states'],
+                infos['n-step trajectory']['dones']
+            )
 
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
