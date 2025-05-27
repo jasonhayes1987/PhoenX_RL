@@ -1,5 +1,6 @@
 import json
 from abc import ABC, abstractmethod
+from collections import deque
 import numpy as np
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec, WrapperSpec
@@ -11,6 +12,90 @@ from gymnasium.wrappers import (
     ResizeObservation
 )
 from gymnasium.vector import VectorEnv, SyncVectorEnv
+
+class NStepTrajectory(gym.Wrapper):
+    def __init__(self, env, n):
+        """Initialize the wrapper with the environment and number of steps to track.
+
+        Args:
+            env (gym.Env): The Gymnasium environment to wrap.
+            n (int): The number of previous steps to include in the trajectory.
+        """
+        super().__init__(env)
+        self.n = n
+        self.n_states = deque(maxlen=self.n)
+        self.n_actions = deque(maxlen=self.n)
+        self.n_rewards = deque(maxlen=self.n)
+        self.n_next_states = deque(maxlen=self.n)
+        self.n_dones = deque(maxlen=self.n)
+        self.current_state = None
+
+    def reset(self, **kwargs):
+        """Reset the environment and clear the trajectory history.
+
+        Args:
+            **kwargs: Additional arguments for env.reset().
+
+        Returns:
+            tuple: (observation, info) from the environment reset.
+        """
+        # Capture info data to return current trajectories before reset erases info dict
+        info = {}
+        info['n-step trajectory'] = {
+            'states': np.array(self.n_states),
+            'actions': np.array(self.n_actions),
+            'rewards': np.array(self.n_rewards),
+            'next_states': np.array(self.n_next_states),
+            'dones': np.array(self.n_dones)
+        }
+        state, _ = self.env.reset(**kwargs)
+        self.n_states = deque(maxlen=self.n)
+        self.n_states.extend([np.zeros(state.shape) for _ in range(self.n)])
+        self.n_actions = deque(maxlen=self.n)
+        self.n_actions.extend([np.zeros(self.env.action_space.shape) for _ in range(self.n)])
+        self.n_rewards = deque(maxlen=self.n)
+        self.n_rewards.extend([0] * self.n)
+        self.n_next_states = deque(maxlen=self.n)
+        self.n_next_states.extend([np.zeros(state.shape) for _ in range(self.n)])
+        self.n_dones = deque(maxlen=self.n)
+        self.n_dones.extend([0] * self.n)
+        self.current_state = state
+
+        return state, info
+
+    def step(self, action):
+        """Step the environment and update the n-step trajectory.
+
+        Args:
+            action: The action to take in the environment.
+
+        Returns:
+            tuple: (observation, reward, terminated, truncated, info) with updated info dict.
+        """
+        next_state, reward, terminated, truncated, info = self.env.step(action)
+        done = terminated or truncated
+        # Append the current step's data to the trajectory
+        self.n_states.append(self.current_state)
+        self.n_actions.append(action)
+        self.n_rewards.append(reward)
+        self.n_next_states.append(next_state)
+        self.n_dones.append(done)
+
+        # Update the current state
+        self.current_state = next_state
+
+        # Construct the trajectory dictionary
+        trajectory = {
+            'states': np.array(self.n_states),
+            'actions': np.array(self.n_actions),
+            'rewards': np.array(self.n_rewards),
+            'next_states': np.array(self.n_next_states),
+            'dones': np.array(self.n_dones)
+        }
+        # Add the trajectory to the info dictionary
+        info['n-step trajectory'] = trajectory
+
+        return next_state, reward, terminated, truncated, info
 
 WRAPPER_REGISTRY = {
     "AtariPreprocessing": {
@@ -45,6 +130,10 @@ WRAPPER_REGISTRY = {
         "default_params": {
             "shape": 84
         }
+    },
+    "NStepTrajectory": {
+        "cls": NStepTrajectory,
+        "default_params": {"n": 1}
     }
 }
 
@@ -304,9 +393,6 @@ class GymnasiumWrapper(EnvWrapper):
         return (self.unique_env_ids[env_idx] << 32) + self.traj_counters[env_idx]
 
     def reset(self):
-        self.traj_counters = [0] * self.num_envs
-        self.traj_ids = [self._compute_traj_id(i) for i in range(self.num_envs)]
-        self.step_indices = [0] * self.num_envs
         if self.seed is not None:
             return self.env.reset(seed=self.seed)
         return self.env.reset()
@@ -314,17 +400,19 @@ class GymnasiumWrapper(EnvWrapper):
     def step(self, action, testing=False):
         states, rewards, terms, truncs, infos = self.env.step(action)
         dones = np.logical_or(terms, truncs)
-        if testing:
-            return states, rewards, dones, infos
-        else:
-            for i in range(self.num_envs):
-                if dones[i]:
-                    self.traj_counters[i] += 1
-                    self.traj_ids[i] = self._compute_traj_id(i)
-                    self.step_indices[i] = 0
-                else:
-                    self.step_indices[i] += 1
-            return states, rewards, dones, infos, self.traj_ids, self.step_indices
+        return states, rewards, dones, infos
+    
+        # if testing:
+        #     return states, rewards, dones, infos
+        # else:
+        #     for i in range(self.num_envs):
+        #         if dones[i]:
+        #             self.traj_counters[i] += 1
+        #             self.traj_ids[i] = self._compute_traj_id(i)
+        #             self.step_indices[i] = 0
+        #         else:
+        #             self.step_indices[i] += 1
+        #     return states, rewards, dones, infos, self.traj_ids, self.step_indices
     
     def render(self, mode="rgb_array"):
         """
@@ -505,3 +593,4 @@ def serialize_env_spec(env_spec):
         "vector_entry_point": env_spec.vector_entry_point,
     }
     return env_spec_dict
+

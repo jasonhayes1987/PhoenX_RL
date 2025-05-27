@@ -269,9 +269,6 @@ class Buffer:
         self.env = env
         self.buffer_size = buffer_size
         self.N = N  # N-step hyperparameter
-        # Trajectory metadata
-        self.traj_ids = T.zeros(buffer_size, dtype=T.long, device=self.device)
-        self.step_indices = T.zeros(buffer_size, dtype=T.long, device=self.device)
         self.counter = 0
 
     def add(self, states, actions, rewards, next_states, dones, traj_ids, step_indices, **kwargs):
@@ -651,17 +648,16 @@ class ReplayBuffer(Buffer):
         else:
             self._obs_space_shape = self.env.single_observation_space.shape
 
-        shape = (buffer_size,) + self._obs_space_shape
-        self.states = T.zeros(shape, dtype=T.float32, device=self.device)
-        self.actions = T.zeros((buffer_size, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
-        self.rewards = T.zeros((buffer_size,), dtype=T.float32, device=self.device)
-        self.next_states = T.zeros(shape, dtype=T.float32, device=self.device)
-        self.dones = T.zeros((buffer_size,), dtype=T.int8, device=self.device)
+        self.states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
+        self.actions = T.zeros((buffer_size, N, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
+        self.rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
+        self.next_states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
+        self.dones = T.zeros((buffer_size, N), dtype=T.int8, device=self.device)
         
         if self.goal_shape is not None:
-            self.desired_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
-            self.state_achieved_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals = T.zeros((buffer_size, *self.goal_shape), dtype=T.float32, device=self.device)
+            self.desired_goals = T.zeros((buffer_size, N, *self.goal_shape), dtype=T.float32, device=self.device)
+            self.state_achieved_goals = T.zeros((buffer_size, N, *self.goal_shape), dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals = T.zeros((buffer_size, N, *self.goal_shape), dtype=T.float32, device=self.device)
         
         # self.counter = 0
         self.gen = np.random.default_rng()
@@ -670,11 +666,9 @@ class ReplayBuffer(Buffer):
         self,
         states: np.ndarray,
         actions: np.ndarray,
-        rewards: float,
+        rewards: np.ndarray,
         next_states: np.ndarray,
-        dones: bool,
-        traj_ids: np.ndarray,
-        step_indices: np.ndarray,
+        dones: np.ndarray,
         state_achieved_goals: Optional[np.ndarray] = None,
         next_state_achieved_goals: Optional[np.ndarray] = None,
         desired_goals: Optional[np.ndarray] = None,
@@ -688,20 +682,18 @@ class ReplayBuffer(Buffer):
         else:
             indices = np.concatenate([np.arange(start_idx, self.buffer_size), np.arange(0, end_idx)])
 
-        self.states[indices] = T.tensor(np.array(states), dtype=T.float32, device=self.device)
-        self.actions[indices] = T.tensor(np.array(actions), dtype=T.float32, device=self.device)
-        self.rewards[indices] = T.tensor(np.array(rewards), dtype=T.float32, device=self.device)
-        self.next_states[indices] = T.tensor(np.array(next_states), dtype=T.float32, device=self.device)
-        self.dones[indices] = T.tensor(np.array(dones), dtype=T.int8, device=self.device)
-        self.traj_ids[indices] = T.tensor(traj_ids, dtype=T.long, device=self.device)
-        self.step_indices[indices] = T.tensor(step_indices, dtype=T.long, device=self.device)
+        self.states[indices] = T.tensor(states, dtype=T.float32, device=self.device)
+        self.actions[indices] = T.tensor(actions, dtype=T.float32, device=self.device)
+        self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
+        self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
+        self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
 
         if self.goal_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
-            self.state_achieved_goals[indices] = T.tensor(np.array(state_achieved_goals), dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals[indices] = T.tensor(np.array(next_state_achieved_goals), dtype=T.float32, device=self.device)
-            self.desired_goals[indices] = T.tensor(np.array(desired_goals), dtype=T.float32, device=self.device)
+            self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals[indices] = T.tensor(next_state_achieved_goals, dtype=T.float32, device=self.device)
+            self.desired_goals[indices] = T.tensor(desired_goals, dtype=T.float32, device=self.device)
 
         self.counter += batch_size
 
@@ -713,10 +705,14 @@ class ReplayBuffer(Buffer):
         # indices = T.randint(0, size, (batch_size,), device=self.device)
         indices = self.gen.integers(0, size, (batch_size,))
         # Retrieve N-step sequences for each sampled starting index
-        sequences = [self._get_sequence(idx.item()) for idx in indices]
-        sorted_sequences = zip(*sequences) # zips metrics together
-        sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
-        return sequence_stack
+        # sequences = [self._get_sequence(idx.item()) for idx in indices]
+        # sorted_sequences = zip(*sequences) # zips metrics together
+        # sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
+        # return sequence_stack
+        if self.goal_shape is not None:
+            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices], self.desired_goals[indices])
+        else:
+            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices])
     
     def reset(self) -> None:
         """
