@@ -1103,8 +1103,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         rewards: np.ndarray,
         next_states: np.ndarray,
         dones: np.ndarray,
-        traj_ids: np.ndarray,  # Trajectory IDs
-        step_indices: np.ndarray,  # Step indices within trajectories
         state_achieved_goals: Optional[np.ndarray] = None,
         next_state_achieved_goals: Optional[np.ndarray] = None,
         desired_goals: Optional[np.ndarray] = None,
@@ -1125,8 +1123,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
         self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
         self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
-        self.traj_ids[indices] = T.tensor(traj_ids, dtype=T.long, device=self.device)  # New
-        self.step_indices[indices] = T.tensor(step_indices, dtype=T.long, device=self.device)  # New
 
         if self.goal_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
@@ -1192,11 +1188,15 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             weights = weights / weights.max()
 
         # Retrieve N-step sequences for each sampled starting index
-        sequences = [self._get_sequence(idx.item()) for idx in indices]
-        sorted_sequences = zip(*sequences) # zips metrics together
-        sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
+        # sequences = [self._get_sequence(idx.item()) for idx in indices]
+        # sorted_sequences = zip(*sequences) # zips metrics together
+        # sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
+        # return sequence_stack, weights, probs, indices
 
-        return sequence_stack, weights, probs, indices
+        if self.goal_shape is not None: 
+            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices], self.desired_goals[indices], weights, probs, indices)
+        else:
+            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], weights, probs, indices)
 
     def update_beta(self) -> None:
         """Anneal beta param more efficiently"""
