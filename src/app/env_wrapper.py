@@ -22,6 +22,7 @@ class NStepTrajectory(gym.Wrapper):
             n (int): The number of previous steps to include in the trajectory.
         """
         super().__init__(env)
+        self.env = env
         self.n = n
         self.n_states = deque(maxlen=self.n)
         self.n_actions = deque(maxlen=self.n)

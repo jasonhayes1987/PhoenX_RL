@@ -1621,9 +1621,12 @@ class DDPG(Agent):
         with T.no_grad():
             # _, target_actions = self.target_actor_model(next_states, desired_goals)
             _, target_actions = self.target_actor_model(
-                next_states[:,0,:],
-                desired_goals[:,0,:] if desired_goals is not None else None
+                next_states[:,-1,:],
+                desired_goals[:,-1,:] if desired_goals is not None else None
             ) # N-step
+            #DEBUG
+            # print(f'target_actions shape: {target_actions.shape}')
+            # print(f'target_actions: {target_actions}')
             # target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
             # Calculate target Q-values
             # targets = rewards + (1 - dones) * self.discount * target_critic_values
@@ -1634,20 +1637,24 @@ class DDPG(Agent):
                 self.N,
                 device=self.target_critic_model.device
             )
+            #DEBUG
+            # print(f'n-step returns shape: {targets.shape}')
+            # print(f'n-step returns: {targets}')
             # Bootstrap only if no 'done' in the sequence (full length N)
-            no_done_in_sequence = ~dones.any(dim=1)
-            bootstrap_mask = no_done_in_sequence.float()
+            # no_done_in_sequence = ~dones.any(dim=1)
+            # bootstrap_mask = no_done_in_sequence.float()
             if desired_goals is not None:
-                last_desired_goals = desired_goals[:,0,:]
+                last_desired_goals = desired_goals[:,-1,:]
                 bootstrap_values = self.target_critic_model(
-                    next_states[:,0,:],
+                    next_states[:,-1,:],
                     target_actions,
                     last_desired_goals).squeeze()
             else:
                 bootstrap_values = self.target_critic_model(
-                    next_states[:,0,:], target_actions).squeeze()
+                    next_states[:,-1,:], target_actions).squeeze()
 
-            targets += bootstrap_mask * (self.discount ** self.N) * bootstrap_values
+            not_done_mask = (1 - dones[:,-1])
+            targets += not_done_mask * (self.discount ** self.N) * bootstrap_values
             # Apply HER-specific clamping if needed
             if self._use_her:
                 targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
@@ -1672,6 +1679,9 @@ class DDPG(Agent):
             critic_loss = (weights.to(self.critic_model.device) * error.pow(2)).mean()
         else:
             critic_loss = error.pow(2).mean()
+        #DEBUG
+        # print(f'critic_loss shape: {critic_loss.shape}')
+        # print(f'critic_loss: {critic_loss}')
 
         # Update critic
         self.critic_model.optimizer.zero_grad()
@@ -1685,14 +1695,25 @@ class DDPG(Agent):
             states[:,0,:],
             desired_goals[:,0,:] if desired_goals is not None else None
         )
+        #DEBUG
+        # print(f'action_values shape: {action_values.shape}')
+        # print(f'action_values: {action_values}')
         
+
         # Calculate actor loss based on critic
         critic_values = self.critic_model(states[:,0,:], action_values, desired_goals[:,0,:] if desired_goals is not None else None)
+        #DEBUG
+        # print(f'critic_values shape: {critic_values.shape}')
+        # print(f'critic_values: {critic_values}')
         if weights is not None:
             actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:
             actor_loss = -critic_values.mean()
+        #DEBUG
+        # print(f'actor_loss shape: {actor_loss.shape}')
+        # print(f'actor_loss: {actor_loss}')
         
+
         # Add HER-specific regularization if needed
         if self._use_her:
             actor_loss += pre_act_values.pow(2).mean()
@@ -2761,11 +2782,11 @@ class TD3(Agent):
             if self._use_her:  # HER with prioritized replay
                 #DEBUG
                 # print(f"HER with prioritized replay")
-                (states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, traj_ids, step_indices), weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
                 #DEBUG
                 # print(f"Just prioritized replay")
-                (states, actions, rewards, next_states, dones, traj_ids, step_indices), weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
             if self._wandb:
@@ -2808,11 +2829,11 @@ class TD3(Agent):
             if self._use_her:
                 #DEBUG
                 # print(f"HER with standard replay")
-                (states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, traj_ids, step_indices) = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
             else:
                 #DEBUG
                 # print(f"Standard replay")
-                (states, actions, rewards, next_states, dones, traj_ids, step_indices) = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
             
             weights = None
             indices = None
@@ -2820,16 +2841,17 @@ class TD3(Agent):
         # Normalize states if self.normalize_inputs
         if self._use_her:
             # Update rewards for hindsight experiences if using n-step (N>1)
-            if self.N > 1:
-                is_hindsight = step_indices[:, 0] < 0  # Shape: (batch_size,)
-                g_prime = desired_goals[is_hindsight, 0, :]  # Shape: (num_hindsight, goal_dim)
-                not_done_mask = T.cumprod(1 - dones.float(), dim=1) > 0  # Shape: (batch_size, N, 1)
-                g_prime_expanded = g_prime.unsqueeze(1).expand(-1, self.N, -1)
-                desired_goals[is_hindsight] = g_prime_expanded
-                new_rewards = self.env.get_base_env().compute_reward(achieved_goals[is_hindsight], desired_goals[is_hindsight], {})  # Shape: (num_hindsight, N, 1)
-                hindsight_mask = is_hindsight.unsqueeze(1).unsqueeze(2)  # Shape: (batch_size, 1, 1)
-                not_done_hindsight_mask = hindsight_mask & not_done_mask  # Shape: (batch_size, N, 1)
-                rewards[not_done_hindsight_mask] = new_rewards[not_done_hindsight_mask[is_hindsight]]
+            #TODO: Update to correctly calculate hindsight rewards
+            # if self.N > 1:
+            #     is_hindsight = step_indices[:, 0] < 0  # Shape: (batch_size,)
+            #     g_prime = desired_goals[is_hindsight, 0, :]  # Shape: (num_hindsight, goal_dim)
+            #     not_done_mask = T.cumprod(1 - dones.float(), dim=1) > 0  # Shape: (batch_size, N, 1)
+            #     g_prime_expanded = g_prime.unsqueeze(1).expand(-1, self.N, -1)
+            #     desired_goals[is_hindsight] = g_prime_expanded
+            #     new_rewards = self.env.get_base_env().compute_reward(achieved_goals[is_hindsight], desired_goals[is_hindsight], {})  # Shape: (num_hindsight, N, 1)
+            #     hindsight_mask = is_hindsight.unsqueeze(1).unsqueeze(2)  # Shape: (batch_size, 1, 1)
+            #     not_done_hindsight_mask = hindsight_mask & not_done_mask  # Shape: (batch_size, N, 1)
+            #     rewards[not_done_hindsight_mask] = new_rewards[not_done_hindsight_mask[is_hindsight]]
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
@@ -2842,20 +2864,22 @@ class TD3(Agent):
         # Get target values
         with T.no_grad():
             _, target_actions = self.target_actor_model(
-                next_states[:,-1,:],
-                desired_goals[:,-1,:] if desired_goals is not None else None
+                next_states[:,0,:],
+                desired_goals[:,0,:] if desired_goals is not None else None
             )
-            noise = self.target_noise()
-            self.target_noise_schedule.step()
-            self._train_step_config["target_noise_anneal"] = self.target_noise_schedule.get_factor()
+            noise = self.target_noise(target_actions.shape)
+            if self.target_noise_schedule is not None:
+                noise *= self.target_noise_schedule.get_factor()
+                self._train_step_config["target_noise_anneal"] = self.target_noise_schedule.get_factor()
+                self.target_noise_schedule.step()
             
             # Apply noise clipping if needed
             if self.target_noise_clip > 0:
-                noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
-                
-            # Apply noise scaling if scheduled
-            if self.target_noise_schedule is not None:
-                noise *= self.target_noise_schedule.get_factor()
+                noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)   
+
+            if self.noise_schedule:
+                self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
+                self.noise_schedule.step()
                 
             # Add noise to target actions and clamp to action space
             target_actions = (target_actions + noise).clamp(float(self.env.action_space.low.min()), float(self.env.action_space.high.max()))
@@ -2870,13 +2894,13 @@ class TD3(Agent):
             # Bootstrap only if no 'done' in the sequence (full length N)
             no_done_in_sequence = ~dones.any(dim=1)
             bootstrap_mask = no_done_in_sequence.float()
-            last_desired_goals = desired_goals[:,-1,:] if desired_goals is not None else None
+            last_desired_goals = desired_goals[:,0,:] if desired_goals is not None else None
             target_critic_values_a = self.target_critic_model_a(
-                next_states[:,-1,:],
+                next_states[:,0,:],
                 target_actions,
                 last_desired_goals).squeeze()
             target_critic_values_b = self.target_critic_model_b(
-                next_states[:,-1,:],
+                next_states[:,0,:],
                 target_actions,
                 last_desired_goals).squeeze()
             target_critic_values = T.minimum(target_critic_values_a, target_critic_values_b)
@@ -2899,15 +2923,15 @@ class TD3(Agent):
 
         # Get current critic predictions
         predictions_a = self.critic_model_a(
-            states[:,-1,:],
-            actions[:,-1,:],
-            desired_goals[:,-1,:] if desired_goals is not None else None
+            states[:,0,:],
+            actions[:,0,:],
+            desired_goals[:,0,:] if desired_goals is not None else None
         ).flatten()
 
         predictions_b = self.critic_model_b(
-            states[:,-1,:],
-            actions[:,-1,:],
-            desired_goals[:,-1,:] if desired_goals is not None else None
+            states[:,0,:],
+            actions[:,0,:],
+            desired_goals[:,0,:] if desired_goals is not None else None
         ).flatten()
 
         # Calculate TD errors (use average of both critic networks for PER)
@@ -2936,15 +2960,15 @@ class TD3(Agent):
         
          # Get actor's action predictions
         pre_act_values, action_values = self.actor_model(
-            states[:,-1,:],
-            desired_goals[:,-1,:] if desired_goals is not None else None
+            states[:,0,:],
+            desired_goals[:,0,:] if desired_goals is not None else None
         )
         
         # Calculate actor loss based on critic A
         critic_values = self.critic_model_a(
-            states[:,-1,:],
+            states[:,0,:],
             action_values,
-            desired_goals[:,-1,:] if desired_goals is not None else None)
+            desired_goals[:,0,:] if desired_goals is not None else None)
         if weights is not None:
             actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:
@@ -3524,10 +3548,16 @@ class TD3(Agent):
                     callback.on_train_epoch_begin(epoch=self._step, logs=None)
             actions = self.get_action(states)
             actions = self.env.format_actions(actions)
-            next_states, rewards, dones, _, traj_ids, step_indices = self.env.step(actions)
+            next_states, rewards, dones, infos = self.env.step(actions)
             self._train_step_config["step_reward"] = rewards.mean()
             episode_scores += rewards
-            self.replay_buffer.add(states, actions, rewards, next_states, dones, traj_ids, step_indices)
+            self.replay_buffer.add(
+                infos['n-step trajectory']['states'],
+                infos['n-step trajectory']['actions'],
+                infos['n-step trajectory']['rewards'],
+                infos['n-step trajectory']['next_states'],
+                infos['n-step trajectory']['dones']
+            )
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
                 # increment completed episodes for env by 1
@@ -3571,9 +3601,6 @@ class TD3(Agent):
                     actor_loss, critic_loss = self.learn()
                     self._train_step_config["actor_loss"] = actor_loss
                     self._train_step_config["critic_loss"] = critic_loss
-                if self.noise_schedule:
-                    self.noise_schedule.step()
-                    self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
                 if self.callbacks:
                     for callback in self.callbacks:
                         callback.on_train_step_end(step=self._step, logs=self._train_step_config)
