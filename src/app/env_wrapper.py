@@ -13,13 +13,14 @@ from gymnasium.wrappers import (
 )
 from gymnasium.vector import VectorEnv, SyncVectorEnv
 
-class NStepTrajectory(gym.Wrapper):
-    def __init__(self, env, n):
+class NStepReward(gym.Wrapper):
+    def __init__(self, env, n, discount=0.99):
         """Initialize the wrapper with the environment and number of steps to track.
 
         Args:
             env (gym.Env): The Gymnasium environment to wrap.
             n (int): The number of previous steps to include in the trajectory.
+            discount (float): The discount factor for the trajectory.
         """
         super().__init__(env)
         self.env = env
@@ -29,7 +30,13 @@ class NStepTrajectory(gym.Wrapper):
         self.n_rewards = deque(maxlen=self.n)
         self.n_next_states = deque(maxlen=self.n)
         self.n_dones = deque(maxlen=self.n)
+        self.n_state_achieved_goals = deque(maxlen=self.n)
+        self.n_next_state_achieved_goals = deque(maxlen=self.n)
+        self.n_desired_goals = deque(maxlen=self.n)
         self.current_state = None
+        self.step_count = 0
+        # self.rewards = deque(maxlen=self.n)
+        self.discount = discount
 
     def reset(self, **kwargs):
         """Reset the environment and clear the trajectory history.
@@ -40,28 +47,59 @@ class NStepTrajectory(gym.Wrapper):
         Returns:
             tuple: (observation, info) from the environment reset.
         """
-        # Capture info data to return current trajectories before reset erases info dict
-        info = {}
-        info['n-step trajectory'] = {
+        #DEBUG
+        # print(f'n-step trajectory reset called')
+        # self.step_count = 0
+        # Capture current n-step trajectory info to return in info dict
+        trajectory = {
             'states': np.array(self.n_states),
             'actions': np.array(self.n_actions),
             'rewards': np.array(self.n_rewards),
             'next_states': np.array(self.n_next_states),
             'dones': np.array(self.n_dones)
         }
-        state, _ = self.env.reset(**kwargs)
-        self.n_states = deque(maxlen=self.n)
-        self.n_states.extend([np.zeros(state.shape) for _ in range(self.n)])
-        self.n_actions = deque(maxlen=self.n)
-        self.n_actions.extend([np.zeros(self.env.action_space.shape) for _ in range(self.n)])
-        self.n_rewards = deque(maxlen=self.n)
-        self.n_rewards.extend([0] * self.n)
-        self.n_next_states = deque(maxlen=self.n)
-        self.n_next_states.extend([np.zeros(state.shape) for _ in range(self.n)])
-        self.n_dones = deque(maxlen=self.n)
-        self.n_dones.extend([0] * self.n)
-        self.current_state = state
+        if isinstance(self.env.observation_space, gym.spaces.Dict):
+            trajectory['state_achieved_goals'] = np.array(self.n_state_achieved_goals)
+            trajectory['next_state_achieved_goals'] = np.array(self.n_next_state_achieved_goals)
+            trajectory['desired_goals'] = np.array(self.n_desired_goals)
 
+        state, info = self.env.reset(**kwargs)
+        #DEBUG
+        # print(f'n-step trajectory reset state:{state}, info:{info}')
+
+        self.n_states = deque(maxlen=self.n)
+        self.n_actions = deque(maxlen=self.n)
+        self.n_rewards = deque(maxlen=self.n)
+        self.n_next_states = deque(maxlen=self.n)
+        self.n_dones = deque(maxlen=self.n)
+        # self.rewards.clear()
+
+        action_shape = self.env.action_space.shape
+        # Add state achieved, next achieved, and desired goals if state is dict and has attrs
+        if isinstance(state, dict):
+            state_shape = self.env.observation_space['observation'].shape
+            goal_shape = self.env.observation_space['achieved_goal'].shape
+            self.n_state_achieved_goals = deque(maxlen=self.n)
+            self.n_next_state_achieved_goals = deque(maxlen=self.n)
+            self.n_desired_goals = deque(maxlen=self.n)
+            for _ in range(self.n):
+                self.n_state_achieved_goals.append(np.zeros(goal_shape))
+                self.n_next_state_achieved_goals.append(np.zeros(goal_shape))
+                self.n_desired_goals.append(np.zeros(goal_shape))
+        else:
+            state_shape = self.env.observation_space.shape
+
+        for _ in range(self.n):
+            self.n_states.append(np.zeros(state_shape))
+            self.n_actions.append(np.zeros(action_shape))
+            self.n_rewards.append(0)
+            self.n_next_states.append(np.zeros(state_shape))
+            self.n_dones.append(0)
+        
+        self.current_state = state
+        info['n-step trajectory'] = trajectory
+        #DEBUG
+        # print(f'n-step trajectory reset info:{info}')
         return state, info
 
     def step(self, action):
@@ -74,12 +112,42 @@ class NStepTrajectory(gym.Wrapper):
             tuple: (observation, reward, terminated, truncated, info) with updated info dict.
         """
         next_state, reward, terminated, truncated, info = self.env.step(action)
+        # self.rewards.append(reward)
+        # discounts = np.array([self.discount ** i for i in range(len(self.rewards))])
+        # rewards = np.array(self.rewards)
+        # reward = np.sum(rewards * discounts)
         done = terminated or truncated
-        # Append the current step's data to the trajectory
-        self.n_states.append(self.current_state)
-        self.n_actions.append(action)
+        # done = terminated or truncated
+        self.step_count += 1
+        # If current step == 1, add state, action, and next state to every idx
+        if self.step_count == 1:
+            for _ in range(self.n):
+                if isinstance(self.env.observation_space, gym.spaces.Dict):
+                    self.n_states.append(self.current_state['observation'])
+                    self.n_actions.append(action)
+                    self.n_next_states.append(next_state['observation'])
+                    self.n_state_achieved_goals.append(self.current_state['achieved_goal'])
+                    self.n_next_state_achieved_goals.append(next_state['achieved_goal'])
+                    self.n_desired_goals.append(self.current_state['desired_goal'])
+                else:
+                    self.n_states.append(self.current_state)
+                    self.n_actions.append(action)
+                    self.n_next_states.append(next_state)
+        else:
+            # Append the current step's data to the trajectory
+            if isinstance(self.env.observation_space, gym.spaces.Dict):
+                self.n_states.append(self.current_state['observation'])
+                self.n_actions.append(action)
+                self.n_next_states.append(next_state['observation'])
+                self.n_state_achieved_goals.append(self.current_state['achieved_goal'])
+                self.n_next_state_achieved_goals.append(next_state['achieved_goal'])
+                self.n_desired_goals.append(self.current_state['desired_goal'])
+            else:
+                self.n_states.append(self.current_state)
+                self.n_actions.append(action)
+                self.n_next_states.append(next_state)
+            
         self.n_rewards.append(reward)
-        self.n_next_states.append(next_state)
         self.n_dones.append(done)
 
         # Update the current state
@@ -93,9 +161,14 @@ class NStepTrajectory(gym.Wrapper):
             'next_states': np.array(self.n_next_states),
             'dones': np.array(self.n_dones)
         }
-        # Add the trajectory to the info dictionary
+        if isinstance(self.env.observation_space, gym.spaces.Dict):
+            trajectory['state_achieved_goals'] = np.array(self.n_state_achieved_goals)
+            trajectory['next_state_achieved_goals'] = np.array(self.n_next_state_achieved_goals)
+            trajectory['desired_goals'] = np.array(self.n_desired_goals)
+        # # Add the trajectory to the info dictionary
         info['n-step trajectory'] = trajectory
-
+        #DEBUG
+        # print(f'n-step trajectory step info:{info}')
         return next_state, reward, terminated, truncated, info
 
 WRAPPER_REGISTRY = {
@@ -132,8 +205,8 @@ WRAPPER_REGISTRY = {
             "shape": 84
         }
     },
-    "NStepTrajectory": {
-        "cls": NStepTrajectory,
+    "NStepReward": {
+        "cls": NStepReward,
         "default_params": {"n": 1}
     }
 }
@@ -394,13 +467,21 @@ class GymnasiumWrapper(EnvWrapper):
         return (self.unique_env_ids[env_idx] << 32) + self.traj_counters[env_idx]
 
     def reset(self):
+        #DEBUG
+        # print(f'GymnasiumWrapper reset called')
         if self.seed is not None:
-            return self.env.reset(seed=self.seed)
-        return self.env.reset()
+            state, info = self.env.reset(seed=self.seed)
+        else:
+            state, info = self.env.reset()
+        #DEBUG
+        # print(f'GymnasiumWrapper reset state:{state}, info:{info}')
+        return state, info
 
     def step(self, action, testing=False):
         states, rewards, terms, truncs, infos = self.env.step(action)
         dones = np.logical_or(terms, truncs)
+        #DEBUG
+        # print(f'GymnasiumWrapper step states:{states}, rewards:{rewards}, dones:{dones}, infos:{infos}')
         return states, rewards, dones, infos
     
         # if testing:
