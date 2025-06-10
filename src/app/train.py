@@ -67,15 +67,17 @@ def train_agent(agent_config, train_config):
         if agent_type:
             if agent_type in ['ActorCritic', 'DDPG', 'TD3']:
                 if args.distributed_workers > 1:
-                    distributed_agents = DistributedAgents(agent_config,
-                                                           args.distributed_workers,
-                                                           args.learner_device,
-                                                           args.learner_num_cpus,
-                                                           args.learner_num_gpus,
-                                                           args.worker_device,
-                                                           args.worker_num_cpus,
-                                                           args.worker_num_gpus,
-                                                           args.learn_iter)
+                    distributed_agents = DistributedAgents(
+                        agent_config,
+                        args.distributed_workers,
+                        args.learner_device,
+                        args.learner_num_cpus,
+                        args.learner_num_gpus,
+                        args.worker_device,
+                        args.worker_num_cpus,
+                        args.worker_num_gpus,
+                        args.learn_iter,
+                    )
                     futures = distributed_agents.train(sync_iter=args.sync_iter, num_episodes=num_episodes, num_envs=num_envs, seed=seed, render_freq=render_freq)
                     if futures:
                         ray.get(futures)
@@ -90,8 +92,34 @@ def train_agent(agent_config, train_config):
             elif agent_type == 'HER':
                 num_epochs = train_config['num_epochs']
                 num_cycles = train_config['num_cycles']
-                num_updates = train_config['learning_epochs']
-                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
+                num_updates = train_config['num_epochs']
+                if args.distributed_workers > 1:
+                    distributed_agents = DistributedAgents(
+                        agent_config,
+                        args.distributed_workers,
+                        args.learner_device,
+                        args.learner_num_cpus,
+                        args.learner_num_gpus,
+                        args.worker_device,
+                        args.worker_num_cpus,
+                        args.worker_num_gpus,
+                        args.learn_iter
+                    )
+                    futures = distributed_agents.train(
+                        sync_iter=args.sync_iter,
+                        num_epochs=num_epochs,
+                        num_cycles=num_cycles,
+                        num_episodes=num_episodes,
+                        num_updates=num_updates,
+                        render_freq=render_freq,
+                        num_envs=num_envs,
+                        seed=seed
+                    )
+                    if futures:
+                        ray.get(futures)
+                else:
+                    agent = load_agent_from_config(agent_config, load_weights)
+                    agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
             
             elif agent_type == 'PPO':
                 timesteps = train_config['num_timesteps']

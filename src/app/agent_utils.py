@@ -30,19 +30,27 @@ def compute_n_step_return(
         Tensor of N-step returns [batch_size].
     """
     batch_size = rewards.size(0)
+    #DEBUG
+    # print(f'rewards:{rewards}, dones:{dones}, gamma:{gamma}, N:{N}, device:{device}')
 
     # Discount factors: [1, gamma, gamma^2, ..., gamma^{N-1}]
     discount_factors = T.pow(gamma, T.arange(N, device=device).float()).unsqueeze(0).expand(batch_size, N)
+    #DEBUG
+    # print(f'discount_factors:{discount_factors}')
 
     # Cumulative done mask: 1 if any 'done' up to step k
-    cum_done = T.cumsum(dones, dim=1).float()
+    # cum_done = T.cumsum(dones, dim=1).float()
     # Include rewards[k] if no 'done' up to k-1 (always include k=0)
-    include_mask = (cum_done == 0).float()
+    # include_mask = (cum_done == 0).float()
     # include_mask[:, 0] = 1.0
 
     # Compute masked discounted rewards
-    masked_rewards = rewards * discount_factors * include_mask
+    masked_rewards = rewards * discount_factors # * include_mask
+    #DEBUG
+    # print(f'masked_rewards:{masked_rewards}')
     return_ = masked_rewards.sum(dim=1)
+    #DEBUG
+    # print(f'return_:{return_}')
 
     return return_
 
