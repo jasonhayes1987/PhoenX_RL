@@ -402,14 +402,15 @@ class DistributedAgents:
             # Convert learner agent WandbCallback to DistributedCallback
             if self.agent_config['agent_type'] == 'HER':
                 learner_agent.agent.callbacks = convert_to_distributed_callbacks(learner_agent.agent.callbacks, "learner", 0)
+                # Initialize DistributedCallback with the learner agent
+                for callback in learner_agent.agent.callbacks:
+                    if isinstance(callback, RayWandbCallback):
+                        learner_agent.agent._config = callback._config(learner_agent)
             else:
                 learner_agent.callbacks = convert_to_distributed_callbacks(learner_agent.callbacks, "learner", 0)
-            # Initialize DistributedCallback with the learner agent
-            for callback in learner_agent.callbacks:
-                if isinstance(callback, RayWandbCallback):
-                    if self.agent_config['agent_type'] == 'HER':
-                        learner_agent.agent._config = callback._config(learner_agent.agent)
-                    else:
+                # Initialize DistributedCallback with the learner agent
+                for callback in learner_agent.callbacks:
+                    if isinstance(callback, RayWandbCallback):
                         learner_agent._config = callback._config(learner_agent)
             # Initialize Learner with its own copy of the agent
             if self.shared_buffer:
@@ -439,7 +440,11 @@ class DistributedAgents:
             for i in range(self.num_workers):
                 try:
                     if self.shared_buffer:
-                        prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
+                        if self.agent_config['agent_type'] == 'HER':
+                            agent_type = self.agent_config['agent']['agent_type']
+                            prioritized = self.agent_config[agent_type]['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
+                        else:
+                            prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                         buffer = BufferWrapper(self.shared_buffer, prioritized, log_level)
                     else:
                         buffer = None
@@ -522,19 +527,30 @@ class Worker:
             self.logger.info("Initializing Worker")
             self.worker_id = id
             self.agent = agent
-            self.agent.env.worker_id = id  # Pass worker_id to GymnasiumWrapper
+            if self.agent.__class__.__name__ == 'HER':
+                self.agent.agent.env.worker_id = id  # Pass worker_id to GymnasiumWrapper
+                self.agent.agent._distributed = True
+            else:
+                self.agent.env.worker_id = id  # Pass worker_id to GymnasiumWrapper
+                self.agent._distributed = True
             self.logger.info(f"Worker agent using device: {self.agent.device}")
             self.learner = learner
             self.logger.info(f"Successfully obtained learner reference")
             self.buffer = buffer
-            self.agent._distributed = True
+            
             
             # If RayWandbCallback, set worker id to passed id
-            for callback in self.agent.callbacks:
-                if isinstance(callback, RayWandbCallback):
-                    callback.worker_id = self.worker_id
-                    callback.role = "worker"
-                    # callback.is_main_worker = (self.worker_id == 0)
+            if self.agent.__class__.__name__ == 'HER':
+                for callback in self.agent.agent.callbacks:
+                    if isinstance(callback, RayWandbCallback):
+                        callback.worker_id = self.worker_id
+                        callback.role = "worker"
+            else:
+                for callback in self.agent.callbacks:
+                    if isinstance(callback, RayWandbCallback):
+                        callback.worker_id = self.worker_id
+                        callback.role = "worker"
+                        # callback.is_main_worker = (self.worker_id == 0)
 
             # Set the _distributed_learn function on the agent to point to Learner
             if self.buffer:
@@ -560,6 +576,7 @@ class Worker:
         try:
             seed = kwargs.get('seed', None)
             self.logger.info(f"Worker {self.worker_id} starting training with seed: {seed}")
+            self.logger.info(f"kwargs: {kwargs}")
             self.agent.train(**kwargs)
             self.logger.info(f"Worker {self.worker_id} training completed")
         except Exception as e:
