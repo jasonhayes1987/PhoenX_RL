@@ -43,9 +43,6 @@ import numpy as np
 
 from agent_utils import load_agent_from_config, get_agent_class_from_type, compute_n_step_return, compute_full_return
 
-# Register gymnasium robotics with gymnasium
-gym.register_envs(gymnasium_robotics)
-
 
 # Agent class
 class Agent:
@@ -81,7 +78,7 @@ class Agent:
         """
         agent_name = self.__class__.__name__.lower()
         if f"/{agent_name}/" not in save_dir:
-            return save_dir + f"/{agent_name}/"
+            return save_dir + f"/{agent_name}"
         else:
             return save_dir
 
@@ -128,7 +125,12 @@ class Agent:
             Agent: A cloned instance of the agent with all components correctly copied and moved.
         """
         # Perform a deep copy of the agent
-        cloned_agent = copy.deepcopy(self)
+        clone = copy.deepcopy(self)
+
+        if clone.__class__.__name__ == 'HER':
+            cloned_agent = clone.agent
+        else:
+            cloned_agent = clone
 
         if device:
             # Determine the target device
@@ -166,9 +168,14 @@ class Agent:
                         setattr(target_model, 'device', target_device)
             
             # Now use move_to_device to handle all tensors and other components
-            return move_to_device(cloned_agent, target_device)
+            cloned_agent = move_to_device(cloned_agent, target_device)
         
-        return cloned_agent
+        if clone.__class__.__name__ == 'HER':
+            clone.agent = cloned_agent
+        else:
+            clone = cloned_agent
+
+        return clone
 
     def get_action(self, state):
         """Returns an action given a state."""
@@ -1334,6 +1341,8 @@ class DDPG(Agent):
             # Set learn_iter and sync_iter to 0. For distributed training
             self._learn_iter = 0
             self._sync_iter = 0
+            # Instantiate step counter (for logging)
+            self._step = 0
 
         except Exception as e:
             self.logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
@@ -1403,7 +1412,7 @@ class DDPG(Agent):
     def _init_her(self):
             self._use_her = True
 
-    def _distributed_learn(self, step: int, run_number:str=None, learn_iter:int=None):
+    def _distributed_learn(self, step: int, run_number:str=None, learn_iter:int=None, num_updates:int=1):
         """Used in distributed training to update the shared models.
         This function is overridden by the Worker class to point to the Learner class.
         """
@@ -1413,7 +1422,8 @@ class DDPG(Agent):
             self._step = step
             # Initialize wandb check
             self._initialize_wandb(run_number=run_number, run_name_prefix="train", learn_iter=learn_iter)
-            actor_loss, critic_loss = self.learn()
+            for _ in range(num_updates):
+                actor_loss, critic_loss = self.learn()
             # Only store log if current step greater than previous and self._wandb
             if self._wandb:
                 self._train_step_config["actor_loss"] = actor_loss
@@ -1422,7 +1432,8 @@ class DDPG(Agent):
                     if isinstance(callback, WandbCallback):
                         callback.on_train_step_end(step, self._train_step_config)
         else:
-            actor_loss, critic_loss = self.learn()
+            for _ in range(num_updates):
+                actor_loss, critic_loss = self.learn()
 
     # def get_parameters(self):
     #     """Get the parameters of all models."""
@@ -2056,7 +2067,7 @@ class DDPG(Agent):
         except Exception as e:
             self.logger.error(f"Error in DDPG.train self.env")
         
-        # initialize step counter (for logging)
+        # Reset step counter (for logging)
         self._step = 0
         best_reward = -np.inf
         score_history = deque(maxlen=100)
@@ -3982,18 +3993,14 @@ class HER(Agent):
             # self.replay_buffer_size = replay_buffer_size
             
             # Set save directory
-            # if save_dir is not None and "/her/" not in save_dir:
-            #     self.save_dir = os.path.join(save_dir, "her")
-            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
-            # elif save_dir is not None:
-            #     self.save_dir = save_dir
-            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
             if save_dir is not None and "/her/" not in save_dir:
-                self.save_dir = save_dir + "/her/"
+                self.save_dir = os.path.join(save_dir, "her")
+                agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
+                self.agent.save_dir = os.path.join(self.save_dir, agent_name)
             elif save_dir is not None:
                 self.save_dir = save_dir
+                agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
+                self.agent.save_dir = os.path.join(self.save_dir, agent_name)
 
             # Set learn iter to 0. For distributed training
             self._learn_iter = 0
@@ -4655,7 +4662,7 @@ class HER(Agent):
         """Apply params to a model. Used in distributed training."""
         self.agent.apply_parameters(params)
 
-    def _distributed_learn(self, step: int, run_number:str=None, learn_iter:int=None, num_updates:int=None):
+    def _distributed_learn(self, step: int, run_number:str=None, learn_iter:int=None, num_updates:int=1):
         """Used in distributed training to update the shared models.
         This function is overridden by the Worker class to point to the Learner class.
         """
@@ -4944,7 +4951,7 @@ class HER(Agent):
                         if self.agent.replay_buffer.counter > self.agent.batch_size:
                             # Check if distributed
                             if self.agent._distributed:
-                                self._distributed_learn(self._step, run_number, num_updates)
+                                self._distributed_learn(self.agent._step, run_number, num_updates)
                             else:
                                 for _ in range(num_updates):
                                     actor_loss, critic_loss = self.agent.learn(

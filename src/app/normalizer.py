@@ -125,14 +125,14 @@ class Normalizer:
             file_path (str): Path to save the state.
         """
         T.save({
-            'local_sum': self.local_sum,
-            'local_sum_sq': self.local_sum_sq,
-            'local_cnt': self.local_cnt,
-            'running_mean': self.running_mean,
-            'running_std': self.running_std,
-            'running_sum': self.running_sum,
-            'running_sum_sq': self.running_sum_sq,
-            'running_cnt': self.running_cnt,
+            'local_sum': self.local_sum.cpu().numpy(),
+            'local_sum_sq': self.local_sum_sq.cpu().numpy(),
+            'local_cnt': self.local_cnt.cpu().numpy(),
+            'running_mean': self.running_mean.cpu().numpy(),
+            'running_std': self.running_std.cpu().numpy(),
+            'running_sum': self.running_sum.cpu().numpy(),
+            'running_sum_sq': self.running_sum_sq.cpu().numpy(),
+            'running_cnt': self.running_cnt.cpu().numpy(),
         }, file_path)
 
     @classmethod

@@ -262,14 +262,13 @@ class Learner:
         self.buffer = buffer
         # Replace buffer from agent with buffer wrapper if using shared buffer
         if self.buffer:
-            self.agent.replay_buffer = self.buffer
+            if self.agent.__class__.__name__ == 'HER':
+                self.agent.agent.replay_buffer = self.buffer
+            else:
+                self.agent.replay_buffer = self.buffer
         self.learn_iter = learn_iter
         self.logger = get_logger(__name__, level=log_level)
         self.log_level = logging.getLevelName(self.logger.getEffectiveLevel()).lower()
-
-        # Verify agent is on correct device (should be CUDA if available)
-        self.device = agent.device
-        self.logger.info(f"Learner agent using device: {self.device}")
 
         # Set internal step counter(tracks num times learn is called)
         self._learn_step = 0
@@ -277,16 +276,16 @@ class Learner:
         # Set step counter on agent to 0
         self.agent._step = 0
 
-    def learn(self, step: int, run_number:str=None, gradients:Dict[str, List[T.Tensor]] = None):
+    def learn(self, step: int, run_number:str=None, num_updates:int=1, gradients:Dict[str, List[T.Tensor]] = None):
         """Update the agent's models using gradients"""
         self._learn_step += 1
         
         try:
             if self._learn_step % self.learn_iter == 0:
                 if gradients:
-                    self.agent._distributed_learn(step, run_number, gradients, self.learn_iter)
+                    self.agent._distributed_learn(step, run_number, num_updates, gradients)
                 else:
-                    self.agent._distributed_learn(step, run_number, self.learn_iter)
+                    self.agent._distributed_learn(step, run_number, num_updates)
             else:
                 pass
             
@@ -307,7 +306,7 @@ class DistributedAgents:
     def __init__(self,
                  agent_config,
                  num_workers,
-                 learner_device: Optional[str] = 'cuda',
+                 learner_device: Optional[str] = None,
                  learner_num_cpus: int = 1,
                  learner_num_gpus: int = 1,
                  worker_device: Optional[str] = 'cpu',
@@ -340,8 +339,8 @@ class DistributedAgents:
             self.agent_config = agent_config
             self.num_workers = num_workers
             self.workers = []
-            self.learner_device = get_device(learner_device)
-            self.worker_device = get_device(worker_device)
+            self.learner_device = get_device(learner_device) if learner_device else None
+            self.worker_device = get_device(worker_device) if worker_device else None
             self.learner_num_cpus = learner_num_cpus
             self.learner_num_gpus = learner_num_gpus
             self.worker_num_cpus = worker_num_cpus
@@ -355,6 +354,12 @@ class DistributedAgents:
             # except Exception as e:
             #     self.logger.error(f"Failed to create GradientSynchronizer actor: {e}", exc_info=True)
             #     raise
+
+            if agent_config['agent_type'] == 'HER':
+                agent_config = agent_config['agent']
+            
+            #DEBUG
+            self.logger.info(f'Agent config: {agent_config}')
             
             # Initialize SharedBuffer if configured
             if 'replay_buffer' in agent_config:
@@ -399,6 +404,10 @@ class DistributedAgents:
             # learner_device = 'cuda' if GPUS > 0 else 'cpu'
             self.logger.info(f'Creating Learner agent with device={self.learner_device}')
             learner_agent = base_agent.clone(device=self.learner_device)
+            # Add /learner/ to end of save directory
+            learner_agent.save_dir = learner_agent.save_dir + 'learner'
+            #DEBUG
+            # self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
             # Convert learner agent WandbCallback to DistributedCallback
             if self.agent_config['agent_type'] == 'HER':
                 learner_agent.agent.callbacks = convert_to_distributed_callbacks(learner_agent.agent.callbacks, "learner", 0)
@@ -415,13 +424,15 @@ class DistributedAgents:
             # Initialize Learner with its own copy of the agent
             if self.shared_buffer:
                 if self.agent_config['agent_type'] == 'HER':
-                    agent_type = self.agent_config['agent']['agent_type']
-                    prioritized = self.agent_config[agent_type]['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
+                    # agent_type = self.agent_config['agent']['agent_type']
+                    prioritized = self.agent_config['agent']['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                 else:
                     prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                 buffer = BufferWrapper(self.shared_buffer, prioritized, log_level)
             else:
                 buffer = None
+            #DEBUG
+            # self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
             self.learner = Learner.options(num_cpus=self.learner_num_cpus, num_gpus=self.learner_num_gpus).remote(
                 learner_agent, buffer, self.learn_iter, log_level)
             self.logger.info(f'Learner initialized successfully')
@@ -441,8 +452,8 @@ class DistributedAgents:
                 try:
                     if self.shared_buffer:
                         if self.agent_config['agent_type'] == 'HER':
-                            agent_type = self.agent_config['agent']['agent_type']
-                            prioritized = self.agent_config[agent_type]['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
+                            # agent_type = self.agent_config['agent']['agent_type']
+                            prioritized = self.agent_config['agent']['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                         else:
                             prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                         buffer = BufferWrapper(self.shared_buffer, prioritized, log_level)
@@ -452,8 +463,14 @@ class DistributedAgents:
                     # Create a fresh CPU-only clone for each worker
                     self.logger.info(f'Creating worker {i} agent with device={self.worker_device}')
                     worker_agent = learner_agent.clone(device=self.worker_device)
+                    # Add /worker-i/ to end of save directory, replacing 'learner'
+                    worker_agent.save_dir = '/'.join(learner_agent.save_dir.split('/')[:-1] + [f'worker-{i}'])
+                    #DEBUG
+                    self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
+                    self.logger.info(f'Worker agent config: {worker_agent.get_config()}')
+                   
                     
-                    self.logger.info(f'Creating Worker {i} actor')
+                    self.logger.info(f'Creating Worker {i}')
                     worker = Worker.options(
                         num_cpus=self.worker_num_cpus,
                         num_gpus=self.worker_num_gpus,
@@ -502,6 +519,8 @@ class DistributedAgents:
                     
                     future = worker.train.remote(sync_iter=sync_iter, **worker_kwargs)
                     futures.append(future)
+                    #DEBUG
+                    # self.logger.info(f"Worker {i} config: {ray.get(worker.get_agent_config.remote())}")
                     self.logger.info(f"Submitted training task to worker {i}")
                 except Exception as e:
                     self.logger.error(f"Failed to submit training task to worker {i}: {e}", exc_info=True)
@@ -527,13 +546,15 @@ class Worker:
             self.logger.info("Initializing Worker")
             self.worker_id = id
             self.agent = agent
+            #DEBUG
+            self.logger.info(f'Worker agent config: {self.agent.get_config()}')
             if self.agent.__class__.__name__ == 'HER':
                 self.agent.agent.env.worker_id = id  # Pass worker_id to GymnasiumWrapper
                 self.agent.agent._distributed = True
             else:
                 self.agent.env.worker_id = id  # Pass worker_id to GymnasiumWrapper
                 self.agent._distributed = True
-            self.logger.info(f"Worker agent using device: {self.agent.device}")
+            # self.logger.info(f"Worker agent using device: {self.agent.device}")
             self.learner = learner
             self.logger.info(f"Successfully obtained learner reference")
             self.buffer = buffer
@@ -555,11 +576,11 @@ class Worker:
             # Set the _distributed_learn function on the agent to point to Learner
             if self.buffer:
                 if self.agent.__class__.__name__ == 'HER':
-                    self.agent._distributed_learn = lambda step, run_number, num_updates: self.learner.learn.remote(step, run_number, num_updates)
+                    self.agent._distributed_learn = lambda step, run_number, num_updates: self.learner.learn.remote(step, run_number, num_updates=num_updates)
                 else:
                     self.agent._distributed_learn = lambda step, run_number: self.learner.learn.remote(step, run_number)
             else:
-                self.agent._distributed_learn = lambda step, run_number, gradients: self.learner.learn.remote(step, run_number, gradients)
+                self.agent._distributed_learn = lambda step, run_number, gradients: self.learner.learn.remote(step, run_number, gradients=gradients)
 
             # Set the get_parameters function on the agent to point to Learner (blocking)
             self.agent.get_parameters = lambda: ray.get(self.learner.get_parameters.remote())

@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 import numpy as np
 import gymnasium as gym
+import gymnasium_robotics
 from gymnasium.envs.registration import EnvSpec, WrapperSpec
 from gymnasium.wrappers import (
     AtariPreprocessing,
@@ -12,6 +13,8 @@ from gymnasium.wrappers import (
     ResizeObservation
 )
 from gymnasium.vector import VectorEnv, SyncVectorEnv
+# Register gymnasium robotics with gymnasium
+gym.register_envs(gymnasium_robotics)
 
 class NStepReward(gym.Wrapper):
     def __init__(self, env, n, discount=0.99):
