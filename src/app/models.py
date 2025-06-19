@@ -18,7 +18,6 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, ExponentialLR
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
-import cnn_models
 from torch_utils import get_device, VarianceScaling_
 # from logging_config import logger
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper

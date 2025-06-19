@@ -271,7 +271,7 @@ class Buffer:
         self.N = N  # N-step hyperparameter
         self.counter = 0
 
-    def add(self, states, actions, rewards, next_states, dones, traj_ids, step_indices, **kwargs):
+    def add(self, states, actions, rewards, next_states, dones):
         """
         Add a transition to the buffer, including trajectory metadata.
         Abstract method to be implemented by subclasses.
@@ -427,7 +427,7 @@ class Buffer:
         )
 
     def get_config(self) -> Dict[str, Any]:
-        pass
+        raise NotImplementedError
 
     @classmethod
     def create_instance(cls, buffer_class_name: str, **kwargs) -> 'Buffer':

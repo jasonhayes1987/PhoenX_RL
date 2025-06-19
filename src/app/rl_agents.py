@@ -48,7 +48,7 @@ from agent_utils import load_agent_from_config, get_agent_class_from_type, compu
 class Agent:
     """Base class for all RL agents."""
 
-    def __init__(self, env: EnvWrapper, callbacks: Optional[list[Callback]] = None, save_dir: str = "models/", device: str | T.device = None, log_level: str = 'info'):
+    def __init__(self, env: EnvWrapper, callbacks: Optional[list[Callback]] = None, save_dir: str = "models/", device: Optional[str | T.device] = None, log_level: str = 'info'):
         try:
             self.save_dir = self._setup_save_dir(save_dir)
             self.env = env
@@ -78,7 +78,7 @@ class Agent:
         """
         agent_name = self.__class__.__name__.lower()
         if f"/{agent_name}/" not in save_dir:
-            return save_dir + f"/{agent_name}"
+            return save_dir + f"/{agent_name}/"
         else:
             return save_dir
 
@@ -102,7 +102,7 @@ class Agent:
         except Exception as e:
             self.logger.error(f"Error initializing callbacks: {e}", exc_info=True)
 
-    def _distributed_learn(self, step: int = None):
+    def _distributed_learn(self, *args, **kwargs):
         """Handle distributed learning for both on-policy and off-policy agents."""
         raise NotImplementedError("Subclasses must implement _distributed_learn.")
     
@@ -218,7 +218,7 @@ class ActorCritic(Agent):
         value_trace_decay: float=0.0,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models/",
-        device: str = None,
+        device: Optional[str | T.device] = None,
         log_level: str = 'info'
     ):
         super().__init__(env, callbacks, save_dir, device, log_level)
@@ -1283,19 +1283,20 @@ class DDPG(Agent):
         env: EnvWrapper,
         actor_model: ActorModel,
         critic_model: CriticModel,
-        replay_buffer: Buffer = None,
+        *,
+        replay_buffer: Buffer,
         discount: float=0.99,
         tau: float=0.001,
         action_epsilon: float = 0.0,
         batch_size: int = 64,
-        noise: Noise=None,
-        noise_schedule: ScheduleWrapper=None,
-        grad_clip: float=None,
+        noise: Noise,
+        noise_schedule: Optional[ScheduleWrapper]=None,
+        grad_clip: Optional[float]=None,
         warmup: int=1000,
         N: int=1, # N-steps
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
-        device: str = None,
+        device: Optional[str | T.device] = None,
         log_level: str = 'info'
     ):
         try:
@@ -1393,7 +1394,7 @@ class DDPG(Agent):
 
         return model.clone(copy_weights, device)
     
-    def _initialize_wandb(self, run_number:str=None, run_name_prefix:str=None, learn_iter:int=None):
+    def _initialize_wandb(self, run_number:Optional[str]=None, run_name_prefix:Optional[str]=None, learn_iter:Optional[int]=None):
         """Initialize WandbCallback if using WandbCallback"""
         try:
             if self._wandb:
@@ -1412,7 +1413,8 @@ class DDPG(Agent):
     def _init_her(self):
             self._use_her = True
 
-    def _distributed_learn(self, step: int, run_number:str=None, learn_iter:int=None, num_updates:int=1):
+    def _distributed_learn(self, step: int, run_number:Optional[str]=None, learn_iter:Optional[int]=None, num_updates:int=1,
+                          state_normalizer:Optional[Normalizer]=None, goal_normalizer:Optional[Normalizer]=None):
         """Used in distributed training to update the shared models.
         This function is overridden by the Worker class to point to the Learner class.
         """
@@ -1423,7 +1425,7 @@ class DDPG(Agent):
             # Initialize wandb check
             self._initialize_wandb(run_number=run_number, run_name_prefix="train", learn_iter=learn_iter)
             for _ in range(num_updates):
-                actor_loss, critic_loss = self.learn()
+                actor_loss, critic_loss = self.learn(state_normalizer, goal_normalizer)
             # Only store log if current step greater than previous and self._wandb
             if self._wandb:
                 self._train_step_config["actor_loss"] = actor_loss
@@ -1461,8 +1463,8 @@ class DDPG(Agent):
         self.target_critic_model.load_state_dict(params['target_critic_model'])
 
     def get_action(self, state, goal=None, test=False,
-                   state_normalizer:Normalizer=None,
-                   goal_normalizer:Normalizer=None):
+                   state_normalizer:Optional[Normalizer]=None,
+                   goal_normalizer:Optional[Normalizer]=None):
 
         # make sure state is a tensor and on correct device
         state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
@@ -2436,20 +2438,20 @@ class TD3(Agent):
         discount: float = 0.99,
         tau: float = 0.005,
         action_epsilon: float = 0.0,
-        replay_buffer: Buffer = None,
+        replay_buffer: Optional[Buffer] = None,
         batch_size: int = 256,
-        noise: Noise = None,
-        noise_schedule: ScheduleWrapper=None,
-        target_noise: Noise = None,
-        target_noise_schedule: ScheduleWrapper=None,
+        noise: Optional[Noise] = None,
+        noise_schedule: Optional[ScheduleWrapper] = None,
+        target_noise: Optional[Noise] = None,
+        target_noise_schedule: Optional[ScheduleWrapper] = None,
         target_noise_clip: float = 0.5,
         actor_update_delay: int = 2,
         grad_clip: float = 40.0,
         warmup: int = 1000,
         N: int=1, # N-steps
-        callbacks: list = None,
+        callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
-        device: str = None,
+        device: Optional[str | T.device] = None,
         log_level: str = 'info'
     ):
         try:
@@ -2712,8 +2714,8 @@ class TD3(Agent):
             self._use_her = True
 
     def get_action(self, state, goal=None, test=False,
-                   state_normalizer:Normalizer=None,
-                   goal_normalizer:Normalizer=None):
+                   state_normalizer:Optional[Normalizer]=None,
+                   goal_normalizer:Optional[Normalizer]=None):
 
         # make sure state is a tensor and on correct device
         state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
@@ -3960,7 +3962,7 @@ class HER(Agent):
 
     def __init__(
         self,
-        agent: Agent,
+        agent: DDPG | TD3,
         strategy: str = 'final',
         tolerance: float = 0.5,
         num_goals: int = 4,
@@ -3991,16 +3993,16 @@ class HER(Agent):
             self.normalizer_clip = normalizer_clip
             self.normalizer_eps = normalizer_eps
             # self.replay_buffer_size = replay_buffer_size
-            
+            self.save_dir = self._setup_save_dir(save_dir)
             # Set save directory
-            if save_dir is not None and "/her/" not in save_dir:
-                self.save_dir = os.path.join(save_dir, "her")
-                agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-                self.agent.save_dir = os.path.join(self.save_dir, agent_name)
-            elif save_dir is not None:
-                self.save_dir = save_dir
-                agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-                self.agent.save_dir = os.path.join(self.save_dir, agent_name)
+            # if save_dir is not None and "/her/" not in save_dir:
+            #     self.save_dir = os.path.join(save_dir, "her/")
+            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
+            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
+            # elif save_dir is not None:
+            #     self.save_dir = save_dir
+            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
+            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
 
             # Set learn iter to 0. For distributed training
             self._learn_iter = 0
@@ -4666,7 +4668,7 @@ class HER(Agent):
         """Used in distributed training to update the shared models.
         This function is overridden by the Worker class to point to the Learner class.
         """
-        self.agent._distributed_learn(step, run_number, learn_iter, num_updates)
+        self.agent._distributed_learn(step, run_number, learn_iter, num_updates, self.state_normalizer, self.goal_normalizer)
 
     def format_trajectory(self, n_step_data):
         # Extract data
