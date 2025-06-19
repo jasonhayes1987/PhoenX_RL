@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 import logging
 from rl_agents import Agent
 from agent_utils import load_agent_from_config, convert_to_distributed_callbacks
+from normalizer import Normalizer
 from buffer import Buffer
 from env_wrapper import EnvWrapper
 from logging_config import get_logger
@@ -16,8 +17,133 @@ from torch_utils import get_device
 # import logging
 # logger = logging.getLogger("ray")
 
+@ray.remote(num_cpus=1)
+class SharedNormalizer:
+    """
+    Shared buffer for distributed training
+    """
+    def __init__(self, size: int, eps: float = 1e-2, clip_range: float = 5.0, device: Optional[str | T.device] = None, state_dir: Optional[str] = None, log_level='info'):
+        try:
+            self.logger = get_logger(__name__, level=log_level)
+            self.logger.info(f"Initializing SharedNormalizer with config: {size, eps, clip_range, device}")
+            self.normalizer = Normalizer(size, eps, clip_range, device)
+            # load normalizer states if not None
+            if state_dir:
+                self.normalizer = Normalizer.load_state(state_dir)
+            self.logger.info("SharedNormalizer initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Error initializing SharedNormalizer: {e}", exc_info=True)
+            raise e 
+    
+    def normalize(self, v: T.Tensor):
+        """Normalize data"""
+        try:
+            return self.normalizer.normalize(v)
+        except Exception as e:
+            self.logger.error(f"Error normalizing data: {e}", exc_info=True)
+            raise
+    
+    def denormalize(self, v: T.Tensor):
+        """Denormalize data"""
+        try:
+            return self.normalizer.denormalize(v)
+        except Exception as e:
+            self.logger.error(f"Error denormalizing data: {e}", exc_info=True)
+            raise
+    
+    def update_local_stats(self, new_data: T.Tensor):
+        """Update local statistics with new data"""
+        try:
+            return self.normalizer.update_local_stats(new_data)
+        except Exception as e:
+            self.logger.error(f"Error updating local statistics: {e}", exc_info=True)
+            raise
+    
+    def update_global_stats(self):
+        """Update global statistics"""
+        try:
+            return self.normalizer.update_global_stats()
+        except Exception as e:
+            self.logger.error(f"Error updating global statistics: {e}", exc_info=True)
+            raise
+    
+    def save_state(self, file_path: str):
+        """Save the state of the normalizer"""
+        return self.normalizer.save_state(file_path)
+    
+    def load_state(self, file_path: str, device: Optional[str] = None):
+        """Load the state of the normalizer"""
+        return self.normalizer.load_state(file_path, device)
 
+    def device(self):
+        """Get the device of the buffer"""
+        return self.normalizer.device
+    
+    def get_config(self):
+        """Get the config of the normalizer"""
+        return self.normalizer.get_config()
 
+class NormalizerWrapper:
+    """
+    Wrapper for Normalizer class to interface with a shared normalizer for distributed training
+    """
+    def __init__(self, shared_normalizer: SharedNormalizer, log_level='info'):
+        try:
+            self.logger = get_logger(__name__, level=log_level)
+            self.logger.info(f"Initializing NormalizerWrapper")
+            self.shared_normalizer = shared_normalizer
+            self.logger.info("NormalizerWrapper initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Error initializing normalizer wrapper: {e}", exc_info=True)
+            raise e
+
+    def normalize(self, v: T.Tensor):
+        """Normalize data"""
+        try:
+            return ray.get(self.shared_normalizer.normalize.remote(v))
+        except Exception as e:
+            self.logger.error(f"Error normalizing data: {e}", exc_info=True)
+            raise
+    
+    def denormalize(self, v: T.Tensor):
+        """Denormalize data"""
+        try:
+            return ray.get(self.shared_normalizer.denormalize.remote(v))
+        except Exception as e:
+            self.logger.error(f"Error denormalizing data: {e}", exc_info=True)
+            raise
+    
+    def update_local_stats(self, new_data: T.Tensor):
+        """Update local statistics with new data"""
+        try:
+            return ray.get(self.shared_normalizer.update_local_stats.remote(new_data))
+        except Exception as e:
+            self.logger.error(f"Error updating local statistics: {e}", exc_info=True)
+            raise
+
+    def update_global_stats(self):
+        """Update global statistics"""
+        try:
+            return ray.get(self.shared_normalizer.update_global_stats.remote())
+        except Exception as e:
+            self.logger.error(f"Error updating global statistics: {e}", exc_info=True)
+            raise
+
+    def save_state(self, file_path: str):
+        """Save the state of the normalizer"""
+        return ray.get(self.shared_normalizer.save_state.remote(file_path))
+    
+    def load_state(self, file_path: str, device: Optional[str] = None):
+        """Load the state of the normalizer"""
+        return ray.get(self.shared_normalizer.load_state.remote(file_path, device))
+    
+    def device(self):
+        """Get the device of the normalizer"""
+        return ray.get(self.shared_normalizer.device.remote())
+    
+    def get_config(self):
+        """Get the config of the normalizer"""
+        return ray.get(self.shared_normalizer.get_config.remote())
 @ray.remote(num_cpus=1)
 class SharedBuffer:
     """
@@ -257,7 +383,7 @@ class SumTreeWrapper:
 #         }
 @ray.remote(num_cpus=1, num_gpus=1)
 class Learner:
-    def __init__(self, agent: Agent, buffer: BufferWrapper = None, learn_iter: int = 1000, log_level='info'):
+    def __init__(self, agent: Agent, buffer: Optional[BufferWrapper] = None, normalizers: Optional[Dict[str, NormalizerWrapper]] = None, learn_iter: int = 1000, log_level='info'):
         self.agent = agent
         self.buffer = buffer
         # Replace buffer from agent with buffer wrapper if using shared buffer
@@ -266,6 +392,11 @@ class Learner:
                 self.agent.agent.replay_buffer = self.buffer
             else:
                 self.agent.replay_buffer = self.buffer
+        if normalizers:
+            self.normalizers = normalizers
+            if self.agent.__class__.__name__ == 'HER':
+                self.agent.state_normalizer = self.normalizers['state']
+                self.agent.goal_normalizer = self.normalizers['goal']
         self.learn_iter = learn_iter
         self.logger = get_logger(__name__, level=log_level)
         self.log_level = logging.getLevelName(self.logger.getEffectiveLevel()).lower()
@@ -276,7 +407,7 @@ class Learner:
         # Set step counter on agent to 0
         self.agent._step = 0
 
-    def learn(self, step: int, run_number:str=None, num_updates:int=1, gradients:Dict[str, List[T.Tensor]] = None):
+    def learn(self, step: int, run_number:Optional[str]=None, num_updates:int=1, gradients:Optional[Dict[str, List[T.Tensor]]] = None):
         """Update the agent's models using gradients"""
         self._learn_step += 1
         
@@ -334,7 +465,8 @@ class DistributedAgents:
             DistributedAgents - The distributed agents
         """
         try:
-            self.logger = get_logger(__name__, level=log_level)
+            self.log_level = log_level
+            self.logger = get_logger(__name__, level=self.log_level)
             self.logger.info(f"Initializing DistributedAgents with {num_workers} workers")
             self.agent_config = agent_config
             self.num_workers = num_workers
@@ -346,42 +478,14 @@ class DistributedAgents:
             self.worker_num_cpus = worker_num_cpus
             self.worker_num_gpus = worker_num_gpus
             self.learn_iter = learn_iter
-            # # Initialize GradientSynchronizer
-            # try:
-            #     self.logger.info("Creating GradientSynchronizer actor")
-            #     self.gradient_synchronizer = GradientSynchronizer.remote(num_workers, log_level)
-            #     self.logger.info("GradientSynchronizer actor created successfully")
-            # except Exception as e:
-            #     self.logger.error(f"Failed to create GradientSynchronizer actor: {e}", exc_info=True)
-            #     raise
-
-            if agent_config['agent_type'] == 'HER':
-                agent_config = agent_config['agent']
-            
-            #DEBUG
-            self.logger.info(f'Agent config: {agent_config}')
-            
-            # Initialize SharedBuffer if configured
-            if 'replay_buffer' in agent_config:
-                try:
-                    self.logger.info("Creating SharedBuffer actor")
-                    self.shared_buffer = SharedBuffer.remote(agent_config['replay_buffer'], log_level)
-                    self.logger.info("SharedBuffer actor created successfully")
-                except Exception as e:
-                    self.logger.error(f"Failed to create SharedBuffer actor: {e}", exc_info=True)
-                    raise
-            else:
-                self.shared_buffer = None
-                self.logger.info("No replay buffer configured")
-            
             # Setup workers
-            self.setup_workers(log_level)
+            self.setup_workers()
             self.logger.info("DistributedAgents initialized successfully")
         except Exception as e:
             self.logger.error(f"Error initializing DistributedAgents: {e}", exc_info=True)
             raise
 
-    def setup_workers(self, log_level='info'):
+    def setup_workers(self):
         try:
             # Initialize Ray and get available resources
             if not ray.is_initialized():
@@ -391,23 +495,38 @@ class DistributedAgents:
             CPUS = RESOURCES['CPU']
             GPUS = RESOURCES.get('GPU', 0)
             self.logger.info(f'Ray initialized with {CPUS} CPUs and {GPUS} GPUs available')
-            
+
             # Create base agent - explicitly force to CPU
             self.logger.info(f'Creating base agent with device=cpu for safe cloning')
             base_agent = load_agent_from_config(self.agent_config, load_weights=False)
+
+            if self.agent_config['agent_type'] == 'HER':
+                self.normalizers = {}
+                self.normalizers['state'] = SharedNormalizer.remote(base_agent._obs_space_shape, base_agent.normalizer_eps, base_agent.normalizer_clip, self.learner_device, base_agent.save_dir + 'state_normalizer.npz', self.log_level)
+                self.normalizers['goal'] = SharedNormalizer.remote(base_agent._goal_shape, base_agent.normalizer_eps, base_agent.normalizer_clip, self.learner_device, base_agent.save_dir + 'goal_normalizer.npz', self.log_level)
+                agent_config = self.agent_config['agent']
+            else:
+                self.normalizers = None
+                agent_config = self.agent_config
             
-            # Create a reference agent on CPU for cloning
-            # self.logger.info(f'Creating CPU reference agent for workers')
-            # cpu_agent = base_agent.clone(device='cpu')
+            # Initialize SharedBuffer if configured
+            if 'replay_buffer' in agent_config:
+                try:
+                    self.logger.info("Creating SharedBuffer actor")
+                    self.shared_buffer = SharedBuffer.remote(agent_config['replay_buffer'], self.log_level)
+                    self.logger.info("SharedBuffer actor created successfully")
+                except Exception as e:
+                    self.logger.error(f"Failed to create SharedBuffer actor: {e}", exc_info=True)
+                    raise
+            else:
+                self.shared_buffer = None
+                self.logger.info("No replay buffer configured")
             
-            # Create a GPU agent for the learner if GPUs are available
-            # learner_device = 'cuda' if GPUS > 0 else 'cpu'
             self.logger.info(f'Creating Learner agent with device={self.learner_device}')
             learner_agent = base_agent.clone(device=self.learner_device)
             # Add /learner/ to end of save directory
             learner_agent.save_dir = learner_agent.save_dir + 'learner'
-            #DEBUG
-            # self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
+            
             # Convert learner agent WandbCallback to DistributedCallback
             if self.agent_config['agent_type'] == 'HER':
                 learner_agent.agent.callbacks = convert_to_distributed_callbacks(learner_agent.agent.callbacks, "learner", 0)
@@ -428,13 +547,18 @@ class DistributedAgents:
                     prioritized = self.agent_config['agent']['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                 else:
                     prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
-                buffer = BufferWrapper(self.shared_buffer, prioritized, log_level)
+                buffer = BufferWrapper(self.shared_buffer, prioritized, self.log_level)
             else:
                 buffer = None
-            #DEBUG
-            # self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
+            if self.normalizers:
+                normalizers = {}
+                normalizers['state'] = NormalizerWrapper(self.normalizers['state'], self.log_level)
+                normalizers['goal'] = NormalizerWrapper(self.normalizers['goal'], self.log_level)
+            else:
+                normalizers = None
+
             self.learner = Learner.options(num_cpus=self.learner_num_cpus, num_gpus=self.learner_num_gpus).remote(
-                learner_agent, buffer, self.learn_iter, log_level)
+                learner_agent, buffer, normalizers, self.learn_iter, self.log_level)
             self.logger.info(f'Learner initialized successfully')
             
             # Get the learner's ID in a way that works with current Ray versions
@@ -456,15 +580,21 @@ class DistributedAgents:
                             prioritized = self.agent_config['agent']['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
                         else:
                             prioritized = self.agent_config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer'
-                        buffer = BufferWrapper(self.shared_buffer, prioritized, log_level)
+                        buffer = BufferWrapper(self.shared_buffer, prioritized, self.log_level)
                     else:
                         buffer = None
+                    if self.normalizers:
+                        normalizers = {}
+                        normalizers['state'] = NormalizerWrapper(self.normalizers['state'], self.log_level)
+                        normalizers['goal'] = NormalizerWrapper(self.normalizers['goal'], self.log_level)
+                    else:
+                        normalizers = None
                     
                     # Create a fresh CPU-only clone for each worker
                     self.logger.info(f'Creating worker {i} agent with device={self.worker_device}')
                     worker_agent = learner_agent.clone(device=self.worker_device)
                     # Add /worker-i/ to end of save directory, replacing 'learner'
-                    worker_agent.save_dir = '/'.join(learner_agent.save_dir.split('/')[:-1] + [f'worker-{i}'])
+                    worker_agent.save_dir = '/'.join(learner_agent.save_dir.split('/')[:-1] + [f'worker-{i}/'])
                     #DEBUG
                     self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
                     self.logger.info(f'Worker agent config: {worker_agent.get_config()}')
@@ -476,7 +606,7 @@ class DistributedAgents:
                         num_gpus=self.worker_num_gpus,
                         max_restarts=3,
                         max_task_retries=3
-                    ).remote(worker_agent, self.learner, buffer, i, log_level)
+                    ).remote(worker_agent, self.learner, buffer, normalizers, i, self.log_level)
                     
                     self.workers.append(worker)
                 except Exception as e:
@@ -540,7 +670,7 @@ class DistributedAgents:
 
 @ray.remote(num_cpus=1, num_gpus=0)
 class Worker:
-    def __init__(self, agent: Agent, learner: Learner, buffer: BufferWrapper = None, id: int = None, log_level='info'):
+    def __init__(self, agent: Agent, learner: Learner, buffer: Optional[BufferWrapper] = None, normalizers: Optional[Dict[str, NormalizerWrapper]] = None, id: int = None, log_level='info'):
         try:
             self.logger = get_logger(f"Worker {id}", level=log_level)
             self.logger.info("Initializing Worker")
@@ -558,7 +688,11 @@ class Worker:
             self.learner = learner
             self.logger.info(f"Successfully obtained learner reference")
             self.buffer = buffer
-            
+            self.normalizers = normalizers
+            if self.normalizers:
+                if self.agent.__class__.__name__ == 'HER':
+                    self.agent.state_normalizer = self.normalizers['state']
+                    self.agent.goal_normalizer = self.normalizers['goal']
             
             # If RayWandbCallback, set worker id to passed id
             if self.agent.__class__.__name__ == 'HER':
@@ -576,8 +710,10 @@ class Worker:
             # Set the _distributed_learn function on the agent to point to Learner
             if self.buffer:
                 if self.agent.__class__.__name__ == 'HER':
+                    self.agent.agent.replay_buffer = self.buffer
                     self.agent._distributed_learn = lambda step, run_number, num_updates: self.learner.learn.remote(step, run_number, num_updates=num_updates)
                 else:
+                    self.agent.replay_buffer = self.buffer
                     self.agent._distributed_learn = lambda step, run_number: self.learner.learn.remote(step, run_number)
             else:
                 self.agent._distributed_learn = lambda step, run_number, gradients: self.learner.learn.remote(step, run_number, gradients=gradients)
@@ -585,9 +721,9 @@ class Worker:
             # Set the get_parameters function on the agent to point to Learner (blocking)
             self.agent.get_parameters = lambda: ray.get(self.learner.get_parameters.remote())
 
-            # Replace buffer from agent with buffer wrapper if using shared buffer
-            if self.buffer:
-                self.agent.replay_buffer = self.buffer
+            # # Replace buffer from agent with buffer wrapper if using shared buffer
+            # if self.buffer:
+                
             self.logger.info("Worker initialized successfully")
         except Exception as e:
             self.logger.error(f"Error initializing worker: {e}", exc_info=True)

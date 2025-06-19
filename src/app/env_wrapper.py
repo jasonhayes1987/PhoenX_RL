@@ -1,4 +1,5 @@
 import json
+from typing import Optional, Dict, List
 from abc import ABC, abstractmethod
 from collections import deque
 import numpy as np
@@ -309,21 +310,21 @@ class EnvWrapper(ABC):
         """
         pass
     
+    # @abstractmethod
+    # def render(self, mode="rgb_array"):
+    #     """
+    #     Render the environment.
+
+    #     Args:
+    #         mode (str): The render mode (default: "rgb_array").
+
+    #     Returns:
+    #         Any: Rendered frame or visualization.
+    #     """
+    #     pass
+
     @abstractmethod
-    def render(self, mode="rgb_array"):
-        """
-        Render the environment.
-
-        Args:
-            mode (str): The render mode (default: "rgb_array").
-
-        Returns:
-            Any: Rendered frame or visualization.
-        """
-        pass
-
-    @abstractmethod
-    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
+    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: Optional[int] = None):
         """
         Initialize the environment with optional rendering and seeding.
 
@@ -334,6 +335,20 @@ class EnvWrapper(ABC):
 
         Returns:
             Any: The initialized environment.
+        """
+        pass
+
+    @abstractmethod
+    def format_actions(self, actions, testing: bool = False):
+        """
+        Format actions for the environment.
+
+        Args:
+            actions: Actions to format.
+            testing (bool): Whether in testing mode (default: False).
+
+        Returns:
+            Any: Formatted actions.
         """
         pass
     
@@ -356,6 +371,26 @@ class EnvWrapper(ABC):
 
         Returns:
             gym.Space: The action space.
+        """
+        pass
+
+    @property
+    def single_action_space(self):
+        """
+        Get the single action space for vectorized environments.
+
+        Returns:
+            gym.Space: The single action space.
+        """
+        pass
+
+    @property
+    def single_observation_space(self):
+        """
+        Get the single observation space for vectorized environments.
+
+        Returns:
+            gym.Space: The single observation space.
         """
         pass
 
@@ -406,7 +441,7 @@ class GymnasiumWrapper(EnvWrapper):
     This wrapper supports initialization, resetting, stepping, rendering,
     and JSON-based serialization of Gymnasium environments.
     """
-    def __init__(self, env_spec: EnvSpec, wrappers: list[dict] = None, worker_id: int = 0):
+    def __init__(self, env_spec: EnvSpec, wrappers: Optional[list[dict]] = None, worker_id: int = 0):
         self.env_spec = env_spec
         self.wrappers = wrappers
         self.worker_id = worker_id
@@ -418,7 +453,7 @@ class GymnasiumWrapper(EnvWrapper):
         self.env = self._initialize_env()
         
 
-    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
+    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: Optional[int] = None):
         """
         Initialize the Gymnasium environment with unique seeds for each environment.
 
@@ -499,17 +534,17 @@ class GymnasiumWrapper(EnvWrapper):
         #             self.step_indices[i] += 1
         #     return states, rewards, dones, infos, self.traj_ids, self.step_indices
     
-    def render(self, mode="rgb_array"):
-        """
-        Render the environment.
+    # def render(self, mode="rgb_array"):
+    #     """
+    #     Render the environment.
 
-        Args:
-            mode (str): The render mode (default: "rgb_array").
+    #     Args:
+    #         mode (str): The render mode (default: "rgb_array").
 
-        Returns:
-            Any: Rendered frame or visualization.
-        """
-        return self.env.render(mode=mode)
+    #     Returns:
+    #         Any: Rendered frame or visualization.
+    #     """
+    #     return self.env.render(mode=mode)
     
     def format_actions(self, actions: np.ndarray, testing=False):
         if isinstance(self.action_space, gym.spaces.Box):
@@ -632,6 +667,20 @@ class IsaacSimWrapper(EnvWrapper):
         This class is a template and needs implementation based on Isaac Sim's API.
         """
         pass
+    
+    def format_actions(self, actions, testing: bool = False):
+        """
+        Format actions for Isaac Sim environment.
+        
+        Args:
+            actions: Actions to format.
+            testing (bool): Whether in testing mode (default: False).
+            
+        Returns:
+            Any: Formatted actions.
+        """
+        # Placeholder implementation - needs to be implemented based on Isaac Sim's API
+        return actions
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):

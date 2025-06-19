@@ -2,6 +2,7 @@ import torch as T
 import torch.nn as nn
 from torch import optim
 import numpy as np
+from typing import Optional
 
 
 def move_to_device(obj, device: T.device | str, visited=None) -> object:
@@ -288,7 +289,7 @@ def verify_device(obj, expected_device: str | T.device, verbose=False, indent=0,
     
     return stats
 
-def get_device(device_spec: str | T.device = None):
+def get_device(device_spec: Optional[str | T.device] = None) -> T.device:
     """
     Convert any valid device specification to a torch.device object.
     
