@@ -149,8 +149,8 @@ class Normalizer:
         Returns:
             Normalizer: A Normalizer instance with the loaded state.
         """
-        state = T.load(file_path)
         device = get_device(device)
+        state = T.load(file_path, map_location='cpu')
         normalizer = cls(size=state['running_mean'].shape[0], device=device)
         target_device = normalizer.device
         

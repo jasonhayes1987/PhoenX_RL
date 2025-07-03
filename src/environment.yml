@@ -56,7 +56,7 @@ dependencies:
     - autorom
     - wandb
     - types-dataclasses
-    - gymnasium[mujoco,jax,atari,box2d,classic-control,toy-text]==1.0.0
+    - gymnasium[all]==1.2.0
     # - gymnasium-robotics
     - decorator==4.0.2
     - mcp
