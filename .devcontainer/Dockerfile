@@ -59,7 +59,7 @@ SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 # RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
 # Install Gymnasium Robotics directly from Repo for Mujoco v4 support
-RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git
+RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 
 # # Install MuJoCo
 # RUN mkdir -p /root/.mujoco && \

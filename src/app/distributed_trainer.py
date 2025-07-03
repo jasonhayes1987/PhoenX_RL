@@ -1,3 +1,5 @@
+import copy
+import time
 import ray
 import asyncio
 import torch as T
@@ -36,9 +38,11 @@ class SharedNormalizer:
             raise e 
     
     def normalize(self, v: T.Tensor):
-        """Normalize data"""
         try:
-            return self.normalizer.normalize(v)
+            self.logger.debug(f"SharedNormalizer.normalize() called with data shape: {v.shape if hasattr(v, 'shape') else type(v)}")
+            self.logger.debug(f"Current running_mean[:3]: {self.normalizer.running_mean[:3] if hasattr(self.normalizer, 'running_mean') else 'N/A'}")
+            result = self.normalizer.normalize(v)
+            return result
         except Exception as e:
             self.logger.error(f"Error normalizing data: {e}", exc_info=True)
             raise
@@ -46,7 +50,10 @@ class SharedNormalizer:
     def denormalize(self, v: T.Tensor):
         """Denormalize data"""
         try:
-            return self.normalizer.denormalize(v)
+            self.logger.debug(f"SharedNormalizer.denormalize() called with data shape: {v.shape if hasattr(v, 'shape') else type(v)}")
+            self.logger.debug(f"Current running_mean[:3]: {self.normalizer.running_mean[:3] if hasattr(self.normalizer, 'running_mean') else 'N/A'}")
+            result = self.normalizer.denormalize(v)
+            return result
         except Exception as e:
             self.logger.error(f"Error denormalizing data: {e}", exc_info=True)
             raise
@@ -54,7 +61,15 @@ class SharedNormalizer:
     def update_local_stats(self, new_data: T.Tensor):
         """Update local statistics with new data"""
         try:
-            return self.normalizer.update_local_stats(new_data)
+            self.logger.debug(f"SharedNormalizer.update_local_stats() called")
+            self.logger.debug(f"Before update - local_sum[:3]: {self.normalizer.local_sum[:3] if hasattr(self.normalizer, 'local_sum') else 'N/A'}")
+            self.logger.debug(f"Before update - local_cnt: {self.normalizer.local_cnt if hasattr(self.normalizer, 'local_cnt') else 'N/A'}")
+            
+            result = self.normalizer.update_local_stats(new_data)
+            
+            self.logger.debug(f"After update - local_sum[:3]: {self.normalizer.local_sum[:3] if hasattr(self.normalizer, 'local_sum') else 'N/A'}")
+            self.logger.debug(f"After update - local_cnt: {self.normalizer.local_cnt if hasattr(self.normalizer, 'local_cnt') else 'N/A'}")
+            return result
         except Exception as e:
             self.logger.error(f"Error updating local statistics: {e}", exc_info=True)
             raise
@@ -62,7 +77,15 @@ class SharedNormalizer:
     def update_global_stats(self):
         """Update global statistics"""
         try:
-            return self.normalizer.update_global_stats()
+            self.logger.debug(f"SharedNormalizer.update_global_stats() called")
+            self.logger.debug(f"Before global update - running_mean[:3]: {self.normalizer.running_mean[:3] if hasattr(self.normalizer, 'running_mean') else 'N/A'}")
+            self.logger.debug(f"Before global update - running_cnt: {self.normalizer.running_cnt if hasattr(self.normalizer, 'running_cnt') else 'N/A'}")
+            
+            result = self.normalizer.update_global_stats()
+            
+            self.logger.debug(f"After global update - running_mean[:3]: {self.normalizer.running_mean[:3] if hasattr(self.normalizer, 'running_mean') else 'N/A'}")
+            self.logger.debug(f"After global update - running_cnt: {self.normalizer.running_cnt if hasattr(self.normalizer, 'running_cnt') else 'N/A'}")
+            return result
         except Exception as e:
             self.logger.error(f"Error updating global statistics: {e}", exc_info=True)
             raise
@@ -83,6 +106,14 @@ class SharedNormalizer:
         """Get the config of the normalizer"""
         return self.normalizer.get_config()
 
+    def get_actor_info(self):
+        """Get information about this actor for debugging"""
+        return {
+            'actor_id': ray.get_runtime_context().get_actor_id(),
+            'timestamp': time.time(),
+            'running_cnt': self.normalizer.running_cnt if hasattr(self.normalizer, 'running_cnt') else 'N/A'
+        }
+
 class NormalizerWrapper:
     """
     Wrapper for Normalizer class to interface with a shared normalizer for distributed training
@@ -100,7 +131,11 @@ class NormalizerWrapper:
     def normalize(self, v: T.Tensor):
         """Normalize data"""
         try:
-            return ray.get(self.shared_normalizer.normalize.remote(v))
+            actor_id = str(self.shared_normalizer)
+            self.logger.debug(f"NormalizerWrapper.normalize() calling actor {actor_id}")
+            result = ray.get(self.shared_normalizer.normalize.remote(v))
+            self.logger.debug(f"NormalizerWrapper.normalize() got result shape: {result.shape if hasattr(result, 'shape') else type(result)}")
+            return result
         except Exception as e:
             self.logger.error(f"Error normalizing data: {e}", exc_info=True)
             raise
@@ -108,7 +143,11 @@ class NormalizerWrapper:
     def denormalize(self, v: T.Tensor):
         """Denormalize data"""
         try:
-            return ray.get(self.shared_normalizer.denormalize.remote(v))
+            actor_id = str(self.shared_normalizer)
+            self.logger.debug(f"NormalizerWrapper.denormalize() calling actor {actor_id}")
+            result = ray.get(self.shared_normalizer.denormalize.remote(v))
+            self.logger.debug(f"NormalizerWrapper.denormalize() got result shape: {result.shape if hasattr(result, 'shape') else type(result)}")
+            return result
         except Exception as e:
             self.logger.error(f"Error denormalizing data: {e}", exc_info=True)
             raise
@@ -116,7 +155,11 @@ class NormalizerWrapper:
     def update_local_stats(self, new_data: T.Tensor):
         """Update local statistics with new data"""
         try:
-            return ray.get(self.shared_normalizer.update_local_stats.remote(new_data))
+            actor_id = str(self.shared_normalizer)
+            self.logger.debug(f"NormalizerWrapper.update_local_stats() calling actor {actor_id} with data shape: {new_data.shape if hasattr(new_data, 'shape') else type(new_data)}")
+            result = ray.get(self.shared_normalizer.update_local_stats.remote(new_data))
+            self.logger.debug(f"NormalizerWrapper.update_local_stats() completed for actor {actor_id}")
+            return result
         except Exception as e:
             self.logger.error(f"Error updating local statistics: {e}", exc_info=True)
             raise
@@ -124,10 +167,18 @@ class NormalizerWrapper:
     def update_global_stats(self):
         """Update global statistics"""
         try:
-            return ray.get(self.shared_normalizer.update_global_stats.remote())
+            actor_id = str(self.shared_normalizer)
+            self.logger.debug(f"NormalizerWrapper.update_global_stats() calling actor {actor_id}")
+            result = ray.get(self.shared_normalizer.update_global_stats.remote())
+            self.logger.debug(f"NormalizerWrapper.update_global_stats() completed for actor {actor_id}")
+            return result
         except Exception as e:
             self.logger.error(f"Error updating global statistics: {e}", exc_info=True)
             raise
+    
+    def get_actor_info(self):
+        """Get information about this actor for debugging"""
+        return self.shared_normalizer.get_actor_info.remote()
 
     def save_state(self, file_path: str):
         """Save the state of the normalizer"""
@@ -137,10 +188,12 @@ class NormalizerWrapper:
         """Load the state of the normalizer"""
         return ray.get(self.shared_normalizer.load_state.remote(file_path, device))
     
+    @property
     def device(self):
         """Get the device of the normalizer"""
         return ray.get(self.shared_normalizer.device.remote())
     
+    @property
     def get_config(self):
         """Get the config of the normalizer"""
         return ray.get(self.shared_normalizer.get_config.remote())
@@ -384,6 +437,8 @@ class SumTreeWrapper:
 @ray.remote(num_cpus=1, num_gpus=1)
 class Learner:
     def __init__(self, agent: Agent, buffer: Optional[BufferWrapper] = None, normalizers: Optional[Dict[str, NormalizerWrapper]] = None, learn_iter: int = 1000, log_level='info'):
+        self.logger = get_logger(__name__, level=log_level)
+        self.log_level = logging.getLevelName(self.logger.getEffectiveLevel()).lower()
         self.agent = agent
         self.buffer = buffer
         # Replace buffer from agent with buffer wrapper if using shared buffer
@@ -397,9 +452,13 @@ class Learner:
             if self.agent.__class__.__name__ == 'HER':
                 self.agent.state_normalizer = self.normalizers['state']
                 self.agent.goal_normalizer = self.normalizers['goal']
+                state_actor_id = str(self.normalizers['state'].shared_normalizer)
+                goal_actor_id = str(self.normalizers['goal'].shared_normalizer)
+                self.logger.debug(f"Learner using normalizer actors:")
+                self.logger.debug(f"  State normalizer actor ID: {state_actor_id}")
+                self.logger.debug(f"  Goal normalizer actor ID: {goal_actor_id}")
         self.learn_iter = learn_iter
-        self.logger = get_logger(__name__, level=log_level)
-        self.log_level = logging.getLevelName(self.logger.getEffectiveLevel()).lower()
+        
 
         # Set internal step counter(tracks num times learn is called)
         self._learn_step = 0
@@ -414,9 +473,9 @@ class Learner:
         try:
             if self._learn_step % self.learn_iter == 0:
                 if gradients:
-                    self.agent._distributed_learn(step, run_number, num_updates, gradients)
+                    self.agent._distributed_learn(step, run_number, self.learn_iter, num_updates, gradients)
                 else:
-                    self.agent._distributed_learn(step, run_number, num_updates)
+                    self.agent._distributed_learn(step, run_number, self.learn_iter, num_updates)
             else:
                 pass
             
@@ -469,6 +528,7 @@ class DistributedAgents:
             self.logger = get_logger(__name__, level=self.log_level)
             self.logger.info(f"Initializing DistributedAgents with {num_workers} workers")
             self.agent_config = agent_config
+            self.logger.debug(f'Agent config passed to DistributedAgents: {self.agent_config}')
             self.num_workers = num_workers
             self.workers = []
             self.learner_device = get_device(learner_device) if learner_device else None
@@ -497,21 +557,30 @@ class DistributedAgents:
             self.logger.info(f'Ray initialized with {CPUS} CPUs and {GPUS} GPUs available')
 
             # Create base agent - explicitly force to CPU
-            self.logger.info(f'Creating base agent with device=cpu for safe cloning')
-            base_agent = load_agent_from_config(self.agent_config, load_weights=False)
+            self.logger.debug(f'Creating base agent with device=cpu for safe cloning')
+            base_agent_config = copy.deepcopy(self.agent_config)
+            # self.logger.info(f'Base agent config: {base_agent_config}')
+            base_agent = load_agent_from_config(base_agent_config, load_weights=False)
 
+            agent_config = copy.deepcopy(self.agent_config)
+            # self.logger.info(f'Agent config copy: {agent_config}')
             if self.agent_config['agent_type'] == 'HER':
                 self.normalizers = {}
                 self.normalizers['state'] = SharedNormalizer.remote(base_agent._obs_space_shape, base_agent.normalizer_eps, base_agent.normalizer_clip, self.learner_device, base_agent.save_dir + 'state_normalizer.npz', self.log_level)
                 self.normalizers['goal'] = SharedNormalizer.remote(base_agent._goal_shape, base_agent.normalizer_eps, base_agent.normalizer_clip, self.learner_device, base_agent.save_dir + 'goal_normalizer.npz', self.log_level)
-                agent_config = self.agent_config['agent']
+                state_actor_id = str(self.normalizers['state'])
+                goal_actor_id = str(self.normalizers['goal'])
+                self.logger.debug(f"Created SharedNormalizer actors:")
+                self.logger.debug(f"  State normalizer actor ID: {state_actor_id}")
+                self.logger.debug(f"  Goal normalizer actor ID: {goal_actor_id}")
+                agent_config = agent_config['agent']
             else:
                 self.normalizers = None
-                agent_config = self.agent_config
             
             # Initialize SharedBuffer if configured
             if 'replay_buffer' in agent_config:
                 try:
+                    # self.logger.info(f'Agent config: {agent_config}')
                     self.logger.info("Creating SharedBuffer actor")
                     self.shared_buffer = SharedBuffer.remote(agent_config['replay_buffer'], self.log_level)
                     self.logger.info("SharedBuffer actor created successfully")
@@ -596,8 +665,8 @@ class DistributedAgents:
                     # Add /worker-i/ to end of save directory, replacing 'learner'
                     worker_agent.save_dir = '/'.join(learner_agent.save_dir.split('/')[:-1] + [f'worker-{i}/'])
                     #DEBUG
-                    self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
-                    self.logger.info(f'Worker agent config: {worker_agent.get_config()}')
+                    # self.logger.info(f'Learner agent config: {learner_agent.get_config()}')
+                    # self.logger.info(f'Worker agent config: {worker_agent.get_config()}')
                    
                     
                     self.logger.info(f'Creating Worker {i}')
@@ -676,8 +745,6 @@ class Worker:
             self.logger.info("Initializing Worker")
             self.worker_id = id
             self.agent = agent
-            #DEBUG
-            self.logger.info(f'Worker agent config: {self.agent.get_config()}')
             if self.agent.__class__.__name__ == 'HER':
                 self.agent.agent.env.worker_id = id  # Pass worker_id to GymnasiumWrapper
                 self.agent.agent._distributed = True
@@ -691,8 +758,14 @@ class Worker:
             self.normalizers = normalizers
             if self.normalizers:
                 if self.agent.__class__.__name__ == 'HER':
+                    self.logger.debug(f'Normalizers: {self.normalizers}')
                     self.agent.state_normalizer = self.normalizers['state']
                     self.agent.goal_normalizer = self.normalizers['goal']
+                    state_actor_id = str(self.normalizers['state'].shared_normalizer)
+                    goal_actor_id = str(self.normalizers['goal'].shared_normalizer)
+                    self.logger.debug(f"Worker {self.worker_id} using normalizer actors:")
+                    self.logger.debug(f"  State normalizer actor ID: {state_actor_id}")
+                    self.logger.debug(f"  Goal normalizer actor ID: {goal_actor_id}")
             
             # If RayWandbCallback, set worker id to passed id
             if self.agent.__class__.__name__ == 'HER':
@@ -721,8 +794,8 @@ class Worker:
             # Set the get_parameters function on the agent to point to Learner (blocking)
             self.agent.get_parameters = lambda: ray.get(self.learner.get_parameters.remote())
 
-            # # Replace buffer from agent with buffer wrapper if using shared buffer
-            # if self.buffer:
+             #DEBUG
+            self.logger.info(f'Worker agent config: {self.agent.get_config()}')
                 
             self.logger.info("Worker initialized successfully")
         except Exception as e:

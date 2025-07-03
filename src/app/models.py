@@ -518,7 +518,7 @@ class StochasticDiscretePolicy(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path))
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -891,7 +891,7 @@ class ValueModel(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path))
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -1031,7 +1031,7 @@ class ActorModel(Model):
         if load_weights:
             try:
                 model_path = Path(config.get("save_dir")) / "actor_model" / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path))
+                model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
 
@@ -1219,7 +1219,7 @@ class CriticModel(Model):
         if load_weights:
             try:
                 model_path = Path(config.get("save_dir")) / "critic_model" / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path))
+                model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
 
