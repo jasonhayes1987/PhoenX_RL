@@ -32,7 +32,18 @@ RUN apt-get update && apt-get install -y \
     libsdl2-mixer-dev \
     libsdl2-ttf-dev \
     libfreetype6-dev \
+    # nsight-systems-2024.5.1 \
+    # nsight-compute-2024.3.2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install NVIDIA Nsight Systems and Compute via apt (compatible with CUDA 12.6 on Ubuntu 22.04)
+RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates && \
+    wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/7fa2af80.pub && \
+    gpg --dearmor -o /usr/share/keyrings/nvidia-devtools-archive-keyring.gpg 7fa2af80.pub && \
+    rm 7fa2af80.pub && \
+    echo "deb [signed-by=/usr/share/keyrings/nvidia-devtools-archive-keyring.gpg] http://developer.download.nvidia.com/devtools/repos/ubuntu2204/amd64 /" | tee /etc/apt/sources.list.d/nvidia-devtools.list && \
+    apt-get update && apt-get install -y nsight-systems-cli nsight-compute && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install Miniconda
 RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
@@ -55,19 +66,14 @@ ENV CONDA_DEFAULT_ENV=rl_env
 # Use the conda environment in subsequent commands
 SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 
-# Install PyTorch with CUDA support
-# RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+# Install PyTorch with CUDA support (ensure it's CUDA 12.6 compatible; adjust if needed)
+RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
-# Install Gymnasium Robotics directly from Repo for Mujoco v4 support
-RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git
+# Install Gymnasium Robotics Ver. 1.4 directly from Repo for Mujoco v4 support
+RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@1.4
 
-# # Install MuJoCo
-# RUN mkdir -p /root/.mujoco && \
-#     wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz && \
-#     tar -xf mujoco.tar.gz -C /root/.mujoco && \
-#     rm mujoco.tar.gz && \
-#     ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1.4 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 && \
-#     ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so
+# Install additional Python packages for profiling (e.g., TensorBoard for Torch Profiler visualization)
+RUN pip install tensorboard torch-tb-profiler
 
 # # Set environment variables for MuJoCo
 # ENV MUJOCO_GL="egl"
