@@ -2,6 +2,7 @@ import torch as T
 import torch.nn as nn
 from torch import optim
 import numpy as np
+from typing import Optional
 
 
 def move_to_device(obj, device: T.device | str, visited=None) -> object:
@@ -93,7 +94,8 @@ def move_to_device(obj, device: T.device | str, visited=None) -> object:
                     setattr(obj, attr_name, attr_value.to(device))
                 # Handle device attribute
                 elif attr_name == 'device' and isinstance(attr_value, (T.device, str)):
-                    setattr(obj, attr_name, device if isinstance(attr_value, T.device) else device_str)
+                    # setattr(obj, attr_name, device if isinstance(attr_value, T.device) else device_str)
+                    setattr(obj, attr_name, get_device(device_str))
                 # Recursively process containers and custom objects
                 elif isinstance(attr_value, (dict, list, tuple)) or (hasattr(attr_value, '__dict__') and not isinstance(attr_value, type)):
                     setattr(obj, attr_name, move_to_device(attr_value, device, visited))
@@ -287,7 +289,7 @@ def verify_device(obj, expected_device: str | T.device, verbose=False, indent=0,
     
     return stats
 
-def get_device(device_spec: str | T.device = None):
+def get_device(device_spec: Optional[str | T.device] = None) -> T.device:
     """
     Convert any valid device specification to a torch.device object.
     

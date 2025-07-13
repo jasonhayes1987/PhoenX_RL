@@ -1,7 +1,10 @@
 import json
+from typing import Optional, Dict, List
 from abc import ABC, abstractmethod
+from collections import deque
 import numpy as np
 import gymnasium as gym
+import gymnasium_robotics
 from gymnasium.envs.registration import EnvSpec, WrapperSpec
 from gymnasium.wrappers import (
     AtariPreprocessing,
@@ -11,6 +14,166 @@ from gymnasium.wrappers import (
     ResizeObservation
 )
 from gymnasium.vector import VectorEnv, SyncVectorEnv
+# Register gymnasium robotics with gymnasium
+gym.register_envs(gymnasium_robotics)
+
+class NStepReward(gym.Wrapper):
+    def __init__(self, env, n, discount=0.99):
+        """Initialize the wrapper with the environment and number of steps to track.
+
+        Args:
+            env (gym.Env): The Gymnasium environment to wrap.
+            n (int): The number of previous steps to include in the trajectory.
+            discount (float): The discount factor for the trajectory.
+        """
+        super().__init__(env)
+        self.env = env
+        self.n = n
+        self.n_states = deque(maxlen=self.n)
+        self.n_actions = deque(maxlen=self.n)
+        self.n_rewards = deque(maxlen=self.n)
+        self.n_next_states = deque(maxlen=self.n)
+        self.n_dones = deque(maxlen=self.n)
+        self.n_state_achieved_goals = deque(maxlen=self.n)
+        self.n_next_state_achieved_goals = deque(maxlen=self.n)
+        self.n_desired_goals = deque(maxlen=self.n)
+        self.current_state = None
+        self.step_count = 0
+        # self.rewards = deque(maxlen=self.n)
+        self.discount = discount
+
+    def reset(self, **kwargs):
+        """Reset the environment and clear the trajectory history.
+
+        Args:
+            **kwargs: Additional arguments for env.reset().
+
+        Returns:
+            tuple: (observation, info) from the environment reset.
+        """
+        #DEBUG
+        # print(f'n-step trajectory reset called')
+        # self.step_count = 0
+        # Capture current n-step trajectory info to return in info dict
+        trajectory = {
+            'states': np.array(self.n_states),
+            'actions': np.array(self.n_actions),
+            'rewards': np.array(self.n_rewards),
+            'next_states': np.array(self.n_next_states),
+            'dones': np.array(self.n_dones)
+        }
+        if isinstance(self.env.observation_space, gym.spaces.Dict):
+            trajectory['state_achieved_goals'] = np.array(self.n_state_achieved_goals)
+            trajectory['next_state_achieved_goals'] = np.array(self.n_next_state_achieved_goals)
+            trajectory['desired_goals'] = np.array(self.n_desired_goals)
+
+        state, info = self.env.reset(**kwargs)
+        #DEBUG
+        # print(f'n-step trajectory reset state:{state}, info:{info}')
+
+        self.n_states = deque(maxlen=self.n)
+        self.n_actions = deque(maxlen=self.n)
+        self.n_rewards = deque(maxlen=self.n)
+        self.n_next_states = deque(maxlen=self.n)
+        self.n_dones = deque(maxlen=self.n)
+        # self.rewards.clear()
+
+        action_shape = self.env.action_space.shape
+        # Add state achieved, next achieved, and desired goals if state is dict and has attrs
+        if isinstance(state, dict):
+            state_shape = self.env.observation_space['observation'].shape
+            goal_shape = self.env.observation_space['achieved_goal'].shape
+            self.n_state_achieved_goals = deque(maxlen=self.n)
+            self.n_next_state_achieved_goals = deque(maxlen=self.n)
+            self.n_desired_goals = deque(maxlen=self.n)
+            for _ in range(self.n):
+                self.n_state_achieved_goals.append(np.zeros(goal_shape))
+                self.n_next_state_achieved_goals.append(np.zeros(goal_shape))
+                self.n_desired_goals.append(np.zeros(goal_shape))
+        else:
+            state_shape = self.env.observation_space.shape
+
+        for _ in range(self.n):
+            self.n_states.append(np.zeros(state_shape))
+            self.n_actions.append(np.zeros(action_shape))
+            self.n_rewards.append(0)
+            self.n_next_states.append(np.zeros(state_shape))
+            self.n_dones.append(0)
+        
+        self.current_state = state
+        info['n-step trajectory'] = trajectory
+        #DEBUG
+        # print(f'n-step trajectory reset info:{info}')
+        return state, info
+
+    def step(self, action):
+        """Step the environment and update the n-step trajectory.
+
+        Args:
+            action: The action to take in the environment.
+
+        Returns:
+            tuple: (observation, reward, terminated, truncated, info) with updated info dict.
+        """
+        next_state, reward, terminated, truncated, info = self.env.step(action)
+        # self.rewards.append(reward)
+        # discounts = np.array([self.discount ** i for i in range(len(self.rewards))])
+        # rewards = np.array(self.rewards)
+        # reward = np.sum(rewards * discounts)
+        done = terminated or truncated
+        # done = terminated or truncated
+        self.step_count += 1
+        # If current step == 1, add state, action, and next state to every idx
+        if self.step_count == 1:
+            for _ in range(self.n):
+                if isinstance(self.env.observation_space, gym.spaces.Dict):
+                    self.n_states.append(self.current_state['observation'])
+                    self.n_actions.append(action)
+                    self.n_next_states.append(next_state['observation'])
+                    self.n_state_achieved_goals.append(self.current_state['achieved_goal'])
+                    self.n_next_state_achieved_goals.append(next_state['achieved_goal'])
+                    self.n_desired_goals.append(self.current_state['desired_goal'])
+                else:
+                    self.n_states.append(self.current_state)
+                    self.n_actions.append(action)
+                    self.n_next_states.append(next_state)
+        else:
+            # Append the current step's data to the trajectory
+            if isinstance(self.env.observation_space, gym.spaces.Dict):
+                self.n_states.append(self.current_state['observation'])
+                self.n_actions.append(action)
+                self.n_next_states.append(next_state['observation'])
+                self.n_state_achieved_goals.append(self.current_state['achieved_goal'])
+                self.n_next_state_achieved_goals.append(next_state['achieved_goal'])
+                self.n_desired_goals.append(self.current_state['desired_goal'])
+            else:
+                self.n_states.append(self.current_state)
+                self.n_actions.append(action)
+                self.n_next_states.append(next_state)
+            
+        self.n_rewards.append(reward)
+        self.n_dones.append(done)
+
+        # Update the current state
+        self.current_state = next_state
+
+        # Construct the trajectory dictionary
+        trajectory = {
+            'states': np.array(self.n_states),
+            'actions': np.array(self.n_actions),
+            'rewards': np.array(self.n_rewards),
+            'next_states': np.array(self.n_next_states),
+            'dones': np.array(self.n_dones)
+        }
+        if isinstance(self.env.observation_space, gym.spaces.Dict):
+            trajectory['state_achieved_goals'] = np.array(self.n_state_achieved_goals)
+            trajectory['next_state_achieved_goals'] = np.array(self.n_next_state_achieved_goals)
+            trajectory['desired_goals'] = np.array(self.n_desired_goals)
+        # # Add the trajectory to the info dictionary
+        info['n-step trajectory'] = trajectory
+        #DEBUG
+        # print(f'n-step trajectory step info:{info}')
+        return next_state, reward, terminated, truncated, info
 
 WRAPPER_REGISTRY = {
     "AtariPreprocessing": {
@@ -45,6 +208,10 @@ WRAPPER_REGISTRY = {
         "default_params": {
             "shape": 84
         }
+    },
+    "NStepReward": {
+        "cls": NStepReward,
+        "default_params": {"n": 1}
     }
 }
 
@@ -143,21 +310,21 @@ class EnvWrapper(ABC):
         """
         pass
     
+    # @abstractmethod
+    # def render(self, mode="rgb_array"):
+    #     """
+    #     Render the environment.
+
+    #     Args:
+    #         mode (str): The render mode (default: "rgb_array").
+
+    #     Returns:
+    #         Any: Rendered frame or visualization.
+    #     """
+    #     pass
+
     @abstractmethod
-    def render(self, mode="rgb_array"):
-        """
-        Render the environment.
-
-        Args:
-            mode (str): The render mode (default: "rgb_array").
-
-        Returns:
-            Any: Rendered frame or visualization.
-        """
-        pass
-
-    @abstractmethod
-    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
+    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: Optional[int] = None):
         """
         Initialize the environment with optional rendering and seeding.
 
@@ -168,6 +335,20 @@ class EnvWrapper(ABC):
 
         Returns:
             Any: The initialized environment.
+        """
+        pass
+
+    @abstractmethod
+    def format_actions(self, actions, testing: bool = False):
+        """
+        Format actions for the environment.
+
+        Args:
+            actions: Actions to format.
+            testing (bool): Whether in testing mode (default: False).
+
+        Returns:
+            Any: Formatted actions.
         """
         pass
     
@@ -190,6 +371,26 @@ class EnvWrapper(ABC):
 
         Returns:
             gym.Space: The action space.
+        """
+        pass
+
+    @property
+    def single_action_space(self):
+        """
+        Get the single action space for vectorized environments.
+
+        Returns:
+            gym.Space: The single action space.
+        """
+        pass
+
+    @property
+    def single_observation_space(self):
+        """
+        Get the single observation space for vectorized environments.
+
+        Returns:
+            gym.Space: The single observation space.
         """
         pass
 
@@ -240,12 +441,19 @@ class GymnasiumWrapper(EnvWrapper):
     This wrapper supports initialization, resetting, stepping, rendering,
     and JSON-based serialization of Gymnasium environments.
     """
-    def __init__(self, env_spec: EnvSpec, wrappers: list[dict] = None):
+    def __init__(self, env_spec: EnvSpec, wrappers: Optional[list[dict]] = None, worker_id: int = 0):
         self.env_spec = env_spec
         self.wrappers = wrappers
+        self.worker_id = worker_id
+        self.traj_counters = []  # Per-environment counters
+        self.unique_env_ids = []  # Unique IDs for each env
+        self.num_envs = 1
+        self.traj_ids = []
+        self.step_indices = []
         self.env = self._initialize_env()
+        
 
-    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: int = None):
+    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: Optional[int] = None):
         """
         Initialize the Gymnasium environment with unique seeds for each environment.
 
@@ -284,42 +492,59 @@ class GymnasiumWrapper(EnvWrapper):
 
         vec_env = SyncVectorEnv(env_fns)
 
+        # Initialize self.num_envs and internal env tracking
+        self.num_envs = num_envs
+        self.traj_counters = [0] * num_envs
+        self.unique_env_ids = [(self.worker_id * num_envs) + i for i in range(num_envs)]
+        self.traj_ids = [self._compute_traj_id(i) for i in range(num_envs)]
+        self.step_indices = [0] * num_envs
+
         return vec_env
+    
+    def _compute_traj_id(self, env_idx):
+        return (self.unique_env_ids[env_idx] << 32) + self.traj_counters[env_idx]
 
     def reset(self):
-        """
-        Reset the environment.
-
-        Returns:
-            Any: Initial observation of the environment.
-        """
+        #DEBUG
+        # print(f'GymnasiumWrapper reset called')
         if self.seed is not None:
-            return self.env.reset(seed=self.seed)
-        return self.env.reset()
+            state, info = self.env.reset(seed=self.seed)
+        else:
+            state, info = self.env.reset()
+        #DEBUG
+        # print(f'GymnasiumWrapper reset state:{state}, info:{info}')
+        return state, info
+
+    def step(self, action, testing=False):
+        states, rewards, terms, truncs, infos = self.env.step(action)
+        dones = np.logical_or(terms, truncs)
+        #DEBUG
+        # print(f'GymnasiumWrapper step states:{states}, rewards:{rewards}, dones:{dones}, infos:{infos}')
+        return states, rewards, dones, infos
     
-    def step(self, action):
-        """
-        Take an action in the environment.
-
-        Args:
-            action: The action to be taken.
-
-        Returns:
-            Tuple: Observation, reward, done flag, and additional info.
-        """
-        return self.env.step(action)
+        # if testing:
+        #     return states, rewards, dones, infos
+        # else:
+        #     for i in range(self.num_envs):
+        #         if dones[i]:
+        #             self.traj_counters[i] += 1
+        #             self.traj_ids[i] = self._compute_traj_id(i)
+        #             self.step_indices[i] = 0
+        #         else:
+        #             self.step_indices[i] += 1
+        #     return states, rewards, dones, infos, self.traj_ids, self.step_indices
     
-    def render(self, mode="rgb_array"):
-        """
-        Render the environment.
+    # def render(self, mode="rgb_array"):
+    #     """
+    #     Render the environment.
 
-        Args:
-            mode (str): The render mode (default: "rgb_array").
+    #     Args:
+    #         mode (str): The render mode (default: "rgb_array").
 
-        Returns:
-            Any: Rendered frame or visualization.
-        """
-        return self.env.render(mode=mode)
+    #     Returns:
+    #         Any: Rendered frame or visualization.
+    #     """
+    #     return self.env.render(mode=mode)
     
     def format_actions(self, actions: np.ndarray, testing=False):
         if isinstance(self.action_space, gym.spaces.Box):
@@ -396,7 +621,8 @@ class GymnasiumWrapper(EnvWrapper):
         return {
             "type": self.__class__.__name__,
             "env": self.env_spec.to_json(),
-            "wrappers": self.wrappers
+            "wrappers": self.wrappers,
+            "worker_id": self.worker_id
         }
     
     def to_json(self):
@@ -429,7 +655,7 @@ class GymnasiumWrapper(EnvWrapper):
         #DEBUG
         # print(f'wrappers in gym from json:{config["wrappers"]}')
         try:
-            return cls(env_spec, config["wrappers"])
+            return cls(env_spec, config["wrappers"], config["worker_id"])
         except Exception as e:
             raise ValueError(f"Environment wrapper error: {config}, {e}")
     
@@ -441,6 +667,20 @@ class IsaacSimWrapper(EnvWrapper):
         This class is a template and needs implementation based on Isaac Sim's API.
         """
         pass
+    
+    def format_actions(self, actions, testing: bool = False):
+        """
+        Format actions for Isaac Sim environment.
+        
+        Args:
+            actions: Actions to format.
+            testing (bool): Whether in testing mode (default: False).
+            
+        Returns:
+            Any: Formatted actions.
+        """
+        # Placeholder implementation - needs to be implemented based on Isaac Sim's API
+        return actions
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -487,3 +727,4 @@ def serialize_env_spec(env_spec):
         "vector_entry_point": env_spec.vector_entry_point,
     }
     return env_spec_dict
+

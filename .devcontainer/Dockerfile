@@ -69,8 +69,8 @@ SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 # Install PyTorch with CUDA support (ensure it's CUDA 12.6 compatible; adjust if needed)
 RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 
-# Install Gymnasium Robotics Ver. 1.4 directly from Repo for Mujoco v4 support
-RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@1.4
+# Install Gymnasium Robotics directly from Repo for Mujoco v4 support
+RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 
 # Install additional Python packages for profiling (e.g., TensorBoard for Torch Profiler visualization)
 RUN pip install tensorboard torch-tb-profiler
