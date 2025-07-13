@@ -119,6 +119,8 @@ class WandbCallback(Callback):
     def on_train_epoch_end(self, epoch: int, logs=None):
         wandb.log(logs, step=epoch)
         if (logs["best"]) & (logs["episode"] % self.chkpt_freq == 0):
+            # Create save dir if not exist
+            os.makedirs(self.save_dir, exist_ok=True)
             wandb_support.save_model_artifact(self.save_dir, self.project_name, model_is_best=True)
 
     def on_train_step_begin(self, step: int, logs=None):
