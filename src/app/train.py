@@ -4,13 +4,14 @@ import time
 from logging_config import get_logger
 import argparse
 import subprocess
-
+import ray
 import random
 import numpy as np
 import torch as T
 import wandb
 
 from rl_agents import load_agent_from_config
+from distributed_trainer import DistributedAgents
 
 # Configure logging
 logger = get_logger(__name__, 'info')
@@ -18,6 +19,15 @@ logger = get_logger(__name__, 'info')
 parser = argparse.ArgumentParser(description='Train Agent')
 parser.add_argument('--agent_config', type=str, required=True, help='Path to the agent configuration file')
 parser.add_argument('--train_config', type=str, required=True, help='Path to the train configuration file')
+parser.add_argument('--distributed_workers', type=int, default=1, help='Number of distributed workers (default: 1)')
+parser.add_argument('--learner_device', type=str, default=None, help='Device for the learner (default: None)')
+parser.add_argument('--learner_num_cpus', type=int, default=1, help='Number of CPUs for the learner (default: 1)')
+parser.add_argument('--learner_num_gpus', type=float, default=1.0, help='Number of GPUs for the learner (default: 1)')
+parser.add_argument('--worker_device', type=str, default='cpu', help='Device for the workers (default: cpu)')
+parser.add_argument('--worker_num_cpus', type=int, default=1, help='Number of CPUs for the workers (default: 1)')
+parser.add_argument('--worker_num_gpus', type=float, default=0.0, help='Number of GPUs for the workers (default: 0)')
+parser.add_argument('--learn_iter', type=int, default=100, help='Learn frequency for the distributed workers (default: 100)')
+parser.add_argument('--sync_iter', type=int, default=10, help='Sync interval for the distributed workers (default: 10)')
 
 args = parser.parse_args()
 
@@ -38,17 +48,42 @@ def train_agent(agent_config, train_config):
         #DEBUG
         # print(f'training save dir: {save_dir}')
         num_envs = train_config['num_envs']
-        seed = train_config.get('seed', np.random.randint(1000))
+        
+        # Use a specific seed if provided, otherwise generate a deterministic one based on current time
+        # This ensures reproducibility while still giving different runs different seeds
+        if 'seed' not in train_config:
+            # Use current timestamp as seed for reproducible randomness
+            seed = int(time.time()) % 10000
+            logger.info(f"No seed provided, using generated seed: {seed}")
+        else:
+            seed = train_config['seed']
+            logger.info(f"Using provided seed: {seed}")
+        
         run_number = train_config.get('run_number', None)
         num_episodes = train_config['num_episodes']
 
         assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
-            agent = load_agent_from_config(agent_config, load_weights)
-
             if agent_type in ['ActorCritic', 'DDPG', 'TD3']:
-                agent.train(num_episodes, num_envs, seed, render_freq)
+                if args.distributed_workers > 1:
+                    distributed_agents = DistributedAgents(
+                        agent_config,
+                        args.distributed_workers,
+                        args.learner_device,
+                        args.learner_num_cpus,
+                        args.learner_num_gpus,
+                        args.worker_device,
+                        args.worker_num_cpus,
+                        args.worker_num_gpus,
+                        args.learn_iter,
+                    )
+                    futures = distributed_agents.train(sync_iter=args.sync_iter, num_episodes=num_episodes, num_envs=num_envs, seed=seed, render_freq=render_freq)
+                    if futures:
+                        ray.get(futures)
+                else:
+                    agent = load_agent_from_config(agent_config, load_weights)
+                    agent.train(num_episodes, num_envs, seed, render_freq)
 
             elif agent_type == 'Reinforce':
                 trajectories_per_update = train_config['trajectories_per_update']
@@ -57,8 +92,34 @@ def train_agent(agent_config, train_config):
             elif agent_type == 'HER':
                 num_epochs = train_config['num_epochs']
                 num_cycles = train_config['num_cycles']
-                num_updates = train_config['learning_epochs']
-                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
+                num_updates = train_config['num_epochs']
+                if args.distributed_workers > 1:
+                    distributed_agents = DistributedAgents(
+                        agent_config,
+                        args.distributed_workers,
+                        args.learner_device,
+                        args.learner_num_cpus,
+                        args.learner_num_gpus,
+                        args.worker_device,
+                        args.worker_num_cpus,
+                        args.worker_num_gpus,
+                        args.learn_iter
+                    )
+                    futures = distributed_agents.train(
+                        sync_iter=args.sync_iter,
+                        num_epochs=num_epochs,
+                        num_cycles=num_cycles,
+                        num_episodes=num_episodes,
+                        num_updates=num_updates,
+                        render_freq=render_freq,
+                        num_envs=num_envs,
+                        seed=seed
+                    )
+                    if futures:
+                        ray.get(futures)
+                else:
+                    agent = load_agent_from_config(agent_config, load_weights)
+                    agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
             
             elif agent_type == 'PPO':
                 timesteps = train_config['num_timesteps']

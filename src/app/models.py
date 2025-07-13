@@ -18,7 +18,6 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, ExponentialLR
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
-import cnn_models
 from torch_utils import get_device, VarianceScaling_
 # from logging_config import logger
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
@@ -519,7 +518,7 @@ class StochasticDiscretePolicy(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path))
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -592,7 +591,7 @@ class StochasticContinuousPolicy(Model):
             x (Tensor): Input tensor (e.g., observation from the environment).
 
         Returns:
-            Tuple[Distribution, Tensor, Tensor]: Action distribution and its parameters.
+            Distribution, Tensor, Tensor: Action distribution and its parameters.
         """
         #DEBUG
         # print(f'state shape sent to policy forward:{x.shape}')
@@ -892,7 +891,7 @@ class ValueModel(Model):
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path))
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -1032,7 +1031,7 @@ class ActorModel(Model):
         if load_weights:
             try:
                 model_path = Path(config.get("save_dir")) / "actor_model" / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path))
+                model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
 
@@ -1220,7 +1219,7 @@ class CriticModel(Model):
         if load_weights:
             try:
                 model_path = Path(config.get("save_dir")) / "critic_model" / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path))
+                model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
 
