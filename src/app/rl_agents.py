@@ -4374,15 +4374,9 @@ class HER(Agent):
             self.normalizer_eps = normalizer_eps
             # self.replay_buffer_size = replay_buffer_size
             self.save_dir = self._setup_save_dir(save_dir)
-            # Set save directory
-            # if save_dir is not None and "/her/" not in save_dir:
-            #     self.save_dir = os.path.join(save_dir, "her/")
-            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
-            # elif save_dir is not None:
-            #     self.save_dir = save_dir
-            #     agent_name = os.path.basename(os.path.dirname(self.agent.save_dir))
-            #     self.agent.save_dir = os.path.join(self.save_dir, agent_name)
+
+            # Set internal profiler attribute to None.  Passed from train.py
+            self.profiler = None
 
             # Set learn iter to 0. For distributed training
             self._learn_iter = 0
@@ -5346,6 +5340,10 @@ class HER(Agent):
                             #     self.completed_episodes[i] += 1
 
                         states = next_states
+
+                        # Call prof.step() here to advance per-episode
+                        if hasattr(self, 'profiler'):  # Check if profiler is active (passed from train.py)
+                            self.profiler.step()  # Advance step per episode
 
                         if self.agent.callbacks:
                             for callback in self.agent.callbacks:
