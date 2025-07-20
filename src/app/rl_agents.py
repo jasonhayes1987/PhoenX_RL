@@ -34,6 +34,7 @@ import torch as T
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical, Beta, Normal, kl_divergence
+from torch.profiler import profile
 import gymnasium as gym
 import gymnasium_robotics
 from gymnasium.envs.registration import EnvSpec
@@ -1646,13 +1647,16 @@ class DDPG(Agent):
             # target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
             # Calculate target Q-values
             # targets = rewards + (1 - dones) * self.discount * target_critic_values
-            targets = compute_n_step_return(
-                rewards,
-                dones,
-                self.discount,
-                self.N,
-                device=self.target_critic_model.device
-            ).squeeze()
+            if self.N > 1:
+                targets = compute_n_step_return(
+                    rewards,
+                    dones,
+                    self.discount,
+                    self.N,
+                    device=self.target_critic_model.device
+                ).squeeze()
+            else:
+                targets = rewards.squeeze()
             #DEBUG
             # print(f'n-step returns shape: {targets.shape}')
             # print(f'n-step returns: {targets}')
@@ -4375,9 +4379,6 @@ class HER(Agent):
             # self.replay_buffer_size = replay_buffer_size
             self.save_dir = self._setup_save_dir(save_dir)
 
-            # Set internal profiler attribute to None.  Passed from train.py
-            self.profiler = None
-
             # Set learn iter to 0. For distributed training
             self._learn_iter = 0
 
@@ -5110,7 +5111,7 @@ class HER(Agent):
             'dones': dones
         }
 
-    def train(self, num_epochs: int, num_cycles: int, num_episodes: int, num_updates: int, render_freq: int, num_envs: int = 1, seed: int = None, sync_iter: int = 1):
+    def train(self, num_epochs: int, num_cycles: int, num_episodes: int, num_updates: int, render_freq: int, num_envs: int = 1, seed: int = None, sync_iter: int = 1, profiler: profile = None):
         """
         Train the HER agent with a vectorized environment setup, following the HER paper's experiment structure.
 
@@ -5249,16 +5250,16 @@ class HER(Agent):
                                     infos['n-step trajectory']['desired_goals'][i]
                                 )
                             )
-                        self.agent.replay_buffer.add(
-                            infos['n-step trajectory']['states'],
-                            infos['n-step trajectory']['actions'],
-                            infos['n-step trajectory']['rewards'],
-                            infos['n-step trajectory']['next_states'],
-                            infos['n-step trajectory']['dones'],
-                            infos['n-step trajectory']['state_achieved_goals'],
-                            infos['n-step trajectory']['next_state_achieved_goals'],
-                            infos['n-step trajectory']['desired_goals']
-                        )
+                        # self.agent.replay_buffer.add(
+                        #     infos['n-step trajectory']['states'],
+                        #     infos['n-step trajectory']['actions'],
+                        #     infos['n-step trajectory']['rewards'],
+                        #     infos['n-step trajectory']['next_states'],
+                        #     infos['n-step trajectory']['dones'],
+                        #     infos['n-step trajectory']['state_achieved_goals'],
+                        #     infos['n-step trajectory']['next_state_achieved_goals'],
+                        #     infos['n-step trajectory']['desired_goals']
+                        # )
 
                         # Update normalizers
                         self.state_normalizer.update_local_stats(
@@ -5271,9 +5272,24 @@ class HER(Agent):
                         completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
                         for i in completed_episodes:
                             self.completed_episodes[i] += 1
-                        # for i in range(num_envs):
-                            #DEBUG
-                            # print(f'trajectories[{i}]: {trajectories[i]}')
+                            # episode_states = T.tensor([d[0] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # episode_actions = T.tensor([d[1] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # episode_rewards = T.tensor([d[2] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # episode_next_states = T.tensor([d[3] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # episode_dones = T.tensor([d[4] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # episode_state_achieved_goals = T.tensor([d[5] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # episode_next_state_achieved_goals = T.tensor([d[6] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # episode_desired_goals = T.tensor([d[7] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
+                            # self.agent.replay_buffer.add(
+                            #     episode_states,
+                            #     episode_actions,
+                            #     episode_rewards,
+                            #     episode_next_states,
+                            #     episode_dones,
+                            #     episode_state_achieved_goals,
+                            #     episode_next_state_achieved_goals,
+                            #     episode_desired_goals
+                            # )
                             self.store_hindsight_trajectory(trajectories[i])
                             # Calculate success rate
                             goal_distance = np.linalg.norm(next_states['achieved_goal'][i] - states['desired_goal'][i], axis=-1)
@@ -5341,9 +5357,8 @@ class HER(Agent):
 
                         states = next_states
 
-                        # Call prof.step() here to advance per-episode
-                        if hasattr(self, 'profiler'):  # Check if profiler is active (passed from train.py)
-                            self.profiler.step()  # Advance step per episode
+                        if profiler:
+                            profiler.step()
 
                         if self.agent.callbacks:
                             for callback in self.agent.callbacks:
@@ -5574,16 +5589,16 @@ class HER(Agent):
         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = zip(*trajectory)
         
         # Convert to NumPy arrays for efficiency
-        # states = np.array(states)
-        # actions = np.array(actions)
-        # rewards = np.array(rewards)
-        # next_states = np.array(next_states)
-        # dones = np.array(dones)
-        # achieved_goals = np.array(achieved_goals)
-        # next_achieved_goals = np.array(next_achieved_goals)
-        # desired_goals = np.array(desired_goals)
+        states = np.array(states)
+        actions = np.array(actions)
+        rewards = np.array(rewards)
+        next_states = np.array(next_states)
+        dones = np.array(dones)
+        achieved_goals = np.array(achieved_goals)
+        next_achieved_goals = np.array(next_achieved_goals)
+        desired_goals = np.array(desired_goals)
 
-        experiences = []
+        # experiences = []
         goals = []
         
         if self.strategy == "final":
@@ -5613,10 +5628,18 @@ class HER(Agent):
                 # next_state_achieved_goal = next_achieved_goals[next_state_idx]
                 
                 # Append transition with n-step reward
-                experiences.append((
-                    states[t], actions[t], n_step_reward, next_states[t], dones[t], 
-                    achieved_goals[t], next_achieved_goals[t], new_desired_goal
-                ))
+                # experiences.append((
+                #     states[t], actions[t], n_step_reward, next_states[t], dones[t], 
+                #     achieved_goals[t], next_achieved_goals[t], new_desired_goal
+                # ))
+                states = np.append(states, np.expand_dims(states[idx], axis=0), axis=0)
+                actions = np.append(actions, np.expand_dims(actions[idx], axis=0), axis=0)
+                rewards = np.append(rewards, np.expand_dims(new_reward, axis=0), axis=0)
+                next_states = np.append(next_states, np.expand_dims(next_states[idx], axis=0), axis=0)
+                dones = np.append(dones, np.expand_dims(dones[idx], axis=0), axis=0)
+                achieved_goals = np.append(achieved_goals, np.expand_dims(achieved_goals[idx], axis=0), axis=0)
+                next_achieved_goals = np.append(next_achieved_goals, np.expand_dims(next_achieved_goals[idx], axis=0), axis=0)
+                desired_goals = np.append(desired_goals, np.expand_dims(goal, axis=0), axis=0)
         
         elif self.strategy == "future":
             # For "future" strategy, n-step rewards are tricky due to changing goals.
@@ -5643,21 +5666,30 @@ class HER(Agent):
                     # print(f'goal_distance: {goal_distance}')
                     new_reward = self.agent.env.get_base_env().compute_reward(next_achieved_goals[idx], goal, {})
                     # print(f'new_reward: {new_reward}')
-                    experiences.append((
-                        states[idx], actions[idx], new_reward, next_states[idx], dones[idx],
-                        achieved_goals[idx], next_achieved_goals[idx], goal
-                    ))
+                    # experiences.append((
+                    #     states[idx], actions[idx], new_reward, next_states[idx], dones[idx],
+                    #     achieved_goals[idx], next_achieved_goals[idx], goal
+                    # ))
+                    states = np.append(states, np.expand_dims(states[idx], axis=0), axis=0)
+                    actions = np.append(actions, np.expand_dims(actions[idx], axis=0), axis=0)
+                    rewards = np.append(rewards, np.expand_dims(new_reward, axis=0), axis=0)
+                    next_states = np.append(next_states, np.expand_dims(next_states[idx], axis=0), axis=0)
+                    dones = np.append(dones, np.expand_dims(dones[idx], axis=0), axis=0)
+                    achieved_goals = np.append(achieved_goals, np.expand_dims(achieved_goals[idx], axis=0), axis=0)
+                    next_achieved_goals = np.append(next_achieved_goals, np.expand_dims(next_achieved_goals[idx], axis=0), axis=0)
+                    desired_goals = np.append(desired_goals, np.expand_dims(goal, axis=0), axis=0)
                 
         
         elif self.strategy == "none":
             pass  # No hindsight replay
         
         # Add all experiences to the replay buffer
-        arrays = [np.array(experience) for experience in zip(*experiences)]
+        # arrays = [np.array(experience) for experience in zip(*experiences)]
         #DEBUG
         # print(f'arrays: {arrays}')
-        self.agent.replay_buffer.add(*arrays)
+        # self.agent.replay_buffer.add(*arrays)
         # self.agent.replay_buffer.add(*zip(*experiences))
+        self.agent.replay_buffer.add(states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals)
                 
         
 
