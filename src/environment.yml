@@ -5,7 +5,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.10
+  - python=3.12
   - pip
   - pylint
   - pytest
@@ -39,15 +39,10 @@ dependencies:
   - moviepy
   - ffmpeg
   - mpi4py
-  - cupy
   - dash-bootstrap-components
   - mujoco>=2.2.0,<3.2.0
   - python-dotenv
   - python-dotenv-with-cli
-  - pytorch
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.4
   - ray-all
   - pip:
     - expecttest!=0.2.0
