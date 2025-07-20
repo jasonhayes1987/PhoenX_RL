@@ -57,6 +57,10 @@ ENV PATH=/opt/conda/bin:$PATH
 # Copy over environment.yml for RL API and app
 COPY src/environment.yml .
 
+# Accept Anaconda Terms of Service for the channels
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
 # Create the conda environment from environment.yml
 RUN conda env create -f environment.yml
 
@@ -67,7 +71,7 @@ ENV CONDA_DEFAULT_ENV=rl_env
 SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 
 # Install PyTorch with CUDA support (ensure it's CUDA 12.6 compatible; adjust if needed)
-RUN conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+RUN pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 
 # Install Gymnasium Robotics directly from Repo for Mujoco v4 support
 RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
@@ -87,7 +91,7 @@ ENV PYOPENGL_PLATFORM="osmesa"
 ENV PYTHONPATH="${PYTHONPATH}:/workspaces/RL_Agents/src/app"
 
 # Run accept license command for AutoROM do download all roms needed for Atari ale
-RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.10/site-packages/ale_py/roms
+RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.12/site-packages/ale_py/roms
 
 # Set working directory
 WORKDIR /app

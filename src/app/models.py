@@ -6,14 +6,13 @@ import json
 import os
 from typing import Optional, List, Tuple, Dict
 from pathlib import Path
-# import time
 
 import torch as T
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
 from torch.distributions import Categorical, Beta, Normal
-from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, ExponentialLR
+# from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, ExponentialLR
 
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
@@ -22,6 +21,7 @@ from torch_utils import get_device, VarianceScaling_
 # from logging_config import logger
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import check_for_inf_or_NaN
+from schedulers import ScheduleWrapper
 
 class Model(nn.Module):
     """
@@ -38,7 +38,7 @@ class Model(nn.Module):
         device (str): The device ('cpu' or 'cuda') to run the model on.
     """
     def __init__(self, env: EnvWrapper, layer_config, optimizer_params: dict = None,
-                 scheduler_params: dict = None, device=None):
+                 lr_scheduler: ScheduleWrapper = None, device=None):
         """
         Sets up the module dictionary of layers (most of which
         will be lazy).
@@ -55,7 +55,7 @@ class Model(nn.Module):
         self.layer_config = layer_config
         self.layers = nn.ModuleDict()
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
-        self.scheduler_params = scheduler_params
+        self.lr_scheduler = lr_scheduler
         self.device = get_device(device)
 
         # Build the layers dynamically based on config
@@ -63,12 +63,9 @@ class Model(nn.Module):
             layer_type = layer_info['type']
             layer_params = layer_info.get('params', {})
             self.layers[f'{layer_type}_{i}'] = self._build_layer(layer_type, layer_params)
-            
-        # add module to model
-        # self.add_module('layers', self.layers)
-        # Set optimizer and scheduler to None (set in init_parameters function after dry run)
+
+        # Set optimizer to None (set in init_parameters function after dry run)
         self.optimizer = None
-        self.scheduler = None
 
         # Move the model to device
         self.to(self.device)
@@ -120,10 +117,8 @@ class Model(nn.Module):
         # Initialize weights after lazy modules are materialized
         self._init_weights(layer_config, module_dict)
 
-        # Now that parameters exist, create the optimizer & scheduler
+        # Now that parameters exist, create the optimizer
         self.optimizer = self._init_optimizer()
-        if self.scheduler_params:
-            self.scheduler = self._init_scheduler()
 
     def _build_layer(self, layer_type, params):
         """
@@ -255,28 +250,28 @@ class Model(nn.Module):
         else:
             raise NotImplementedError(f"Unsupported optimizer type: {optimizer_type}")
     
-    def _init_scheduler(self):
-        """
-        Initialize the learning rate scheduler for the model.
+    # def _init_scheduler(self):
+    #     """
+    #     Initialize the learning rate scheduler for the model.
 
-        Args:
-            scheduler (dict): Scheduler configuration.
+    #     Args:
+    #         scheduler (dict): Scheduler configuration.
 
-        Returns:
-            torch.optim.lr_scheduler: Configured scheduler.
-        """
-        scheduler_type = self.scheduler_params.get('type', '').lower()
-        scheduler_params = self.scheduler_params.get('params', {})
-        if scheduler_type == 'cosineannealing':
-            return optim.lr_scheduler.CosineAnnealingLR(self.optimizer, **scheduler_params)
-        elif scheduler_type == 'step':
-            return optim.lr_scheduler.StepLR(self.optimizer, **scheduler_params)
-        elif scheduler_type == 'exponential':
-            return optim.lr_scheduler.ExponentialLR(self.optimizer, **scheduler_params)
-        elif scheduler_type == 'linear':
-            return optim.lr_scheduler.LinearLR(self.optimizer, **scheduler_params)
-        else:
-            raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
+    #     Returns:
+    #         torch.optim.lr_scheduler: Configured scheduler.
+    #     """
+    #     scheduler_type = self.scheduler_params.get('type', '').lower()
+    #     scheduler_params = self.scheduler_params.get('params', {})
+    #     if scheduler_type == 'cosineannealing':
+    #         return optim.lr_scheduler.CosineAnnealingLR(self.optimizer, **scheduler_params)
+    #     elif scheduler_type == 'step':
+    #         return optim.lr_scheduler.StepLR(self.optimizer, **scheduler_params)
+    #     elif scheduler_type == 'exponential':
+    #         return optim.lr_scheduler.ExponentialLR(self.optimizer, **scheduler_params)
+    #     elif scheduler_type == 'linear':
+    #         return optim.lr_scheduler.LinearLR(self.optimizer, **scheduler_params)
+    #     else:
+    #         raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
     
     @abstractmethod
     def forward(self, x):
@@ -902,10 +897,10 @@ class ActorModel(Model):
                  layer_config: List[Dict],
                  output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
-                 scheduler_params: dict=None,
+                 lr_scheduler: ScheduleWrapper=None,
                  device: str=None
                  ):
-        super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device)
         self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -943,7 +938,7 @@ class ActorModel(Model):
             'layer_config': self.layer_config,
             'output_layer_kernel':self.output_config,
             'optimizer_params': self.optimizer_params,
-            'scheduler_params': self.scheduler_params,
+            'lr_scheduler': self.lr_scheduler.get_config(),
             'device': self.device.type,
         }
 
@@ -957,13 +952,17 @@ class ActorModel(Model):
         else:
             device = self.device
 
+        #DEBUG
+        print(f'lr_scheduler:{self.lr_scheduler}')
+        print(f'lr_scheduler config:{self.lr_scheduler.get_config()}')
+
         env = GymnasiumWrapper(self.env.env_spec, self.env.wrappers)
         cloned_model = ActorModel(
             env=env,
             layer_config=self.layer_config.copy(),
             output_layer_kernel=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
-            scheduler_params=self.scheduler_params.copy() if self.scheduler_params else None,
+            lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
             device=device
         )
         
@@ -1017,13 +1016,14 @@ class ActorModel(Model):
         #     raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         env = EnvWrapper.from_json(config.get("env"))
+        lr_scheduler = ScheduleWrapper(config.get("lr_scheduler", None))
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel"),
                     # goal_shape = config.get("goal_shape", None)
                     optimizer_params = config.get("optimizer_params"),
-                    scheduler_params = config.get("scheduler_params", None),
+                    lr_scheduler = lr_scheduler,
                     device = config.get("device")
                     )
 
@@ -1046,10 +1046,10 @@ class CriticModel(Model):
                  output_layer_kernel: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
-                 scheduler_params: dict=None,
+                 lr_scheduler: ScheduleWrapper=None,
                  device: str=None
                  ):
-        super().__init__(env, state_layers, optimizer_params, scheduler_params, device)
+        super().__init__(env, state_layers, optimizer_params, lr_scheduler, device)
         self.env = env
         # self.state_config = state_layers # Stored as layer config in parent
         self.merged_config = merged_layers
@@ -1125,7 +1125,7 @@ class CriticModel(Model):
             'output_layer_kernel': self.output_config,
             # 'goal_shape': self.goal_shape,
             'optimizer_params': self.optimizer_params,
-            'scheduler_params': self.scheduler_params,
+            'lr_scheduler': self.lr_scheduler.get_config(),
             'device': self.device.type,
         }
 
@@ -1146,7 +1146,7 @@ class CriticModel(Model):
             output_layer_kernel=self.output_config.copy(),
             # goal_shape=self.goal_shape.copy(),
             optimizer_params=self.optimizer_params.copy(),
-            scheduler_params=self.scheduler_params.copy() if self.scheduler_params else None,
+            lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
             device=device
         )
         
@@ -1204,14 +1204,15 @@ class CriticModel(Model):
         #     raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         env = EnvWrapper.from_json(config.get("env"))
-
+        lr_scheduler = ScheduleWrapper(config.get("lr_scheduler", None))
+        
         model = cls(env = env,
                     state_layers = config.get("state_layers"),
                     merged_layers = config.get("merged_layers"),
                     output_layer_kernel = config.get("output_layer_kernel"),
                     # goal_shape = config.get("goal_shape", None)
                     optimizer_params = config.get("optimizer_params"),
-                    scheduler_params = config.get("scheduler_params", None),
+                    lr_scheduler = lr_scheduler,
                     device = config.get("device")
                     )
 
