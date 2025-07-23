@@ -88,7 +88,7 @@ ENV PYOPENGL_PLATFORM="osmesa"
 # ENV MUJOCO_PATH="/root/.mujoco/mujoco-3.1.4"
 
 # Add app directory to python path
-ENV PYTHONPATH="${PYTHONPATH}:/workspaces/RL_Agents/src/app"
+ENV PYTHONPATH="/workspaces/PhoenX_RL:$PYTHONPATH"
 
 # Run accept license command for AutoROM do download all roms needed for Atari ale
 RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.12/site-packages/ale_py/roms

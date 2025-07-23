@@ -938,7 +938,7 @@ class ActorModel(Model):
             'layer_config': self.layer_config,
             'output_layer_kernel':self.output_config,
             'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config(),
+            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
             'device': self.device.type,
         }
 
@@ -951,10 +951,6 @@ class ActorModel(Model):
             device = get_device(device)
         else:
             device = self.device
-
-        #DEBUG
-        print(f'lr_scheduler:{self.lr_scheduler}')
-        print(f'lr_scheduler config:{self.lr_scheduler.get_config()}')
 
         env = GymnasiumWrapper(self.env.env_spec, self.env.wrappers)
         cloned_model = ActorModel(
@@ -1016,7 +1012,8 @@ class ActorModel(Model):
         #     raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler = ScheduleWrapper(config.get("lr_scheduler", None))
+        lr_scheduler_config = config.get("lr_scheduler", None)
+        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
@@ -1125,7 +1122,7 @@ class CriticModel(Model):
             'output_layer_kernel': self.output_config,
             # 'goal_shape': self.goal_shape,
             'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config(),
+            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
             'device': self.device.type,
         }
 
@@ -1204,7 +1201,8 @@ class CriticModel(Model):
         #     raise FileNotFoundError(f"No configuration file found in {config_path}")
         
         env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler = ScheduleWrapper(config.get("lr_scheduler", None))
+        lr_scheduler_config = config.get("lr_scheduler", None)
+        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
         
         model = cls(env = env,
                     state_layers = config.get("state_layers"),
