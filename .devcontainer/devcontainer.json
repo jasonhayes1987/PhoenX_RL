@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/anaconda
 {
-    "name": "PyTorch - Cuda RL_Agents",
+    "name": "Advanced Replay",
     "build": {
       "context": "..",
       "dockerfile": "Dockerfile",
@@ -19,7 +19,7 @@
     "forwardPorts": [8000, 8080, 8265],
     "mounts": [
       // "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app,target=/app,type=bind,consistency=cached"
-      "source=C:/Users/jason/OneDrive/Documents/AI/Projects/RL Agents/RL_Agents/pytorch/src/app,target=/app,type=bind,consistency=cached"
+      "source=E:/Documents/Programming/Projects/Reinforcement/Advanced-Replay-Strategies,target=//Advanced-Replay-Strategies,type=bind,consistency=cached"
       // "source=E:/Documents/Programming/Projects/Reinforcement/RL_Agents/pytorch/src/app/tensorboard/logs,target=/app/tensorboard/logs,type=bind,consistency=cached"
     ],
   // Use 'forwardPorts' to make a list of ports inside the container available locally.

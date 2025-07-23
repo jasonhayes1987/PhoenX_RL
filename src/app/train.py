@@ -42,14 +42,12 @@ def train_agent(agent_config, train_config):
     try:
         agent_type = agent_config['agent_type']
         print(f'agent type:{agent_type}')
-        # load_weights = train_config.get('load_weights', False)
         load_weights = train_config.get('load_weights', False)
-        # render = train_config.get('render', False)
         render_freq = train_config.get('render_freq', 0)
         save_dir = train_config.get('save_dir', agent_config['save_dir'])
-        #DEBUG
-        # print(f'training save dir: {save_dir}')
         num_envs = train_config['num_envs']
+        run_number = train_config.get('run_number', None)
+        num_episodes = train_config['num_episodes']
         
         # Use a specific seed if provided, otherwise generate a deterministic one based on current time
         # This ensures reproducibility while still giving different runs different seeds
@@ -60,9 +58,6 @@ def train_agent(agent_config, train_config):
         else:
             seed = train_config['seed']
             logger.info(f"Using provided seed: {seed}")
-        
-        run_number = train_config.get('run_number', None)
-        num_episodes = train_config['num_episodes']
 
         assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
 
@@ -94,7 +89,7 @@ def train_agent(agent_config, train_config):
             elif agent_type == 'HER':
                 num_epochs = train_config['num_epochs']
                 num_cycles = train_config['num_cycles']
-                num_updates = train_config['num_epochs']
+                num_updates = train_config['num_updates']
                 if args.distributed_workers > 1:
                     distributed_agents = DistributedAgents(
                         agent_config,
