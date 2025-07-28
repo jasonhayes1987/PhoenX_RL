@@ -6,28 +6,32 @@ from env_wrapper import EnvWrapper
 from schedulers import ScheduleWrapper
 from logging_config import get_logger
 import gymnasium as gym
+from pathlib import Path
+import json
+import logging
 
 class ICM(Model):
     """Intrinsic Curiousity Module."""
     def __init__(self, env:EnvWrapper, model_configs:dict, optimizer_params:dict, reward_weight:float=0.1,
                  reward_scheduler: Optional[ScheduleWrapper]=None, beta:float=0.2,
-                 log_level: str = 'info', device:Optional[str | T.device]=None):
+                 extrinsic_threshold: int=0, warmup:int=0, log_level: str = 'info',
+                 device:Optional[str | T.device]=None):
         try:
             super().__init__(env, [], optimizer_params, device=device)
             self.model_configs = model_configs
             self.reward_weight = reward_weight
             self.reward_scheduler = reward_scheduler
             self.beta = beta
+            self.extrinsic_threshold = extrinsic_threshold
+            self.warmup = warmup
             # Internal Attributes
             self._use_encoder = False
+            self._use_extrinsic = False
 
             # Instantiate model attributes
             self.encoder = None
             self.inverse_model = None
             self.forward_model = None
-
-            # TODO: Move self.logger call to base model class
-            self.logger = get_logger(__name__, log_level)
 
             # Determine action and observation space properties
             action_space = (self.env.single_action_space
@@ -53,12 +57,12 @@ class ICM(Model):
 
             # Initialize model weights
             if self._use_encoder:
-                self._init_weights(self.model_configs['encoder']['layer_config'], self.encoder)
-                self._init_weights(self.model_configs['encoder']['output_layer'], self.encoder)
-            self._init_weights(self.model_configs['inverse_model']['layer_config'], self.inverse_model)
-            self._init_weights(self.model_configs['inverse_model']['output_layer'], self.inverse_model)
-            self._init_weights(self.model_configs['forward_model']['layer_config'], self.forward_model)
-            self._init_weights(self.model_configs['forward_model']['output_layer'], self.forward_model)
+                encoder_config = self.model_configs['encoder']['layer_config'] + self.model_configs['encoder']['output_layer']
+                self._init_weights(encoder_config, self.encoder)
+            inverse_config = self.model_configs['inverse_model']['layer_config'] + self.model_configs['inverse_model']['output_layer']
+            self._init_weights(inverse_config, self.inverse_model)
+            forward_config = self.model_configs['forward_model']['layer_config'] + self.model_configs['forward_model']['output_layer']
+            self._init_weights(forward_config, self.forward_model)
 
             # Initialize Optimizer
             self.optimizer = self._init_optimizer()
@@ -66,8 +70,27 @@ class ICM(Model):
             # Move to device
             self.to(self.device)
 
+            # Warmup models by training on synthetic data
+            if self.warmup > 0:
+                self._warmup_models()
+
         except Exception as e:
             self.logger.error(f"Error in ICM init: {e}", exc_info=True)
+
+    def _warmup_models(self)->None:
+        """
+        Warmup models by training on synthetic data
+        """
+        for _ in range(self.warmup):
+            states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float)
+            next_states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float)
+            if self._is_discrete:
+                action = T.randint(0, self.action_dim[0], (512,), device=self.device)
+                action_input = T.nn.functional.one_hot(action.long(), num_classes=int(np.prod(self.action_dim)))
+            else:
+                action_input = T.randn(512, *self.action_dim, device=self.device)
+            loss = self.train(states, next_states, action_input)
+            print(f'Warmup loss: {loss}')
 
     def _init_model(self)->None:
         """
@@ -135,24 +158,29 @@ class ICM(Model):
 
     def _forward_submodel(self, x, submodel):
         """Helper to forward pass through a submodel."""
+        # x = x.to(self.device)
         for name, layer in submodel.items():
             x = layer(x)
         return x
 
     def encode(self, state):
         """Feature Extractor."""
+        state = state.to(self.device)
         if self._use_encoder:
             return self._forward_submodel(state, self.encoder)
         return state
 
     def forward(self, states, next_states, actions):
         """Run inference on Inverse and Forward models"""
+        states = states.to(self.device)
+        next_states = next_states.to(self.device)
+        actions = actions.to(self.device)
         encoded_states = self.encode(states)
         encoded_next_states = self.encode(next_states)
         inverse_input = T.cat([encoded_states, encoded_next_states], dim=-1)
         pred_actions = self._forward_submodel(inverse_input, self.inverse_model)
         if self._is_discrete:
-            actions = T.nn.functional.one_hot(actions.long(), num_classes=int(np.prod(self.action_dim))).float()
+            actions = T.nn.functional.one_hot(actions.long(), num_classes=int(np.prod(self.action_dim)), device=self.device).float()
         forward_input = T.cat([encoded_states, actions], dim=-1)
         pred_next_states = self._forward_submodel(forward_input, self.forward_model)
 
@@ -162,12 +190,25 @@ class ICM(Model):
         """Computes and returns the Intrinsic Rewards"""
         with T.no_grad():
             _, pred_next_states, next_states = self.forward(states, next_states, actions)
-            error = (pred_next_states - next_states).pow(2).sum(dim=-1)  # Squared L2 norm
-            intrinsic_rewards = (self.reward_weight / 2) * error
+            error = (pred_next_states - next_states).pow(2).sum(dim=-1)
+            reward_weight = self.reward_weight
+            if self.reward_scheduler:
+                reward_weight *= self.reward_scheduler.get_factor()
+            intrinsic_rewards = (reward_weight / 2) * error
 
             return intrinsic_rewards
 
     def train(self, states, next_states, actions):
+        # Set models to train mode
+        if self._use_encoder:
+            self.encoder.train()
+        self.inverse_model.train()
+        self.forward_model.train()
+
+        states = states.to(self.device)
+        next_states = next_states.to(self.device)
+        actions = actions.to(self.device)
+
         self.optimizer.zero_grad()
         pred_actions, pred_next_states, encoded_next_states = self.forward(states, next_states, actions)
 
@@ -186,4 +227,61 @@ class ICM(Model):
         if self.reward_scheduler:
             self.reward_scheduler.step()
 
+        # Set models to eval mode
+        if self._use_encoder:
+            self.encoder.eval()
+        self.inverse_model.eval()
+        self.forward_model.eval()
+
         return loss.item()
+
+    def get_config(self):
+        """Returns the configuration of the ICM model."""
+        return {
+            "env": self.env.to_json(),
+            "model_configs": self.model_configs,
+            "optimizer_params": self.optimizer_params,
+            "reward_weight": self.reward_weight,
+            "reward_scheduler": self.reward_scheduler.get_config() if self.reward_scheduler else None,
+            "beta": self.beta,
+            "extrinsic_threshold": self.extrinsic_threshold,
+            "warmup": self.warmup,
+            "log_level": logging.getLevelName(self.logger.getEffectiveLevel()).lower(),
+            "device": self.device.type
+        }
+
+    def save(self, folder):
+        """Save the model and its configuration."""
+        model_dir = Path(folder) / "curiosity"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
+        config = self.get_config()
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
+
+    @classmethod
+    def load(cls, folder):
+        """Load a model from a saved configuration."""
+        model_dir = Path(folder) / "curiosity"
+        config_path = model_dir / "config.json"
+        model_path = model_dir / 'pytorch_model.pt'
+
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            raise FileNotFoundError(f"No configuration file found in {config_path}")
+
+        # Load EnvWrapper
+        env_wrapper = EnvWrapper.from_json(config["env"])
+        if config['reward_scheduler'] is not None:
+            scheduler = ScheduleWrapper(config['reward_scheduler'])
+        else:
+            scheduler = None
+
+        model = cls(env=env_wrapper, model_configs=config['model_configs'], optimizer_params=config['optimizer_params'],
+                    reward_weight=config['reward_weight'], reward_scheduler=scheduler,
+                    beta=config['beta'], extrinsic_threshold=config['extrinsic_threshold'], warmup=config['warmup'],
+                    device=config['device'], log_level=config['log_level'])
+        model.load_state_dict(T.load(model_path))
+        return model

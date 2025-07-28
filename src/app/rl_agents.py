@@ -16,6 +16,7 @@ from moviepy.editor import ImageSequenceClip
 from umap import UMAP
 import plotly.express as px
 
+from icm import ICM
 from rl_callbacks import WandbCallback, Callback
 from rl_callbacks import load as callback_load
 from models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, CriticModel, ActorModel
@@ -49,10 +50,15 @@ from agent_utils import load_agent_from_config, get_agent_class_from_type, compu
 class Agent:
     """Base class for all RL agents."""
 
-    def __init__(self, env: EnvWrapper, callbacks: Optional[list[Callback]] = None, save_dir: str = "models/", device: Optional[str | T.device] = None, log_level: str = 'info'):
+    def __init__(self, env: EnvWrapper, curiosity: Optional[ICM] = None, callbacks: Optional[list[Callback]] = None,
+                 save_dir: str = "models/", device: Optional[str | T.device] = None,
+                 log_level: str = 'info',
+        **kwargs):
+        self.kwargs = kwargs
         try:
             self.save_dir = self._setup_save_dir(save_dir)
             self.env = env
+            self.curiosity = curiosity
             self.callbacks = self._initialize_callbacks(callbacks)
             self.device = get_device(device)
             self.logger = get_logger(__name__, log_level)
@@ -364,7 +370,10 @@ class ActorCritic(Agent):
                     self._config['num_episodes'] = num_episodes
                     self._config['seed'] = seed
                     self._config['num_envs'] = self.num_envs
-                    callback.on_train_begin((self.policy_model, self.value_model,), logs=self._config)
+                    models = [self.policy_model, self.value_model]
+                    if self.curiosity is not None:
+                        models.append(self.curiosity)
+                    callback.on_train_begin(tuple(models), logs=self._config)
                 else:
                     callback.on_train_begin(logs=self._config)
         
@@ -1295,13 +1304,14 @@ class DDPG(Agent):
         grad_clip: Optional[float]=None,
         warmup: int=1000,
         N: int=1, # N-steps
+        curiosity: Optional[ICM] = None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
         log_level: str = 'info'
     ):
         try:
-            super().__init__(env, callbacks, save_dir, device, log_level)
+            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
             self.actor_model = actor_model
             self.critic_model = critic_model
             # set target actor and critic models
@@ -1317,7 +1327,6 @@ class DDPG(Agent):
             self.grad_clip = grad_clip
             self.warmup = warmup
             self.N = N
-            # logger.debug(f"rank {self.rank} DDPG init attributes set")
         except Exception as e:
             self.logger.error(f"Error in DDPG init: {e}", exc_info=True)
         
@@ -1402,7 +1411,9 @@ class DDPG(Agent):
                 for callback in self.callbacks:
                     if isinstance(callback, WandbCallback):
                         if not callback.initialized:
-                            models = (self.actor_model, self.critic_model)
+                            models = [self.actor_model, self.critic_model]
+                            if self.curiosity is not None:
+                                models.append(self.curiosity)
                             config = self.get_config()
                             if learn_iter:
                                 self._learn_iter = learn_iter
@@ -1597,72 +1608,55 @@ class DDPG(Agent):
             weights = None
             indices = None
 
-        #DEBUG
-        # print(f'states shape: {states.shape}')
-        # print(f'states: {states}')
-        # print(f'actions shape: {actions.shape}')
-        # print(f'actions: {actions}')
-        # print(f'rewards shape: {rewards.shape}')
-        # print(f'rewards: {rewards}')
-        # print(f'next_states shape: {next_states.shape}')
-        # print(f'next_states: {next_states}')
-        # print(f'dones shape: {dones.shape}')
-        # print(f'dones: {dones}')
-
         # Normalize states if self.normalize_inputs
         if self._use_her:
-            # Update rewards for hindsight experiences if using n-step (N>1)
-            # if self.N > 1:
-            #     is_hindsight = step_indices[:, 0] < 0  # Shape: (batch_size,)
-            #     g_prime = desired_goals[is_hindsight, 0, :]  # Shape: (num_hindsight, goal_dim)
-            #     not_done_mask = T.cumprod(1 - dones.float(), dim=1) > 0  # Shape: (batch_size, N, 1)
-            #     g_prime_expanded = g_prime.unsqueeze(1).expand(-1, self.N, -1)
-            #     desired_goals[is_hindsight] = g_prime_expanded
-            #     new_rewards = self.env.get_base_env().compute_reward(achieved_goals[is_hindsight], desired_goals[is_hindsight], {})  # Shape: (num_hindsight, N, 1)
-            #     hindsight_mask = is_hindsight.unsqueeze(1).unsqueeze(2)  # Shape: (batch_size, 1, 1)
-            #     not_done_hindsight_mask = hindsight_mask & not_done_mask  # Shape: (batch_size, N, 1)
-            #     rewards[not_done_hindsight_mask] = new_rewards[not_done_hindsight_mask[is_hindsight]]
             states = state_normalizer.normalize(states)
             next_states = state_normalizer.normalize(next_states)
             desired_goals = goal_normalizer.normalize(desired_goals)
         else:
             desired_goals = None
 
-        # Convert rewards and dones to 2D tensors
-        # rewards = rewards.unsqueeze(1).to(self.target_critic_model.device)
-        # dones = dones.unsqueeze(1).to(self.target_critic_model.device)
         rewards = rewards.to(self.target_critic_model.device)
         dones = dones.to(self.target_critic_model.device)
 
+        # Train ICM if curiosity and update _use_extrinsic flag
+        if self.curiosity:
+            curiosity_loss = self.curiosity.train(states[:,-1,:], next_states[:,-1,:], actions[:,-1,:])
+            if self._step > self.curiosity.extrinsic_threshold:
+                self.curiosity._use_extrinsic = True
+            else:
+                self.curiosity._use_extrinsic = False
+
         # Get target values
         with T.no_grad():
-            # _, target_actions = self.target_actor_model(next_states, desired_goals)
             _, target_actions = self.target_actor_model(
                 next_states[:,-1,:],
                 desired_goals[:,-1,:] if desired_goals is not None else None
             ) # N-step
-            #DEBUG
-            # print(f'target_actions shape: {target_actions.shape}')
-            # print(f'target_actions: {target_actions}')
-            # target_critic_values = self.target_critic_model(next_states, target_actions, desired_goals)
-            # Calculate target Q-values
-            # targets = rewards + (1 - dones) * self.discount * target_critic_values
-            if self.N > 1:
-                targets = compute_n_step_return(
-                    rewards,
-                    dones,
-                    self.discount,
-                    self.N,
-                    device=self.target_critic_model.device
-                ).squeeze()
+
+            if self.curiosity and not self.curiosity._use_extrinsic:
+                targets = T.zeros_like(rewards).squeeze()
             else:
-                targets = rewards.squeeze()
-            #DEBUG
-            # print(f'n-step returns shape: {targets.shape}')
-            # print(f'n-step returns: {targets}')
-            # Bootstrap only if no 'done' in the sequence (full length N)
-            # no_done_in_sequence = ~dones.any(dim=1)
-            # bootstrap_mask = no_done_in_sequence.float()
+                if self.N > 1:
+                    targets = compute_n_step_return(
+                        rewards,
+                        dones,
+                        self.discount,
+                        self.N,
+                        device=self.target_critic_model.device
+                    ).squeeze()
+                else:
+                    targets = rewards.squeeze()
+
+            # Compute intrinsic reward if using ICM
+            if self.curiosity:
+                intrinsic_reward = self.curiosity.compute_intrinsic_reward(
+                    states[:,-1,:],
+                    next_states[:,-1,:],
+                    actions[:,-1,:]
+                )
+                targets += intrinsic_reward
+
             if desired_goals is not None:
                 last_desired_goals = desired_goals[:,-1,:]
                 bootstrap_values = self.target_critic_model(
@@ -1675,16 +1669,10 @@ class DDPG(Agent):
 
             not_done_mask = (1 - dones[:,-1]).squeeze()
             targets += not_done_mask * (self.discount ** self.N) * bootstrap_values
-            #DEBUG
-            # print(f'bootstrap_values shape: {bootstrap_values.shape}')
-            # print(f'rewards shape: {rewards.shape}')
-            # targets = rewards + (self.discount ** self.N) * bootstrap_values * (1 - dones)
+
             # Apply HER-specific clamping if needed
             if self._use_her:
                 targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
-            #DEBUG
-            # print(f'targets shape: {targets.shape}')
-            # print(f'targets: {targets}')
 
         # Get current critic predictions
         predictions = self.critic_model(
@@ -1692,7 +1680,7 @@ class DDPG(Agent):
             actions[:,0,:],
             desired_goals[:,0,:] if desired_goals is not None else None
         ).squeeze()
-        # print(f'predictions: {predictions}')
+
         # Calculate TD errors
         error = targets - predictions
         # Apply importance sampling weights if using prioritized replay
@@ -1714,24 +1702,14 @@ class DDPG(Agent):
             states[:,0,:],
             desired_goals[:,0,:] if desired_goals is not None else None
         )
-        #DEBUG
-        # print(f'action_values shape: {action_values.shape}')
-        # print(f'action_values: {action_values}')
         
 
         # Calculate actor loss based on critic
         critic_values = self.critic_model(states[:,0,:], action_values, desired_goals[:,0,:] if desired_goals is not None else None)
-        #DEBUG
-        # print(f'critic_values shape: {critic_values.shape}')
-        # print(f'critic_values: {critic_values}')
         if weights is not None:
             actor_loss = -(weights.to(self.actor_model.device) * critic_values).mean()
         else:
             actor_loss = -critic_values.mean()
-        #DEBUG
-        # print(f'actor_loss shape: {actor_loss.shape}')
-        # print(f'actor_loss: {actor_loss}')
-        
 
         # Add HER-specific regularization if needed
         if self._use_her:
@@ -1751,9 +1729,6 @@ class DDPG(Agent):
 
         # Update priorities if using prioritized replay - only on update_freq steps
         if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
-            #DEBUG
-            # print(f'indices shape: {indices.shape}')
-            # print(f'error shape: {error.flatten().shape}')
             self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
 
         # Add metrics to step_logs
@@ -1762,6 +1737,12 @@ class DDPG(Agent):
         self._train_step_config['critic_predictions'] = critic_values.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
         self._train_step_config['target_critic_predictions'] = targets.mean()
+        if self.curiosity:
+            self._train_step_config['curiosity_loss'] = curiosity_loss
+            self._train_step_config['intrinsic_reward'] = intrinsic_reward.mean()
+            self._train_step_config['use_extrinsic'] = self.curiosity._use_extrinsic
+            self._train_step_config['reward_weight'] = self.curiosity.reward_weight * self.curiosity.reward_scheduler.get_factor() \
+                if self.curiosity.reward_scheduler else self.curiosity.reward_weight
 
         return actor_loss.item(), critic_loss.item()
         
@@ -2063,7 +2044,10 @@ class DDPG(Agent):
                     config['num_envs'] = self.num_envs
                     config['distributed'] = self._distributed
                     config['sync_interval'] = self._sync_iter
-                    callback.on_train_begin((self.actor_model, self.critic_model,), logs=config)
+                    models = [self.actor_model, self.critic_model]
+                    if self.curiosity:
+                        models.append(self.curiosity)
+                    callback.on_train_begin(tuple(models), logs=config)
                     run_number = callback.run_name.split("-")[-1]
                 else:
                     callback.on_train_begin(logs=self._config)
@@ -2348,6 +2332,7 @@ class DDPG(Agent):
             'grad_clip': self.grad_clip,
             'warmup': self.warmup,
             'N': self.N,
+            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
@@ -2374,6 +2359,10 @@ class DDPG(Agent):
         # saves policy and value model
         self.actor_model.save(self.save_dir)
         self.critic_model.save(self.save_dir)
+
+        # save curiosity
+        if self.curiosity:
+            self.curiosity.save(self.save_dir)
         
         # if self.normalize_inputs:
         #     self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
@@ -2400,6 +2389,8 @@ class DDPG(Agent):
             replay_buffer = None
         # load noise
         noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
+        # load curiosity
+        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
         # load callbacks
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
                     if config['callbacks'] else None
@@ -2419,6 +2410,7 @@ class DDPG(Agent):
             grad_clip=config['grad_clip'],
             warmup = config['warmup'],
             N = config['N'],
+            curiosity=curiosity,
             callbacks=callbacks,
             save_dir=config["save_dir"],
             device=config["device"],
@@ -6103,7 +6095,7 @@ class PPO(Agent):
             # instantiate new vec environment
             self.env.env = self.env._initialize_env(0, num_envs, seed)
         except Exception as e:
-            logger.error(f"Error in PPO.train agent._initialize_env process: {e}", exc_info=True)
+            self.logger.error(f"Error in PPO.train agent._initialize_env process: {e}", exc_info=True)
 
         # set best reward
         best_reward = -np.inf
@@ -6141,7 +6133,6 @@ class PPO(Agent):
         while self._step < timesteps:
             self._step += 1
             episode_lengths += 1 # increment the step count of each episode of each env by 1
-            dones = []
             actions, log_probs = self.get_action(states)
             #DEBUG
             # print(f'train actions shape:{actions.shape}')
@@ -6169,15 +6160,14 @@ class PPO(Agent):
                         else:
                             self._train_step_config['action'] = acts
 
-            next_states, rewards, terms, truncs, _ = self.env.step(acts)
+            next_states, rewards, dones, _ = self.env.step(acts)
             # Update scores of each episode
             scores += rewards
 
             self._train_step_config["step_reward"] = rewards.max()
 
-            for i, (term, trunc) in enumerate(zip(terms, truncs)):
-                if term or trunc:
-                    dones.append(True)
+            for i, done in enumerate(dones):
+                if done:
                     env_scores[i] = scores[i]  # Store score at end of episode
                     episode_scores.append(scores[i]) # Store score in deque to compute avg
                     self._train_step_config["episode_reward"] = scores[i]
@@ -6258,29 +6248,13 @@ class PPO(Agent):
                 self._train_episode_config["entropy"] = entropy
                 self._train_episode_config["kl_divergence"] = kl
                 if self.policy_model.scheduler:
-                    self._train_episode_config['policy learning rate'] = self.policy_model.scheduler.get_last_lr()[0]
+                    self._train_episode_config['policy learning rate'] = self.policy_model.scheduler.get_last_lr()[0] * self.policy_model.optimizer.param_groups[0]['lr']
                 else:
                     self._train_episode_config['policy learning rate'] = self.policy_model.optimizer.param_groups[0]['lr']
                 if self.value_model.scheduler:
-                    self._train_episode_config['value learning rate'] = self.value_model.scheduler.get_last_lr()[0]
+                    self._train_episode_config['value learning rate'] = self.value_model.scheduler.get_last_lr()[0] * self.value_model.optimizer.param_groups[0]['lr']
                 else:
                     self._train_episode_config['value learning rate'] = self.value_model.optimizer.param_groups[0]['lr']
-                # if self.policy_model.distribution == 'categorical':
-                #     # Convert logits to probabilities
-                #     probabilities = F.softmax(logits, dim=0)
-                #     self._train_episode_config["probabilities"] = probabilities
-                # else:
-                #     self._train_episode_config["param1"] = param1.mean()
-                #     self._train_episode_config["param2"] = param2.mean()
-
-                # policy_loss_history.append(policy_loss)
-                # value_loss_history.append(value_loss)
-                # entropy_history.append(entropy)
-                # kl_history.append(kl)
-                # if self.policy_model.distribution == 'categorical':
-                #     param_history.append(logits)
-                # else:
-                #     param_history.append((param1, param2))
                 
                 # Clear trajectory data
                 all_states = []
@@ -6293,9 +6267,6 @@ class PPO(Agent):
         if self.callbacks:
             for callback in self.callbacks:
                         callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
-
-                # # Clear CUDA cache
-                # T.cuda.empty_cache()
 
             # Set avg score if 1 or more episodes scores are logged, else set avg to -inf
             if len(episode_scores) > 0:
@@ -6323,15 +6294,6 @@ class PPO(Agent):
         if self.callbacks:
             for callback in self.callbacks:
                 callback.on_train_end(logs=self._train_episode_config)
-
-        # return {
-        #         'scores': episode_scores,
-        #         'policy loss': policy_loss_history,
-        #         'value loss': value_loss_history,
-        #         'entropy': entropy_history,
-        #         'kl': kl_history,
-        #         'params': param_history,
-        #         }
 
     def learn(self, trajectory, batch_size, learning_epochs):
         """
@@ -6385,15 +6347,6 @@ class PPO(Agent):
         log_probs = log_probs.reshape(total_samples, -1) # Shape: (total_samples, action_dim)
         advantages = advantages.reshape(total_samples, 1) # Shape: (total_samples, 1)
         returns = returns.reshape(total_samples, 1)      # Shape: (total_samples, 1)
-        #DEBUG
-        # print(f'resized values:{all_values.shape}')
-        # print(f'resized actions:{actions.shape}')
-        # print(f'resized log probs:{log_probs.shape}')
-        # print(f'resized advantages:{advantages.shape}')
-        # print(f'resized returns:{returns.shape}')
-
-        # Set previous distribution to none (used for KL divergence calculation)
-        # prev_dist = None
 
         # Create random indices for shuffling
         indices = T.randperm(total_samples)
@@ -6537,67 +6490,6 @@ class PPO(Agent):
         if self.kl_adapter:
             self.kl_adapter.step(kl)
             kl_coefficient = self.kl_coefficient * self.kl_adapter.get_beta()
-
-        # Create 3d scatter plot of visited states colored by state value and action magnitude
-        # if self.callbacks:
-        #     for callback in self.callbacks:
-        #         if isinstance(callback, WandbCallback):
-        #             # Reduce states to 3D embeddings
-        #             reducer = UMAP(n_components=3, random_state=42)
-        #             embeddings = reducer.fit_transform(states.cpu().numpy())  # Shape: (num_samples, 3)
-        #             # Compute the magnitude of the actions
-        #             action_magnitude = np.linalg.norm(actions.cpu().numpy(), axis=1)
-        #             df = pd.DataFrame({
-        #                 'embedding_x': embeddings[:, 0],
-        #                 'embedding_y': embeddings[:, 1],
-        #                 'embedding_z': embeddings[:, 2],
-        #                 'value': all_values.cpu().numpy().flatten(),
-        #                 'action_magnitude': action_magnitude,
-        #                 # If you want to include specific action components:
-        #                 # 'action_component_0': actions[:, 0],
-        #                 # 'action_component_1': actions[:, 1],
-        #                 # ...
-        #             })
-
-        #             # Create a 3D scatter plot colored by value estimates
-        #             fig_value = px.scatter_3d(
-        #                 df,
-        #                 x='embedding_x',
-        #                 y='embedding_y',
-        #                 z='embedding_z',
-        #                 color='value',
-        #                 title='State Embeddings Colored by Value Function',
-        #                 labels={'embedding_x': 'Embedding X', 'embedding_y': 'Embedding Y', 'embedding_z': 'Embedding Z', 'value': 'Value Estimate'},
-        #                 opacity=0.7
-        #             )
-                    
-        #             # Create a 3D scatter plot colored by action magnitude
-        #             fig_action = px.scatter_3d(
-        #                 df,
-        #                 x='embedding_x',
-        #                 y='embedding_y',
-        #                 z='embedding_z',
-        #                 color='action_magnitude',
-        #                 title='State Embeddings Colored by Action Magnitude',
-        #                 labels={'embedding_x': 'Embedding X', 'embedding_y': 'Embedding Y', 'embedding_z': 'Embedding Z', 'action_magnitude': 'Action Magnitude'},
-        #                 opacity=0.7
-        #             )
-
-        #             # Log the 3D plots
-        #             wandb.log({
-        #                 "Value Function Embeddings 3D": fig_value,
-        #                 "Policy Embeddings 3D": fig_action
-        #             })
-
-        # Decay Policy Clip
-        # self.policy_clip *= self.clip_decay
-        # Decay Entropy Coefficient
-        # self.entropy_coefficient *= self.entropy_decay
-
-        # print(f'Policy Loss: {policy_loss.sum()}')
-        # print(f'Value Loss: {value_loss}')
-        # print(f'Entropy: {entropy}')
-        # print(f'KL Divergence: {kl}')
 
         if self.policy_model.distribution == 'categorical':
             return policy_loss, value_loss, entropy, kl, logits.detach().cpu().flatten()

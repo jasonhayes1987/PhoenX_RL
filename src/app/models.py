@@ -18,7 +18,7 @@ import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
 from torch_utils import get_device, VarianceScaling_
-# from logging_config import logger
+from logging_config import get_logger
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from utils import check_for_inf_or_NaN
 from schedulers import ScheduleWrapper
@@ -38,7 +38,7 @@ class Model(nn.Module):
         device (str): The device ('cpu' or 'cuda') to run the model on.
     """
     def __init__(self, env: EnvWrapper, layer_config, optimizer_params: dict = None,
-                 lr_scheduler: ScheduleWrapper = None, device=None):
+                 lr_scheduler: ScheduleWrapper = None, device=None, log_level: str = 'info'):
         """
         Sets up the module dictionary of layers (most of which
         will be lazy).
@@ -57,6 +57,7 @@ class Model(nn.Module):
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
         self.lr_scheduler = lr_scheduler
         self.device = get_device(device)
+        self.logger = get_logger(__name__, log_level)
 
         # Build the layers dynamically based on config
         for i, layer_info in enumerate(self.layer_config):
