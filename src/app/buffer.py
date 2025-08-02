@@ -1266,7 +1266,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], weights, probs, indices)
 
     def update_beta(self) -> None:
-        """Anneal beta param more efficiently"""
+        """Anneal beta param"""
         progress = min(self._total_steps / self.beta_iter, 1.0)
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
 

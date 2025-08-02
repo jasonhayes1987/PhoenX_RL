@@ -1510,7 +1510,7 @@ def register_callbacks(app, shared_data):
                 layer_config=value_layers,
                 output_layer_kernel=value_output_kernel,
                 optimizer_params=value_optimizer,
-                scheduler_params=value_learning_rate_schedule,
+                lr_scheduler=value_learning_rate_schedule,
                 device=device,
             )
 
