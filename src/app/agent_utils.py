@@ -186,13 +186,14 @@ def get_agent_class_from_type(agent_type: str):
     Returns:
         The agent class
     """
-    from rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, HER
+    from rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, HER, SAC
     agent_classes = {
         "PPO": PPO,
         "DDPG": DDPG,
         "Reinforce": Reinforce,
         "ActorCritic": ActorCritic,
         "TD3": TD3,
-        "HER": HER
+        "HER": HER,
+        "SAC": SAC
     }
     return agent_classes.get(agent_type) 

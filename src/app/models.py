@@ -735,7 +735,7 @@ class ValueModel(Model):
         layer_config: List[Dict],
         output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
-        scheduler_params = None,
+        lr_scheduler: Optional[ScheduleWrapper] = None,
         device = None
     ):
         """
@@ -749,7 +749,7 @@ class ValueModel(Model):
             scheduler_params (dict, optional): Scheduler parameters (default: None).
             device (str): Device for computation (default: 'cuda').
         """
-        super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device)
         self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -818,11 +818,39 @@ class ValueModel(Model):
             'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
             'optimizer_params': self.optimizer_params,
-            'scheduler_params': self.scheduler_params,
+            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
             'device': self.device.type,
         }
 
         return config
+
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        # Reconstruct the model from its configuration
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
+        env = GymnasiumWrapper(self.env.env_spec)
+
+        cloned_model = ValueModel(
+            env=env,
+            layer_config=self.layer_config.copy(),
+            output_layer_kernel=self.output_config.copy(),
+            optimizer_params=self.optimizer_params.copy(),
+            lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
+            device=device
+        )
+        
+        if copy_weights:
+            # Copy the model weights
+            cloned_model.load_state_dict(self.state_dict())
+            
+            # # Optionally, clone the optimizer (requires more manual work, shown below)
+            # cloned_optimizer = type(self.optimizer)(cloned_model.parameters(), **self.optimizer.defaults)
+            # cloned_optimizer.load_state_dict(self.optimizer.state_dict())
+
+        return cloned_model
 
 
     def save(self, folder):
