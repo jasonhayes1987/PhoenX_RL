@@ -80,15 +80,15 @@ RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@
 RUN pip install tensorboard torch-tb-profiler
 
 # # Set environment variables for MuJoCo
-# ENV MUJOCO_GL="egl"
-# ENV PYOPENGL_PLATFORM="egl"
-ENV MUJOCO_GL="osmesa"
-ENV PYOPENGL_PLATFORM="osmesa"
+ENV MUJOCO_GL="egl"
+ENV PYOPENGL_PLATFORM="egl"
+# ENV MUJOCO_GL="osmesa"
+# ENV PYOPENGL_PLATFORM="osmesa"
 # ENV LD_LIBRARY_PATH="/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}"
 # ENV MUJOCO_PATH="/root/.mujoco/mujoco-3.1.4"
 
 # Add app directory to python path
-ENV PYTHONPATH="/workspaces/PhoenX_RL:$PYTHONPATH"
+ENV PYTHONPATH="/workspaces/PhoenX_RL"
 
 # Run accept license command for AutoROM do download all roms needed for Atari ale
 RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.12/site-packages/ale_py/roms

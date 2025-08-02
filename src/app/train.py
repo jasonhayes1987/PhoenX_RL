@@ -59,10 +59,10 @@ def train_agent(agent_config, train_config):
             seed = train_config['seed']
             logger.info(f"Using provided seed: {seed}")
 
-        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
+        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO', 'SAC'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
-            if agent_type in ['ActorCritic', 'DDPG', 'TD3']:
+            if agent_type in ['ActorCritic', 'DDPG', 'TD3', 'SAC']:
                 if args.distributed_workers > 1:
                     distributed_agents = DistributedAgents(
                         agent_config,

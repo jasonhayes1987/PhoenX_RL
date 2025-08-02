@@ -81,16 +81,33 @@ class ICM(Model):
         """
         Warmup models by training on synthetic data
         """
+        # Determine observation and action space properties
+        obs_space = (self.env.single_observation_space
+                    if hasattr(self.env, "single_observation_space")
+                    else self.env.observation_space)
+        if isinstance(obs_space, gym.spaces.Dict):
+            obs_high = T.tensor(obs_space['observation'].high, device=self.device).float()
+        else:
+            obs_high = T.tensor(obs_space.high, device=self.device).float()
+        if obs_high.isinf().any():
+            self.logger.warning("Observation space is unbounded, using default value of 10.0")
+            obs_high = T.ones(self.obs_dim, device=self.device).float() * 10.0
+            print(f'obs_high: {obs_high}')
+        action_space = (self.env.single_action_space
+                        if hasattr(self.env, "single_action_space")
+                        else self.env.action_space)
+        
         for _ in range(self.warmup):
-            states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float)
-            next_states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float)
+            states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float) * obs_high
+            next_states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float) * obs_high
             if self._is_discrete:
                 action = T.randint(0, self.action_dim[0], (512,), device=self.device)
                 action_input = T.nn.functional.one_hot(action.long(), num_classes=int(np.prod(self.action_dim)))
             else:
-                action_input = T.randn(512, *self.action_dim, device=self.device)
+                action_high = T.tensor(action_space.high, device=self.device).float()
+                action_input = T.randn(512, *self.action_dim, device=self.device) * action_high
             loss = self.train(states, next_states, action_input)
-            print(f'Warmup loss: {loss}')
+            # print(f'Warmup loss: {loss}')
 
     def _init_model(self)->None:
         """
@@ -189,8 +206,8 @@ class ICM(Model):
     def compute_intrinsic_reward(self, states, next_states, actions):
         """Computes and returns the Intrinsic Rewards"""
         with T.no_grad():
-            _, pred_next_states, next_states = self.forward(states, next_states, actions)
-            error = (pred_next_states - next_states).pow(2).sum(dim=-1)
+            _, pred_next_states, encoded_next_states = self.forward(states, next_states, actions)
+            error = (pred_next_states - encoded_next_states).pow(2).sum(dim=-1)
             reward_weight = self.reward_weight
             if self.reward_scheduler:
                 reward_weight *= self.reward_scheduler.get_factor()
