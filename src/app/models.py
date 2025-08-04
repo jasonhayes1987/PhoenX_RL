@@ -746,7 +746,7 @@ class ValueModel(Model):
             layer_config (list): List of dictionaries specifying hidden layer configurations.
             output_layer_kernel (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
-            scheduler_params (dict, optional): Scheduler parameters (default: None).
+            lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
             device (str): Device for computation (default: 'cuda').
         """
         super().__init__(env, layer_config, optimizer_params, lr_scheduler, device)
@@ -874,26 +874,26 @@ class ValueModel(Model):
 
 
     @classmethod
-    def load(cls, config_path, load_weights:bool=True):
+    def load(cls, config, load_weights:bool=True):
         """
         Load a value model from a saved configuration.
 
         Args:
-            config_path (str): Path to the configuration file.
+            config (dict): Configuration dictionary.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             ValueModel: Loaded value model instance.
         """
-        model_dir = Path(config_path) / "value_model"
-        config_path = model_dir / "config.json"
-        model_path = model_dir / 'pytorch_model.onnx'
+        # model_dir = Path(config) / "value_model"
+        # config = model_dir / "config.json"
+        # model_path = model_dir / 'pytorch_model.onnx'
 
-        if config_path.is_file():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            raise FileNotFoundError(f"No configuration file found in {config_path}")
+        # if config.is_file():
+        #     with open(config, "r", encoding="utf-8") as f:
+        #         config = json.load(f)
+        # else:
+        #     raise FileNotFoundError(f"No configuration file found in {config}")
         
         # Determine the wrapper type from the environment configuration
         # wrapper_dict = json.loads(config['env'])
@@ -904,18 +904,23 @@ class ValueModel(Model):
         #     raise ValueError(f"Unsupported wrapper type: {wrapper_type}")
 
         env = EnvWrapper.from_json(config.get("env"))
+        lr_scheduler_config = config.get("lr_scheduler", None)
+        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel"),
                     optimizer_params = config.get("optimizer_params"),
-                    scheduler_params = config.get("scheduler_params", None),
+                    lr_scheduler = lr_scheduler,
                     device = config.get("device")
                     )
-
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path, map_location=model.device))
+            try:
+                model_path = Path(config.get("save_dir")) / "value_model" / "pytorch_model.pt"
+                model.load_state_dict(T.load(model_path, map_location=model.device))
+            except Exception as e:
+                print(f"Error loading model: {e}")
 
         return model
 
@@ -1213,7 +1218,7 @@ class CriticModel(Model):
         Load a critic model from a saved configuration.
 
         Args:
-            config_path (str): Path to the configuration file.
+            config (dict): Configuration dictionary.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
