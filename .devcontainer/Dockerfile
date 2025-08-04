@@ -80,10 +80,10 @@ RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@
 RUN pip install tensorboard torch-tb-profiler
 
 # # Set environment variables for MuJoCo
-ENV MUJOCO_GL="egl"
-ENV PYOPENGL_PLATFORM="egl"
-# ENV MUJOCO_GL="osmesa"
-# ENV PYOPENGL_PLATFORM="osmesa"
+# ENV MUJOCO_GL="egl"
+# ENV PYOPENGL_PLATFORM="egl"
+ENV MUJOCO_GL="osmesa"
+ENV PYOPENGL_PLATFORM="osmesa"
 # ENV LD_LIBRARY_PATH="/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}"
 # ENV MUJOCO_PATH="/root/.mujoco/mujoco-3.1.4"
 

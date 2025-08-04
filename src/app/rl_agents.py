@@ -4123,7 +4123,7 @@ class SAC(Agent):
         # if in warmup, sample random action
         elif self._step <= self.warmup:
             action = self.env.action_space.sample()
-            return action.cpu().detach().numpy()
+            return action
         
         else:
             # (HER) use passed state normalizer if using HER
