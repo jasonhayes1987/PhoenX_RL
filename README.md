@@ -1,6 +1,6 @@
 # PhoenX RL
 ![](src/app/assets/Python-3.8+-blue.svg)
-![](src/app/assets/Python-3.8+-blue.svg)
+![](src/app/assets/PyTorch-2.0+-orange.svg)
 ![](src/app/assets/License-MIT-yellow.svg)
 <table>
   <tr>
