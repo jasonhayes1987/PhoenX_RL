@@ -1,4 +1,5 @@
 import os
+import ray
 import json
 import numpy as np
 import torch as T
@@ -26,7 +27,7 @@ class Callback():
         on_test_step_end(step, logs): Called at the end of each testing step.
     """
     
-    def on_train_begin(self, logs=None):
+    def on_train_begin(self, models, logs=None):
         pass
 
     def on_train_end(self, logs=None):
@@ -76,29 +77,38 @@ class WandbCallback(Callback):
     """
 
     def __init__(self, project_name: str, run_name: str = None, chkpt_freq: int = 100, _sweep: bool = False):
-        super().__init__()
+        # super().__init__()
         self.project_name = project_name
         self.run_name = run_name
         self.chkpt_freq = chkpt_freq
         self._sweep = _sweep
         self.save_dir = None
         self.model_type = None
+        self.initialized = False
+
+    def initialize_run(self, models, logs=None, run_number:str=None, run_name_prefix:str=None):
+        # Only get a new run number if we're initializing and none was provided
+        if run_number is None:
+            run_number = wandb_support.get_next_run_number(self.project_name)
+        
+        run = wandb.init(
+            project=self.project_name,
+            name=f"{run_name_prefix}-{run_number}",
+            tags=["train", self.model_type],
+            group=f"group-{run_number}",
+            job_type="train",
+            config=logs,
+        )
+        self.run_name = run.name
+        self.initialized = True
+        for i, model in enumerate(models):
+            wandb.watch(model, log='all', log_freq=100, idx=i, log_graph=True)
 
     def on_train_begin(self, models, logs=None):
         if not self._sweep:
-            run_number = wandb_support.get_next_run_number(self.project_name)
-            run = wandb.init(
-                project=self.project_name,
-                name=f"train-{run_number}",
-                tags=["train", self.model_type],
-                group=f"group-{run_number}",
-                job_type="train",
-                config=logs,
-            )
-            self.run_name = run.name
-        wandb.watch(models, log='all', log_freq=100, idx=1, log_graph=True)
-        #DEBUG
-        print("WandbCallback.on_train_begin called")
+            if not self.initialized:
+                self.initialize_run(models, logs, run_name_prefix="train")
+            
 
     def on_train_end(self, logs=None):
         wandb.finish()
@@ -109,6 +119,8 @@ class WandbCallback(Callback):
     def on_train_epoch_end(self, epoch: int, logs=None):
         wandb.log(logs, step=epoch)
         if (logs["best"]) & (logs["episode"] % self.chkpt_freq == 0):
+            # Create save dir if not exist
+            os.makedirs(self.save_dir, exist_ok=True)
             wandb_support.save_model_artifact(self.save_dir, self.project_name, model_is_best=True)
 
     def on_train_step_begin(self, step: int, logs=None):
@@ -118,21 +130,8 @@ class WandbCallback(Callback):
         wandb.log(logs, step=step)
 
     def on_test_begin(self, logs=None, run_number: int = None):
-        if run_number is None:
-            try:
-                run_number = wandb_support.get_run_number_from_name(self.run_name)
-            except AttributeError:
-                run_number = wandb_support.get_next_run_number(self.project_name)
-        run = wandb.init(
-            project=self.project_name,
-            job_type="test",
-            tags=["test", self.model_type],
-            name=f"test-{run_number}",
-            group=f"group-{run_number}",
-            config=logs,
-        )
-        wandb.config.update({"model_type": self.model_type})
-        self.run_name = run.name
+        if not self.initialized:
+            self.initialize_run(logs, run_name_prefix="test")
 
     def on_test_end(self, logs=None):
         if not self._sweep:
@@ -154,7 +153,7 @@ class WandbCallback(Callback):
         """Configures callback internal state for wandb integration."""
         self.model_type = type(agent).__name__
         self.save_dir = agent.save_dir
-        return agent.get_config()
+        # return agent.get_config()
 
     def get_config(self):
         return {
@@ -173,6 +172,123 @@ class WandbCallback(Callback):
         with open(folder, "w", encoding="utf-8") as f:
             json.dump(wandb_config, f)
 
+    @classmethod
+    def load(cls, config):
+        return cls(**config)
+    
+class RayWandbCallback(WandbCallback):
+    """
+    A W&B callback that works with Ray distributed training.
+    Only the main worker (worker_id=0) logs to W&B.
+    """
+    def __init__(self, project_name, role, run_name=None, chkpt_freq=100, worker_id=0, _sweep=False):
+        super().__init__(project_name, run_name, chkpt_freq, _sweep)
+        self.worker_id = worker_id
+        self.role = role
+        # self.is_main_worker = (worker_id == 0)
+        self.initialized = False
+
+    def initialize_run(self, models, logs=None, run_number:str=None, run_name_prefix:str=None):
+        # Only get a new run number if we're initializing and none was provided
+        if run_number is None:
+            run_number = wandb_support.get_next_run_number(self.project_name)
+        
+        run = wandb.init(
+            project=self.project_name,
+            name=f"{self.role}-{self.worker_id}-{run_name_prefix}-{run_number}",
+            tags=["train", self.role, self.model_type],
+            group=f"group-{run_number}",
+            job_type=self.role,
+            config=logs,
+        )
+        self.run_name = run.name
+        self.initialized = True
+        if self.role == "learner":
+            for i, model in enumerate(models):
+                wandb.watch(model, log='all', log_freq=100, idx=i, log_graph=True)
+
+    def on_train_begin(self, models, logs=None):
+        # if not self.is_main_worker:
+        #     return  # Only the main worker initializes W&B
+        # super().on_train_begin(models, logs)
+        if not self.initialized:
+            self.initialize_run(models, logs)
+            
+    
+    # def on_train_end(self, logs=None):
+    #     if not self.is_main_worker:
+    #         return  # Only the main worker finalizes W&B
+    #     super().on_train_end(logs)
+    
+    # def on_train_epoch_end(self, epoch, logs=None):
+    #     if not self.is_main_worker:
+    #         return  # Only the main worker logs to W&B
+    #     super().on_train_epoch_end(epoch, logs)
+    
+    # def on_train_step_end(self, step, logs=None):
+    #     if not self.is_main_worker:
+    #         return  # Only the main worker logs to W&B
+    #     super().on_train_step_end(step, logs)
+    
+    def on_test_begin(self, logs=None, run_number=None):
+        # if not self.is_main_worker:
+        #     return  # Only the main worker logs to W&B
+        # super().on_test_begin(logs, run_number)
+        if run_number is None:
+            try:
+                run_number = wandb_support.get_run_number_from_name(self.run_name)
+            except AttributeError:
+                raise ValueError("Run number not found. Please provide a run number.")
+
+        run = wandb.init(
+                project=self.project_name,
+                name=f"{self.role} {self.worker_id} test-{run_number}",
+                tags=["test", self.role, self.model_type],
+                group=f"group-{run_number}",
+                job_type=self.role,
+                config=logs,
+            )
+        self.initialized = True
+        wandb.config.update({"model_type": self.model_type})
+        self.run_name = run.name
+    
+    # def on_test_end(self, logs=None):
+    #     if not self.is_main_worker:
+    #         return  # Only the main worker finalizes W&B
+    #     super().on_test_end(logs)
+    
+    # def on_test_epoch_end(self, epoch, logs=None):
+    #     if not self.is_main_worker:
+    #         return  # Only the main worker logs to W&B
+    #     super().on_test_epoch_end(epoch, logs)
+    
+    # def on_test_step_end(self, step, logs=None):
+    #     if not self.is_main_worker:
+    #         return  # Only the main worker logs to W&B
+    #     super().on_test_step_end(step, logs)
+    
+    # def _config(self, agent):
+    #     """Configures callback internal state for wandb integration."""
+    #     # return super()._config(agent)
+    #     self.model_type = type(agent).__name__
+    #     self.save_dir = agent.save_dir
+    #     return agent.get_config()
+        # return agent.get_config()
+        
+    def get_config(self):
+        return {
+            'class_name': self.__class__.__name__,
+            'config': {
+                'project_name': self.project_name,
+                'role': self.role,
+                'run_name': self.run_name,
+                'chkpt_freq': self.chkpt_freq,
+                'worker_id': self.worker_id,
+                '_sweep': self._sweep
+            }
+        }
+
+    
     @classmethod
     def load(cls, config):
         return cls(**config)
@@ -289,6 +405,7 @@ def load(class_name: str, config: dict):
     """
     types = {
         "WandbCallback": WandbCallback,
+        "RayWandbCallback": RayWandbCallback,
         "DashCallback": DashCallback,
     }
 

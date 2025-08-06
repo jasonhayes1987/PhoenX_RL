@@ -1,23 +1,35 @@
+import os
 import sys
 import json
 import time
-from logging_config import logger
+from logging_config import get_logger
 import argparse
 import subprocess
-
+import ray
 import random
 import numpy as np
 import torch as T
 import wandb
+from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
 
 from rl_agents import load_agent_from_config
+from distributed_trainer import DistributedAgents
 
 # Configure logging
-# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = get_logger(__name__, 'info')
 
 parser = argparse.ArgumentParser(description='Train Agent')
 parser.add_argument('--agent_config', type=str, required=True, help='Path to the agent configuration file')
 parser.add_argument('--train_config', type=str, required=True, help='Path to the train configuration file')
+parser.add_argument('--distributed_workers', type=int, default=1, help='Number of distributed workers (default: 1)')
+parser.add_argument('--learner_device', type=str, default=None, help='Device for the learner (default: None)')
+parser.add_argument('--learner_num_cpus', type=int, default=1, help='Number of CPUs for the learner (default: 1)')
+parser.add_argument('--learner_num_gpus', type=float, default=1.0, help='Number of GPUs for the learner (default: 1)')
+parser.add_argument('--worker_device', type=str, default='cpu', help='Device for the workers (default: cpu)')
+parser.add_argument('--worker_num_cpus', type=int, default=1, help='Number of CPUs for the workers (default: 1)')
+parser.add_argument('--worker_num_gpus', type=float, default=0.0, help='Number of GPUs for the workers (default: 0)')
+parser.add_argument('--learn_iter', type=int, default=100, help='Learn frequency for the distributed workers (default: 100)')
+parser.add_argument('--sync_iter', type=int, default=10, help='Sync interval for the distributed workers (default: 10)')
 
 args = parser.parse_args()
 
@@ -30,25 +42,45 @@ def train_agent(agent_config, train_config):
     try:
         agent_type = agent_config['agent_type']
         print(f'agent type:{agent_type}')
-        # load_weights = train_config.get('load_weights', False)
         load_weights = train_config.get('load_weights', False)
-        # render = train_config.get('render', False)
         render_freq = train_config.get('render_freq', 0)
         save_dir = train_config.get('save_dir', agent_config['save_dir'])
-        #DEBUG
-        # print(f'training save dir: {save_dir}')
         num_envs = train_config['num_envs']
-        seed = train_config.get('seed', np.random.randint(1000))
         run_number = train_config.get('run_number', None)
         num_episodes = train_config['num_episodes']
+        
+        # Use a specific seed if provided, otherwise generate a deterministic one based on current time
+        # This ensures reproducibility while still giving different runs different seeds
+        if 'seed' not in train_config:
+            # Use current timestamp as seed for reproducible randomness
+            seed = int(time.time()) % 10000
+            logger.info(f"No seed provided, using generated seed: {seed}")
+        else:
+            seed = train_config['seed']
+            logger.info(f"Using provided seed: {seed}")
 
-        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO'], f"Unsupported agent type: {agent_type}"
+        assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO', 'SAC'], f"Unsupported agent type: {agent_type}"
 
         if agent_type:
-            agent = load_agent_from_config(agent_config, load_weights)
-
-            if agent_type in ['ActorCritic', 'DDPG', 'TD3']:
-                agent.train(num_episodes, num_envs, seed, render_freq)
+            if agent_type in ['ActorCritic', 'DDPG', 'TD3', 'SAC']:
+                if args.distributed_workers > 1:
+                    distributed_agents = DistributedAgents(
+                        agent_config,
+                        args.distributed_workers,
+                        args.learner_device,
+                        args.learner_num_cpus,
+                        args.learner_num_gpus,
+                        args.worker_device,
+                        args.worker_num_cpus,
+                        args.worker_num_gpus,
+                        args.learn_iter,
+                    )
+                    futures = distributed_agents.train(sync_iter=args.sync_iter, num_episodes=num_episodes, num_envs=num_envs, seed=seed, render_freq=render_freq)
+                    if futures:
+                        ray.get(futures)
+                else:
+                    agent = load_agent_from_config(agent_config, load_weights)
+                    agent.train(num_episodes, num_envs, seed, render_freq)
 
             elif agent_type == 'Reinforce':
                 trajectories_per_update = train_config['trajectories_per_update']
@@ -57,8 +89,52 @@ def train_agent(agent_config, train_config):
             elif agent_type == 'HER':
                 num_epochs = train_config['num_epochs']
                 num_cycles = train_config['num_cycles']
-                num_updates = train_config['learning_epochs']
-                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
+                num_updates = train_config['num_updates']
+                if args.distributed_workers > 1:
+                    distributed_agents = DistributedAgents(
+                        agent_config,
+                        args.distributed_workers,
+                        args.learner_device,
+                        args.learner_num_cpus,
+                        args.learner_num_gpus,
+                        args.worker_device,
+                        args.worker_num_cpus,
+                        args.worker_num_gpus,
+                        args.learn_iter
+                    )
+                    futures = distributed_agents.train(
+                        sync_iter=args.sync_iter,
+                        num_epochs=num_epochs,
+                        num_cycles=num_cycles,
+                        num_episodes=num_episodes,
+                        num_updates=num_updates,
+                        render_freq=render_freq,
+                        num_envs=num_envs,
+                        seed=seed
+                    )
+                    if futures:
+                        ray.get(futures)
+                else:
+                    agent = load_agent_from_config(agent_config, load_weights)
+                    report_dir = os.path.join(os.curdir, 'profiles')
+                    os.makedirs(report_dir, exist_ok=True)  # Ensure dir exists
+                    with profile(
+                        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],  # Capture CPU and GPU events
+                        schedule=T.profiler.schedule(wait=1, warmup=1, active=3, repeat=4),  # Limit to a few cycles to avoid huge files
+                        on_trace_ready=tensorboard_trace_handler(os.path.join(report_dir, "torch_profiler_logs")),  # Save to mounted dir for TensorBoard
+                        record_shapes=True,  # Log tensor shapes (e.g., in model forward passes)
+                        profile_memory=True,  # Track GPU memory (useful for buffer/replay in rl_agents.py)
+                        with_stack=True  # Include call stacks (trace back to specific lines in models.py or rl_agents.py)
+                    ) as prof:
+                        with record_function("full_training_loop"):  # Label the entire training for easy navigation
+                            # Your training call (e.g., for HER/DDPG based on config.json)
+                            agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed, profiler=prof)
+
+                    # Export a Chrome trace for manual viewing (optional) -- MOVED OUTSIDE THE WITH BLOCK
+                    # try:
+                    #     prof.export_chrome_trace(os.path.join(report_dir, "torch_profiler_logs/torch_profile.json"))
+                    # except RuntimeError as e:
+                    #     logger.error(f"Failed to export profiler trace: {e}")
             
             elif agent_type == 'PPO':
                 timesteps = train_config['num_timesteps']

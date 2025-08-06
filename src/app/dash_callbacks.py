@@ -338,6 +338,7 @@ def register_callbacks(app, shared_data):
                             {"label": "MaxPool2D", "value": "maxpool2d"},
                             {"label": "Dropout", "value": "dropout"},
                             {"label": "BatchNorm2D", "value": "batchnorm2d"},
+                            {"label": "LayerNorm", "value": "layernorm"},
                             {"label": "Flatten", "value": "flatten"},
                             {"label": "ReLU", "value": "relu"},
                             {"label": "LeakyReLU", "value": "leakyrelu"},
@@ -492,6 +493,21 @@ def register_callbacks(app, shared_data):
                     type='number',
                     placeholder='Num Features',
                     value=agent_params_store.get(dash_utils.get_key(ids, "num-features"), None)
+                )
+            ]
+        
+        elif layer_type == "layernorm":
+            params = [
+                dcc.Input(
+                    id={
+                        'type': 'normalized-shape',
+                        'model': ids['model'],
+                        'agent': ids['agent'],
+                        'index': ids['index']
+                    },
+                    type='number',
+                    placeholder='Normalized Shape',
+                    value=agent_params_store.get(dash_utils.get_key(ids, "normalized-shape"), None)
                 )
             ]
         
@@ -1315,6 +1331,17 @@ def register_callbacks(app, shared_data):
         return dash_utils.update_goal_strategy_options(agent_type, strategy)
     
     @app.callback(
+        Output({'type': 'replay-buffer-options', 'model': MATCH, 'agent': MATCH}, 'children'),
+        Input({'type': 'replay-buffer', 'model': MATCH, 'agent': MATCH}, 'value'),
+        State({'type': 'replay-buffer', 'model': MATCH, 'agent': MATCH}, 'id'),
+        prevent_initial_call=True
+    )
+    def update_replay_buffer_options(replay_buffer, replay_buffer_id):
+        agent_type = replay_buffer_id['agent']
+        return dash_utils.update_replay_buffer_options(agent_type, replay_buffer)
+    
+    
+    @app.callback(
         Output({'type': 'goal-strategy-options-hyperparam', 'model': MATCH, 'agent': MATCH}, 'children'),
         Input({'type': 'goal-strategy-hyperparam', 'model': MATCH, 'agent': MATCH}, 'value'),
         State({'type': 'goal-strategy-hyperparam', 'model': MATCH, 'agent': MATCH}, 'id'),
@@ -1483,7 +1510,7 @@ def register_callbacks(app, shared_data):
                 layer_config=value_layers,
                 output_layer_kernel=value_output_kernel,
                 optimizer_params=value_optimizer,
-                scheduler_params=value_learning_rate_schedule,
+                lr_scheduler=value_learning_rate_schedule,
                 device=device,
             )
 
@@ -1605,7 +1632,7 @@ def register_callbacks(app, shared_data):
             discount = agent_params.get(dash_utils.get_key({'type':'discount', 'model':'none', 'agent':agent_type_dropdown_value}))
             tau = agent_params.get(dash_utils.get_key({'type':'tau', 'model':'none', 'agent':agent_type_dropdown_value}))
             epsilon = agent_params.get(dash_utils.get_key({'type':'epsilon-greedy', 'model':'none', 'agent':agent_type_dropdown_value}))
-            replay_buffer = ReplayBuffer(env, 100000, device=device)
+            replay_buffer = dash_utils.get_replay_buffer(env, agent_type_dropdown_value, 'none', agent_params)
             batch_size = agent_params.get(dash_utils.get_key({'type':'batch-size', 'model':'none', 'agent':agent_type_dropdown_value}))
             noise = agent_params.get(dash_utils.get_key({'type':'noise-function', 'model':'actor', 'agent':agent_type_dropdown_value}))
             noise = dash_utils.create_noise_object(env, model_type='actor', agent_type=agent_type_dropdown_value, agent_params=agent_params)
@@ -1671,7 +1698,7 @@ def register_callbacks(app, shared_data):
             elif agent_type_dropdown_value in ["HER_DDPG", "HER_TD3"]:
 
                 # set HER specific hyperparams
-                replay_buffer = ReplayBuffer(env, 100000, (env.observation_space['desired_goal'].shape[-1],), device=device)
+                replay_buffer = dash_utils.get_replay_buffer(env, agent_type_dropdown_value, 'none', agent_params)
                 strategy = agent_params.get(dash_utils.get_key({'type':'goal-strategy', 'model':'none', 'agent':agent_type_dropdown_value}))
                 num_goals = agent_params.get(dash_utils.get_key({'type':'future-goals', 'model':'none', 'agent':agent_type_dropdown_value}))
                 tolerance = agent_params.get(dash_utils.get_key({'type':'goal-tolerance', 'model':'none', 'agent':agent_type_dropdown_value}))

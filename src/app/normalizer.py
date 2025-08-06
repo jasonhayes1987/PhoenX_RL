@@ -1,6 +1,7 @@
 import torch as T
 import numpy as np
 from torch_utils import get_device
+from typing import Optional
 
 class Normalizer:
     """
@@ -12,7 +13,7 @@ class Normalizer:
         clip_range (float): Range to clip normalized values.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
     """
-    def __init__(self, size: int, eps: float = 1e-2, clip_range: float = 5.0, device: str = None):
+    def __init__(self, size: int, eps: float = 1e-2, clip_range: float = 5.0, device: Optional[str | T.device] = None):
         self.size = size
         self.device = get_device(device)
         self.eps = T.tensor(eps, device=self.device)
@@ -104,6 +105,7 @@ class Normalizer:
                 'size':self.size,
                 'eps':self.eps,
                 'clip_range':self.clip_range,
+                'device':self.device.type,
             },
             "state":{
                 'local_sum':self.local_sum.cpu().numpy(),
@@ -125,18 +127,18 @@ class Normalizer:
             file_path (str): Path to save the state.
         """
         T.save({
-            'local_sum': self.local_sum,
-            'local_sum_sq': self.local_sum_sq,
-            'local_cnt': self.local_cnt,
-            'running_mean': self.running_mean,
-            'running_std': self.running_std,
-            'running_sum': self.running_sum,
-            'running_sum_sq': self.running_sum_sq,
-            'running_cnt': self.running_cnt,
+            'local_sum': self.local_sum.cpu().numpy(),
+            'local_sum_sq': self.local_sum_sq.cpu().numpy(),
+            'local_cnt': self.local_cnt.cpu().numpy(),
+            'running_mean': self.running_mean.cpu().numpy(),
+            'running_std': self.running_std.cpu().numpy(),
+            'running_sum': self.running_sum.cpu().numpy(),
+            'running_sum_sq': self.running_sum_sq.cpu().numpy(),
+            'running_cnt': self.running_cnt.cpu().numpy(),
         }, file_path)
 
     @classmethod
-    def load_state(cls, file_path: str, device: str = 'cpu') -> 'Normalizer':
+    def load_state(cls, file_path: str, device: Optional[str] = None) -> 'Normalizer':
         """
         Load a normalizer's state from a file.
 
@@ -147,19 +149,20 @@ class Normalizer:
         Returns:
             Normalizer: A Normalizer instance with the loaded state.
         """
-        state = T.load(file_path)
+        device = get_device(device)
+        state = T.load(file_path, map_location='cpu')
         normalizer = cls(size=state['running_mean'].shape[0], device=device)
         target_device = normalizer.device
         
         # Ensure all loaded tensors are moved to the correct device
-        normalizer.local_sum = state['local_sum'].to(target_device)
-        normalizer.local_sum_sq = state['local_sum_sq'].to(target_device)
-        normalizer.local_cnt = state['local_cnt'].to(target_device)
-        normalizer.running_mean = state['running_mean'].to(target_device)
-        normalizer.running_std = state['running_std'].to(target_device)
-        normalizer.running_sum = state['running_sum'].to(target_device)
-        normalizer.running_sum_sq = state['running_sum_sq'].to(target_device)
-        normalizer.running_cnt = state['running_cnt'].to(target_device)
+        normalizer.local_sum = T.tensor(state['local_sum'], device=target_device)
+        normalizer.local_sum_sq = T.tensor(state['local_sum_sq'], device=target_device)
+        normalizer.local_cnt = T.tensor(state['local_cnt'], device=target_device)
+        normalizer.running_mean = T.tensor(state['running_mean'], device=target_device)
+        normalizer.running_std = T.tensor(state['running_std'], device=target_device)
+        normalizer.running_sum = T.tensor(state['running_sum'], device=target_device)
+        normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=target_device)
+        normalizer.running_cnt = T.tensor(state['running_cnt'], device=target_device)
         
         return normalizer
 

@@ -3,13 +3,7 @@ from torch import optim
 from torch.optim import lr_scheduler
 
 class ScheduleWrapper:
-    def __init__(self, schedule_config):
-        #DEBUG
-        # print(f'scheduler config:{schedule_config}')
-        if schedule_config is None:
-            self.schedule_config = None
-            self.scheduler = None
-            return
+    def __init__(self, schedule_config: dict):
         self.schedule_config = schedule_config
         
         self.param = T.nn.Parameter(T.zeros(1), requires_grad=False)
@@ -41,3 +35,12 @@ class ScheduleWrapper:
     
     def get_config(self):
         return self.schedule_config
+
+    def clone(self):
+        new_wrapper = ScheduleWrapper(self.schedule_config.copy())
+        if self.scheduler:
+            new_wrapper.scheduler.load_state_dict(self.scheduler.state_dict())
+        if self.optimizer:
+            new_wrapper.optimizer.load_state_dict(self.optimizer.state_dict())
+        new_wrapper.param = self.param.clone().detach().requires_grad_(False)
+        return new_wrapper

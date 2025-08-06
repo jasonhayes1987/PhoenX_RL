@@ -1,6 +1,7 @@
 import json
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec, WrapperSpec
+from env_wrapper import GymnasiumWrapper
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -10,6 +11,12 @@ class CustomJSONEncoder(json.JSONEncoder):
             return serialize_env_spec(obj)
         if isinstance(obj, WrapperSpec):
             return wrapper_to_dict(obj)
+        if isinstance(obj, GymnasiumWrapper):
+            return {
+                "type": obj.__class__.__name__,
+                "env": obj.env_spec.to_json(),
+                "wrappers": obj.wrappers if obj.wrappers else []
+            }
         if callable(obj):
             return str(obj)  # Convert functions, including lambdas, to strings
 
