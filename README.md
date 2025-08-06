@@ -1,4 +1,7 @@
 # PhoenX RL
+![](src/app/assets/Python-3.8+-blue.svg)
+![](src/app/assets/Python-3.8+-blue.svg)
+![](src/app/assets/License-MIT-yellow.svg)
 <table>
   <tr>
     <td><img src="src/app/assets/cheetah.gif" alt="Cheetah" width="200"></td>
@@ -20,7 +23,7 @@ The framework emphasizes extensibility, allowing users to customize models, nois
 
 ## Key Features
 - **Supported Algorithms:**
-   - **On-Policy**: Reinforce, Actor-Critic (A2C), Proximal Policy Optimization (PPO) with adaptive KL divergence.
+   - **On-Policy**: Reinforce, Actor-Critic, Proximal Policy Optimization (PPO) with adaptive KL divergence.
    - **Off-Policy**: Deep Deterministic Policy Gradient (DDPG), Twin Delayed DDPG (TD3), Soft Actor-Critic (SAC).
    - **Goal-Oriented**: Hindsight Experience Replay (HER) with DDPG/TD3 backends (adding SAC backend support).
 - **Modular Components:**
@@ -249,7 +252,8 @@ with open(train_config_path, 'w') as f:
     json.dump(train_config, f)
 ```
 2. **Train**:
-   Command Line
+   
+ Command Line
 ```bash
 python train.py --agent_config agent_config.json --train_config train_config.json
 ```
