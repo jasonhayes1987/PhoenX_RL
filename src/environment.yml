@@ -5,7 +5,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.10
+  - python=3.12
   - pip
   - pylint
   - pytest
@@ -39,15 +39,11 @@ dependencies:
   - moviepy
   - ffmpeg
   - mpi4py
-  - cupy
   - dash-bootstrap-components
   - mujoco>=2.2.0,<3.2.0
   - python-dotenv
   - python-dotenv-with-cli
-  - pytorch
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.4
+  - ray-all
   - pip:
     - expecttest!=0.2.0
     - optree>=0.9.1
@@ -55,7 +51,8 @@ dependencies:
     - autorom
     - wandb
     - types-dataclasses
-    - gymnasium[mujoco,jax,atari,box2d,classic-control,toy-text]==1.0.0
+    - gymnasium[all]==1.2.0
     # - gymnasium-robotics
     - decorator==4.0.2
     - mcp
+    - ipywidgets
