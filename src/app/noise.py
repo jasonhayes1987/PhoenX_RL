@@ -2,6 +2,7 @@ import torch as T
 from torch.distributions import uniform, normal
 import numpy as np
 from torch_utils import get_device
+from typing import Optional
 
 class Noise:
     """
@@ -35,7 +36,7 @@ class Noise:
         """
         pass
 
-    def clone(self):
+    def clone(self, device: Optional[str | T.device] = None):
         """
         Clone the noise process.
 
@@ -86,14 +87,16 @@ class UniformNoise(Noise):
         
         self.noise_gen = uniform.Uniform(low=self.minval, high=self.maxval)
 
-    def __call__(self) -> T.Tensor:
+    def __call__(self, shape: tuple=None) -> T.Tensor:
         """
         Generate uniform noise.
 
         Returns:
             T.Tensor: Generated noise.
         """
-        return self.noise_gen.sample(self.shape)
+        if shape is None:
+            shape = self.shape
+        return self.noise_gen.sample(shape)
 
     def get_config(self) -> dict:
         """
@@ -112,14 +115,19 @@ class UniformNoise(Noise):
             }
         }
     
-    def clone(self) -> 'UniformNoise':
+    def clone(self, device: Optional[str | T.device] = None) -> 'UniformNoise':
         """
         Clone the UniformNoise instance.
 
         Returns:
             UniformNoise: A new instance with the same configuration.
         """
-        return UniformNoise(self.shape, self.minval.item(), self.maxval.item(), self.device)
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
+        return UniformNoise(self.shape, self.minval.item(), self.maxval.item(), device)
 
 class NormalNoise(Noise):
     """
@@ -139,14 +147,16 @@ class NormalNoise(Noise):
         """
         self.noise_gen = normal.Normal(loc=self.mean, scale=self.stddev)
 
-    def __call__(self) -> T.Tensor:
+    def __call__(self, shape: tuple=None) -> T.Tensor:
         """
         Generate normal noise.
 
         Returns:
             T.Tensor: Generated noise.
         """
-        return self.noise_gen.sample(self.shape)
+        if shape is None:
+            shape = self.shape
+        return self.noise_gen.sample(shape)
 
     def __getstate__(self):
         # Only the numpy arrays are serialized
@@ -177,14 +187,19 @@ class NormalNoise(Noise):
             }
         }
     
-    def clone(self) -> 'NormalNoise':
+    def clone(self, device: Optional[str | T.device] = None) -> 'NormalNoise':
         """
         Clone the NormalNoise instance.
 
         Returns:
             NormalNoise: A new instance with the same configuration.
         """
-        return NormalNoise(self.shape, self.mean.item(), self.stddev.item(), self.device)
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
+        return NormalNoise(self.shape, self.mean.item(), self.stddev.item(), device)
     
 class OUNoise(Noise):
     """
@@ -204,14 +219,16 @@ class OUNoise(Noise):
         self.dt = T.tensor(dt, device=self.device)
         self.reset()
 
-    def __call__(self) -> T.Tensor:
+    def __call__(self, shape: tuple=None) -> T.Tensor:
         """
         Generate Ornstein-Uhlenbeck noise.
 
         Returns:
             T.Tensor: Generated noise.
         """
-        dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * T.randn(self.shape, device=self.device)
+        if shape is None:
+            shape = self.shape
+        dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * T.randn(shape, device=self.device)
         x = self.x_prev + dx
         self.x_prev = x
         return x
@@ -246,11 +263,16 @@ class OUNoise(Noise):
             }
         }
         
-    def clone(self) -> 'OUNoise':
+    def clone(self, device: Optional[str | T.device] = None) -> 'OUNoise':
         """
         Clone the OUNoise instance.
 
         Returns:
             OUNoise: A new instance with the same configuration.
         """
-        return OUNoise(self.shape, self.mean.item(), self.theta.item(), self.sigma.item(), self.dt.item(), self.device)
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
+
+        return OUNoise(self.shape, self.mean.item(), self.theta.item(), self.sigma.item(), self.dt.item(), device)
