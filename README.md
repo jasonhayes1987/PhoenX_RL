@@ -1,5 +1,18 @@
-
 # PhoenX RL
+<table>
+  <tr>
+    <td><img src="src/app/assets/cheetah.gif" alt="Cheetah" width="200"></td>
+    <td><img src="src/app/assets/lunar.gif" alt="Lunar Lander" width="200"></td>
+    <td><img src="src/app/assets/pong.gif" alt="Atari Pong" width="200"></td>
+    <td><img src="src/app/assets/double_pendulum.gif" alt="Inverted Pendulum" width="200"></td>
+  </tr>
+  <tr>
+    <td><img src="src/app/assets/reach.gif" alt="Fetch Reach" width="200"></td>
+    <td><img src="src/app/assets/push.gif" alt="Fetch Push" width="200"></td>
+    <td><img src="src/app/assets/slide.gif" alt="Fetch Slide" width="200"></td>
+    <td><img src="src/app/assets/place.gif" alt="Fetch Pick and Place" width="200"></td>
+  </tr>
+</table>
 
 ## Overview
 PhoenX RL is a flexible, modular reinforcement learning (RL) framework designed for rapid experimentation and development of RL agents. Built on PyTorch, it supports a variety of on-policy and off-policy algorithms, integrates seamlessly with Gymnasium environments, and includes tools for distributed training with Ray, hyperparameter sweeps, intrinsic curiosity, N-step returns, and visualization via Dash and Weights & Biases (WandB).
