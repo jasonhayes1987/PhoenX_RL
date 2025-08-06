@@ -66,13 +66,17 @@ pip install torch torchvision torchaudio
 ```bash
 pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 ```
+6. **Accept Atari ROM License (for Atari environments)**:
+```bash
+AutoROM --accept-license --install-dir $(conda info --base)/envs/rl_env/lib/python3.12/site-packages/ale_py/roms
+```
 
 ## Usage
 ### Building and Training an Agent (W/O using Dash app)
 1. **Configure the Agent**:
 Create JSON configs for the agent and training parameters (e.g., `agent_config.json`, `train_config.json`).
 
-Example for HER with DDPG backend using N-step, ICM, and schedulers for Actor/Critic learning rate and ICM rewards:
+   Example for HER with DDPG backend using N-step, ICM, and schedulers for Actor/Critic learning rate and ICM rewards:
 ```python
 # Set device
 device = 'cuda'
@@ -230,3 +234,41 @@ train_config = {
 train_config_path = config["save_dir"] + 'train_config.json'
 with open(train_config_path, 'w') as f:
     json.dump(train_config, f)
+```
+2. **Train**:
+   Command Line
+```bash
+python train.py --agent_config agent_config.json --train_config train_config.json
+```
+   Distributed Train
+```bash
+python train.py --agent_config agent_config.json --train_config train_config.json --distributed_workers 4
+```
+   Programatically
+```python
+from agent_utils import load_agent_from_config
+
+agent = load_agent_from_config(config)
+agent.train(**train_config)
+
+# Distributed
+from distributed_trainer import DistributedAgents
+
+distributed_agents = DistributedAgents(config, num_workers=4)
+distributed_agents.train(**train_config)
+```
+
+### Dash UI
+   Launch the Dash app for interactive agent building/training:
+```bash
+python dashboard.py
+```
+
+# Roadmap
+PhoenX RL is actively evolving. Future plans include:
+- **Isaac Sim Integration**: Adding support for NVIDIA Isaac Sim environments to enable advanced robotics simulations and real-world transfer learning.
+- **Ray Tune for Hyperparameter Optimization**: Incorporating Ray Tune to leverage advanced search algorithms (e.g., Bayesian optimization, HyperBand) for more efficient hyperparameter tuning.
+- **Transformer Layers Support**: Extending the model architecture to include transformer layers for handling sequential data in RL tasks, such as in partially observable environments or long-horizon planning.
+
+# License
+This project is licensed under the MIT License - see the LICENSE file for details.
