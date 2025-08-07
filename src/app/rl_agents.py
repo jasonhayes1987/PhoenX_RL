@@ -3976,6 +3976,7 @@ class SAC(Agent):
         replay_buffer: Buffer,
         discount: float=0.99,
         tau: float=0.005,
+        alpha: float=0.2,
         batch_size: int = 256,
         grad_clip: Optional[float]=None,
         warmup: int=1000,
@@ -3995,6 +3996,7 @@ class SAC(Agent):
             self.target_value_model = self.clone_model(value_model)
             self.discount = discount
             self.tau = tau
+            self.alpha = alpha
             self.replay_buffer = replay_buffer
             self.batch_size = batch_size
             self.grad_clip = grad_clip
@@ -4220,28 +4222,36 @@ class SAC(Agent):
         rewards = rewards.to(self.target_value_model.device)
         dones = dones.to(self.target_value_model.device)
 
+        action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+
         with T.no_grad():
             # Get target values
             dist, _, _ = self.actor_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
-            new_actions = dist.rsample()
-            # action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-            # action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
-            # new_actions = new_actions.clip(action_space_low, action_space_high)
+            new_actions = T.tanh(dist.rsample()) * action_space_high
             log_probs = dist.log_prob(new_actions)
+            log_probs -= T.log(1-new_actions.pow(2) + 1e-6)
             q_1 = self.critic_model_a(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
             q_2 = self.critic_model_b(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
             min_q = T.minimum(q_1, q_2)
-            v_preds = self.value_model(states[:,-1,:]).squeeze()
             v_targ = min_q - self.alpha * log_probs
+            print(f'v_targ shape: {v_targ.shape}')
+            print(f'log_probs shape: {log_probs.shape}')
+            print(f'min_q shape: {min_q.shape}')
+            print(f'q_1 shape: {q_1.shape}')
+            print(f'q_2 shape: {q_2.shape}')
 
-            # Update Value Model
-            self.value_model.optimizer.zero_grad()
-            value_loss = F.mse_loss(v_preds, v_targ.detatch())
-            value_loss.backward()
-            if self.grad_clip:
-                T.nn.utils.clip_grad_norm_(self.value_model.parameters(), self.grad_clip)
-            self.value_model.optimizer.step()
+        v_preds = self.value_model(states[:,-1,:]).squeeze()
+        print(f'v_preds shape: {v_preds.shape}')
+        # Update Value Model
+        self.value_model.optimizer.zero_grad()
+        value_loss = F.mse_loss(v_preds, v_targ)
+        value_loss.backward()
+        if self.grad_clip:
+            T.nn.utils.clip_grad_norm_(self.value_model.parameters(), self.grad_clip)
+        self.value_model.optimizer.step()
 
+
+        with T.no_grad():
             # Calculate target Q-values
             q_targets = compute_n_step_return(
                 rewards,
@@ -4274,8 +4284,8 @@ class SAC(Agent):
         q2_loss = (q2_preds - q_targets.detach()).pow(2)
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            q1_loss = weights.to(self.critic_model.device) * q1_loss
-            q2_loss = weights.to(self.critic_model.device) * q2_loss
+            q1_loss = weights.to(self.critic_model_a.device) * q1_loss
+            q2_loss = weights.to(self.critic_model_b.device) * q2_loss
         critic_loss = q1_loss.mean() + q2_loss.mean()
 
         self.critic_model_a.optimizer.zero_grad()
@@ -4288,7 +4298,13 @@ class SAC(Agent):
         self.critic_model_b.optimizer.step()
 
         # Update Actor
-        actor_loss = (self.alpha * log_probs - min_q)
+        dist, _, _ = self.actor_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
+        new_actions = dist.rsample()
+        log_probs = dist.log_prob(new_actions)
+        q_1 = self.critic_model_a(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+        q_2 = self.critic_model_b(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+        min_q = T.minimum(q_1, q_2)
+        actor_loss = self.alpha * log_probs - min_q
 
         if weights is not None:
             actor_loss = weights.to(self.actor_model.device) * actor_loss
@@ -4497,11 +4513,6 @@ class SAC(Agent):
                         self._train_step_config["actor_loss"] = actor_loss
                         self._train_step_config["critic_loss"] = critic_loss
                         self._train_step_config["value_loss"] = value_loss
-                    # Step scheduler if not None
-                    if self.noise_schedule:
-                        self.noise_schedule.step()
-                        self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
-
 
             self._train_step_config["step_reward"] = rewards.mean()
             
@@ -4656,6 +4667,7 @@ class SAC(Agent):
             "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
             "discount": self.discount,
             "tau": self.tau,
+            "alpha": self.alpha,
             "batch_size": self.batch_size,
             'grad_clip': self.grad_clip,
             'warmup': self.warmup,
@@ -4734,6 +4746,7 @@ class SAC(Agent):
             value_model = value_model,
             discount=config["discount"],
             tau=config["tau"],
+            alpha=config["alpha"],
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             grad_clip=config['grad_clip'],
