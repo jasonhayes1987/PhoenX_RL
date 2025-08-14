@@ -13,7 +13,7 @@ class Normalizer:
         clip_range (float): Range to clip normalized values.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
     """
-    def __init__(self, size: int, eps: float = 1e-2, clip_range: float = 5.0, device: Optional[str | T.device] = None):
+    def __init__(self, size: int, eps: float = 1e-6, clip_range: float = 5.0, device: Optional[str | T.device] = None):
         self.size = size
         self.device = get_device(device)
         self.eps = T.tensor(eps, device=self.device)
