@@ -594,8 +594,14 @@ class StochasticContinuousPolicy(Model):
             goal = goal.to(self.device)
             x = T.cat([x, goal], dim=-1)
 
+        #DEBUG
+        # print(f'input x: {x}')
+
         for layer in self.layers.values():
             x = layer(x)
+            #DEBUG
+            # print(f'output x layer {layer}: {x}')
+
         param_1 = self.output_layer['policy_output_param_1'](x)
         param_2 = self.output_layer['policy_output_param_2'](x)
 
@@ -606,9 +612,10 @@ class StochasticContinuousPolicy(Model):
             return dist, alpha, beta
         elif self.distribution == 'normal':
             mu = param_1
-            sigma = F.softplus(param_2)
-            print(f'mu: {mu}')
-            print(f'sigma: {sigma}')
+            # sigma = F.softplus(param_2) + 1e-6
+            sigma = T.exp(T.clamp(param_2, min=-20, max=2))
+            # print(f'mu: {mu}')
+            # print(f'sigma: {sigma}')
             dist = Normal(mu, sigma)
             return dist, mu, sigma
         else:
