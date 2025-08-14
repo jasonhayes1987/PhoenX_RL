@@ -3977,11 +3977,15 @@ class SAC(Agent):
         discount: float=0.99,
         tau: float=0.005,
         alpha: float=0.2,
+        auto_entropy_tuning: bool=True,
+        alpha_lr: float=3e-4, # Only used if auto entropy = True
         batch_size: int = 256,
         grad_clip: Optional[float]=None,
         warmup: int=1000,
         N: int=1,
         curiosity: Optional[ICM] = None,
+        normalize_observations: bool=True,
+        normalizer_clip: float=5.0, # Only used if normalize_observations = True
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
@@ -3997,11 +4001,19 @@ class SAC(Agent):
             self.discount = discount
             self.tau = tau
             self.alpha = alpha
+            self.auto_entropy_tuning = auto_entropy_tuning
+            self.alpha_lr = alpha_lr
+            if self.auto_entropy_tuning:
+                self.target_entropy = -float(int(self.env.single_action_space.shape[-1]))
+                self.log_alpha = T.tensor(np.log(alpha), requires_grad=True, device=self.device)
+                self.alpha_optimizer = T.optim.Adam([self.log_alpha], lr=self.alpha_lr)
             self.replay_buffer = replay_buffer
             self.batch_size = batch_size
             self.grad_clip = grad_clip
             self.warmup = warmup
             self.N = N
+            self.curiosity = curiosity
+            self.normalize_observations = normalize_observations
 
         except Exception as e:
             self.logger.error(f"Error in SAC init: {e}", exc_info=True)
@@ -4013,14 +4025,13 @@ class SAC(Agent):
             # Check if the observation space is a dictionary for goal-aware environments
             if isinstance(obs_space, gym.spaces.Dict):
                 shape = obs_space['observation'].shape
-                # goal_shape = obs_space['desired_goal'].shape
-                # shape = (observation_shape[0] + goal_shape[0],)
             else:
                 shape = obs_space.shape
 
-            # if self.normalize_inputs:
-            #     # self.state_normalizer = Normalizer(shape, self.normalizer_eps, self.normalizer_clip, self.device)
-            #     self.state_normalizer = nn.BatchNorm1d(num_features=shape[-1], device=self.device)
+            if self.normalize_observations:
+                self.state_normalizer = Normalizer(shape, clip_range=self.normalizer_clip, device=self.device)
+            else:
+                self.state_normalizer = None
 
             # Instantiate internal attribute use_her to be switched by HER class if using DDPG
             self._use_her = False
@@ -4222,26 +4233,42 @@ class SAC(Agent):
         rewards = rewards.to(self.target_value_model.device)
         dones = dones.to(self.target_value_model.device)
 
-        action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+        action_space_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.actor_model.device)
+        # print(f'action_space_high: {action_space_high}')
+
+        # Train ICM if curiosity and update _use_extrinsic flag
+        if self.curiosity:
+            curiosity_loss = self.curiosity.train(states[:,-1,:], next_states[:,-1,:], actions[:,-1,:])
+            if self._step > self.curiosity.extrinsic_threshold:
+                self.curiosity._use_extrinsic = True
+            else:
+                self.curiosity._use_extrinsic = False
 
         with T.no_grad():
             # Get target values
             dist, _, _ = self.actor_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
-            new_actions = T.tanh(dist.rsample()) * action_space_high
-            log_probs = dist.log_prob(new_actions)
-            log_probs -= T.log(1-new_actions.pow(2) + 1e-6)
-            q_1 = self.critic_model_a(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
-            q_2 = self.critic_model_b(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+            new_actions = dist.rsample()
+            squashed_actions = T.tanh(new_actions)
+            scaled_actions = squashed_actions * action_space_high
+            log_probs = dist.log_prob(new_actions).sum(-1)
+            log_probs -= T.log(1-squashed_actions.pow(2) + 1e-6).sum(-1)
+            log_probs -= T.log(action_space_high).sum()
+            q_1 = self.critic_model_a(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None).view(-1)
+            q_2 = self.critic_model_b(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None).view(-1)
             min_q = T.minimum(q_1, q_2)
-            v_targ = min_q - self.alpha * log_probs
-            print(f'v_targ shape: {v_targ.shape}')
-            print(f'log_probs shape: {log_probs.shape}')
-            print(f'min_q shape: {min_q.shape}')
-            print(f'q_1 shape: {q_1.shape}')
-            print(f'q_2 shape: {q_2.shape}')
+            if self.auto_entropy_tuning:
+                current_alpha = self.log_alpha.exp()
+            else:
+                current_alpha = self.alpha
+            v_targ = min_q - current_alpha * log_probs
+            # print(f'v_targ shape: {v_targ.shape}')
+            # print(f'log_probs shape: {log_probs.shape}')
+            # print(f'min_q shape: {min_q.shape}')
+            # print(f'q_1 shape: {q_1.shape}')
+            # print(f'q_2 shape: {q_2.shape}')
 
-        v_preds = self.value_model(states[:,-1,:]).squeeze()
-        print(f'v_preds shape: {v_preds.shape}')
+        v_preds = self.value_model(states[:,-1,:]).view(-1)
+        # print(f'v_preds shape: {v_preds.shape}')
         # Update Value Model
         self.value_model.optimizer.zero_grad()
         value_loss = F.mse_loss(v_preds, v_targ)
@@ -4253,13 +4280,25 @@ class SAC(Agent):
 
         with T.no_grad():
             # Calculate target Q-values
-            q_targets = compute_n_step_return(
-                rewards,
-                dones,
-                self.discount,
-                self.N,
-                device=self.target_value_model.device
-            ).squeeze()
+            if self.curiosity and not self.curiosity._use_extrinsic:
+                q_targets = T.zeros_like(rewards).squeeze()
+            else:
+                q_targets = compute_n_step_return(
+                    rewards,
+                    dones,
+                    self.discount,
+                    self.N,
+                    device=self.target_value_model.device
+                ).squeeze()
+
+            # Compute intrinsic reward if using ICM
+            if self.curiosity:
+                intrinsic_reward = self.curiosity.compute_intrinsic_reward(
+                    states[:,-1,:],
+                    next_states[:,-1,:],
+                    actions[:,-1,:]
+                )
+                q_targets += intrinsic_reward
 
             bootstrap_values = self.target_value_model(next_states[:,-1,:]).squeeze()
 
@@ -4300,11 +4339,14 @@ class SAC(Agent):
         # Update Actor
         dist, _, _ = self.actor_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
         new_actions = dist.rsample()
-        log_probs = dist.log_prob(new_actions)
-        q_1 = self.critic_model_a(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
-        q_2 = self.critic_model_b(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+        squashed_actions = T.tanh(new_actions)
+        scaled_actions = squashed_actions * action_space_high
+        log_probs = dist.log_prob(new_actions).sum(-1)
+        log_probs -= T.log(1-squashed_actions.pow(2) + 1e-6).sum(-1)
+        q_1 = self.critic_model_a(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+        q_2 = self.critic_model_b(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
         min_q = T.minimum(q_1, q_2)
-        actor_loss = self.alpha * log_probs - min_q
+        actor_loss = current_alpha * log_probs - min_q
 
         if weights is not None:
             actor_loss = weights.to(self.actor_model.device) * actor_loss
@@ -4316,6 +4358,12 @@ class SAC(Agent):
         if self.grad_clip:
             T.nn.utils.clip_grad_norm_(self.actor_model.parameters(), self.grad_clip)
         self.actor_model.optimizer.step()
+
+        if self.auto_entropy_tuning:
+            self.alpha_optimizer.zero_grad()
+            alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
 
         # Perform soft update on target networks
         if not self._use_her:
@@ -4337,6 +4385,14 @@ class SAC(Agent):
         self._train_step_config['critic_predictions'] = min_q
         self._train_step_config['value_predictions'] = v_preds
         self._train_step_config['target_value_predictions'] = bootstrap_values
+        self._train_step_config['alpha'] = float(current_alpha.item()) if self.auto_entropy_tuning else self.alpha
+        self._train_step_config['entropy'] = float(-log_probs.mean().item())
+        if self.curiosity:
+            self._train_step_config['curiosity_loss'] = curiosity_loss
+            self._train_step_config['intrinsic_reward'] = intrinsic_reward.mean()
+            self._train_step_config['use_extrinsic'] = self.curiosity._use_extrinsic
+            self._train_step_config['reward_weight'] = self.curiosity.reward_weight * self.curiosity.reward_scheduler.get_factor() \
+                if self.curiosity.reward_scheduler else self.curiosity.reward_weight
 
         return actor_loss.item(), critic_loss.item(), value_loss.item()
 
@@ -4668,11 +4724,15 @@ class SAC(Agent):
             "discount": self.discount,
             "tau": self.tau,
             "alpha": self.alpha,
+            "auto_entropy_tuning": self.auto_entropy_tuning,
+            "alpha_lr": self.alpha_lr,
             "batch_size": self.batch_size,
             'grad_clip': self.grad_clip,
             'warmup': self.warmup,
             'N': self.N,
             "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "normalize_observations": self.normalize_observations,
+            "normalizer_clip": self.normalizer_clip,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
@@ -4747,6 +4807,8 @@ class SAC(Agent):
             discount=config["discount"],
             tau=config["tau"],
             alpha=config["alpha"],
+            auto_entropy_tuning=config["auto_entropy_tuning"],
+            alpha_lr=config["alpha_lr"],
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             grad_clip=config['grad_clip'],
