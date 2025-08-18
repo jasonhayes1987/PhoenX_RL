@@ -31,7 +31,7 @@ class SharedNormalizer:
             self.normalizer = Normalizer(size, eps, clip_range, device)
             # load normalizer states if not None
             if state_dir:
-                self.normalizer = Normalizer.load_state(state_dir)
+                self.normalizer = Normalizer.load(state_dir)
             self.logger.info("SharedNormalizer initialized successfully")
         except Exception as e:
             self.logger.error(f"Error initializing SharedNormalizer: {e}", exc_info=True)
@@ -92,11 +92,11 @@ class SharedNormalizer:
     
     def save_state(self, file_path: str):
         """Save the state of the normalizer"""
-        return self.normalizer.save_state(file_path)
+        return self.normalizer.save(file_path)
     
     def load_state(self, file_path: str, device: Optional[str] = None):
         """Load the state of the normalizer"""
-        return self.normalizer.load_state(file_path, device)
+        return self.normalizer.load(file_path, device)
 
     def device(self):
         """Get the device of the buffer"""
