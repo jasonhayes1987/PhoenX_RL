@@ -251,28 +251,32 @@ class Model(nn.Module):
         else:
             raise NotImplementedError(f"Unsupported optimizer type: {optimizer_type}")
     
-    # def _init_scheduler(self):
-    #     """
-    #     Initialize the learning rate scheduler for the model.
+    def _preprocess_state(self, state):
+        """
+        Preprocess the state tensor to handle various shapes, including flat vectors and images.
+        
+        - Adds a feature dim to 1D (flat) states.
+        - Adds a channel dim to 3D (grayscale image) states.
+        - Permutes image states from Gymnasium envs if needed (HWC -> CHW).
+        
+        Returns:
+            Tensor: Preprocessed state.
+        """
+        # Handle flat (1D) states by adding a feature dimension (e.g., for single-feature observations)
+        if state.dim() == 1:
+            state = state.unsqueeze(-1)  # Reshape to (batch_size, 1)
 
-    #     Args:
-    #         scheduler (dict): Scheduler configuration.
+        # Handle grayscale image states without channel dim (e.g., (batch_size, height, width) -> (batch_size, 1, height, width))
+        if state.dim() == 3:
+            state = state.unsqueeze(1)
 
-    #     Returns:
-    #         torch.optim.lr_scheduler: Configured scheduler.
-    #     """
-    #     scheduler_type = self.scheduler_params.get('type', '').lower()
-    #     scheduler_params = self.scheduler_params.get('params', {})
-    #     if scheduler_type == 'cosineannealing':
-    #         return optim.lr_scheduler.CosineAnnealingLR(self.optimizer, **scheduler_params)
-    #     elif scheduler_type == 'step':
-    #         return optim.lr_scheduler.StepLR(self.optimizer, **scheduler_params)
-    #     elif scheduler_type == 'exponential':
-    #         return optim.lr_scheduler.ExponentialLR(self.optimizer, **scheduler_params)
-    #     elif scheduler_type == 'linear':
-    #         return optim.lr_scheduler.LinearLR(self.optimizer, **scheduler_params)
-    #     else:
-    #         raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
+        # Handle image-like observations from Gymnasium envs
+        if isinstance(self.env, GymnasiumWrapper):
+            # Permute color images from (B, H, W, C) to (B, C, H, W) if channels are last
+            if state.dim() == 4 and state.shape[-1] in [3, 4]:
+                state = state.permute(0, 3, 1, 2)
+
+        return state
     
     @abstractmethod
     def forward(self, x):
@@ -407,15 +411,8 @@ class StochasticDiscretePolicy(Model):
         Returns:
             Tuple[Categorical, Tensor]: Action distribution and logits for the action space.
         """
-        if x.dim() == 1: # Check if tensor is flat
-            x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        # Check if observation is image-like (HWC)
-        if isinstance(self.env, GymnasiumWrapper):
-            if x.dim() == 4 and x.shape[-1] in [3,4]:
-                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
-
+        # Preprocess state to ensure correct formatting
+        x = self._preprocess_state(x)
         x = x.to(self.device)
 
         if goal is not None:
@@ -579,15 +576,8 @@ class StochasticContinuousPolicy(Model):
         Returns:
             Distribution, Tensor, Tensor: Action distribution and its parameters.
         """
-        
-        if x.dim() == 1: # Check if tensor is flat
-            x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        # Check if observation is image-like (HWC)
-        if isinstance(self.env, GymnasiumWrapper):
-            if x.dim() == 4 and x.shape[-1] in [3,4]:
-                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
+         # Preprocess state to ensure correct formatting
+        x = self._preprocess_state(x)
         x = x.to(self.device)
 
         if goal is not None:
@@ -746,44 +736,32 @@ class ValueModel(Model):
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
 
-    def forward(self, x):
+    def forward(self, x, goal=None):
         """
         Perform a forward pass through the model.
 
         Args:
             x (Tensor): Input tensor (e.g., observation from the environment).
+            goal (Tensor, optional): Goal tensor (default: None).
 
         Returns:
             Tensor: Predicted state value.
         """
-        #DEBUG
-        # print(f'value model x shape:{x.shape}')
-        # print(f'value model x:{x}')
-        if x.dim() == 1: # Check if tensor is flat
-            x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        # Check if observation is image-like (HWC)
-        if isinstance(self.env, GymnasiumWrapper):
-            obs_shape = self.env.single_observation_space.shape
-            #DEBUG
-            # print(f'observation space shape:{obs_shape}')
-            if x.dim() == 4 and x.shape[-1] in [3,4]:
-                # DEBUG
-                # print(f'permutation fired')
-                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
-        #DEBUG
-        # print(f'value model new x shape:{x.shape}')
+
+        # Preprocess state to ensure correct formatting
+        x = self._preprocess_state(x)
         x = x.to(self.device)
-        #DEBUG
-        # print(f'Value Model Input Shape: {x.size()}')
+
+        if goal is not None:
+            goal = goal.to(self.device)
+            x = T.cat([x, goal], dim=-1)
+
         for layer in self.layers.values():
             x = layer(x)
 
         x = self.output_layer['value_dense_output'](x)
 
         return x
-
 
     def get_config(self):
         """
@@ -932,6 +910,7 @@ class ActorModel(Model):
         self._init_model(self.output_layer, self.output_config)
 
     def forward(self, x, goal=None):
+        x = self._preprocess_state(x)
         x = x.to(self.device)
 
         if goal is not None:
@@ -1096,35 +1075,24 @@ class CriticModel(Model):
         self._init_model(self.output_layer, self.output_config)
 
     def forward(self, state, action, goal=None):
+         # Preprocess state to ensure correct formatting
+        state = self._preprocess_state(state)
         state = state.to(self.device)
         action = action.to(self.device)
-        #DEBUG
-        # print(f'critic state input shape:{state.size()}')
-        # print(f'critic action input shape:{action.size()}')
+        
         if goal is not None:
             goal = goal.to(self.device)
             state = T.cat([state, goal], dim=-1)
 
-        # if self.goal_shape is not None:
-            # state = T.cat([state, goal], dim=-1)
-
         for layer in self.layers.values():
             state = layer(state)
-            #DEBUG
-            # print(f'critic {layer} output shape:{state.size()}')
 
         merged = T.cat([state, action], dim=-1)
-        #DEBUG
-        # print(f'critic merged shape:{merged.size()}')
         for layer in self.merged_layers.values():
             merged = layer(merged)
-            #DEBUG
-            # print(f'critic {layer} output shape:{merged.size()}')
 
         for layer in self.output_layer.values():
             output = layer(merged)
-            #DEBUG
-            # print(f'critic {layer} output shape:{output.size()}')
         
         return output
 
