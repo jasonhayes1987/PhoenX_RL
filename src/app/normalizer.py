@@ -13,7 +13,7 @@ class Normalizer:
         clip_range (float): Range to clip normalized values.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
     """
-    def __init__(self, size: int, eps: float = 1e-2, clip_range: float = 5.0, device: Optional[str | T.device] = None):
+    def __init__(self, size: int, eps: float = 1e-6, clip_range: float = 5.0, device: Optional[str | T.device] = None):
         self.size = size
         self.device = get_device(device)
         self.eps = T.tensor(eps, device=self.device)
@@ -101,25 +101,13 @@ class Normalizer:
             dict: Configuration and state of the normalizer.
         """
         return {
-            "params":{
-                'size':self.size,
-                'eps':self.eps,
-                'clip_range':self.clip_range,
-                'device':self.device.type,
-            },
-            "state":{
-                'local_sum':self.local_sum.cpu().numpy(),
-                'local_sum_sq':self.local_sum_sq.cpu().numpy(),
-                'local_cnt':self.local_cnt.cpu().numpy(),
-                'running_mean':self.running_mean.cpu().numpy(),
-                'running_std':self.running_std.cpu().numpy(),
-                'running_sum':self.running_sum.cpu().numpy(),
-                'running_sum_sq':self.running_sum_sq.cpu().numpy(),
-                'running_cnt':self.running_cnt.cpu().numpy(),
-            },
+            'size':self.size,
+            'eps':self.eps.item(),
+            'clip_range':self.clip_range.item(),
+            'device':self.device.type,
         }
 
-    def save_state(self, file_path: str) -> None:
+    def save(self, file_path: str) -> None:
         """
         Save the current state of the normalizer to a file.
 
@@ -138,7 +126,7 @@ class Normalizer:
         }, file_path)
 
     @classmethod
-    def load_state(cls, file_path: str, device: Optional[str] = None) -> 'Normalizer':
+    def load(cls, config: dict, state_path: str) -> 'Normalizer':
         """
         Load a normalizer's state from a file.
 
@@ -149,9 +137,10 @@ class Normalizer:
         Returns:
             Normalizer: A Normalizer instance with the loaded state.
         """
-        device = get_device(device)
-        state = T.load(file_path, map_location='cpu')
-        normalizer = cls(size=state['running_mean'].shape[0], device=device)
+
+        device = get_device(config['device'])
+        state = T.load(state_path, map_location='cpu')
+        normalizer = cls(size=config['size'], eps=config['eps'], clip_range=config['clip_range'], device=device)
         target_device = normalizer.device
         
         # Ensure all loaded tensors are moved to the correct device

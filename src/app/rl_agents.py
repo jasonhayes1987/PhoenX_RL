@@ -223,109 +223,37 @@ class ActorCritic(Agent):
         discount: float=0.99,
         policy_trace_decay: float=0.0,
         value_trace_decay: float=0.0,
+        curiosity: Optional[ICM] = None,
+        state_normalizer: Optional[Normalizer] = None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models/",
         device: Optional[str | T.device] = None,
         log_level: str = 'info'
     ):
-        super().__init__(env, callbacks, save_dir, device, log_level)
-        self.policy_model = policy_model
-        self.value_model = value_model
-        self.discount = discount
-        self.policy_trace_decay = policy_trace_decay
-        self.value_trace_decay = value_trace_decay
-        # self.callbacks = callbacks
-        # self.save_dir = save_dir
-        if save_dir is not None and "/actor_critic/" not in save_dir:
-            self.save_dir = save_dir + "/actor_critic/"
-        elif save_dir is not None:
-            self.save_dir = save_dir
+        try:
+            super().__init__(env, callbacks, save_dir, device, log_level)
+            self.policy_model = policy_model
+            self.value_model = value_model
+            self.discount = discount
+            self.policy_trace_decay = policy_trace_decay
+            self.value_trace_decay = value_trace_decay
+            self.state_normalizer = state_normalizer
 
-        # Initialize callback configurations
-        self._initialize_callbacks(callbacks)
-        self._train_config = {}
-        self._train_episode_config = {}
-        self._train_step_config = {}
-        self._test_config = {}
-        self._test_step_config = {}
-        self._test_episode_config = {}
-
-        self._step = None
-        # set self.action to None
-        self.action = None
-        # instantiate and set policy and value traces
-        self.policy_trace = []
-        self.value_trace = []
-        self._set_traces()
-
-    # def _initialize_callbacks(self, callbacks):
-    #     """
-    #     Initialize and configure callbacks for logging and monitoring.
-
-    #     Args:
-    #         callbacks (list): List of callback objects.
-    #     """
-    #     try:
-    #         self.callbacks = callbacks
-    #         if callbacks:
-    #             for callback in self.callbacks:
-    #                 self._config = callback._config(self)
-    #                 if isinstance(callback, WandbCallback):
-    #                     self._wandb = True
-    #         else:
-    #             self.callback_list = None
-    #             self._wandb = False
-    #     except Exception as e:
-    #         logger.error(f"Error initializing callbacks: {e}", exc_info=True)
-
-#     @classmethod
-#     def build(
-#         cls,
-#         env,
-#         policy_layers,
-#         value_layers,
-#         callbacks,
-#         config,#: wandb.config,
-#         save_dir: str = "models/",
-#     ):
-#         """Builds the agent."""
-#         policy_optimizer = wandb.config.policy_optimizer
-#         value_optimizer = wandb.config.value_optimizer
-#         policy_learning_rate = wandb.config.learning_rate
-#         value_learning_rate = wandb.config.learning_rate
-#         policy_model = models.StochasticDiscretePolicy(
-#             env, dense_layers=policy_layers, optimizer=policy_optimizer, learning_rate=policy_learning_rate
-#         )
-#         value_model = models.ValueModel(
-#             env, dense_layers=value_layers, optimizer=value_optimizer, learning_rate=value_learning_rate
-#         )
-
-#         agent = cls(
-#             env,
-#             policy_model,
-#             value_model,
-#             config.discount,
-#             config.policy_trace_decay,
-#             config.value_trace_decay,
-#             callbacks,
-#             save_dir=save_dir,
-#         )
-
-#         agent.save()
-
-#         return agent
+            # set self.action to None
+            self.action = None
+            # instantiate and set policy and value traces
+            self.policy_trace = []
+            self.value_trace = []
+            self._set_traces()
+        except Exception as e:
+            self.logger.error(f"Error in ActorCritic init: {e}", exc_info=True)
 
     def _set_traces(self):
         for weights in self.policy_model.parameters():
             self.policy_trace.append(T.zeros_like(weights, device=self.device))
-            #DEBUG
-            # print(f'policy trace shape: {weights.size()}')
 
         for weights in self.value_model.parameters():
             self.value_trace.append(T.zeros_like(weights, device=self.device))
-            #DEBUG
-            # print(f'value trace shape: {weights.size()}')
-
 
     def _update_traces(self):
         with T.no_grad():
@@ -335,22 +263,16 @@ class ActorCritic(Agent):
             for i, weights in enumerate(self.value_model.parameters()):
                 self.value_trace[i] = (self.discount * self.value_trace_decay * self.value_trace[i]) + weights.grad
 
-        # log to train step
-        # for i, (v_trace, p_trace) in enumerate(zip(self.value_trace, self.policy_trace)):
-            # self._train_step_config[f"value trace {i}"] = T.histc(v_trace, bins=20)
-            # self._train_step_config[f"policy trace {i}"] = T.histc(p_trace, bins=20)
-
     def get_action(self, states):
-        # state =  T.from_numpy(state).to(self.device)
         states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
         dist, logits = self.policy_model(states)
         actions = dist.sample()
-        # log_probs = dist.log_prob(actions)
-        
-        actions = actions.detach().cpu().numpy() # Detach from graph, move to CPU and convert to numpy for Gym
+        actions = actions.detach().cpu().numpy()
         return actions, dist, logits
 
-    def train(self, num_episodes, num_envs: int, seed: int | None = None, render_freq: int = 0):
+    def train(self, num_episodes: int, num_envs: int, seed: int | None = None, render_freq: int = 0, sync_iter: int = 1):
         """Trains the model for 'episodes' number of episodes."""
         # set models to train mode
         self.policy_model.train()
@@ -393,28 +315,34 @@ class ActorCritic(Agent):
         completed_scores = deque(maxlen=10)
         episode_scores = np.zeros(self.num_envs)
         states, _ = self.env.reset()
+        # Add initial observation normalizer if state_normalizer
+        if self.state_normalizer:
+            self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
         
         while self.completed_episodes < num_episodes:
+            # If distributed, sync to shared agent
+            if self._distributed and self._step % self._sync_iter == 0:
+                params = self.get_parameters()
+                self.apply_parameters(params)
             # Increment step counter
             self._step += 1
-            # if self.callbacks:
-            #     for callback in self.callbacks:
-            #         callback.on_train_epoch_begin(epoch=self._step, logs=None)
+            rendered = False # Flag to keep track of render status to avoid rendering multiple times per step
             
             if self.callbacks:
                 for callback in self.callbacks:
                     callback.on_train_step_begin(step=self._step, logs=None)
             
             actions, dist, logits = self.get_action(states)
-            # actions, log_probs = self.get_action(states)
             actions = self.env.format_actions(actions)
             next_states, rewards, terms, truncs, _ = self.env.step(actions)
+            # Update normalizer if state_normalizer
+            if self.state_normalizer:
+                self.state_normalizer.update_local_stats(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
+                self.state_normalizer.update_global_stats()
             self._train_step_config["step_reward"] = rewards.mean()
-            # self._train_step_config["logits"] = wandb.Histogram(logits.detach().cpu().numpy())
             episode_scores += rewards
             dones = np.logical_or(terms, truncs)
             self.learn(states, rewards, next_states, actions, dist, dones)
-            # self.learn(states, rewards, next_states, actions, log_probs, dones)
 
             for i in range(self.num_envs):
                 if dones[i]:
@@ -482,10 +410,13 @@ class ActorCritic(Agent):
         next_states = T.tensor(next_states, dtype=T.float32, device=self.device)
         actions = T.tensor(actions, dtype=T.long, device=self.device)
         dones = T.tensor(dones, dtype=T.int, device=self.device)
-        # Run states through policy model to get distribution and log probs of actions
-        # dist, logits = self.policy_model(states)
-        log_probs = dist.log_prob(actions)
 
+        # Normalize states if self.normalize_inputs
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
+
+        log_probs = dist.log_prob(actions)
         state_values = self.value_model(states)
         next_state_values = self.value_model(next_states).detach()
         temporal_difference = (
@@ -497,26 +428,7 @@ class ActorCritic(Agent):
         policy_loss = -(log_probs * temporal_difference.detach()).mean()
         policy_loss.backward()
 
-        # total_loss = value_loss + policy_loss
-        # total_loss.backward()
-
         self._update_traces()
-
-        #DEBUG
-        # print(f'dones:{dones}')
-        # print(f'states size: {states.size()}')
-        # print(f'next states size: {next_states.size()}')
-        # print(f'rewards size: {rewards.size()}')
-        # print(f'actions size: {actions.size()}')
-        # print(f'dones size: {dones.size()}')
-        # print(f'log_probs size: {log_probs.size()}')
-        # print(f'state values size: {state_values.size()}')
-        # print(f'squeezed state values:{state_values.squeeze().size()}')
-        # print(f'squeezed next state values:{next_state_values.squeeze().size()}')
-        # print(f'next state values size: {next_state_values.size()}')
-        # print(f'temporal_difference size: {temporal_difference.size()}')
-        # print(f'value loss size: {value_loss.size()}')
-        # print(f'policy loss size: {policy_loss.size()}')
 
         #copy traces to weight gradients
         with T.no_grad():
@@ -652,6 +564,7 @@ class ActorCritic(Agent):
             "discount": self.discount,
             "policy_trace_decay": self.policy_trace_decay,
             "value_trace_decay": self.value_trace_decay,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir
         }
@@ -660,38 +573,23 @@ class ActorCritic(Agent):
     def save(self):
         """Saves the model."""
         config = self.get_config()
-
-        # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
-
-        # writes and saves JSON file of actor critic agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
-
-        # saves policy and value model
         self.policy_model.save(self.save_dir)
         self.value_model.save(self.save_dir)
-
-        # # if wandb callback, save wandb config
-        # if self._wandb:
-        #     for callback in self.callbacks:
-        #         if isinstance(callback, rl_callbacks.WandbCallback):
-        #             callback.save(self.save_dir + "/wandb_config.json")
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
 
     @classmethod
     def load(cls, config, load_weights=True):
         """Loads the model."""
-        # Load EnvWrapper
         env_wrapper = EnvWrapper.from_json(config["env"])
-        # load policy model
         policy_model = StochasticDiscretePolicy.load(config['save_dir'], load_weights)
-        # load value model
         value_model = ValueModel.load(config['save_dir'], load_weights)
-        # load callbacks
+        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
                     if config['callbacks'] else None
-
-        # return Actor-Critic agent
         agent = cls(
             env=env_wrapper,
             policy_model=policy_model,
@@ -699,6 +597,7 @@ class ActorCritic(Agent):
             discount=config["discount"],
             policy_trace_decay=config["policy_trace_decay"],
             value_trace_decay=config["value_trace_decay"],
+            state_normalizer=state_normalizer,
             callbacks=callbacks,
             save_dir=config["save_dir"],
         )
@@ -713,88 +612,24 @@ class Reinforce(Agent):
         policy_model: StochasticDiscretePolicy,
         value_model: Optional[ValueModel] = None,
         discount: float = 0.99,
+        curiosity: Optional[ICM] = None,
+        state_normalizer: Optional[Normalizer] = None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: str = None,
     ):
-        # Set the device
-        self.device = get_device(device)
-
-        self.env = env
-        self.policy_model = policy_model
-        self.value_model = value_model
-        self.discount = discount
-        # self.callbacks = callbacks
-        # self.save_dir = save_dir
-        if save_dir is not None and "/reinforce/" not in save_dir:
-            self.save_dir = save_dir + "/reinforce/"
-        elif save_dir is not None:
-            self.save_dir = save_dir
-
-        self._step = None
-        self._cur_learning_steps = None
-            
-        # Initialize callback configurations
-        self._initialize_callbacks(callbacks)
-        self._train_config = {}
-        self._train_episode_config = {}
-        self._train_step_config = {}
-        self._test_config = {}
-        self._test_step_config = {}
-        self._test_episode_config = {}
-
-    def _initialize_callbacks(self, callbacks):
-        """
-        Initialize and configure callbacks for logging and monitoring.
-
-        Args:
-            callbacks (list): List of callback objects.
-        """
         try:
-            self.callbacks = callbacks
-            if callbacks:
-                for callback in self.callbacks:
-                    self._config = callback._config(self)
-                    if isinstance(callback, WandbCallback):
-                        self._wandb = True
-            else:
-                self.callback_list = None
-                self._wandb = False
+            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
+            self.policy_model = policy_model
+            self.value_model = value_model
+            self.discount = discount
+            self.state_normalizer = state_normalizer
+            self._cur_learning_steps = None
+             # Set learn_iter and sync_iter to 0. For distributed training
+            self._learn_iter = 0
+            self._sync_iter = 0
         except Exception as e:
-            logger.error(f"Error initializing callbacks: {e}", exc_info=True)
-
-    # @classmethod
-    # def build(
-    #     cls,
-    #     env,
-    #     policy_layers,
-    #     value_layers,
-    #     callbacks,
-    #     config,#: wandb.config,
-    #     save_dir: str = "models/",
-    # ):
-    #     """Builds the agent."""
-    #     policy_optimizer = config.policy_optimizer
-    #     value_optimizer = config.value_optimizer
-    #     policy_model = StochasticDiscretePolicy(
-    #         env, dense_layers=policy_layers, optimizer=policy_optimizer, learning_rate=config.learning_rate
-    #     )
-    #     value_model = ValueModel(
-    #         env, dense_layers=value_layers, optimizer=value_optimizer, learning_rate=config.learning_rate
-    #     )
-
-    #     agent = cls(
-    #         env,
-    #         policy_model,
-    #         value_model,
-    #         config.discount,
-    #         callbacks,
-    #         save_dir=save_dir,
-    #     )
-
-    #     agent.save()
-
-    #     return agent
+            self.logger.error(f"Error in Reinforce.__init__: {e}", exc_info=True)
 
     def get_return(self, trajectories):
         """Compute expected returns per timestep for each trajectory."""
@@ -808,64 +643,36 @@ class Reinforce(Agent):
         return trajectories
     
     def get_action(self, state):
-        # with T.no_grad():
         state = T.tensor(state, dtype=T.float32, device=self.policy_model.device)
+        if self.state_normalizer:
+            state = self.state_normalizer.normalize(state)
         dist, logits = self.policy_model(state)
         actions = dist.sample()
         log_probs = dist.log_prob(actions)
-
-        # Reshape if flat
-        # if actions.dim() == 1:  # Adjust for scalar action
-        #     actions = actions.unsqueeze(0)
-
         actions = actions.detach().cpu().numpy()
-        # log_probs = log_probs.detach().cpu().numpy() # Keep as tensor for gradient
-        
-        
-        
+
         return actions, log_probs
 
     def learn(self, trajectories):
         # Clear gradients
         self.policy_model.optimizer.zero_grad()
         self.value_model.optimizer.zero_grad()
-
         # Get returns for each step in all trajectories
         trajectories = self.get_return(trajectories)
-            
         # Flatten trajectories across all envs
         all_steps = [step for trajectory in trajectories for step in trajectory]
-        # DEBUG
-        # print(f'all_steps:{all_steps}')
-        # print(f'length of all_steps:{len(all_steps)}')
         # Extract states, returns, and log probs from trajectories
         all_states = [step["state"] for step in all_steps]
         all_returns = [step["return"] for step in all_steps]
         all_actions = [step["action"] for step in all_steps]
-        # all_log_probs = [step["log_prob"] for step in all_steps]
         # Convert to tensors and store on correct device
         states = T.tensor(all_states, dtype=T.float32, device=self.device)
         returns = T.tensor(all_returns, dtype=T.float32, device=self.device)
         actions = T.tensor(all_actions, dtype=T.long, device=self.device)
-        # log_probs = torch.stack(all_log_probs, dim=0)
-        # Compute log probs by passing states through policy model, re-computing the
-        # computational graph only using the log_probs for the batch update (detaches log_probs from
-        # all envs in the env vector)
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
         dist, logits = self.policy_model(states)
         log_probs = dist.log_prob(actions)
-        #DEBUG
-        print(f'states shape:{states.size()}')
-        # print(f'returns shape:{returns.size()}')
-        # print(f'log probs shape:{log_probs.size()}')
-        # print(f'log probs mean:{log_probs.mean()}')
-        
-
-        # Insert dimension at end of states if flat
-        if states.dim() == 1:
-            states = states.unsqueeze(-1)
-            #DEBUG
-            print(f'new state shape:{states.size()}')
-
         # Get state values and calculate value loss
         if self.value_model:
             state_values = self.value_model(states)
@@ -874,17 +681,13 @@ class Reinforce(Agent):
         else:
             advantages = returns
             value_loss = 0
-        #DEBUG
-        # print(f'advantages shape:{advantages.size()}')
-        
+
         # Get policy loss
         policy_loss = -(log_probs * advantages.detach()).mean()
 
         # Calculate gradients
         total_loss = policy_loss + value_loss
         total_loss.backward()
-        # if self.value_model:
-        #     value_loss.backward()
 
         # Update weights
         self.policy_model.optimizer.step()
@@ -892,7 +695,6 @@ class Reinforce(Agent):
             self.value_model.optimizer.step()
 
         # log the metrics for callbacks
-        # if self._wandb:
         self._train_step_config["advantages"] = advantages.mean()
         self._train_step_config["policy_loss"] = policy_loss.item()
         self._train_step_config["value_loss"] = value_loss.item()
@@ -915,26 +717,31 @@ class Reinforce(Agent):
         if seed is None:
             seed = np.random.randint(100)
 
-        # Set render freq to 0 if None is passed
-        # if render_freq == None:
-        #     render_freq = 0
-
         # Set seeds
         set_seed(seed)
 
         if self.callbacks:
+            config = self.get_config()
             for callback in self.callbacks:
                 if isinstance(callback, WandbCallback):
-                    self._config['num_episodes'] = num_episodes
-                    self._config['seed'] = seed
-                    self._config['num_envs'] = self.num_envs
-                    callback.on_train_begin((self.policy_model, self.value_model,), logs=self._config)
+                    config['num_episodes'] = num_episodes
+                    config['seed'] = seed
+                    config['num_envs'] = self.num_envs
+                    config['distributed'] = self._distributed
+                    config['sync_interval'] = self._sync_iter
+                    models = [self.policy_model, self.value_model]
+                    if self.curiosity:
+                        models.append(self.curiosity)
+                    callback.on_train_begin(tuple(models), logs=config)
+                    run_number = callback.run_name.split("-")[-1]
+                else:
+                    callback.on_train_begin(logs=config)
         
         try:
             # instantiate new vec environment
             self.env.env = self.env._initialize_env(0, self.num_envs, seed)
         except Exception as e:
-            logger.error(f"Error in Reinforce.train self.env._initialize_env process: {e}", exc_info=True)
+            self.logger.error(f"Error in Reinforce.train self.env._initialize_env process: {e}", exc_info=True)
 
         # set step counter
         self._step = 0
@@ -950,6 +757,9 @@ class Reinforce(Agent):
         completed_trajectories = []
         # Reset all envs to get initial states
         states, _ = self.env.reset()
+        # Add initial observation normalizer if state_normalizer
+        if self.state_normalizer:
+            self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
         # Set rendered flag to trigger episode rendering during training
         rendered = False
         while self.completed_episodes < num_episodes:
@@ -959,24 +769,15 @@ class Reinforce(Agent):
                 for callback in self.callbacks:
                     callback.on_train_epoch_begin(epoch=self._step, logs=None)
             
-            # if self.callbacks:
-            #     for callback in self.callbacks:
-            #         callback.on_train_step_begin(step=self._step, logs=None)
-            
-            # self._cur_learning_steps.append(self._step)
             actions, _ = self.get_action(states)
             actions = self.env.format_actions(actions)
-            #DEBUG
-            # print(f'actions pre convert:{actions}')
-            # Convert actions to list of ints
-            # actions = [int(a) for a in actions]
-            #DEBUG
-            # print(f'actions post convert:{actions}')
             next_states, rewards, terms, truncs, _ = self.env.step(actions)
+            # Update normalizer if state_normalizer
+            if self.state_normalizer:
+                self.state_normalizer.update_local_stats(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
+                self.state_normalizer.update_global_stats()
             # Add data to train step log
-            # self._train_step_config["actions"] = actions
             self._train_step_config["step_rewards"] = rewards.mean()
-            # self._train_step_config["log_probabilities"] = log_probs
             # Add rewards to episode scores
             episode_scores += rewards
             # store trajectories
@@ -1112,37 +913,15 @@ class Reinforce(Agent):
                 for callback in self.callbacks:
                     callback.on_test_epoch_begin(epoch=_step, logs=None)
             
-            # if self.callbacks:
-            #     for callback in self.callbacks:
-            #         callback.on_train_step_begin(step=self._step, logs=None)
-            
-            # self._cur_learning_steps.append(self._step)
             actions, _ = self.get_action(states)
             actions = self.env.format_actions(actions)
-            #DEBUG
-            # print(f'actions pre convert:{actions}')
-            # Convert actions to list of ints
-            # actions = [int(a) for a in actions]
-            #DEBUG
-            # print(f'actions post convert:{actions}')
             next_states, rewards, terms, truncs, _ = env.step(actions)
             # Add data to train step log
-            # self._train_step_config["actions"] = actions
             self._train_step_config["step_rewards"] = rewards
-            # self._train_step_config["log_probabilities"] = log_probs
             # Add rewards to episode scores
             episode_scores += rewards
             # store trajectories
             for i in range(num_envs):
-                # episode_trajectories[i].append(
-                #     {
-                #         "state": states[i],
-                #         "action": actions[i],
-                #         # "log_prob": log_probs[i],
-                #         "reward": rewards[i],
-                #         "done": terms[i] or truncs[i]
-                #     }
-                # )
                 # Perform updates if term or trunc
                 if terms[i] or truncs[i]:
                     # Append episode trajectory to completed trajectories
@@ -1226,6 +1005,8 @@ class Reinforce(Agent):
             "policy_model": self.policy_model.get_config(),
             "value_model": self.value_model.get_config(),
             "discount": self.discount,
+            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir
         }
@@ -1233,42 +1014,26 @@ class Reinforce(Agent):
     def save(self):
         """Saves the model."""
         config = self.get_config()
-
-        # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
-
-        # writes and saves JSON file of reinforce agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
-
-        # saves policy and value model
         self.policy_model.save(self.save_dir)
         if self.value_model:
             self.value_model.save(self.save_dir)
-
-        # if wandb callback, save wandb config
-        # if self._wandb:
-        #     for callback in self.callbacks:
-        #         if isinstance(callback, rl_callbacks.WandbCallback):
-        #             callback.save(self.save_dir + "/wandb_config.json")
+        if self.curiosity:
+            self.curiosity.save(self.save_dir)
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
 
     @classmethod
-    def load(cls, config, load_weights):
+    def load(cls, config, load_weights=True):
         """Loads the model."""
-        # # load reinforce agent config
-        # with open(
-        #     Path(folder).joinpath(Path("obj_config.json")), "r", encoding="utf-8"
-        # ) as f:
-        #     obj_config = json.load(f)
-
         env_wrapper = EnvWrapper.from_json(config["env"])
-
-        # load policy model
-        policy_model = StochasticDiscretePolicy.load(config['save_dir'], load_weights)
+        policy_model = StochasticDiscretePolicy.load(config['policy_model'], load_weights)
         if config["value_model"]:
-            # load value model
-            value_model = ValueModel.load(config['save_dir'], load_weights)
-        # load callbacks
+            value_model = ValueModel.load(config['value_model'], load_weights)
+        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
+        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
                     if config['callbacks'] else None
 
@@ -1278,6 +1043,8 @@ class Reinforce(Agent):
             policy_model=policy_model,
             value_model=value_model,
             discount=config["discount"],
+            curiosity=curiosity,
+            state_normalizer=state_normalizer,
             callbacks=callbacks,
             save_dir=config["save_dir"],
         )
@@ -1305,6 +1072,7 @@ class DDPG(Agent):
         warmup: int=1000,
         N: int=1, # N-steps
         curiosity: Optional[ICM] = None,
+        state_normalizer: Optional[Normalizer] = None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
@@ -1327,6 +1095,8 @@ class DDPG(Agent):
             self.grad_clip = grad_clip
             self.warmup = warmup
             self.N = N
+            self.curiosity = curiosity
+            self.state_normalizer = state_normalizer
         except Exception as e:
             self.logger.error(f"Error in DDPG init: {e}", exc_info=True)
         
@@ -1357,44 +1127,7 @@ class DDPG(Agent):
 
         except Exception as e:
             self.logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
-
-
-    # def clone(self, device: Optional[str | T.device] = None):
-    #     """Clone the DDPG agent."""
-    #     if device:
-    #         device = get_device(device)
-    #     else:
-    #         device = self.device
-
-    #     env = GymnasiumWrapper(self.env.env_spec)
-    #     actor = self.clone_model(self.actor_model, device)
-    #     critic = self.clone_model(self.critic_model, device)
-    #     replay_buffer = self.replay_buffer.clone(device)
-    #     noise = self.noise.clone()
-    #     noise_schedule = ScheduleWrapper(self.noise_schedule.get_config()) if self.noise_schedule else None
-
-    #     return DDPG(
-    #         env,
-    #         actor,
-    #         critic,
-    #         replay_buffer,
-    #         self.discount,
-    #         self.tau,
-    #         self.action_epsilon,
-    #         self.batch_size,
-    #         noise,
-    #         noise_schedule,
-    #         self.normalize_inputs,
-    #         self.normalizer_clip,
-    #         self.normalizer_eps,
-    #         self.warmup,
-    #         self.callbacks,
-    #         self.save_dir,
-    #         device,
-    #         logging.getLevelName(self.logger.getEffectiveLevel()).lower()
-    #     )
         
-
     def clone_model(self, model, copy_weights: bool = True, device: Optional[str | T.device] = None):
         """Clones a model."""
         if device:
@@ -1449,15 +1182,6 @@ class DDPG(Agent):
             for _ in range(num_updates):
                 actor_loss, critic_loss = self.learn(state_normalizer, goal_normalizer)
 
-    # def get_parameters(self):
-    #     """Get the parameters of all models."""
-    #     return {
-    #         'actor_model': self.actor_model.state_dict(),
-    #         'critic_model': self.critic_model.state_dict(),
-    #         'target_actor_model': self.target_actor_model.state_dict(),
-    #         'target_critic_model': self.target_critic_model.state_dict(),
-    #     }
-
     def get_parameters(self):
         """Get the parameters of all models, ensuring they are on CPU for Ray serialization."""
         return {
@@ -1475,22 +1199,17 @@ class DDPG(Agent):
         self.target_critic_model.load_state_dict(params['target_critic_model'])
 
     def get_action(self, state, goal=None, test=False,
-                   state_normalizer:Optional[Normalizer]=None,
                    goal_normalizer:Optional[Normalizer]=None):
 
         # make sure state is a tensor and on correct device
         state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
 
         if test:
-            if self._use_her:
-                state = state_normalizer.normalize(state)
-                # make sure goal is a tensor and on correct device
+            if self.state_normalizer:
+                state = self.state_normalizer.normalize(state)
+            if goal_normalizer:
                 goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 goal = goal_normalizer.normalize(goal)
-                
-            # use self.state_normalizer if self.normalize_inputs
-            # elif self.normalize_inputs and not self._use_her:
-            #     state = self.state_normalizer.normalize(state)
             
             with T.no_grad():
                 _, action = self.target_actor_model(state, goal)
@@ -1502,10 +1221,9 @@ class DDPG(Agent):
             noise_np = np.zeros((1,action_np.shape[-1]))
         
         else:
-            # (HER) use passed state normalizer if using HER
-            if self._use_her:
-                state = state_normalizer.normalize(state)
-                # make sure goal is a tensor and on correct device
+            if self.state_normalizer:
+                state = self.state_normalizer.normalize(state)
+            if goal_normalizer:
                 goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 goal = goal_normalizer.normalize(goal)
             
@@ -1527,35 +1245,25 @@ class DDPG(Agent):
             noise_np = noise.cpu().detach().numpy()
             action_np = action.cpu().detach().numpy()
 
-        # if test:
-            # loop over all actions to log to wandb
-            # for i, a in enumerate(action_np):
-            #     # Log the values to wandb
-            #     self._train_step_config[f'action_{i}'] = a
-
         # Loop over the noise and action values and log them to wandb
-        for i in range(action_np.shape[-1]):
-            # Log the values to wandb
-            # self._train_step_config[f'action_{i}'] = a
-            self._train_step_config[f'action_{i}'] = action_np[:,i].mean()
-            self._train_step_config[f'action_{i}_noise'] = noise_np[:,i].mean()
+        # for i in range(action_np.shape[-1]):
+        #     # Log the values to wandb
+        #     # self._train_step_config[f'action_{i}'] = a
+        #     self._train_step_config[f'action_{i}'] = action_np[:,i].mean()
+        #     self._train_step_config[f'action_{i}_noise'] = noise_np[:,i].mean()
 
         return action_np
 
 
-    def learn(self, state_normalizer: Optional[Normalizer]=None, goal_normalizer: Optional[Normalizer]=None):
+    def learn(self, goal_normalizer: Optional[Normalizer]=None):
         
         self._learn_iter += 1
         self.logger.debug(f"DDPG learn iteration: {self._learn_iter}")
             
         if self.replay_buffer.get_config()['class_name'] == 'PrioritizedReplayBuffer':
             if self._use_her:  # HER with prioritized replay
-                #DEBUG
-                # print(f"HER with prioritized replay")
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
-                #DEBUG
-                # print(f"Just prioritized replay")
                 states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
@@ -1597,21 +1305,18 @@ class DDPG(Agent):
                         }, step=self._step)
         else:  # Standard replay buffer
             if self._use_her:
-                #DEBUG
-                # print(f"HER with standard replay")
                 states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
             else:
-                #DEBUG
-                # print(f"Standard replay")
                 states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
             
             weights = None
             indices = None
 
         # Normalize states if self.normalize_inputs
-        if self._use_her:
-            states = state_normalizer.normalize(states)
-            next_states = state_normalizer.normalize(next_states)
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
+        if goal_normalizer:
             desired_goals = goal_normalizer.normalize(desired_goals)
         else:
             desired_goals = None
@@ -1621,7 +1326,11 @@ class DDPG(Agent):
 
         # Train ICM if curiosity and update _use_extrinsic flag
         if self.curiosity:
-            curiosity_loss = self.curiosity.train(states[:,-1,:], next_states[:,-1,:], actions[:,-1,:])
+            # Reshape arrays to (batch_size * N, -1) to train on all steps in N
+            states_reshaped = states.view(self.batch_size * self.N, -1)
+            next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
+            actions_reshaped = actions.view(self.batch_size * self.N, -1)
+            curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
             if self._step > self.curiosity.extrinsic_threshold:
                 self.curiosity._use_extrinsic = True
             else:
@@ -1629,53 +1338,45 @@ class DDPG(Agent):
 
         # Get target values
         with T.no_grad():
-            _, target_actions = self.target_actor_model(
-                next_states[:,-1,:],
-                desired_goals[:,-1,:] if desired_goals is not None else None
-            ) # N-step
-
-            if self.curiosity and not self.curiosity._use_extrinsic:
-                targets = T.zeros_like(rewards).squeeze()
-
-            else:
-                if self.N > 1:
-                    targets = compute_n_step_return(
-                        rewards,
-                        dones,
-                        self.discount,
-                        self.N,
-                        device=self.target_critic_model.device
-                    ).squeeze()
-                else:
-                    targets = rewards.squeeze()
-
             # Compute intrinsic reward if using ICM
             if self.curiosity:
                 intrinsic_reward = self.curiosity.compute_intrinsic_reward(
-                    states[:,-1,:],
-                    next_states[:,-1,:],
-                    actions[:,-1,:]
+                    states_reshaped,
+                    next_states_reshaped,
+                    actions_reshaped
                 )
-                targets += intrinsic_reward
+                intrinsic_reward = intrinsic_reward.view(self.batch_size, self.N)
+                if self.curiosity._use_extrinsic:
+                    rewards += intrinsic_reward
+                else:
+                    rewards = intrinsic_reward
 
-            if desired_goals is not None:
-                last_desired_goals = desired_goals[:,-1,:]
-                bootstrap_values = self.target_critic_model(
-                    next_states[:,-1,:],
-                    target_actions,
-                    last_desired_goals).squeeze()
-            else:
-                bootstrap_values = self.target_critic_model(
-                    next_states[:,-1,:], target_actions).squeeze()
+            targets = compute_n_step_return(
+                rewards,
+                dones,
+                self.discount,
+                self.N,
+                device=self.target_critic_model.device
+            ).squeeze()
+
+            _, target_actions = self.target_actor_model(
+                next_states[:,-1,:],
+                desired_goals[:,-1,:] if desired_goals is not None else None
+            )
+
+            bootstrap_values = self.target_critic_model(
+                next_states[:,-1,:],
+                target_actions,
+                desired_goals[:,-1,:] if desired_goals is not None else None
+            ).squeeze()
 
             not_done_mask = (1 - dones[:,-1]).squeeze()
             targets += not_done_mask * (self.discount ** self.N) * bootstrap_values
 
             # Apply HER-specific clamping if needed
             if self._use_her:
-                if self.curiosity:
-                    if not self.curiosity._use_extrinsic:
-                        pass
+                if self.curiosity and not self.curiosity._use_extrinsic:
+                    pass
                 else:
                     targets = T.clamp(targets, min=-1/(1-self.discount))
 
@@ -2033,10 +1734,6 @@ class DDPG(Agent):
         if seed is None:
             seed = np.random.randint(100)
 
-        # Set render freq to 0 if None is passed
-        # if render_freq == None:
-        #     render_freq = 0
-
         # Set seeds
         set_seed(seed)
 
@@ -2044,9 +1741,9 @@ class DDPG(Agent):
         self._sync_iter = sync_iter
 
         if self.callbacks:
+            config = self.get_config()
             for callback in self.callbacks:
                 if isinstance(callback, WandbCallback):
-                    config = self.get_config()
                     config['num_episodes'] = num_episodes
                     config['seed'] = seed
                     config['num_envs'] = self.num_envs
@@ -2058,7 +1755,7 @@ class DDPG(Agent):
                     callback.on_train_begin(tuple(models), logs=config)
                     run_number = callback.run_name.split("-")[-1]
                 else:
-                    callback.on_train_begin(logs=self._config)
+                    callback.on_train_begin(logs=config)
         
         try:
             # instantiate new vec environment
@@ -2075,6 +1772,10 @@ class DDPG(Agent):
         self.completed_episodes = np.zeros(self.num_envs)
         # Initialize environments
         states, _ = self.env.reset()
+        # Add initial observation normalizer if state_normalizer
+        if self.state_normalizer:
+            self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
+        
         while self.completed_episodes.sum() < num_episodes:
             # If distributed, sync to shared agent
             if self._distributed and self._step % self._sync_iter == 0:
@@ -2094,13 +1795,7 @@ class DDPG(Agent):
             actions = self.env.format_actions(actions)
             next_states, rewards, dones, infos = self.env.step(actions)
             episode_scores += rewards
-            # dones = np.logical_or(terms, truncs)
-            #DEBUG
-            # print(f"infos: {infos}")
-            # Store transitions in the env trajectory
-            # for i in range(self.num_envs):
-            #     self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i], traj_ids[i], step_indices[i])
-                # trajectories[i].append((states[i], actions[i], rewards[i], next_states[i], dones[i]))
+
             self.replay_buffer.add(
                 infos['n-step trajectory']['states'],
                 infos['n-step trajectory']['actions'],
@@ -2108,19 +1803,13 @@ class DDPG(Agent):
                 infos['n-step trajectory']['next_states'],
                 infos['n-step trajectory']['dones']
             )
-            # self.replay_buffer.add(
-            #     states,
-            #     actions,
-            #     rewards,
-            #     next_states,
-            #     dones
-            # )
+            # Update normalizer if state_normalizer
+            if self.state_normalizer:
+                self.state_normalizer.update_local_stats(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
+                self.state_normalizer.update_global_stats()
 
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
-                # self.replay_buffer.add(*zip(*trajectories[i]))
-                # trajectories[i] = []
-
                 # Increment completed episodes for env by 1
                 self.completed_episodes[i] += 1
                 score_history.append(episode_scores[i]) 
@@ -2341,6 +2030,7 @@ class DDPG(Agent):
             'warmup': self.warmup,
             'N': self.N,
             "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
@@ -2350,43 +2040,23 @@ class DDPG(Agent):
 
     def save(self):
         """Saves the model."""
-
-        # Change self.save_dir if save_dir
-        # if save_dir is not None:
-        #     self.save_dir = save_dir + "/ddpg/"
-
         config = self.get_config()
-
-        # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
-
-        # writes and saves JSON file of DDPG agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
-
-        # saves policy and value model
         self.actor_model.save(self.save_dir)
         self.critic_model.save(self.save_dir)
-
-        # save curiosity
         if self.curiosity:
             self.curiosity.save(self.save_dir)
-        
-        # if self.normalize_inputs:
-        #     self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
 
     @classmethod
     def load(cls, config, load_weights=True):
         """Loads the model."""
-
-        # Load EnvWrapper
         env_wrapper = EnvWrapper.from_json(config["env"])
-            
-        # load policy model
         actor_model = ActorModel.load(config['actor_model'], load_weights)
-        # load value model
         critic_model = CriticModel.load(config['critic_model'], load_weights)
-        # load replay buffer if not None
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
             if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
@@ -2395,15 +2065,12 @@ class DDPG(Agent):
                 replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
-        # load noise
         noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
-        # load curiosity
         curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
-        # load callbacks
+        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
                     if config['callbacks'] else None
 
-        # return DDPG agent
         agent = cls(
             env = env_wrapper,
             actor_model = actor_model,
@@ -2419,14 +2086,12 @@ class DDPG(Agent):
             warmup = config['warmup'],
             N = config['N'],
             curiosity=curiosity,
+            state_normalizer=state_normalizer,
             callbacks=callbacks,
             save_dir=config["save_dir"],
             device=config["device"],
             log_level=config["log_level"]
         )
-
-        # if agent.normalize_inputs:
-        #     agent.state_normalizer = Normalizer.load_state(config['save_dir'] + "state_normalizer.npz")
 
         return agent
     
@@ -2454,6 +2119,8 @@ class TD3(Agent):
         grad_clip: float = 40.0,
         warmup: int = 1000,
         N: int=1, # N-steps
+        curiosity: Optional[ICM] = None,
+        state_normalizer: Optional[Normalizer] = None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
@@ -2487,6 +2154,8 @@ class TD3(Agent):
             self.grad_clip = grad_clip
             self.warmup = warmup
             self.N = N
+            self.curiosity = curiosity
+            self.state_normalizer = state_normalizer
 
         except Exception as e:
             self.logger.error(f"Error in TD3 init: {e}", exc_info=True)
@@ -2719,7 +2388,6 @@ class TD3(Agent):
             self._use_her = True
 
     def get_action(self, state, goal=None, test=False,
-                   state_normalizer:Optional[Normalizer]=None,
                    goal_normalizer:Optional[Normalizer]=None):
 
         # make sure state is a tensor and on correct device
@@ -2727,9 +2395,9 @@ class TD3(Agent):
             
         # check if get action is for testing
         if test:
-            # (HER) else if using HER, normalize using passed normalizer
-            if self._use_her:
-                state = state_normalizer.normalize(state)
+            if self.state_normalizer:
+                state = self.state_normalizer.normalize(state)
+            if goal_normalizer:
                 goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 goal = goal_normalizer.normalize(goal)
 
@@ -2744,9 +2412,9 @@ class TD3(Agent):
                 noise_np = np.zeros((1,action_np.shape[-1]))
             
             else:
-                if self._use_her:
-                    state = state_normalizer.normalize(state)
-                    # make sure goal is a tensor and on correct device
+                if self.state_normalizer:
+                    state = self.state_normalizer.normalize(state)
+                if goal_normalizer:
                     goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                     goal = goal_normalizer.normalize(goal)
                 
@@ -2800,7 +2468,7 @@ class TD3(Agent):
         return action_np
 
 
-    def learn(self, state_normalizer: Normalizer = None, goal_normalizer: Normalizer = None):
+    def learn(self, goal_normalizer: Optional[Normalizer] = None):
         self._learn_iter += 1
         self.logger.debug(f"TD3 learn iteration: {self._learn_iter}")
             
@@ -2866,27 +2534,28 @@ class TD3(Agent):
 
 
         # Normalize states if self.normalize_inputs
-        if self._use_her:
-            # Update rewards for hindsight experiences if using n-step (N>1)
-            #TODO: Update to correctly calculate hindsight rewards
-            # if self.N > 1:
-            #     is_hindsight = step_indices[:, 0] < 0  # Shape: (batch_size,)
-            #     g_prime = desired_goals[is_hindsight, 0, :]  # Shape: (num_hindsight, goal_dim)
-            #     not_done_mask = T.cumprod(1 - dones.float(), dim=1) > 0  # Shape: (batch_size, N, 1)
-            #     g_prime_expanded = g_prime.unsqueeze(1).expand(-1, self.N, -1)
-            #     desired_goals[is_hindsight] = g_prime_expanded
-            #     new_rewards = self.env.get_base_env().compute_reward(achieved_goals[is_hindsight], desired_goals[is_hindsight], {})  # Shape: (num_hindsight, N, 1)
-            #     hindsight_mask = is_hindsight.unsqueeze(1).unsqueeze(2)  # Shape: (batch_size, 1, 1)
-            #     not_done_hindsight_mask = hindsight_mask & not_done_mask  # Shape: (batch_size, N, 1)
-            #     rewards[not_done_hindsight_mask] = new_rewards[not_done_hindsight_mask[is_hindsight]]
-            states = state_normalizer.normalize(states)
-            next_states = state_normalizer.normalize(next_states)
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
+        if goal_normalizer:
             desired_goals = goal_normalizer.normalize(desired_goals)
         else:
             desired_goals = None
         # Convert rewards and dones to 2D tensors
         rewards = rewards.squeeze().to(self.target_critic_model_a.device)
         dones = dones.squeeze().to(self.target_critic_model_a.device)
+
+        # Train ICM if curiosity and update _use_extrinsic flag
+        if self.curiosity:
+            # Reshape arrays to (batch_size * N, -1) to train on all steps in N
+            states_reshaped = states.view(self.batch_size * self.N, -1)
+            next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
+            actions_reshaped = actions.view(self.batch_size * self.N, -1)
+            curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
+            if self._step > self.curiosity.extrinsic_threshold:
+                self.curiosity._use_extrinsic = True
+            else:
+                self.curiosity._use_extrinsic = False
 
         # Get target values
         with T.no_grad():
@@ -2911,16 +2580,6 @@ class TD3(Agent):
             # Add noise to target actions and clamp to action space
             target_actions = (target_actions + noise).clamp(float(self.env.action_space.low.min()), float(self.env.action_space.high.max()))
             
-            # targets = compute_n_step_return(
-            #     rewards,
-            #     dones,
-            #     self.discount,
-            #     self.N,
-            #     device=self.target_critic_model_a.device
-            # )
-            # Bootstrap only if no 'done' in the sequence (full length N)
-            # no_done_in_sequence = ~dones.any(dim=1)
-            # bootstrap_mask = no_done_in_sequence.float()
             last_desired_goals = desired_goals[:,-1,:] if desired_goals is not None else None
             target_critic_values_a = self.target_critic_model_a(
                 next_states[:,-1,:],
@@ -2932,21 +2591,35 @@ class TD3(Agent):
                 last_desired_goals).squeeze()
             target_critic_values = T.minimum(target_critic_values_a, target_critic_values_b)
 
-            targets = rewards + (self.discount ** self.N) * target_critic_values * (1 - dones)
+            # Compute intrinsic reward if using ICM
+            if self.curiosity:
+                intrinsic_reward = self.curiosity.compute_intrinsic_reward(
+                    states_reshaped,
+                    next_states_reshaped,
+                    actions_reshaped
+                )
+                intrinsic_reward = intrinsic_reward.view(self.batch_size, self.N)
+                if self.curiosity._use_extrinsic:
+                    rewards += intrinsic_reward
+                else:
+                    rewards = intrinsic_reward
 
-            # Get target critic values from both critic networks
-            # target_critic_values_a = self.target_critic_model_a(next_states, target_actions, desired_goals)
-            # target_critic_values_b = self.target_critic_model_b(next_states, target_actions, desired_goals)
-            
-            # # Take minimum of both critic values for stability
-            # target_critic_values = T.min(target_critic_values_a, target_critic_values_b)
-            
-            # Calculate target Q-values
-            # targets = rewards + (1 - dones) * self.discount * target_critic_values
+            targets = compute_n_step_return(
+                rewards,
+                dones,
+                self.discount,
+                self.N,
+                device=self.target_critic_model_a.device
+            ).squeeze()
+
+            targets += (self.discount ** self.N) * target_critic_values * (1 - dones)
             
             # Apply HER-specific clamping if needed
             if self._use_her:
-                targets = T.clamp(targets, min=-1/(1-self.discount), max=0)
+                if self.curiosity and not self.curiosity._use_extrinsic:
+                    pass
+                else:
+                    targets = T.clamp(targets, min=-1/(1-self.discount))
 
         # Get current critic predictions
         predictions_a = self.critic_model_a(
@@ -2975,13 +2648,10 @@ class TD3(Agent):
             critic_loss_a = F.mse_loss(predictions_a, targets)
             critic_loss_b = F.mse_loss(predictions_b, targets)
             critic_loss = critic_loss_a + critic_loss_b
-            # critic_loss = F.mse_loss(predictions_a, targets) + F.mse_loss(predictions_b, targets)
-            # critic_loss = error_a.pow(2).mean() + error_b.pow(2).mean()
 
         # Update critics
         self.critic_model_a.optimizer.zero_grad()
         self.critic_model_b.optimizer.zero_grad()
-        # critic_loss.backward()
         critic_loss_a.backward()
         critic_loss_b.backward()
 
@@ -3040,6 +2710,12 @@ class TD3(Agent):
         self._train_step_config['critic_predictions'] = critic_values.mean()
         self._train_step_config['target_actor_predictions'] = target_actions.mean()
         self._train_step_config['target_critic_predictions'] = targets.mean()
+        if self.curiosity:
+            self._train_step_config['curiosity_loss'] = curiosity_loss
+            self._train_step_config['intrinsic_reward'] = intrinsic_reward.mean()
+            self._train_step_config['use_extrinsic'] = self.curiosity._use_extrinsic
+            self._train_step_config['reward_weight'] = self.curiosity.reward_weight * self.curiosity.reward_scheduler.get_factor() \
+                if self.curiosity.reward_scheduler else self.curiosity.reward_weight
 
         return actor_loss.item(), critic_loss.item()
         
@@ -3546,18 +3222,21 @@ class TD3(Agent):
         # Set sync_interval (for distributed learning)
         self._sync_iter = sync_iter
         if self.callbacks:
+            config = self.get_config()
             for callback in self.callbacks:
                 if isinstance(callback, WandbCallback):
-                    config = self.get_config()
                     config['num_episodes'] = num_episodes
                     config['seed'] = seed
                     config['num_envs'] = self.num_envs
                     config['distributed'] = self._distributed
                     config['sync_interval'] = self._sync_iter
-                    callback.on_train_begin((self.critic_model_a, self.critic_model_b, self.actor_model,), logs=config)
+                    models = [self.critic_model_a, self.critic_model_b, self.actor_model]
+                    if self.curiosity:
+                        models.append(self.curiosity)
+                    callback.on_train_begin(tuple(models), logs=config)
                     run_number = callback.run_name.split("-")[-1]
                 else:
-                    callback.on_train_begin(logs=self._config)
+                    callback.on_train_begin(logs=config)
         try:
             # Use the EnvWrapper's _initialize_env method
             self.env.env = self.env._initialize_env(render_freq, num_envs, seed)
@@ -3569,6 +3248,8 @@ class TD3(Agent):
         episode_scores = np.zeros(self.num_envs)
         self.completed_episodes = np.zeros(self.num_envs)
         states, _ = self.env.reset()
+        # Add initial observation and goal to normalizer
+        self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
         while self.completed_episodes.sum() < num_episodes:
             # If distributed, sync to shared agent
             if self._distributed and self._step % self._sync_iter == 0:
@@ -3584,20 +3265,18 @@ class TD3(Agent):
             next_states, rewards, dones, infos = self.env.step(actions)
             self._train_step_config["step_reward"] = rewards.mean()
             episode_scores += rewards
-            # self.replay_buffer.add(
-            #     infos['n-step trajectory']['states'],
-            #     infos['n-step trajectory']['actions'],
-            #     infos['n-step trajectory']['rewards'],
-            #     infos['n-step trajectory']['next_states'],
-            #     infos['n-step trajectory']['dones']
-            # )
             self.replay_buffer.add(
-                states,
-                actions,
-                rewards,
-                next_states,
-                dones
+                infos['n-step trajectory']['states'],
+                infos['n-step trajectory']['actions'],
+                infos['n-step trajectory']['rewards'],
+                infos['n-step trajectory']['next_states'],
+                infos['n-step trajectory']['dones']
             )
+            # Update normalizer if state_normalizer
+            if self.state_normalizer:
+                self.state_normalizer.update_local_stats(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
+                self.state_normalizer.update_global_stats()
+
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
                 # increment completed episodes for env by 1
@@ -3809,6 +3488,8 @@ class TD3(Agent):
             "grad_clip": self.grad_clip,
             "warmup": self.warmup,
             "N": self.N,
+            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
@@ -3816,7 +3497,7 @@ class TD3(Agent):
         }
 
     def save(self):
-            
+        """Saves the model."""
         config = self.get_config()
         os.makedirs(self.save_dir, exist_ok=True)
         with open(os.path.join(self.save_dir, "config.json"), "w", encoding="utf-8") as f:
@@ -3824,93 +3505,9 @@ class TD3(Agent):
         self.actor_model.save(self.save_dir)
         self.critic_model_a.save(self.save_dir)
         self.critic_model_b.save(self.save_dir)
-
-
-    # def save(self, save_dir=None):
-    #     """Saves the model."""
-
-    #     # Change self.save_dir if save_dir
-    #     # if save_dir is not None:
-    #     #     self.save_dir = save_dir + "/ddpg/"
-
-    #     config = self.get_config()
-
-    #     # makes directory if it doesn't exist
-    #     os.makedirs(self.save_dir, exist_ok=True)
-
-    #     # writes and saves JSON file of DDPG agent config
-    #     with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
-    #         json.dump(config, f, cls=CustomJSONEncoder)
-
-    #     # saves policy and value model
-    #     self.actor_model.save(self.save_dir)
-    #     self.critic_model_a.save(self.save_dir)
-    #     self.critic_model_b.save(self.save_dir)
-
-    #     if self.normalize_inputs:
-    #         self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
-
-        # if wandb callback, save wandb config
-        # if self._wandb:
-        #     for callback in self.callbacks:
-        #         if isinstance(callback, rl_callbacks.WandbCallback):
-        #             callback.save(self.save_dir + "/wandb_config.json")
-
-
-    # @classmethod
-    # def load(cls, config, load_weights=True):
-    #     """Loads the model."""
-    #     # # load reinforce agent config
-    #     # with open(
-    #     #     Path(folder).joinpath(Path("obj_config.json")), "r", encoding="utf-8"
-    #     # ) as f:
-    #     #     config = json.load(f)
-
-    #     # create EnvSpec from config
-    #     env_spec_json = json.dumps(config["env"])
-    #     env_spec = gym.envs.registration.EnvSpec.from_json(env_spec_json)
-
-    #     # load policy model
-    #     actor_model = models.ActorModel.load(config['save_dir'], load_weights)
-    #     # load value model
-    #     critic_model = models.CriticModel.load(config['save_dir'], load_weights)
-    #     # load replay buffer if not None
-    #     if config['replay_buffer'] is not None:
-    #         config['replay_buffer']['config']['env'] = gym.make(env_spec)
-    #         replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
-    #     else:
-    #         replay_buffer = None
-    #     # load noise
-    #     noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
-    #     # load callbacks
-    #     callbacks = [rl_callbacks.load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]
-
-    #     # return TD3 agent
-    #     agent = cls(
-    #         gym.make(env_spec),
-    #         actor_model = actor_model,
-    #         critic_model = critic_model,
-    #         discount=config["discount"],
-    #         tau=config["tau"],
-    #         action_epsilon=config["action_epsilon"],
-    #         replay_buffer=replay_buffer,
-    #         batch_size=config["batch_size"],
-    #         noise=noise,
-    #         target_noise_stddev = config['target_noise_stddev'],
-    #         target_noise_clip = config['target_noise_clip'],
-    #         actor_update_delay = config['actor_update_delay'],
-    #         normalize_inputs = config['normalize_inputs'],
-    #         normalizer_clip = config['normalizer_clip'],
-    #         warmup = config['warmup'],
-    #         callbacks=callbacks,
-    #         save_dir=config["save_dir"],
-    #         device=config["device"],
-    #     )
-
-    #     if agent.normalize_inputs:
-    #         agent.state_normalizer = Normalizer.load_state(config['save_dir'] + "state_normalizer.npz")
-
-    #     return agent
+        # save state normalizer
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
 
     @classmethod
     def load(cls, config, load_weights=True):
@@ -3932,6 +3529,10 @@ class TD3(Agent):
                 replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
+        # load curiosity
+        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
+        # load state normalizer
+        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
         target_noise = Noise.create_instance(config["target_noise"]["class_name"], **config["target_noise"]["config"])
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
@@ -3956,6 +3557,8 @@ class TD3(Agent):
             grad_clip=config["grad_clip"],
             warmup=config["warmup"],
             N=config["N"],
+            curiosity=curiosity,
+            state_normalizer=state_normalizer,
             callbacks=callbacks,
             save_dir=config["save_dir"],
             device=config["device"],
@@ -3976,11 +3579,15 @@ class SAC(Agent):
         replay_buffer: Buffer,
         discount: float=0.99,
         tau: float=0.005,
+        alpha: float=0.2,
+        auto_entropy_tuning: bool=True,
+        alpha_lr: float=3e-4, # Only used if auto entropy = True
         batch_size: int = 256,
         grad_clip: Optional[float]=None,
         warmup: int=1000,
         N: int=1,
         curiosity: Optional[ICM] = None,
+        state_normalizer: Optional[Normalizer] = None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
@@ -3995,11 +3602,20 @@ class SAC(Agent):
             self.target_value_model = self.clone_model(value_model)
             self.discount = discount
             self.tau = tau
+            self.alpha = alpha
+            self.auto_entropy_tuning = auto_entropy_tuning
+            self.alpha_lr = alpha_lr
+            if self.auto_entropy_tuning:
+                self.target_entropy = -float(int(self.env.single_action_space.shape[-1]))
+                self.log_alpha = T.tensor(np.log(alpha), requires_grad=True, device=self.device)
+                self.alpha_optimizer = T.optim.Adam([self.log_alpha], lr=self.alpha_lr)
             self.replay_buffer = replay_buffer
             self.batch_size = batch_size
             self.grad_clip = grad_clip
             self.warmup = warmup
             self.N = N
+            self.curiosity = curiosity
+            self.state_normalizer = state_normalizer
 
         except Exception as e:
             self.logger.error(f"Error in SAC init: {e}", exc_info=True)
@@ -4011,14 +3627,8 @@ class SAC(Agent):
             # Check if the observation space is a dictionary for goal-aware environments
             if isinstance(obs_space, gym.spaces.Dict):
                 shape = obs_space['observation'].shape
-                # goal_shape = obs_space['desired_goal'].shape
-                # shape = (observation_shape[0] + goal_shape[0],)
             else:
                 shape = obs_space.shape
-
-            # if self.normalize_inputs:
-            #     # self.state_normalizer = Normalizer(shape, self.normalizer_eps, self.normalizer_clip, self.device)
-            #     self.state_normalizer = nn.BatchNorm1d(num_features=shape[-1], device=self.device)
 
             # Instantiate internal attribute use_her to be switched by HER class if using DDPG
             self._use_her = False
@@ -4103,15 +3713,15 @@ class SAC(Agent):
         self.target_value_model.load_state_dict(params['target_value_model'])
 
     def get_action(self, state, goal=None, test=False,
-                   state_normalizer:Optional[Normalizer]=None,
                    goal_normalizer:Optional[Normalizer]=None):
 
         # make sure state is a tensor and on correct device
         state = T.tensor(state, dtype=T.float32, device=self.actor_model.device)
 
         if test:
-            if self._use_her:
-                state = state_normalizer.normalize(state)
+            if self.state_normalizer:
+                state = self.state_normalizer.normalize(state)
+            if goal_normalizer:
                 goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 goal = goal_normalizer.normalize(goal)
                 
@@ -4126,9 +3736,9 @@ class SAC(Agent):
             return action
         
         else:
-            # (HER) use passed state normalizer if using HER
-            if self._use_her:
-                state = state_normalizer.normalize(state)
+            if self.state_normalizer:
+                state = self.state_normalizer.normalize(state)
+            if goal_normalizer:
                 # make sure goal is a tensor and on correct device
                 goal = T.tensor(goal, dtype=T.float32, device=self.actor_model.device)
                 goal = goal_normalizer.normalize(goal)
@@ -4140,10 +3750,6 @@ class SAC(Agent):
                 action = dist.sample()
             self.actor_model.train()
 
-            # Convert the action space bounds to a tensor on the same device
-            # action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-            # action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
-            # action = action.clip(action_space_low, action_space_high)
             action = action.cpu().detach().numpy()
 
         # Loop over the action values and log them to wandb
@@ -4152,7 +3758,7 @@ class SAC(Agent):
 
         return action
 
-    def learn(self, state_normalizer: Optional[Normalizer]=None, goal_normalizer: Optional[Normalizer]=None):
+    def learn(self, goal_normalizer: Optional[Normalizer]=None):
         
         self._learn_iter += 1
         self.logger.debug(f"SAC learn iteration: {self._learn_iter}")
@@ -4210,9 +3816,10 @@ class SAC(Agent):
             indices = None
 
         # Normalize states if self.normalize_inputs
-        if self._use_her:
-            states = state_normalizer.normalize(states)
-            next_states = state_normalizer.normalize(next_states)
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
+        if goal_normalizer:
             desired_goals = goal_normalizer.normalize(desired_goals)
         else:
             desired_goals = None
@@ -4220,29 +3827,62 @@ class SAC(Agent):
         rewards = rewards.to(self.target_value_model.device)
         dones = dones.to(self.target_value_model.device)
 
+        action_space_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.actor_model.device)
+        # print(f'action_space_high: {action_space_high}')
+
+        # Train ICM if curiosity and update _use_extrinsic flag
+        if self.curiosity:
+            # Reshape arrays to (batch_size * N, -1) to train on all steps in N
+            states_reshaped = states.view(self.batch_size * self.N, -1)
+            next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
+            actions_reshaped = actions.view(self.batch_size * self.N, -1)
+            curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
+            if self._step > self.curiosity.extrinsic_threshold:
+                self.curiosity._use_extrinsic = True
+            else:
+                self.curiosity._use_extrinsic = False
+
         with T.no_grad():
             # Get target values
             dist, _, _ = self.actor_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
             new_actions = dist.rsample()
-            # action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-            # action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
-            # new_actions = new_actions.clip(action_space_low, action_space_high)
-            log_probs = dist.log_prob(new_actions)
-            q_1 = self.critic_model_a(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
-            q_2 = self.critic_model_b(states[:,-1,:], new_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+            squashed_actions = T.tanh(new_actions)
+            scaled_actions = squashed_actions * action_space_high
+            log_probs = dist.log_prob(new_actions).sum(-1)
+            log_probs -= T.log(1-squashed_actions.pow(2) + 1e-6).sum(-1)
+            log_probs -= T.log(action_space_high).sum()
+            q_1 = self.critic_model_a(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None).view(-1)
+            q_2 = self.critic_model_b(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None).view(-1)
             min_q = T.minimum(q_1, q_2)
-            v_preds = self.value_model(states[:,-1,:]).squeeze()
-            v_targ = min_q - self.alpha * log_probs
+            if self.auto_entropy_tuning:
+                current_alpha = self.log_alpha.exp()
+            else:
+                current_alpha = self.alpha
+            v_targ = min_q - current_alpha * log_probs
 
-            # Update Value Model
-            self.value_model.optimizer.zero_grad()
-            value_loss = F.mse_loss(v_preds, v_targ.detatch())
-            value_loss.backward()
-            if self.grad_clip:
-                T.nn.utils.clip_grad_norm_(self.value_model.parameters(), self.grad_clip)
-            self.value_model.optimizer.step()
+        v_preds = self.value_model(states[:,-1,:]).view(-1)
+        self.value_model.optimizer.zero_grad()
+        value_loss = 0.5 * F.mse_loss(v_preds, v_targ)
+        value_loss.backward()
+        if self.grad_clip:
+            T.nn.utils.clip_grad_norm_(self.value_model.parameters(), self.grad_clip)
+        self.value_model.optimizer.step()
 
-            # Calculate target Q-values
+
+        with T.no_grad():
+            # Compute intrinsic reward if using ICM
+            if self.curiosity:
+                intrinsic_reward = self.curiosity.compute_intrinsic_reward(
+                    states_reshaped,
+                    next_states_reshaped,
+                    actions_reshaped
+                )
+                intrinsic_reward = intrinsic_reward.view(self.batch_size, self.N)
+                if self.curiosity._use_extrinsic:
+                    rewards += intrinsic_reward
+                else:
+                    rewards = intrinsic_reward
+            
             q_targets = compute_n_step_return(
                 rewards,
                 dones,
@@ -4251,13 +3891,20 @@ class SAC(Agent):
                 device=self.target_value_model.device
             ).squeeze()
 
-            bootstrap_values = self.target_value_model(next_states[:,-1,:]).squeeze()
+            bootstrap_values = self.target_value_model(
+                next_states[:,-1,:],
+                desired_goals[:,-1,:] if desired_goals is not None else None
+                ).squeeze()
 
             not_done_mask = (1 - dones[:,-1]).squeeze()
             q_targets += not_done_mask * (self.discount ** self.N) * bootstrap_values
 
+            # Apply HER-specific clamping if needed
             if self._use_her:
-                q_targets = T.clamp(q_targets, min=-1/(1-self.discount))
+                if self.curiosity and not self.curiosity._use_extrinsic:
+                    pass
+                else:
+                    q_targets = T.clamp(q_targets, min=-1/(1-self.discount))
 
         # Get current predictions
         q1_preds = self.critic_model_a(
@@ -4274,9 +3921,9 @@ class SAC(Agent):
         q2_loss = (q2_preds - q_targets.detach()).pow(2)
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            q1_loss = weights.to(self.critic_model.device) * q1_loss
-            q2_loss = weights.to(self.critic_model.device) * q2_loss
-        critic_loss = q1_loss.mean() + q2_loss.mean()
+            q1_loss = weights.to(self.critic_model_a.device) * q1_loss
+            q2_loss = weights.to(self.critic_model_b.device) * q2_loss
+        critic_loss = 0.5 * (q1_loss.mean() + q2_loss.mean())
 
         self.critic_model_a.optimizer.zero_grad()
         self.critic_model_b.optimizer.zero_grad()
@@ -4288,7 +3935,16 @@ class SAC(Agent):
         self.critic_model_b.optimizer.step()
 
         # Update Actor
-        actor_loss = (self.alpha * log_probs - min_q)
+        dist, _, _ = self.actor_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
+        new_actions = dist.rsample()
+        squashed_actions = T.tanh(new_actions)
+        scaled_actions = squashed_actions * action_space_high
+        log_probs = dist.log_prob(new_actions).sum(-1)
+        log_probs -= T.log(1-squashed_actions.pow(2) + 1e-6).sum(-1)
+        q_1 = self.critic_model_a(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+        q_2 = self.critic_model_b(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None)
+        min_q = T.minimum(q_1, q_2)
+        actor_loss = current_alpha * log_probs - min_q
 
         if weights is not None:
             actor_loss = weights.to(self.actor_model.device) * actor_loss
@@ -4300,6 +3956,12 @@ class SAC(Agent):
         if self.grad_clip:
             T.nn.utils.clip_grad_norm_(self.actor_model.parameters(), self.grad_clip)
         self.actor_model.optimizer.step()
+
+        if self.auto_entropy_tuning:
+            self.alpha_optimizer.zero_grad()
+            alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
 
         # Perform soft update on target networks
         if not self._use_her:
@@ -4321,6 +3983,14 @@ class SAC(Agent):
         self._train_step_config['critic_predictions'] = min_q
         self._train_step_config['value_predictions'] = v_preds
         self._train_step_config['target_value_predictions'] = bootstrap_values
+        self._train_step_config['alpha'] = float(current_alpha.item()) if self.auto_entropy_tuning else self.alpha
+        self._train_step_config['entropy'] = float(-log_probs.mean().item())
+        if self.curiosity:
+            self._train_step_config['curiosity_loss'] = curiosity_loss
+            self._train_step_config['intrinsic_reward'] = intrinsic_reward.mean()
+            self._train_step_config['use_extrinsic'] = self.curiosity._use_extrinsic
+            self._train_step_config['reward_weight'] = self.curiosity.reward_weight * self.curiosity.reward_scheduler.get_factor() \
+                if self.curiosity.reward_scheduler else self.curiosity.reward_weight
 
         return actor_loss.item(), critic_loss.item(), value_loss.item()
 
@@ -4364,9 +4034,9 @@ class SAC(Agent):
         self._sync_iter = sync_iter
 
         if self.callbacks:
+            config = self.get_config()
             for callback in self.callbacks:
                 if isinstance(callback, WandbCallback):
-                    config = self.get_config()
                     config['num_episodes'] = num_episodes
                     config['seed'] = seed
                     config['num_envs'] = self.num_envs
@@ -4378,7 +4048,7 @@ class SAC(Agent):
                     callback.on_train_begin(tuple(models), logs=config)
                     run_number = callback.run_name.split("-")[-1]
                 else:
-                    callback.on_train_begin(logs=self._config)
+                    callback.on_train_begin(logs=config)
         
         try:
             # instantiate new vec environment
@@ -4395,6 +4065,9 @@ class SAC(Agent):
         self.completed_episodes = np.zeros(self.num_envs)
         # Initialize environments
         states, _ = self.env.reset()
+        # Add initial observation and goal to normalizer
+        self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
+        
         while self.completed_episodes.sum() < num_episodes:
             # If distributed, sync to shared agent
             if self._distributed and self._step % self._sync_iter == 0:
@@ -4411,13 +4084,7 @@ class SAC(Agent):
             actions = self.env.format_actions(actions)
             next_states, rewards, dones, infos = self.env.step(actions)
             episode_scores += rewards
-            # dones = np.logical_or(terms, truncs)
-            #DEBUG
-            # print(f"infos: {infos}")
-            # Store transitions in the env trajectory
-            # for i in range(self.num_envs):
-            #     self.replay_buffer.add(states[i], actions[i], rewards[i], next_states[i], dones[i], traj_ids[i], step_indices[i])
-                # trajectories[i].append((states[i], actions[i], rewards[i], next_states[i], dones[i]))
+
             self.replay_buffer.add(
                 infos['n-step trajectory']['states'],
                 infos['n-step trajectory']['actions'],
@@ -4425,19 +4092,13 @@ class SAC(Agent):
                 infos['n-step trajectory']['next_states'],
                 infos['n-step trajectory']['dones']
             )
-            # self.replay_buffer.add(
-            #     states,
-            #     actions,
-            #     rewards,
-            #     next_states,
-            #     dones
-            # )
+            # Update normalizer if state_normalizer
+            if self.state_normalizer:
+                self.state_normalizer.update_local_stats(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
+                self.state_normalizer.update_global_stats()
 
             completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
             for i in completed_episodes:
-                # self.replay_buffer.add(*zip(*trajectories[i]))
-                # trajectories[i] = []
-
                 # Increment completed episodes for env by 1
                 self.completed_episodes[i] += 1
                 score_history.append(episode_scores[i]) 
@@ -4497,11 +4158,6 @@ class SAC(Agent):
                         self._train_step_config["actor_loss"] = actor_loss
                         self._train_step_config["critic_loss"] = critic_loss
                         self._train_step_config["value_loss"] = value_loss
-                    # Step scheduler if not None
-                    if self.noise_schedule:
-                        self.noise_schedule.step()
-                        self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
-
 
             self._train_step_config["step_reward"] = rewards.mean()
             
@@ -4656,11 +4312,15 @@ class SAC(Agent):
             "replay_buffer": self.replay_buffer.get_config() if self.replay_buffer is not None else None,
             "discount": self.discount,
             "tau": self.tau,
+            "alpha": self.alpha,
+            "auto_entropy_tuning": self.auto_entropy_tuning,
+            "alpha_lr": self.alpha_lr,
             "batch_size": self.batch_size,
             'grad_clip': self.grad_clip,
             'warmup': self.warmup,
             'N': self.N,
             "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir,
             "device": self.device.type,
@@ -4670,47 +4330,34 @@ class SAC(Agent):
 
     def save(self):
         """Saves the model."""
-
-        # Change self.save_dir if save_dir
-        # if save_dir is not None:
-        #     self.save_dir = save_dir + "/ddpg/"
-
         config = self.get_config()
-
-        # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
-
-        # writes and saves JSON file of DDPG agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
-
-        # saves policy and value model
         self.actor_model.save(self.save_dir)
         self.critic_model_a.save(self.save_dir)
         self.critic_model_b.save(self.save_dir)
         self.value_model.save(self.save_dir)
-
-        # save curiosity
         if self.curiosity:
             self.curiosity.save(self.save_dir)
-        
-        # if self.normalize_inputs:
-        #     self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
 
     @classmethod
     def load(cls, config, load_weights=True):
         """Loads the model."""
-
-        # Load EnvWrapper
         env_wrapper = EnvWrapper.from_json(config["env"])
-            
-        # load policy model
-        actor_model = ActorModel.load(config['actor_model'], load_weights)
-        # load value model
+        actor_model = config['actor_model']
+        distribution = actor_model['distribution']
+        if distribution == 'categorical':
+            actor_model = StochasticDiscretePolicy.load(actor_model, load_weights)
+        elif distribution in ['beta', 'normal']:
+            actor_model = StochasticContinuousPolicy.load(actor_model, load_weights)
+        else:
+            raise ValueError(f"Invalid distribution: {distribution}")
         critic_model_a = CriticModel.load(config['critic_model_a'], load_weights)
         critic_model_b = CriticModel.load(config['critic_model_b'], load_weights)
         value_model = ValueModel.load(config['value_model'], load_weights)
-        # load replay buffer if not None
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
             if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
@@ -4719,13 +4366,11 @@ class SAC(Agent):
                 replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
-        # load curiosity
         curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
-        # load callbacks
+        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
                     if config['callbacks'] else None
 
-        # return DDPG agent
         agent = cls(
             env = env_wrapper,
             actor_model = actor_model,
@@ -4734,12 +4379,16 @@ class SAC(Agent):
             value_model = value_model,
             discount=config["discount"],
             tau=config["tau"],
+            alpha=config["alpha"],
+            auto_entropy_tuning=config["auto_entropy_tuning"],
+            alpha_lr=config["alpha_lr"],
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             grad_clip=config['grad_clip'],
             warmup = config['warmup'],
             N = config['N'],
             curiosity=curiosity,
+            state_normalizer=state_normalizer,
             callbacks=callbacks,
             save_dir=config["save_dir"],
             device=config["device"],
@@ -4757,8 +4406,7 @@ class HER(Agent):
         strategy: str = 'final',
         tolerance: float = 0.5,
         num_goals: int = 4,
-        normalizer_clip: float = 5.0,
-        normalizer_eps: float = 1e-8,
+        goal_normalizer: Optional[Normalizer] = None,
         save_dir: str = "models",
     ):
         """
@@ -4769,10 +4417,7 @@ class HER(Agent):
             strategy (str): HER strategy for goal sampling ('final', 'future', etc.).
             tolerance (float): Distance threshold for success determination.
             num_goals (int): Number of goals to sample for hindsight replay.
-            normalizer_clip (float): Clipping value for state and goal normalizers.
-            normalizer_eps (float): Epsilon for numerical stability in normalizers.
-            replay_buffer_size (int): Size of the replay buffer.
-            device (str): Device for computation ('cuda' or 'cpu').
+            goal_normalizer (Optional[Normalizer]): Normalizer for goal space.
             save_dir (str): Directory to save models and logs.
             # callbacks (Optional[list[Callback]]): List of callbacks for training.
         """
@@ -4781,9 +4426,7 @@ class HER(Agent):
             self.strategy = strategy
             self.tolerance = tolerance
             self.num_goals = num_goals
-            self.normalizer_clip = normalizer_clip
-            self.normalizer_eps = normalizer_eps
-            # self.replay_buffer_size = replay_buffer_size
+            self.goal_normalizer = goal_normalizer
             self.save_dir = self._setup_save_dir(save_dir)
 
             # Set learn iter to 0. For distributed training
@@ -4822,49 +4465,11 @@ class HER(Agent):
                 else:
                     self.logger.warning("Underlying environment does not have distance_threshold attribute")
 
-            # Initialize replay buffer and normalizers
-            # self.replay_buffer = ReplayBuffer(
-            #     env=self.agent.env,
-            #     buffer_size=self.replay_buffer_size,
-            #     goal_shape=self._goal_shape,
-            #     device=self.device.type,
-            # )
-            self.state_normalizer = Normalizer(
-                self._obs_space_shape, self.normalizer_eps, self.normalizer_clip, 'cpu'
-            )
-            self.goal_normalizer = Normalizer(
-                self._goal_shape, self.normalizer_eps, self.normalizer_clip, 'cpu'
-            )
-
             self._sync_iter = 1
             self._learn_iter = 0
 
         except Exception as e:
             self.logger.error(f"Error in HER init internal attributes: {e}", exc_info=True)
-
-        # # Set callbacks
-        # try:
-        #     self.callbacks = callbacks if callbacks else self.agent.callbacks
-        #     if self.callbacks:
-        #         for callback in self.callbacks:
-        #             self._config = callback._config(self)
-        #             if isinstance(callback, WandbCallback):
-        #                 self._wandb = True
-        #     else:
-        #         self._wandb = False
-        # except Exception as e:
-        #     logger.error(f"Error in HER init callbacks: {e}", exc_info=True)
-
-        # Initialize config dictionaries
-        # self._train_config = {}
-        # self._train_episode_config = {}
-        # self._train_step_config = {}
-        # self._test_config = {}
-        # self._test_episode_config = {}
-        # self._test_step_config = {}
-        # self._step = 0
-
-
         
     # @classmethod
     # def sweep_train(
@@ -5561,10 +5166,10 @@ class HER(Agent):
 
             # Initialize callbacks
             if self.agent.callbacks:
+                config = self.get_config()
                 for callback in self.agent.callbacks:
                     if isinstance(callback, WandbCallback):
                         # Update agent config
-                        config = self.get_config()
                         config['strategy'] = self.strategy
                         config['num_goals'] = self.num_goals if self.strategy == 'future' else None
                         config['num_epochs'] = num_epochs
@@ -5577,13 +5182,15 @@ class HER(Agent):
                         config['distributed'] = self.agent._distributed
                         config['sync_interval'] = self._sync_iter
                         if isinstance(self.agent, DDPG):
-                            models = (self.agent.critic_model, self.agent.actor_model)
+                            models = [self.agent.critic_model, self.agent.actor_model]
                         elif isinstance(self.agent, TD3):
-                            models = (self.agent.critic_model_a, self.agent.critic_model_b, self.agent.actor_model)
-                        callback.on_train_begin(models, logs=config)
+                            models = [self.agent.critic_model_a, self.agent.critic_model_b, self.agent.actor_model]
+                        if self.agent.curiosity:
+                            models.append(self.agent.curiosity)
+                        callback.on_train_begin(tuple(models), logs=config)
                         run_number = callback.run_name.split("-")[-1]
                     else:
-                        callback.on_train_begin(logs=self.get_config())
+                        callback.on_train_begin(logs=config)
 
             # Initialize environment
             try:
@@ -5602,14 +5209,11 @@ class HER(Agent):
             success_counter = 0.0
 
             states, _ = self.agent.env.reset()
-
-            # Add initial observation and goal to normalizers
-            self.state_normalizer.update_local_stats(
-                T.tensor(states['observation'], dtype=T.float32, device=self.state_normalizer.device.type)
-            )
-            self.goal_normalizer.update_local_stats(
-                T.tensor(states['desired_goal'], dtype=T.float32, device=self.goal_normalizer.device.type)
-            )
+            # Add initial observation and goal to normalizer if Normalizers
+            if self.agent.state_normalizer:
+                self.agent.state_normalizer.update_local_stats(T.tensor(states['observation'], dtype=T.float32, device=self.state_normalizer.device.type))
+            if self.goal_normalizer:
+                self.goal_normalizer.update_local_stats(T.tensor(states['desired_goal'], dtype=T.float32, device=self.goal_normalizer.device.type))
 
             # Training loop
             for epoch in range(num_epochs):
@@ -5634,14 +5238,11 @@ class HER(Agent):
                             states['observation'],
                             states['desired_goal'],
                             test=False,
-                            state_normalizer=self.state_normalizer,
                             goal_normalizer=self.goal_normalizer
                         )
                         actions = self.agent.env.format_actions(actions)
                         next_states, rewards, dones, infos = self.agent.env.step(actions)
                         episode_scores += rewards
-                        # Format the n-step trajectory
-                        # n_step_data = self.format_trajectory(infos['n-step trajectory'])
                         
                         # Store transitions in the env trajectory
                         for i in range(self.num_envs):
@@ -5657,58 +5258,26 @@ class HER(Agent):
                                     infos['n-step trajectory']['desired_goals'][i]
                                 )
                             )
-                        # self.agent.replay_buffer.add(
-                        #     infos['n-step trajectory']['states'],
-                        #     infos['n-step trajectory']['actions'],
-                        #     infos['n-step trajectory']['rewards'],
-                        #     infos['n-step trajectory']['next_states'],
-                        #     infos['n-step trajectory']['dones'],
-                        #     infos['n-step trajectory']['state_achieved_goals'],
-                        #     infos['n-step trajectory']['next_state_achieved_goals'],
-                        #     infos['n-step trajectory']['desired_goals']
-                        # )
 
                         # Update normalizers
-                        self.state_normalizer.update_local_stats(
-                            T.tensor(next_states['observation'], dtype=T.float32, device=self.state_normalizer.device.type)
-                        )
-                        self.goal_normalizer.update_local_stats(
-                            T.tensor(next_states['achieved_goal'], dtype=T.float32, device=self.goal_normalizer.device.type)
-                        )
+                        if self.agent.state_normalizer:
+                            self.agent.state_normalizer.update_local_stats(
+                                T.tensor(next_states['observation'], dtype=T.float32, device=self.agent.state_normalizer.device.type)
+                            )
+                        if self.goal_normalizer:
+                            self.goal_normalizer.update_local_stats(
+                                T.tensor(next_states['achieved_goal'], dtype=T.float32, device=self.agent.goal_normalizer.device.type)
+                            )
 
                         completed_episodes = np.flatnonzero(dones) # Get indices of completed episodes
                         for i in completed_episodes:
                             self.completed_episodes[i] += 1
-                            # episode_states = T.tensor([d[0] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # episode_actions = T.tensor([d[1] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # episode_rewards = T.tensor([d[2] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # episode_next_states = T.tensor([d[3] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # episode_dones = T.tensor([d[4] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # episode_state_achieved_goals = T.tensor([d[5] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # episode_next_state_achieved_goals = T.tensor([d[6] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # episode_desired_goals = T.tensor([d[7] for d in trajectories[i]], dtype=T.float32, device=self.agent.device)
-                            # self.agent.replay_buffer.add(
-                            #     episode_states,
-                            #     episode_actions,
-                            #     episode_rewards,
-                            #     episode_next_states,
-                            #     episode_dones,
-                            #     episode_state_achieved_goals,
-                            #     episode_next_state_achieved_goals,
-                            #     episode_desired_goals
-                            # )
                             self.store_hindsight_trajectory(trajectories[i])
                             # Calculate success rate
                             goal_distance = np.linalg.norm(next_states['achieved_goal'][i] - states['desired_goal'][i], axis=-1)
                             success = (goal_distance <= self.tolerance).astype(np.float32)
                             success_counter += success
                             success_perc = (success_counter / self.completed_episodes.sum())
-                            #DEBUG
-                            # print(f'self.completed_episodes.sum(): {self.completed_episodes.sum()}')
-                            # print(f'goal_distance: {goal_distance}')
-                            # print(f'success: {success}')
-                            # print(f'success_counter: {success_counter}')
-                            # print(f'success_perc: {success_perc}')
                             self.agent._train_step_config.update({
                                 "success rate": success_perc,
                                 "goal distance": goal_distance,
@@ -5744,23 +5313,9 @@ class HER(Agent):
                                         if isinstance(callback, WandbCallback):
                                             wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self.agent._step)
                                 rendered = True
-                                # Reset models to train mode
-                                # self.agent.actor_model.train()
-                                # if hasattr(self.agent, 'critic_model'):
-                                #     self.agent.critic_model.train()
-                                # if hasattr(self.agent, 'critic_model_a'):
-                                #     self.agent.critic_model_a.train()
-                                # if hasattr(self.agent, 'critic_model_b'):
-                                #     self.agent.critic_model_b.train()
 
                             print(f"Environment {i}: episode {int(self.completed_episodes[i])}, score {episode_scores[i]}, avg_score {avg_reward}")
                             episode_scores[i] = 0
-
-                            # if dones[i]:
-                            #     # Apply hindsight to the completed trajectory
-                            #     self.store_hindsight_trajectory(trajectory_buffers[i])
-                            #     trajectory_buffers[i] = []
-                            #     self.completed_episodes[i] += 1
 
                         states = next_states
 
@@ -5771,9 +5326,11 @@ class HER(Agent):
                             for callback in self.agent.callbacks:
                                 callback.on_train_step_end(step=self.agent._step, logs=self.agent._train_step_config)
 
-                    # Update normalizers and states# Update normalizers and states
-                    self.state_normalizer.update_global_stats()
-                    self.goal_normalizer.update_global_stats()
+                    # Update normalizers
+                    if self.agent.state_normalizer:
+                        self.agent.state_normalizer.update_global_stats()
+                    if self.goal_normalizer:
+                        self.goal_normalizer.update_global_stats()
 
                     # Perform optimization after collecting episodes
                     if self.agent._step > self.agent.warmup:
@@ -5826,15 +5383,6 @@ class HER(Agent):
     
     def test(self, num_episodes: int, num_envs: int = 1, seed: int = None, render_freq: int = 0, training: bool = False):
         """Runs a test over 'num_episodes'."""
-
-        # Set models to eval mode
-        # self.agent.actor_model.eval()
-        # if hasattr(self.agent, 'critic_model'):
-        #     self.agent.critic_model.eval()  # For DDPG
-        # if hasattr(self.agent, 'critic_model_a'):
-        #     self.agent.critic_model_a.eval()  # For TD3
-        # if hasattr(self.agent, 'critic_model_b'):
-        #     self.agent.critic_model_b.eval()  # For TD3
         
         if seed is None:
             seed = np.random.randint(10000)
@@ -5870,8 +5418,7 @@ class HER(Agent):
             actions = self.agent.get_action(
                     states['observation'],
                     states['desired_goal'],
-                    test=True,  # Test mode
-                    state_normalizer=self.state_normalizer,
+                    test=True,
                     goal_normalizer=self.goal_normalizer
                 )
             actions = self.agent.env.format_actions(actions, testing=True)
@@ -5919,67 +5466,6 @@ class HER(Agent):
             for callback in self.agent.callbacks:
                 callback.on_test_end(logs=self.agent._test_episode_config)
 
-    # def store_hindsight_trajectory(self, trajectory):
-    #     """
-    #     Store hindsight-augmented transitions from a completed trajectory into the replay buffer.
-        
-    #     Args:
-    #         trajectory (list): List of dictionaries, each containing transition data with keys:
-    #             'state', 'action', 'reward', 'next_state', 'done', 'achieved_goal',
-    #             'next_achieved_goal', 'desired_goal'
-    #     """
-    #     states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, traj_ids, step_indices = zip(*trajectory)
-
-    #     # # Convert lists to NumPy arrays for efficiency
-    #     states = np.array(states)
-    #     actions = np.array(actions)
-    #     rewards = np.array(rewards)
-    #     next_states = np.array(next_states)
-    #     dones = np.array(dones)
-    #     achieved_goals = np.array(achieved_goals)
-    #     next_achieved_goals = np.array(next_achieved_goals)
-    #     desired_goals = np.array(desired_goals)
-
-
-    #     tol_count = 0
-    #     experiences = [] # Store experiences for hindsight
-
-    #     # loop over each step in the trajectory to set new achieved goals, calculate new reward, and save to replay buffer
-    #     for idx, (state, action, next_state, done, state_achieved_goal, next_state_achieved_goal, desired_goal, traj_id, step_idx) in enumerate(zip(states, actions, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, traj_ids, step_indices)):
-
-    #         if self.strategy == "final":
-    #             new_desired_goal = next_achieved_goals[-1]
-    #             # new_reward, within_tol = self.reward_fn(self.agent.env, action, state_achieved_goal, next_state_achieved_goal, new_desired_goal, self.tolerance)
-    #             new_reward = self.agent.env.get_base_env().compute_reward(state_achieved_goal, new_desired_goal, {})
-    #             within_tol = self.agent.env.get_base_env()._is_success(state_achieved_goal, new_desired_goal)
-    #             # increment tol_count
-    #             tol_count += within_tol
-
-    #             # store non normalized trajectory
-    #             experiences.append((state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal, traj_id, -step_idx))
-
-    #         elif self.strategy == 'future':
-    #             for i in range(self.num_goals):
-    #                 if idx + i >= len(states) -1:
-    #                     break
-    #                 goal_idx = np.random.randint(idx + 1, len(states))
-    #                 new_desired_goal = next_achieved_goals[goal_idx]
-    #                 # new_reward, within_tol = self.reward_fn(self.agent.env, action, state_achieved_goal, next_state_achieved_goal, new_desired_goal, self.tolerance)
-    #                 new_reward = self.agent.env.get_base_env().compute_reward(state_achieved_goal, new_desired_goal, {})
-    #                 within_tol = self.agent.env.get_base_env()._is_success(state_achieved_goal, new_desired_goal)
-    #                 tol_count += within_tol
-    #                 # store non normalized trajectory
-    #                 experiences.append((state, action, new_reward, next_state, done, state_achieved_goal, next_state_achieved_goal, new_desired_goal, traj_id, -step_idx))
-
-    #         elif self.strategy == 'none':
-    #             break
-
-    #     self.agent.replay_buffer.add(*zip(*experiences))
-
-    #     # add tol count to train step config for callbacks
-    #     if self.agent.callbacks:
-    #         self.agent._train_episode_config["tolerance count"] = tol_count
-
     def store_hindsight_trajectory(self, trajectory):
         """
         Store hindsight-augmented transitions from a completed trajectory into the replay buffer with n-step rewards.
@@ -5988,11 +5474,6 @@ class HER(Agent):
             trajectory (list): List of tuples or dicts with transition data:
                 (state, action, reward, next_state, done, achieved_goal, next_achieved_goal, desired_goal, traj_id, step_idx)
         """
-        #DEBUG
-        # print('Store hindsight trajectory')
-        # print(f'trajectory: {trajectory}')
-        # print(f'len(trajectory): {len(trajectory)}')
-        # Unzip trajectory into separate lists
         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = zip(*trajectory)
         
         # Convert to NumPy arrays for efficiency
@@ -6024,21 +5505,6 @@ class HER(Agent):
                 # Calculate n-step return
                 n_step_reward = sum([self.agent.discount**i * new_rewards[t + i] for i in range(k)])
                 
-                # Transition components
-                # state = states[t]
-                # action = actions[t]
-                # # next_state_idx = min(t + self.agent.N, len(trajectory) - 1)
-                # next_state = states[next_state_idx]
-                # # Done is True if n-step horizon reaches or exceeds trajectory end
-                # done = True if t + self.agent.N >= len(trajectory) else dones[t]
-                # state_achieved_goal = achieved_goals[t]
-                # next_state_achieved_goal = next_achieved_goals[next_state_idx]
-                
-                # Append transition with n-step reward
-                # experiences.append((
-                #     states[t], actions[t], n_step_reward, next_states[t], dones[t], 
-                #     achieved_goals[t], next_achieved_goals[t], new_desired_goal
-                # ))
                 states = np.append(states, np.expand_dims(states[idx], axis=0), axis=0)
                 actions = np.append(actions, np.expand_dims(actions[idx], axis=0), axis=0)
                 rewards = np.append(rewards, np.expand_dims(new_reward, axis=0), axis=0)
@@ -6057,26 +5523,13 @@ class HER(Agent):
                     if idx + 1 >= len(trajectory):
                         break
                     goal_idx = np.random.randint(idx + 1, len(trajectory))
-                    #DEBUG
-                    # print(f'goal_idx: {goal_idx}')
-                    # print(f'next_achieved_goals[goal_idx]: {next_achieved_goals[goal_idx]}')
                     step_goals.append(next_achieved_goals[goal_idx])
-                    # new_desired_goal = next_achieved_goals[goal_idx]
-                    # print(f'new_desired_goal: {new_desired_goal}')
                 goals.append(step_goals)
             
             for idx in range(len(trajectory)):
                 for goal in goals[idx]:
-                    #DEBUG
-                    # print(f'goal idx: {idx}')
                     goal_distance = np.linalg.norm(next_achieved_goals[idx] - goal, axis=-1)
-                    # print(f'goal_distance: {goal_distance}')
                     new_reward = self.agent.env.get_base_env().compute_reward(next_achieved_goals[idx], goal, {})
-                    # print(f'new_reward: {new_reward}')
-                    # experiences.append((
-                    #     states[idx], actions[idx], new_reward, next_states[idx], dones[idx],
-                    #     achieved_goals[idx], next_achieved_goals[idx], goal
-                    # ))
                     states = np.append(states, np.expand_dims(states[idx], axis=0), axis=0)
                     actions = np.append(actions, np.expand_dims(actions[idx], axis=0), axis=0)
                     rewards = np.append(rewards, np.expand_dims(new_reward, axis=0), axis=0)
@@ -6091,28 +5544,12 @@ class HER(Agent):
             pass  # No hindsight replay
         
         # Add all experiences to the replay buffer
-        # arrays = [np.array(experience) for experience in zip(*experiences)]
-        #DEBUG
-        # print(f'arrays: {arrays}')
-        # self.agent.replay_buffer.add(*arrays)
-        # self.agent.replay_buffer.add(*zip(*experiences))
         self.agent.replay_buffer.add(states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals)
                 
         
 
     def set_normalizer_state(self, config):
         self.agent.state_normalizer.set_state(config)
-
-    # def cleanup(self):
-    #     self.replay_buffer.cleanup()
-    #     self.state_normalizer.cleanup()
-    #     self.goal_normalizer.cleanup()
-    #     T.cuda.empty_cache()
-    #     if dist.is_initialized():
-    #         dist.destroy_process_group()
-    #         print("Process group destroyed")
-    #     print("Cleanup complete")
-
 
     def get_config(self):
         config = {
@@ -6121,9 +5558,7 @@ class HER(Agent):
             "strategy": self.strategy,
             "tolerance":self.tolerance,
             "num_goals": self.num_goals,
-            "normalizer_clip": self.normalizer_clip,
-            "normalizer_eps": self.normalizer_eps,
-            # "replay_buffer_size": self.replay_buffer_size,
+            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "device": self.agent.device.type,
             "save_dir": self.save_dir,
         }
@@ -6154,8 +5589,8 @@ class HER(Agent):
         # else:
         self.agent.save()
 
-        self.state_normalizer.save_state(self.save_dir + "state_normalizer.npz")
-        self.goal_normalizer.save_state(self.save_dir + "goal_normalizer.npz")
+        self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
+        self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
 
     @classmethod
     def load(cls, config, load_weights=True):
@@ -6178,8 +5613,8 @@ class HER(Agent):
                     config["save_dir"])
 
         # load agent normalizers
-        agent.state_normalizer = Normalizer.load_state(config['save_dir'] + "state_normalizer.npz")
-        agent.goal_normalizer = Normalizer.load_state(config['save_dir'] + "goal_normalizer.npz")
+        agent.state_normalizer = Normalizer.load(config['save_dir'] + "state_normalizer.pt")
+        agent.goal_normalizer = Normalizer.load(config['save_dir'] + "goal_normalizer.pt")
         
         return her
     
@@ -6207,10 +5642,8 @@ class PPO(Agent):
         kl_coefficient (float): Coefficient for KL divergence penalty.
         kl_adapter (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
         normalize_advantages (bool): Whether to normalize advantages.
-        normalize_values (bool): Whether to normalize value outputs.
-        value_norm_clip (float): Clipping range for value normalization.
-        policy_grad_clip (float): Maximum norm for policy gradients.
-        value_grad_clip (float): Maximum norm for value model gradients
+        state_normalizer (Normalizer): Normalizer for state inputs.
+        grad_clip (float): Maximum norm for gradients.
         reward_clip (float): Maximum absolute value for reward clipping.
         callbacks (List): List of callback objects for logging and monitoring.
         save_dir (str): Directory to save models and configurations.
@@ -6233,10 +5666,9 @@ class PPO(Agent):
                  kl_coefficient: float = 0.0,
                  kl_adapter: Optional[AdaptiveKL] = None,
                  normalize_advantages: bool = True,
-                 normalize_values: bool = False,
-                 value_normalizer_clip: float = float('inf'),
-                 policy_grad_clip: float = float('inf'),
-                 value_grad_clip: float = float('inf'),
+                 curiosity: Optional[ICM] = None,
+                 state_normalizer: Optional[Normalizer] = None,
+                 grad_clip: float = float('inf'),
                  reward_clip: float = float('inf'),
                  callbacks: Optional[list[Callback]] = None,
                  save_dir: str = 'models',
@@ -6261,84 +5693,40 @@ class PPO(Agent):
             kl_coefficient (float): Coefficient for KL divergence penalty (default: 0.01).
             kl_adapter (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target (default: None).
             normalize_advantages (bool): Whether to normalize advantages (default: True).
-            normalize_values (bool): Whether to normalize value outputs (default: False).
-            value_normalizer_clip (float): Clipping range for value normalization (default: inf).
-            policy_grad_clip (float): Maximum norm for policy gradients (default: inf).
+            state_normalizer (Normalizer): Normalizer for state inputs (default: None).
+            grad_clip (float): Maximum norm for policy gradients (default: inf).
             reward_clip (float): Maximum absolute value for reward clipping (default: inf).
             callbacks (list): List of callback objects for logging and monitoring (default: []).
             save_dir (str): Directory to save models and configurations (default: 'models').
             device (str): Device for computations ('cpu' or 'cuda', default: 'cuda').
         """
-        self.env = env
-        self.policy_model = policy_model
-        self.value_model = value_model
-        self.discount = discount
-        self.gae_coefficient = gae_coefficient
-        self.policy_clip = policy_clip
-        self.policy_clip_schedule = policy_clip_schedule
-        self.value_clip = value_clip
-        self.value_clip_schedule = value_clip_schedule
-        self.value_loss_coefficient = value_loss_coefficient
-        self.entropy_coefficient = entropy_coefficient
-        self.entropy_schedule = entropy_schedule
-        self.kl_coefficient = kl_coefficient
-        self.kl_adapter = kl_adapter
-        self.normalize_advantages = normalize_advantages
-        self.normalize_values = normalize_values
-        self.value_norm_clip = value_normalizer_clip
-        self.policy_grad_clip = policy_grad_clip
-        self.value_grad_clip = value_grad_clip
-        self.reward_clip = reward_clip
-        # self.callbacks = callbacks
-        self.device = get_device(device)
-
-        if self.normalize_values:
-            self.normalizer = Normalizer((1), clip_range=self.value_norm_clip, device=device)
-
-        if save_dir is not None and "/ppo/" not in save_dir:
-            self.save_dir = save_dir + "/ppo/"
-        elif save_dir is not None:
-            self.save_dir = save_dir
-
-        # Initialize callback configurations
-        self._initialize_callbacks(callbacks)
-        self._train_config = {}
-        self._train_episode_config = {}
-        self._train_step_config = {}
-        self._test_config = {}
-        self._test_step_config = {}
-        self._test_episode_config = {}
-        self._step = None
-
-    def _initialize_callbacks(self, callbacks):
-        """
-        Initialize and configure callbacks for logging and monitoring.
-
-        Args:
-            callbacks (list): List of callback objects.
-        """
         try:
-            self.callbacks = callbacks
-            if callbacks:
-                for callback in self.callbacks:
-                    self._config = callback._config(self)
-                    if isinstance(callback, WandbCallback):
-                        self._wandb = True
-            else:
-                self.callback_list = None
-                self._wandb = False
+            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
+            self.policy_model = policy_model
+            self.value_model = value_model
+            self.discount = discount
+            self.gae_coefficient = gae_coefficient
+            self.policy_clip = policy_clip
+            self.policy_clip_schedule = policy_clip_schedule
+            self.value_clip = value_clip
+            self.value_clip_schedule = value_clip_schedule
+            self.value_loss_coefficient = value_loss_coefficient
+            self.entropy_coefficient = entropy_coefficient
+            self.entropy_schedule = entropy_schedule
+            self.kl_coefficient = kl_coefficient
+            self.kl_adapter = kl_adapter
+            self.normalize_advantages = normalize_advantages
+            self.state_normalizer = state_normalizer,
+            self.grad_clip = grad_clip
+            self.reward_clip = reward_clip
         except Exception as e:
-            logger.error(f"Error initializing callbacks: {e}", exc_info=True)
+            self.logger.error(f"Error in PPO.__init__: {e}", exc_info=True)
+    
 
     def calculate_advantages_and_returns(self, rewards, states, next_states, dones):
         """
         Compute advantages and returns using GAE, correctly handling episode terminations.
         """
-        #DEBUG
-        # print(f'states shape:{states.shape}')
-        # print(f'next states shape:{next_states.shape}')
-        # print(f'rewards shape:{rewards.shape}')
-        # print(f'dones shape:{dones.shape}')
         num_steps, num_envs = rewards.shape
         all_advantages = []
         all_returns = []
@@ -6356,19 +5744,11 @@ class PPO(Agent):
                 returns = T.zeros_like(rewards_env)
                 gae = 0.0
 
-                #DEBUG
-                # print(f'reward_env shape:{rewards_env.shape}')
-                
                 # Calculate deltas across the trajectory
                 deltas = rewards_env + self.discount * next_values * (1.0 - dones_env) - values
-                #DEBUG
-                # print(f'deltas shape:{deltas.shape}')
 
                 for t in reversed(range(num_steps)):
-                    # delta = rewards_env[t] + self.discount * next_values[t] * (1-) 
                     gae = deltas[t] + self.discount * self.gae_coefficient * gae * (1.0 - dones_env[t])
-                    #DEBUG
-                    # print(f'gae:{gae}')
                     advantages[t] = gae
                     returns[t] = gae + values[t]
 
@@ -6385,9 +5765,9 @@ class PPO(Agent):
         self._train_episode_config["advantages"] = advantages.mean().item()
         self._train_episode_config["returns"] = returns.mean().item()
 
-        # Normalize advantages if required
+        # Normalize advantages
         if self.normalize_advantages:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-4)
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         return advantages, returns, values
 
@@ -6403,8 +5783,9 @@ class PPO(Agent):
         """
         with T.no_grad():
             states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
-            #DEBUG
-            # print(f'get action states:{states.shape}')
+            if self.state_normalizer:
+                states = self.state_normalizer.normalize(states)
+
             if self.policy_model.distribution == 'categorical':
                 dist, logits = self.policy_model(states)
             else:
@@ -6466,7 +5847,7 @@ class PPO(Agent):
         else:
             return reward
 
-    def train(self, timesteps, trajectory_length, batch_size, learning_epochs, num_envs, seed=None, render_freq:int=0):
+    def train(self, timesteps, trajectory_length, batch_size, learning_epochs, num_envs, seed=None, render_freq:int=0, sync_iter: int = 1):
         """
         Train the PPO agent.
         
@@ -6480,31 +5861,35 @@ class PPO(Agent):
             render_freq (int): Frequency of rendering episodes.
             save_dir (str, optional): directory to save the model. Defaults to self.save_dir
         """
+        # Set models to train mode
+        self.policy_model.train()
+        self.value_model.train()
+
+        # Set seeds
         if seed is None:
             seed = np.random.randint(100)
+        set_seed(seed)
 
         # Set render freq to 0 if None is passed
         if render_freq == None:
             render_freq = 0
 
-        # Set seeds
-        set_seed(seed)
-        # gym.utils.seeding.np_random.seed = seed # Seeds of envs now set in _initialize_env
-
         if self.callbacks:
+            config = self.get_config()
             for callback in self.callbacks:
-                self._config = callback._config(self)
                 if isinstance(callback, WandbCallback):
-                    self._config['timesteps'] = timesteps
-                    self._config['trajectory_length'] = trajectory_length
-                    self._config['batch_size'] = batch_size
-                    self._config['learning_epochs'] = learning_epochs
-                    self._config['seed'] = seed
-                    self._config['num_envs'] = num_envs
-                    callback.on_train_begin((self.value_model, self.policy_model,), logs=self._config)
-                    # logger.debug(f'TD3.train on train begin callback complete')
+                    config['timesteps'] = timesteps
+                    config['trajectory_length'] = trajectory_length
+                    config['batch_size'] = batch_size
+                    config['learning_epochs'] = learning_epochs
+                    config['seed'] = seed
+                    config['num_envs'] = num_envs
+                    models = [self.value_model, self.policy_model]
+                    if self.curiosity:
+                        models.append(self.curiosity)
+                    callback.on_train_begin(tuple(models), logs=config)
                 else:
-                    callback.on_train_begin(logs=self._config)
+                    callback.on_train_begin(logs=config)
 
         try:
             # instantiate new vec environment
@@ -6526,12 +5911,6 @@ class PPO(Agent):
         all_rewards = []
         all_next_states = []
         all_dones = []
-        # policy_loss_history = []
-        # value_loss_history = []
-        # entropy_history = []
-        # kl_history = []
-        # time_history = []
-        # param_history = []
         frames = []  # List to store frames for the video
         self.episodes = np.zeros(self.num_envs) # Tracks current episode for each env
         episode_lengths = np.zeros(self.num_envs) # Tracks step count for each env
@@ -6539,6 +5918,9 @@ class PPO(Agent):
         env_scores = np.zeros(self.num_envs)  # Tracks last episode score for each env
         episode_scores = deque(maxlen=100) # Tracks the last 100 episode scores
         states, _ = self.env.reset()
+        # Add initial observation normalizer if state_normalizer
+        if self.state_normalizer:
+            self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
 
         # set an episode rendered flag to track if an episode has yet to be rendered
         episode_rendered = False
@@ -6549,37 +5931,29 @@ class PPO(Agent):
             self._step += 1
             episode_lengths += 1 # increment the step count of each episode of each env by 1
             actions, log_probs = self.get_action(states)
-            #DEBUG
-            # print(f'train actions shape:{actions.shape}')
-            # print(f'train actions:{actions}')
             if self.policy_model.distribution == 'beta':
                 acts = self.action_adapter(actions)
             else:
                 acts = actions
-            # if self.policy_model.distribution != 'categorical':
-            #     acts = acts.astype(np.float32)
-            #     acts = acts.tolist()
-            #     acts = [[float(a) for a in act] for act in acts]
             acts = self.env.format_actions(acts)
-            #DEBUG
-            # print(f'acts shape:{acts.shape}')
-            # print(f'acts:{acts}')
-
             # If using WANDB log action values of first environment
-            if self.callbacks:
-                for callback in self.callbacks:
-                    if isinstance(callback, WandbCallback):
-                        if self.policy_model.distribution != 'categorical':
-                            for i, a in enumerate(acts[0]):
-                                self._train_step_config[f'action_{i}'] = a
-                        else:
-                            self._train_step_config['action'] = acts
+            # if self.callbacks:
+            #     for callback in self.callbacks:
+            #         if isinstance(callback, WandbCallback):
+            #             if self.policy_model.distribution != 'categorical':
+            #                 for i, a in enumerate(acts[0]):
+            #                     self._train_step_config[f'action_{i}'] = a
+            #             else:
+            #                 self._train_step_config['action'] = acts
 
             next_states, rewards, dones, _ = self.env.step(acts)
             # Update scores of each episode
             scores += rewards
-
             self._train_step_config["step_reward"] = rewards.max()
+            # Update normalizer if state_normalizer
+            if self.state_normalizer:
+                self.state_normalizer.update_local_stats(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
+                self.state_normalizer.update_global_stats()
 
             for i, done in enumerate(dones):
                 if done:
@@ -6728,13 +6102,9 @@ class PPO(Agent):
         # Convert lists to tensors without flattening
         # This results in tensors of shape (num_steps, num_envs, ...)
         states = T.stack([T.tensor(s, dtype=T.float32, device=self.policy_model.device) for s in all_states])
-        #DEBUG
-        # print(f'learn states shape:{states.shape}')
         # Convert actions to T.long values if categorical, else floats
         if self.policy_model.distribution == 'categorical':
             actions = T.stack([T.tensor(a, dtype=T.long, device=self.policy_model.device) for a in all_actions])
-            #DEBUG
-            # print(f'actions:{actions}')
         else:
             actions = T.stack([T.tensor(a, dtype=T.float32, device=self.policy_model.device) for a in all_actions])
         log_probs = T.stack([T.tensor(lp, dtype=T.float32, device=self.policy_model.device) for lp in all_log_probs])
@@ -6753,8 +6123,11 @@ class PPO(Agent):
         # obs_shape = states.shape[2:]  # Get observation shape
         states = states.reshape(total_samples, *self.env.single_observation_space.shape)
         next_states = next_states.reshape(total_samples, *self.env.single_observation_space.shape)
-        #DEBUG
-        # print(f'learn reshaped states shape:{states.shape}')
+        
+        # Normalize states if self.normalize_inputs
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
 
         # Reshape tensors for batching
         all_values = all_values.reshape(total_samples, -1) # Shape: (total_samples, 1)
@@ -6871,7 +6244,8 @@ class PPO(Agent):
                 # Update the policy
                 self.policy_model.optimizer.zero_grad()
                 policy_loss.backward()
-                T.nn.utils.clip_grad_norm_(self.policy_model.parameters(), max_norm=self.policy_grad_clip)
+                if self.grad_clip:
+                    T.nn.utils.clip_grad_norm_(self.policy_model.parameters(), max_norm=self.grad_clip)
                 self.policy_model.optimizer.step()
                 
                     
@@ -6884,7 +6258,8 @@ class PPO(Agent):
                 value_loss = self.value_loss_coefficient * (0.5 * T.max(loss, clipped_value_loss).mean()).mean()
                 self.value_model.optimizer.zero_grad()
                 value_loss.backward()
-                T.nn.utils.clip_grad_norm_(self.value_model.parameters(), max_norm=self.value_grad_clip)
+                if self.grad_clip:
+                    T.nn.utils.clip_grad_norm_(self.value_model.parameters(), max_norm=self.grad_clip)
                 self.value_model.optimizer.step()
 
                 
@@ -7069,18 +6444,13 @@ class PPO(Agent):
             save_dir (str, optional): Directory to save the model. Defaults to self.save_dir.
         """
         config = self.get_config()
-
-        # makes directory if it doesn't exist
         os.makedirs(self.save_dir, exist_ok=True)
-
-        # writes and saves JSON file of DDPG agent config
         with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f, cls=CustomJSONEncoder)
-
-        # saves policy and value model
         self.policy_model.save(self.save_dir)
         self.value_model.save(self.save_dir)
-
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
 
     @classmethod
     def load(cls, config, load_weights=True):
@@ -7094,24 +6464,13 @@ class PPO(Agent):
         Returns:
             PPO: Loaded PPO agent.
         """
-
-        ## create EnvSpec from config
-        # env_spec = EnvSpec.from_json(config['env'])
-        
-        # env_wrapper = build_env_wrapper_obj(env_spec)
         env_wrapper = EnvWrapper.from_json(config["env"])
-
-
-        # load policy model
         model = select_policy_model(env_wrapper)
-        policy_model = model.load(config['save_dir'], load_weights)
-        # load value model
-        value_model = ValueModel.load(config['save_dir'], load_weights)
-        # load callbacks
+        policy_model = model.load(config['policy_model'], load_weights)
+        value_model = ValueModel.load(config['value_model'], load_weights)
+        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
                     if config['callbacks'] else None
-
-        # return PPO agent
         agent = cls(
             env_wrapper,
             policy_model = policy_model,
@@ -7128,215 +6487,210 @@ class PPO(Agent):
             kl_coefficient = config["kl_coefficient"],
             kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config["kl_adapter"] else None,
             normalize_advantages = config["normalize_advantages"],
-            normalize_values = config["normalize_values"],
-            value_normalizer_clip = config["normalizer_clip"],
-            policy_grad_clip = config["policy_grad_clip"],
-            value_grad_clip = config["value_grad_clip"],
+            state_normalizer = state_normalizer,
+            grad_clip = config["grad_clip"],
             reward_clip = config['reward_clip'],
             callbacks=callbacks,
             save_dir=config["save_dir"],
             device=config["device"],
         )
 
-        # if agent.normalize_inputs:
-        #     agent.state_normalizer = helper.Normalizer.load_state(config['save_dir'] + "state_normalizer.npz")
-
         return agent
     
-    @classmethod
-    def sweep_train(cls, config, env_spec, callbacks, run_number):
-        """
-        Train agents based on a sweep configuration.
+    # @classmethod
+    # def sweep_train(cls, config, env_spec, callbacks, run_number):
+    #     """
+    #     Train agents based on a sweep configuration.
 
-        Args:
-            config (dict): Configuration for the sweep.
-            env_spec: Environment specification.
-            callbacks (list): List of callbacks.
-            run_number (int): Run number for logging.
+    #     Args:
+    #         config (dict): Configuration for the sweep.
+    #         env_spec: Environment specification.
+    #         callbacks (list): List of callbacks.
+    #         run_number (int): Run number for logging.
 
-        Returns:
-            None
-        """
-        # Import necessary functions directly from wandb_support
-        from wandb_support import get_wandb_config_value, get_wandb_config_optimizer_params
+    #     Returns:
+    #         None
+    #     """
+    #     # Import necessary functions directly from wandb_support
+    #     from wandb_support import get_wandb_config_value, get_wandb_config_optimizer_params
 
-        logger.debug(f"init_sweep fired")
-        try:
-            # Instantiate env from env_spec
-            env_spec = gym.envs.registration.EnvSpec.from_json(env_spec)
-            env_library = config["parameters"]["env_library"]
-            env_wrappers = config["parameters"]["env_wrappers"]
-            if env_library == 'Gymnasium':
-                env = GymnasiumWrapper(env_spec, env_wrappers)
-            # env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
+    #     logger.debug(f"init_sweep fired")
+    #     try:
+    #         # Instantiate env from env_spec
+    #         env_spec = gym.envs.registration.EnvSpec.from_json(env_spec)
+    #         env_library = config["parameters"]["env_library"]
+    #         env_wrappers = config["parameters"]["env_wrappers"]
+    #         if env_library == 'Gymnasium':
+    #             env = GymnasiumWrapper(env_spec, env_wrappers)
+    #         # env = gym.make(gym.envs.registration.EnvSpec.from_json(env_spec))
 
-            # logger.debug(f"train config: {train_config}")
-            print(f"env library: {env_library}")
-            print(f"env wrappers: {env_wrappers}")
-            print(f"env spec id: {env.spec.id}")
-            print(f"callbacks: {callbacks}")
-            print(f"run number: {run_number}")
-            print(f"config set: {config}")
-            agent_type = config['model_type']
-            print(f"agent type: {agent_type}")
+    #         # logger.debug(f"train config: {train_config}")
+    #         print(f"env library: {env_library}")
+    #         print(f"env wrappers: {env_wrappers}")
+    #         print(f"env spec id: {env.spec.id}")
+    #         print(f"callbacks: {callbacks}")
+    #         print(f"run number: {run_number}")
+    #         print(f"config set: {config}")
+    #         agent_type = config['model_type']
+    #         print(f"agent type: {agent_type}")
 
-            # Get devicez
-            device = get_wandb_config_value(config, agent_type, 'none', 'device')
+    #         # Get devicez
+    #         device = get_wandb_config_value(config, agent_type, 'none', 'device')
 
-            # Format policy and value layers, and kernels
-            model_config = wandb_support.format_layers(config)
+    #         # Format policy and value layers, and kernels
+    #         model_config = wandb_support.format_layers(config)
 
-            # Policy
-            # Learning Rate
-            policy_learning_rate_const = get_wandb_config_value(config, agent_type, 'policy', 'learning_rate_constant')
-            policy_learning_rate_exp = get_wandb_config_value(config, agent_type, 'policy', 'learning_rate_exponent')
-            policy_learning_rate = policy_learning_rate_const * (10 ** policy_learning_rate_exp)
-            logger.debug(f"policy learning rate set to {policy_learning_rate}")
-            # Distribution
-            distribution = get_wandb_config_value(config, agent_type, 'policy', 'distribution')
-            # Optimizer
-            policy_optimizer = get_wandb_config_value(config, agent_type, 'policy', 'optimizer')
-            logger.debug(f"policy optimizer set to {policy_optimizer}")
-            # Get optimizer params
-            optimizer_params = get_wandb_config_optimizer_params(config, agent_type, 'policy', 'optimizer')
-            policy_optimizer_params = {'type':policy_optimizer, 'params':optimizer_params}
-            logger.debug(f"policy optimizer params set to {policy_optimizer_params}")
-            # Get correct policy model for env action space
-            if isinstance(env.action_space, gym.spaces.Discrete):
-                policy_model = StochasticDiscretePolicy(
-                    env = env,
-                    layer_config = model_config['policy']['hidden'],
-                    output_layer_kernel = model_config['policy']['output'],
-                    optimizer_params = policy_optimizer_params,
-                    learning_rate = policy_learning_rate,
-                    distribution = distribution,
-                    device = device,
-                )
-            # Check if the action space is continuous
-            elif isinstance(env.action_space, gym.spaces.Box):
-                policy_model = StochasticContinuousPolicy(
-                    env = env,
-                    layer_config = model_config['policy']['hidden'],
-                    output_layer_kernel = model_config['policy']['output'],
-                    optimizer_params = policy_optimizer_params,
-                    distribution = distribution,
-                    device = device,
-                )
-            logger.debug(f"policy model built: {policy_model.get_config()}")
+    #         # Policy
+    #         # Learning Rate
+    #         policy_learning_rate_const = get_wandb_config_value(config, agent_type, 'policy', 'learning_rate_constant')
+    #         policy_learning_rate_exp = get_wandb_config_value(config, agent_type, 'policy', 'learning_rate_exponent')
+    #         policy_learning_rate = policy_learning_rate_const * (10 ** policy_learning_rate_exp)
+    #         logger.debug(f"policy learning rate set to {policy_learning_rate}")
+    #         # Distribution
+    #         distribution = get_wandb_config_value(config, agent_type, 'policy', 'distribution')
+    #         # Optimizer
+    #         policy_optimizer = get_wandb_config_value(config, agent_type, 'policy', 'optimizer')
+    #         logger.debug(f"policy optimizer set to {policy_optimizer}")
+    #         # Get optimizer params
+    #         optimizer_params = get_wandb_config_optimizer_params(config, agent_type, 'policy', 'optimizer')
+    #         policy_optimizer_params = {'type':policy_optimizer, 'params':optimizer_params}
+    #         logger.debug(f"policy optimizer params set to {policy_optimizer_params}")
+    #         # Get correct policy model for env action space
+    #         if isinstance(env.action_space, gym.spaces.Discrete):
+    #             policy_model = StochasticDiscretePolicy(
+    #                 env = env,
+    #                 layer_config = model_config['policy']['hidden'],
+    #                 output_layer_kernel = model_config['policy']['output'],
+    #                 optimizer_params = policy_optimizer_params,
+    #                 learning_rate = policy_learning_rate,
+    #                 distribution = distribution,
+    #                 device = device,
+    #             )
+    #         # Check if the action space is continuous
+    #         elif isinstance(env.action_space, gym.spaces.Box):
+    #             policy_model = StochasticContinuousPolicy(
+    #                 env = env,
+    #                 layer_config = model_config['policy']['hidden'],
+    #                 output_layer_kernel = model_config['policy']['output'],
+    #                 optimizer_params = policy_optimizer_params,
+    #                 distribution = distribution,
+    #                 device = device,
+    #             )
+    #         logger.debug(f"policy model built: {policy_model.get_config()}")
 
-            # Value Func
-            # Learning Rate
-            value_learning_rate_const = get_wandb_config_value(config, agent_type, 'value', "learning_rate_constant")
-            value_learning_rate_exp = get_wandb_config_value(config, agent_type, 'value', "learning_rate_exponent")
-            critic_learning_rate = value_learning_rate_const * (10 ** value_learning_rate_exp)
-            logger.debug(f"value learning rate set to {critic_learning_rate}")
-            # Optimizer
-            value_optimizer = get_wandb_config_value(config, agent_type, 'value', 'optimizer')
-            logger.debug(f"value optimizer set to {value_optimizer}")
-            optimizer_params = get_wandb_config_optimizer_params(config, agent_type, 'value', 'optimizer')
-            value_optimizer_params = {'type':value_optimizer, 'params':optimizer_params}
-            logger.debug(f"value optimizer params set to {value_optimizer_params}")
+    #         # Value Func
+    #         # Learning Rate
+    #         value_learning_rate_const = get_wandb_config_value(config, agent_type, 'value', "learning_rate_constant")
+    #         value_learning_rate_exp = get_wandb_config_value(config, agent_type, 'value', "learning_rate_exponent")
+    #         critic_learning_rate = value_learning_rate_const * (10 ** value_learning_rate_exp)
+    #         logger.debug(f"value learning rate set to {critic_learning_rate}")
+    #         # Optimizer
+    #         value_optimizer = get_wandb_config_value(config, agent_type, 'value', 'optimizer')
+    #         logger.debug(f"value optimizer set to {value_optimizer}")
+    #         optimizer_params = get_wandb_config_optimizer_params(config, agent_type, 'value', 'optimizer')
+    #         value_optimizer_params = {'type':value_optimizer, 'params':optimizer_params}
+    #         logger.debug(f"value optimizer params set to {value_optimizer_params}")
 
-            value_model = ValueModel(
-                env = env,
-                layer_config = model_config['value']['hidden'],
-                output_layer_kernel=model_config['value']['output'],
-                optimizer_params = value_optimizer_params,
-                device=device,
-            )
-            logger.debug(f"value model built: {value_model.get_config()}")
+    #         value_model = ValueModel(
+    #             env = env,
+    #             layer_config = model_config['value']['hidden'],
+    #             output_layer_kernel=model_config['value']['output'],
+    #             optimizer_params = value_optimizer_params,
+    #             device=device,
+    #         )
+    #         logger.debug(f"value model built: {value_model.get_config()}")
 
-            # Discount
-            discount = get_wandb_config_value(config, agent_type, 'none', 'discount')
-            # GAE coefficient
-            gae_coeff = get_wandb_config_value(config, agent_type, 'none', 'advantage')
-            logger.debug(f"gae coeff set to {gae_coeff}")
-            # Policy clip
-            policy_clip = get_wandb_config_value(config, agent_type, 'policy', 'clip_range')
-            logger.debug(f"policy clip set to {policy_clip}")
-            # Value clip
-            value_clip = get_wandb_config_value(config, agent_type, 'value', 'clip_range')
-            logger.debug(f"value clip set to {value_clip}")
-            # Entropy coefficient
-            entropy_coeff = get_wandb_config_value(config, agent_type, 'none', 'entropy')
-            logger.debug(f"entropy coeff set to {entropy_coeff}")
-            # Normalize advantages
-            normalize_advantages = get_wandb_config_value(config, agent_type, 'none', 'normalize_advantage')
-            logger.debug(f"normalize advantage set to {normalize_advantages}")
-            # Normalize values
-            normalize_values = get_wandb_config_value(config, agent_type, 'value', 'normalize_values')
-            logger.debug(f"normalize values set to {normalize_values}")
-            # Normalize values clip value
-            normalize_val_clip = get_wandb_config_value(config, agent_type, 'value', 'normalize_values_clip')
-            if normalize_val_clip == 'infinity':
-                normalize_val_clip = np.inf
-            logger.debug(f"normalize values clip set to {normalize_val_clip}")
-            # Policy gradient clip
-            policy_grad_clip = get_wandb_config_value(config, agent_type, 'policy', 'grad_clip')
-            # Change value of policy_grad_clip to np.inf if == 'infinity'
-            if policy_grad_clip == "infinity":
-                policy_grad_clip = np.inf
-            logger.debug(f"policy grad clip set to {policy_grad_clip}")
-            # Value gradient clip
-            value_grad_clip = get_wandb_config_value(config, agent_type, 'value', 'grad_clip')
-            # Change value of policy_grad_clip to np.inf if == 'infinity'
-            if value_grad_clip == "infinity":
-                value_grad_clip = np.inf
-            logger.debug(f"value grad clip set to {value_grad_clip}")
+    #         # Discount
+    #         discount = get_wandb_config_value(config, agent_type, 'none', 'discount')
+    #         # GAE coefficient
+    #         gae_coeff = get_wandb_config_value(config, agent_type, 'none', 'advantage')
+    #         logger.debug(f"gae coeff set to {gae_coeff}")
+    #         # Policy clip
+    #         policy_clip = get_wandb_config_value(config, agent_type, 'policy', 'clip_range')
+    #         logger.debug(f"policy clip set to {policy_clip}")
+    #         # Value clip
+    #         value_clip = get_wandb_config_value(config, agent_type, 'value', 'clip_range')
+    #         logger.debug(f"value clip set to {value_clip}")
+    #         # Entropy coefficient
+    #         entropy_coeff = get_wandb_config_value(config, agent_type, 'none', 'entropy')
+    #         logger.debug(f"entropy coeff set to {entropy_coeff}")
+    #         # Normalize advantages
+    #         normalize_advantages = get_wandb_config_value(config, agent_type, 'none', 'normalize_advantage')
+    #         logger.debug(f"normalize advantage set to {normalize_advantages}")
+    #         # Normalize values
+    #         normalize_values = get_wandb_config_value(config, agent_type, 'value', 'normalize_values')
+    #         logger.debug(f"normalize values set to {normalize_values}")
+    #         # Normalize values clip value
+    #         normalize_val_clip = get_wandb_config_value(config, agent_type, 'value', 'normalize_values_clip')
+    #         if normalize_val_clip == 'infinity':
+    #             normalize_val_clip = np.inf
+    #         logger.debug(f"normalize values clip set to {normalize_val_clip}")
+    #         # Policy gradient clip
+    #         policy_grad_clip = get_wandb_config_value(config, agent_type, 'policy', 'grad_clip')
+    #         # Change value of policy_grad_clip to np.inf if == 'infinity'
+    #         if policy_grad_clip == "infinity":
+    #             policy_grad_clip = np.inf
+    #         logger.debug(f"policy grad clip set to {policy_grad_clip}")
+    #         # Value gradient clip
+    #         value_grad_clip = get_wandb_config_value(config, agent_type, 'value', 'grad_clip')
+    #         # Change value of policy_grad_clip to np.inf if == 'infinity'
+    #         if value_grad_clip == "infinity":
+    #             value_grad_clip = np.inf
+    #         logger.debug(f"value grad clip set to {value_grad_clip}")
 
-            # Value Loss coefficient
-            value_coeff = get_wandb_config_value(config, agent_type, 'value', 'loss_coeff')
-            logger.debug(f"gae coeff set to {value_coeff}")
+    #         # Value Loss coefficient
+    #         value_coeff = get_wandb_config_value(config, agent_type, 'value', 'loss_coeff')
+    #         logger.debug(f"gae coeff set to {value_coeff}")
 
-            # Reward clip
-            reward_clip = get_wandb_config_value(config, agent_type, 'none', 'reward_clip')
+    #         # Reward clip
+    #         reward_clip = get_wandb_config_value(config, agent_type, 'none', 'reward_clip')
 
-            # Save dir
-            save_dir = get_wandb_config_value(config, agent_type, 'none', 'save_dir')
-            logger.debug(f"save dir set: {save_dir}")
+    #         # Save dir
+    #         save_dir = get_wandb_config_value(config, agent_type, 'none', 'save_dir')
+    #         logger.debug(f"save dir set: {save_dir}")
 
 
-            # create PPO agent
-            ppo_agent= PPO(
-                env = env,
-                policy_model = policy_model,
-                value_model = value_model,
-                discount = discount,
-                gae_coefficient = gae_coeff,
-                policy_clip = policy_clip,
-                value_clip = value_clip,
-                value_loss_coefficient = value_coeff,
-                entropy_coefficient = entropy_coeff,
-                normalize_advantages = normalize_advantages,
-                normalize_values = normalize_values,
-                value_normalizer_clip = normalize_val_clip,
-                policy_grad_clip = policy_grad_clip,
-                value_grad_clip = value_grad_clip,
-                reward_clip = reward_clip,
-                callbacks = callbacks,
-                device = device,
-            )
-            logger.debug(f"PPO agent built: {ppo_agent.get_config()}")
+    #         # create PPO agent
+    #         ppo_agent= PPO(
+    #             env = env,
+    #             policy_model = policy_model,
+    #             value_model = value_model,
+    #             discount = discount,
+    #             gae_coefficient = gae_coeff,
+    #             policy_clip = policy_clip,
+    #             value_clip = value_clip,
+    #             value_loss_coefficient = value_coeff,
+    #             entropy_coefficient = entropy_coeff,
+    #             normalize_advantages = normalize_advantages,
+    #             normalize_values = normalize_values,
+    #             value_normalizer_clip = normalize_val_clip,
+    #             policy_grad_clip = policy_grad_clip,
+    #             value_grad_clip = value_grad_clip,
+    #             reward_clip = reward_clip,
+    #             callbacks = callbacks,
+    #             device = device,
+    #         )
+    #         self.logger.debug(f"PPO agent built: {ppo_agent.get_config()}")
 
-            timesteps = get_wandb_config_value(config, agent_type, 'none', 'num_timesteps')
-            traj_length = get_wandb_config_value(config, agent_type, 'none', 'trajectory_length')
-            batch_size = get_wandb_config_value(config, agent_type, 'none', 'batch_size')
-            learning_epochs = get_wandb_config_value(config, agent_type, 'none', 'learning_epochs')
-            num_envs = get_wandb_config_value(config, agent_type, 'none', 'num_envs')
-            seed = get_wandb_config_value(config, agent_type, 'none', 'seed')
+    #         timesteps = get_wandb_config_value(config, agent_type, 'none', 'num_timesteps')
+    #         traj_length = get_wandb_config_value(config, agent_type, 'none', 'trajectory_length')
+    #         batch_size = get_wandb_config_value(config, agent_type, 'none', 'batch_size')
+    #         learning_epochs = get_wandb_config_value(config, agent_type, 'none', 'learning_epochs')
+    #         num_envs = get_wandb_config_value(config, agent_type, 'none', 'num_envs')
+    #         seed = get_wandb_config_value(config, agent_type, 'none', 'seed')
 
-            ppo_agent.train(
-                timesteps = timesteps,
-                trajectory_length = traj_length,
-                batch_size = batch_size,
-                learning_epochs = learning_epochs,
-                num_envs = num_envs,
-                seed = seed,
-                render_freq = 0,
-            )
+    #         ppo_agent.train(
+    #             timesteps = timesteps,
+    #             trajectory_length = traj_length,
+    #             batch_size = batch_size,
+    #             learning_epochs = learning_epochs,
+    #             num_envs = num_envs,
+    #             seed = seed,
+    #             render_freq = 0,
+    #         )
 
-        except Exception as e:
-            logger.error(f"An error occurred: {e}", exc_info=True)
+    #     except Exception as e:
+    #         logger.error(f"An error occurred: {e}", exc_info=True)
 
     def get_config(self):
         """
@@ -7363,10 +6717,8 @@ class PPO(Agent):
                 "kl_coefficient": self.kl_coefficient,
                 "kl_adapter": self.kl_adapter.get_config() if self.kl_adapter else None,
                 "normalize_advantages":self.normalize_advantages,
-                "normalize_values": self.normalize_values,
-                "normalizer_clip": self.value_norm_clip,
-                "policy_grad_clip": self.policy_grad_clip,
-                "value_grad_clip": self.value_grad_clip,
+                "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer else None,
+                "grad_clip": self.grad_clip,
                 "reward_clip": self.reward_clip,
                 "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
                 "save_dir": self.save_dir,

@@ -251,28 +251,32 @@ class Model(nn.Module):
         else:
             raise NotImplementedError(f"Unsupported optimizer type: {optimizer_type}")
     
-    # def _init_scheduler(self):
-    #     """
-    #     Initialize the learning rate scheduler for the model.
+    def _preprocess_state(self, state):
+        """
+        Preprocess the state tensor to handle various shapes, including flat vectors and images.
+        
+        - Adds a feature dim to 1D (flat) states.
+        - Adds a channel dim to 3D (grayscale image) states.
+        - Permutes image states from Gymnasium envs if needed (HWC -> CHW).
+        
+        Returns:
+            Tensor: Preprocessed state.
+        """
+        # Handle flat (1D) states by adding a feature dimension (e.g., for single-feature observations)
+        if state.dim() == 1:
+            state = state.unsqueeze(-1)  # Reshape to (batch_size, 1)
 
-    #     Args:
-    #         scheduler (dict): Scheduler configuration.
+        # Handle grayscale image states without channel dim (e.g., (batch_size, height, width) -> (batch_size, 1, height, width))
+        if state.dim() == 3:
+            state = state.unsqueeze(1)
 
-    #     Returns:
-    #         torch.optim.lr_scheduler: Configured scheduler.
-    #     """
-    #     scheduler_type = self.scheduler_params.get('type', '').lower()
-    #     scheduler_params = self.scheduler_params.get('params', {})
-    #     if scheduler_type == 'cosineannealing':
-    #         return optim.lr_scheduler.CosineAnnealingLR(self.optimizer, **scheduler_params)
-    #     elif scheduler_type == 'step':
-    #         return optim.lr_scheduler.StepLR(self.optimizer, **scheduler_params)
-    #     elif scheduler_type == 'exponential':
-    #         return optim.lr_scheduler.ExponentialLR(self.optimizer, **scheduler_params)
-    #     elif scheduler_type == 'linear':
-    #         return optim.lr_scheduler.LinearLR(self.optimizer, **scheduler_params)
-    #     else:
-    #         raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
+        # Handle image-like observations from Gymnasium envs
+        if isinstance(self.env, GymnasiumWrapper):
+            # Permute color images from (B, H, W, C) to (B, C, H, W) if channels are last
+            if state.dim() == 4 and state.shape[-1] in [3, 4]:
+                state = state.permute(0, 3, 1, 2)
+
+        return state
     
     @abstractmethod
     def forward(self, x):
@@ -332,38 +336,41 @@ class StochasticDiscretePolicy(Model):
 
     Attributes:
         env (EnvWrapper): The environment wrapper.
-        layer_config (list): Configuration of hidden layers.
-        output_layer_kernel (dict): Configuration of the output layer weights.
+        layer_config (list[dict]): Configuration of hidden layers.
+        output_layer_kernel (list[dict]): Configuration of the output layer weights.
         optimizer_params (dict): Parameters for the optimizer. (default: Adam with lr=0.001)
-        scheduler_params (dict): Parameters for the learning rate scheduler (optional).
+        lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
         distribution (str): Type of distribution for action selection (default: 'categorical').
-        device (str): Device to run the model on (default: 'cuda').
+        device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+        log_level (str): logger level. Default=info.
     """
 
     def __init__(
         self,
         env: EnvWrapper,
-        layer_config: list,
-        output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        layer_config: list[dict],
+        output_layer_kernel: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
-        scheduler_params:dict = None,
+        lr_scheduler: Optional[ScheduleWrapper] = None,
         distribution: str = 'categorical',
-        device: str = None
+        device: Optional[str | T.device] = None,
+        log_level: str = 'info'
     ):
         """
         Initialize the policy model.
 
         Args:
             env (EnvWrapper): The environment wrapper.
-            layer_config (list): List of dictionaries specifying hidden layer configurations.
+            layer_config (list[dict]): List of dictionaries specifying hidden layer configurations.
             output_layer_kernel (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
-            scheduler_params (dict, optional): Scheduler parameters (default: None).
+            lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
             distribution (str): Type of distribution for actions (default: 'categorical').
-            device (str): Device for computation (default: 'cuda').
+            device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+            log_level (str): logger level. Default=info.
         """
         
-        super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
         self.output_config = output_layer_kernel
         self.distribution = distribution
 
@@ -394,7 +401,7 @@ class StochasticDiscretePolicy(Model):
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
 
-    def forward(self, x):
+    def forward(self, x, goal=None):
         """
         Perform a forward pass through the model.
 
@@ -404,25 +411,14 @@ class StochasticDiscretePolicy(Model):
         Returns:
             Tuple[Categorical, Tensor]: Action distribution and logits for the action space.
         """
-        #DEBUG
-        # print(f'discrete policy shape of x: {x.shape}')
-        # print(f'discrete policy x:{x}')
-        if x.dim() == 1: # Check if tensor is flat
-            x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        # Check if observation is image-like (HWC)
-        if isinstance(self.env, GymnasiumWrapper):
-            # obs_shape = self.env.single_observation_space.shape
-            #DEBUG
-            # print(f'observation space shape:{obs_shape}')
-            if x.dim() == 4 and x.shape[-1] in [3,4]:
-                # DEBUG
-                # print(f'permutation fired')
-                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
-        #DEBUG
-        # print(f'discrete policy new x shape:{x.shape}')
+        # Preprocess state to ensure correct formatting
+        x = self._preprocess_state(x)
         x = x.to(self.device)
+
+        if goal is not None:
+            goal = goal.to(self.device)
+            x = T.cat([x, goal], dim=-1)
+            
         for layer in self.layers.values():
             x = layer(x)
         x = self.output_layer['policy_dense_output'](x)
@@ -445,7 +441,7 @@ class StochasticDiscretePolicy(Model):
             'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
             'optimizer_params': self.optimizer_params,
-            'scheduler_params': self.scheduler_params,
+            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
             'distribution': self.distribution,
             'device': self.device.type,
         }
@@ -472,49 +468,37 @@ class StochasticDiscretePolicy(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, config_path, load_weights=True):
+    def load(cls, config, load_weights=True):
         """
         Load a policy model from a saved configuration.
 
         Args:
-            config_path (str): Path to the configuration file.
+            config (dict): Configuration dictionary.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             StochasticDiscretePolicy: Loaded policy model instance.
         """
-        model_dir = Path(config_path) / "policy_model"
-        config_path = model_dir / "config.json"
-        model_path = model_dir / 'pytorch_model.onnx'
-
-        if config_path.is_file():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            raise FileNotFoundError(f"No configuration file found in {config_path}")
-        
-        # # Determine which wrapper to use
-        # wrapper_dict = json.loads(config['env'])
-        # wrapper_type = wrapper_dict.get("type")
-        # if wrapper_type == 'GymnasiumWrapper':
-        #     env = GymnasiumWrapper(wrapper_dict.get("env"))
-        # else:
-        #     raise ValueError(f"Unsupported wrapper type: {wrapper_type}")
-
         env = EnvWrapper.from_json(config.get("env"))
+        lr_scheduler_config = config.get("lr_scheduler", None)
+        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
                     optimizer_params = config.get("optimizer_params", {}),
-                    scheduler_params = config.get("scheduler_params", None),
+                    lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "categorical"),
                     device = config.get("device", "cpu")
                     )
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path, map_location=model.device))
+            try:
+                model_path = Path(config.get("save_dir")) / "value_model" / "pytorch_model.pt"
+                model.load_state_dict(T.load(model_path, map_location=model.device))
+            except Exception as e:
+                print(f"Error loading model: {e}")
 
         return model
 
@@ -530,20 +514,22 @@ class StochasticContinuousPolicy(Model):
         layer_config (list): Configuration of hidden layers.
         output_layer_kernel (dict): Configuration of the output layer weights.
         optimizer_params (dict): Parameters for the optimizer.
-        scheduler_params (dict): Parameters for the learning rate scheduler (optional).
-        distribution (str): Type of distribution for action selection ('beta' or 'normal').
-        device (str): Device to run the model on (default: 'cuda').
+        lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
+        distribution (str): Type of distribution for actions (default: 'categorical').
+        device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+        log_level (str): logger level. Default=info.
     """
 
     def __init__(
         self,
         env:EnvWrapper,
         layer_config: List[Dict],
-        output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_layer_kernel: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
-        scheduler_params:dict = None,
+        lr_scheduler: Optional[ScheduleWrapper] = None,
         distribution: str = 'beta',
-        device: str = None
+        device: Optional[str | T.device] = None,
+        log_level: str = 'info'
     ):
         """
         Initialize the policy model.
@@ -553,11 +539,12 @@ class StochasticContinuousPolicy(Model):
             layer_config (list): List of dictionaries specifying hidden layer configurations.
             output_layer_kernel (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
-            scheduler_params (dict, optional): Scheduler parameters (default: None).
+            lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
             distribution (str): Type of distribution for actions (default: 'beta').
-            device (str): Device for computation (default: 'cuda').
+            device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+            log_level (str): logger level. Default=info.
         """
-        super().__init__(env, layer_config, optimizer_params, scheduler_params, device)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
         self.output_config = output_layer_kernel
         self.distribution = distribution
         # Get the action space of the environment
@@ -579,7 +566,7 @@ class StochasticContinuousPolicy(Model):
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
 
-    def forward(self, x):
+    def forward(self, x, goal=None):
         """
         Perform a forward pass through the model.
 
@@ -589,29 +576,25 @@ class StochasticContinuousPolicy(Model):
         Returns:
             Distribution, Tensor, Tensor: Action distribution and its parameters.
         """
-        #DEBUG
-        # print(f'state shape sent to policy forward:{x.shape}')
-        if x.dim() == 1: # Check if tensor is flat
-            x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        # Check if observation is image-like (HWC)
-        if isinstance(self.env, GymnasiumWrapper):
-            # obs_shape = self.env.single_observation_space.shape
-            #DEBUG
-            # print(f'observation space shape:{obs_shape}')
-            if x.dim() == 4 and x.shape[-1] in [3,4]:
-                # DEBUG
-                # print(f'permutation fired')
-                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
+         # Preprocess state to ensure correct formatting
+        x = self._preprocess_state(x)
         x = x.to(self.device)
+
+        if goal is not None:
+            goal = goal.to(self.device)
+            x = T.cat([x, goal], dim=-1)
+
+        #DEBUG
+        # print(f'input x: {x}')
+
         for layer in self.layers.values():
             x = layer(x)
+            #DEBUG
+            # print(f'output x layer {layer}: {x}')
+
         param_1 = self.output_layer['policy_output_param_1'](x)
         param_2 = self.output_layer['policy_output_param_2'](x)
-        #DEBUG
-        # print(f'param 1 shape:{param_1.shape}')
-        # print(f'param 2 shape:{param_2.shape}')
+
         if self.distribution == 'beta':
             alpha = F.softplus(param_1) + 1.0
             beta = F.softplus(param_2) + 1.0
@@ -619,7 +602,10 @@ class StochasticContinuousPolicy(Model):
             return dist, alpha, beta
         elif self.distribution == 'normal':
             mu = param_1
-            sigma = F.softplus(param_2)
+            # sigma = F.softplus(param_2) + 1e-6
+            sigma = T.exp(T.clamp(param_2, min=-20, max=2))
+            # print(f'mu: {mu}')
+            # print(f'sigma: {sigma}')
             dist = Normal(mu, sigma)
             return dist, mu, sigma
         else:
@@ -638,7 +624,7 @@ class StochasticContinuousPolicy(Model):
             'layer_config': self.layer_config,
             'output_layer_kernel': self.output_config,
             'optimizer_params': self.optimizer_params,
-            'scheduler_params': self.scheduler_params,
+            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
             'distribution': self.distribution,
             'device': self.device.type,
         }
@@ -664,52 +650,37 @@ class StochasticContinuousPolicy(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, config_path, load_weights=True):
+    def load(cls, config, load_weights=True):
         """
         Load a policy model from a saved configuration.
 
         Args:
-            config_path (str): Path to the configuration file.
+            config (dict): Configuration dictionary.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             StochasticContinuousPolicy: Loaded policy model instance.
         """
-        model_dir = Path(config_path) / "policy_model"
-        config_path = model_dir / "config.json"
-        model_path = model_dir / 'pytorch_model.onnx'
-
-        if config_path.is_file():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            raise FileNotFoundError(f"No configuration file found in {config_path}")
-        
-        # Determine which wrapper to use
-        # wrapper_dict = json.loads(config['env'])
-        # wrapper_type = wrapper_dict.get("type")
-        # if wrapper_type == 'GymnasiumWrapper':
-        #     env = GymnasiumWrapper(wrapper_dict.get("env"))
-        # else:
-        #     raise ValueError(f"Unsupported wrapper type: {wrapper_type}")
-        #DEBUG
-        # print(f'config:{config}')
         env = EnvWrapper.from_json(config.get("env"))
-        #DEBUG
-        # print(f'env:{env.config}')
+        lr_scheduler_config = config.get("lr_scheduler", None)
+        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
                     output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
                     optimizer_params = config.get("optimizer_params", {}),
-                    scheduler_params = config.get("scheduler_params", None),
+                    lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "beta"),
                     device = config.get("device", "cpu")
                     )
 
         # Load weights if True
         if load_weights:
-            model.load_state_dict(T.load(model_path))
+            try:
+                model_path = Path(config.get("save_dir")) / "value_model" / "pytorch_model.pt"
+                model.load_state_dict(T.load(model_path, map_location=model.device))
+            except Exception as e:
+                print(f"Error loading model: {e}")
 
         return model
 
@@ -765,44 +736,32 @@ class ValueModel(Model):
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
 
-    def forward(self, x):
+    def forward(self, x, goal=None):
         """
         Perform a forward pass through the model.
 
         Args:
             x (Tensor): Input tensor (e.g., observation from the environment).
+            goal (Tensor, optional): Goal tensor (default: None).
 
         Returns:
             Tensor: Predicted state value.
         """
-        #DEBUG
-        # print(f'value model x shape:{x.shape}')
-        # print(f'value model x:{x}')
-        if x.dim() == 1: # Check if tensor is flat
-            x = x.unsqueeze(-1)  # Reshape to (batch, 1)
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        # Check if observation is image-like (HWC)
-        if isinstance(self.env, GymnasiumWrapper):
-            obs_shape = self.env.single_observation_space.shape
-            #DEBUG
-            # print(f'observation space shape:{obs_shape}')
-            if x.dim() == 4 and x.shape[-1] in [3,4]:
-                # DEBUG
-                # print(f'permutation fired')
-                x = x.permute(0, 3, 1, 2)  # → (B, C, H, W)
-        #DEBUG
-        # print(f'value model new x shape:{x.shape}')
+
+        # Preprocess state to ensure correct formatting
+        x = self._preprocess_state(x)
         x = x.to(self.device)
-        #DEBUG
-        # print(f'Value Model Input Shape: {x.size()}')
+
+        if goal is not None:
+            goal = goal.to(self.device)
+            x = T.cat([x, goal], dim=-1)
+
         for layer in self.layers.values():
             x = layer(x)
 
         x = self.output_layer['value_dense_output'](x)
 
         return x
-
 
     def get_config(self):
         """
@@ -951,6 +910,7 @@ class ActorModel(Model):
         self._init_model(self.output_layer, self.output_config)
 
     def forward(self, x, goal=None):
+        x = self._preprocess_state(x)
         x = x.to(self.device)
 
         if goal is not None:
@@ -1115,35 +1075,24 @@ class CriticModel(Model):
         self._init_model(self.output_layer, self.output_config)
 
     def forward(self, state, action, goal=None):
+         # Preprocess state to ensure correct formatting
+        state = self._preprocess_state(state)
         state = state.to(self.device)
         action = action.to(self.device)
-        #DEBUG
-        # print(f'critic state input shape:{state.size()}')
-        # print(f'critic action input shape:{action.size()}')
+        
         if goal is not None:
             goal = goal.to(self.device)
             state = T.cat([state, goal], dim=-1)
 
-        # if self.goal_shape is not None:
-            # state = T.cat([state, goal], dim=-1)
-
         for layer in self.layers.values():
             state = layer(state)
-            #DEBUG
-            # print(f'critic {layer} output shape:{state.size()}')
 
         merged = T.cat([state, action], dim=-1)
-        #DEBUG
-        # print(f'critic merged shape:{merged.size()}')
         for layer in self.merged_layers.values():
             merged = layer(merged)
-            #DEBUG
-            # print(f'critic {layer} output shape:{merged.size()}')
 
         for layer in self.output_layer.values():
             output = layer(merged)
-            #DEBUG
-            # print(f'critic {layer} output shape:{output.size()}')
         
         return output
 
