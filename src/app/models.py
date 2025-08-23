@@ -473,7 +473,7 @@ class StochasticDiscretePolicy(Model):
         Load a policy model from a saved configuration.
 
         Args:
-            config_path (str): Path to the configuration file.
+            config (dict): Configuration dictionary.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
@@ -655,7 +655,7 @@ class StochasticContinuousPolicy(Model):
         Load a policy model from a saved configuration.
 
         Args:
-            config_path (str): Path to the configuration file.
+            config (dict): Configuration dictionary.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
