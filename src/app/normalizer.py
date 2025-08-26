@@ -154,6 +154,10 @@ class Normalizer:
         normalizer.running_cnt = T.tensor(state['running_cnt'], device=target_device)
         
         return normalizer
+    
+    @classmethod
+    def create_instance(cls, **kwargs) -> 'Normalizer':
+        return cls(**kwargs)
 
     
 class SharedNormalizer:
@@ -310,3 +314,7 @@ class SharedNormalizer:
             normalizer.running_sum_sq = data['running_sum_sq']
             normalizer.running_cnt = data['running_cnt']
         return normalizer
+    
+    @classmethod
+    def create_instance(cls, **kwargs) -> 'SharedNormalizer':
+        return cls(**kwargs)
