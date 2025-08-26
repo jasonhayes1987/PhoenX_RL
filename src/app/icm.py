@@ -302,3 +302,7 @@ class ICM(Model):
                     device=config['device'], log_level=config['log_level'])
         model.load_state_dict(T.load(model_path))
         return model
+    
+    @classmethod
+    def create_instance(cls, **kwargs) -> Optional['ICM']:
+        return ICM(**kwargs) if kwargs else None
