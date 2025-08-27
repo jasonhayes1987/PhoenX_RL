@@ -24,10 +24,12 @@ def build_layer_config(config, prefix, max_layers=6):
         type = config[f'{prefix}layer{i}_type']
         params = {}
         if type in ['dense', 'conv']:
-            params['units'] = config[f'{prefix}layer{i}_units']
             params['kernel'] = config[f'{prefix}layer{i}_init']
             params['kernel params'] = config.get(f'{prefix}layer{i}_kernel_params', {})
+            if type == 'dense':
+                params['units'] = config[f'{prefix}layer{i}_units']
             if type == 'conv':
+                params['out_channels'] = config[f'{prefix}layer{i}_out_channels']
                 params['kernel_size'] = config[f'{prefix}layer{i}_kernel_size']
                 params['stride'] = config[f'{prefix}layer{i}_stride']
                 params['padding'] = config[f'{prefix}layer{i}_padding']
@@ -49,19 +51,21 @@ def rl_trainable(config):
         env = gym.make(config['env_name'])
         env_spec = env.spec
         wrappers = [
-            {"type": "NStepReward", "params": {"n": config['n_step_n'], "discount": config['gamma']}}
+            {"type": "NStepReward", "params": {"n": config['n_step_n']}}
         ]
         env_wrap = GymnasiumWrapper(env_spec, wrappers)
-        env = SyncVectorEnv([lambda: GymnasiumWrapper(env_spec, wrappers) for _ in range(config.get('num_envs', 1))])
+        # env = SyncVectorEnv([lambda: GymnasiumWrapper(env_spec, wrappers) for _ in range(config.get('num_envs', 1))])
 
         # Component instantiation
-        buffer_params = {k.replace('buffer_', ''): config[k] for k in config if k.startswith('buffer_')}
-        buffer_params['device'] = config.get('buffer_device', 'cpu')
-        buffer = Buffer.create_instance(config['buffer_type'], env=env_wrap, **buffer_params)
+        if 'buffer_type' in config:
+            buffer_params = {k.replace('buffer_', ''): config[k] for k in config if k.startswith('buffer_')}
+            buffer_params['device'] = config.get('buffer_device', 'cpu')
+            buffer = Buffer.create_instance(config['buffer_type'], env=env_wrap, **buffer_params)
 
-        noise_params = {k.replace('noise_', ''): config[k] for k in config if k.startswith('noise_')}
-        noise_params['device'] = config.get('device', 'cuda')
-        noise = Noise.create_instance(config['noise_type'], **noise_params)
+        if 'noise_type' in config:
+            noise_params = {k.replace('noise_', ''): config[k] for k in config if k.startswith('noise_')}
+            noise_params['device'] = config.get('device', 'cuda')
+            noise = Noise.create_instance(config['noise_type'], **noise_params)
 
         normalizer_params = {k.replace('normalizer_', ''): config[k] for k in config if k.startswith('normalizer_')}
         normalizer_params['size'] = env_wrap.single_observation_space.shape[0]
@@ -152,6 +156,13 @@ def run_ray_tune_sweep(user_config):
     ray.init(ignore_reinit_error=True)
 
     algorithm = user_config['algorithm']
+    if algorithm == 'HER':
+        try:
+            base_algorithm = user_config['base_algorithm']
+            if base_algorithm not in ['DDPG','TD3','SAC']:
+                raise ValueError(f"Base algorithm {base_algorithm} not supported for HER")
+        except KeyError as e:
+            raise KeyError(f"Base algorithm {e} not found in user_config")
 
     def add_param(space, name, default_min=None, default_max=None, default=None, is_log=False, is_int=False, choices=None):
         if f'{name}_min' in user_config and f'{name}_max' in user_config:
@@ -188,24 +199,43 @@ def run_ray_tune_sweep(user_config):
     }
 
     # Common
-    add_param(param_space, 'gamma', choices=user_config.get('gamma_choices', [0.99, 0.98]))
-    add_param(param_space, 'batch_size', choices=user_config.get('batch_size_choices', [256, 512, 1024]))
-    add_param(param_space, 'n_step_n', choices=user_config.get('n_step_n_choices', [1, 3, 5]))
+    add_param(param_space, 'discount', choices=user_config.get('discount_choices', [0.99, 0.98]))
 
     # Buffer
-    add_param(param_space, 'buffer_type', choices=['ReplayBuffer'])
-    add_param(param_space, 'buffer_size', default=user_config.get('buffer_size', 1000000))
-    add_param(param_space, 'buffer_N', choices=user_config.get('buffer_N_choices', [1, 3, 5]))
+    if algorithm in ['DDPG','TD3','SAC','HER']:
+        try:
+            add_param(param_space, 'buffer_type', choices=user_config.get('buffer_type_choices', ['ReplayBuffer']))
+            add_param(param_space, 'buffer_size', default=user_config.get('buffer_size', 1000000))
+        except KeyError as e:
+            raise KeyError(f"Buffer type {e} not found in user_config")
 
     # Noise
-    add_param(param_space, 'noise_type', choices=['NormalNoise', 'UniformNoise', 'OUNoise'])
-    add_param(param_space, 'noise_mean', default=0.0)
-    add_param(param_space, 'noise_stddev', default_min=0.1, default_max=0.5)
-    add_param(param_space, 'noise_minval', default_min=-1.0, default_max=0.0)
-    add_param(param_space, 'noise_maxval', default_min=0.0, default_max=1.0)
-    add_param(param_space, 'noise_theta', default_min=0.1, default_max=0.2)
-    add_param(param_space, 'noise_sigma', default_min=0.1, default_max=0.3)
-    add_param(param_space, 'noise_dt', default_min=1e-3, default_max=1e-1, is_log=True)
+    if algorithm in ['DDPG','TD3','HER']:
+        try:
+            add_param(param_space, 'noise_type', choices=user_config.get('noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise']))
+            if 'NormalNoise' in user_config.get('noise_type_choices', []):
+                add_param(param_space, 'noise_mean', default_min=user_config.get('noise_mean_min', 0.0), default_max=user_config.get('noise_mean_max', 0.0))
+                add_param(param_space, 'noise_stddev', default_min=user_config.get('noise_stddev_min', 0.1), default_max=user_config.get('noise_stddev_max', 0.3))
+            if 'UniformNoise' in user_config.get('noise_type_choices', []):
+                add_param(param_space, 'noise_minval', default_min=user_config.get('noise_minval_min', -1.0), default_max=user_config.get('noise_minval_max', 0.0))
+                add_param(param_space, 'noise_maxval', default_min=user_config.get('noise_maxval_min', 0.0), default_max=user_config.get('noise_maxval_max', 1.0))
+            if 'OUNoise' in user_config.get('noise_type_choices', []):
+                add_param(param_space, 'noise_theta', default_min=user_config.get('noise_theta_min', 0.1), default_max=user_config.get('noise_theta_max', 0.2))
+                add_param(param_space, 'noise_sigma', default_min=user_config.get('noise_sigma_min', 0.1), default_max=user_config.get('noise_sigma_max', 0.3))
+            if (algorithm == 'TD3') or (algorithm == 'HER' and base_algorithm == 'TD3'):
+                add_param(param_space, 'target_noise_type', choices=user_config.get('target_noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise']))
+                if 'NormalNoise' in user_config.get('target_noise_type_choices', []):
+                    add_param(param_space, 'target_noise_mean', default_min=user_config.get('target_noise_mean_min', 0.0), default_max=user_config.get('target_noise_mean_max', 0.0))
+                    add_param(param_space, 'target_noise_stddev', default_min=user_config.get('target_noise_stddev_min', 0.1), default_max=user_config.get('target_noise_stddev_max', 0.3))
+                if 'UniformNoise' in user_config.get('target_noise_type_choices', []):
+                    add_param(param_space, 'target_noise_minval', default_min=user_config.get('target_noise_minval_min', -1.0), default_max=user_config.get('target_noise_minval_max', 0.0))
+                    add_param(param_space, 'target_noise_maxval', default_min=user_config.get('target_noise_maxval_min', 0.0), default_max=user_config.get('target_noise_maxval_max', 1.0))
+                if 'OUNoise' in user_config.get('target_noise_type_choices', []):
+                    add_param(param_space, 'target_noise_theta', default_min=user_config.get('target_noise_theta_min', 0.1), default_max=user_config.get('target_noise_theta_max', 0.2))
+                    add_param(param_space, 'target_noise_sigma', default_min=user_config.get('target_noise_sigma_min', 0.1), default_max=user_config.get('target_noise_sigma_max', 0.3))
+                add_param(param_space, 'target_noise_clip', choices=user_config.get('target_noise_clip_choices', [0.1, 0.5]))
+        except KeyError as e:
+            raise KeyError(f"Noise type {e} not found in user_config")
 
     # Normalizer
     add_param(param_space, 'normalizer_type', choices=['Normalizer'])
@@ -231,6 +261,11 @@ def run_ray_tune_sweep(user_config):
     add_param(param_space, 'icm_scheduler_total_iters', choices=user_config['icm_scheduler_total_iters_choices'])
     add_param(param_space, 'icm_optimizer_type', choices=['Adam'])
     add_param(param_space, 'icm_lr', default_min=user_config['icm_lr_min'], default_max=user_config['icm_lr_max'], is_log=True)
+
+
+    #TODO
+    add_param(param_space, 'batch_size', choices=user_config.get('batch_size_choices', [256, 512, 1024]))
+    add_param(param_space, 'n_step_n', choices=user_config.get('n_step_n_choices', [1, 3, 5]))
 
     # Models
     layer_choices = ['dense', 'batchnorm1d', 'relu']
