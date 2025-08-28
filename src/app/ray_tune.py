@@ -165,18 +165,7 @@ def run_ray_tune_sweep(user_config):
             raise KeyError(f"Base algorithm {e} not found in user_config")
 
     def add_param(space, name, default_min=None, default_max=None, default=None, is_log=False, is_int=False, choices=None):
-        if f'{name}_min' in user_config and f'{name}_max' in user_config:
-            if is_log:
-                space[name] = tune.loguniform(user_config[f'{name}_min'], user_config[f'{name}_max'])
-            elif is_int:
-                space[name] = tune.randint(user_config[f'{name}_min'], user_config[f'{name}_max'])
-            else:
-                space[name] = tune.uniform(user_config[f'{name}_min'], user_config[f'{name}_max'])
-        elif choices and f'{name}_choices' in user_config:
-            space[name] = tune.choice(user_config[f'{name}_choices'])
-        elif name in user_config:
-            space[name] = user_config[name]
-        elif default is not None:
+        if default is not None:
             space[name] = default
         elif choices:
             space[name] = tune.choice(choices)

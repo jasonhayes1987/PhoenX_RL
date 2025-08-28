@@ -4,6 +4,9 @@ from torch.optim import lr_scheduler
 
 class ScheduleWrapper:
     def __init__(self, schedule_config: dict):
+        """
+        #TODO: define schedule config dict
+        """
         self.schedule_config = schedule_config
         
         self.param = T.nn.Parameter(T.zeros(1), requires_grad=False)
