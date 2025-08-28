@@ -202,45 +202,49 @@ def run_ray_tune_sweep(user_config):
     add_param(param_space, 'discount', choices=user_config.get('discount_choices', [0.99, 0.98]))
 
     # Buffer
-    if algorithm in ['DDPG','TD3','SAC','HER']:
-        try:
-            add_param(param_space, 'buffer_type', choices=user_config.get('buffer_type_choices', ['ReplayBuffer']))
-            add_param(param_space, 'buffer_size', default=user_config.get('buffer_size', 1000000))
-        except KeyError as e:
-            raise KeyError(f"Buffer type {e} not found in user_config")
+    if 'buffer_type' in user_config or 'buffer_type_choices' in user_config:
+        add_param(param_space, 'buffer_type', choices=user_config.get('buffer_type_choices', ['ReplayBuffer']))
+        add_param(param_space, 'buffer_size', default=user_config.get('buffer_size', 1000000))
 
     # Noise
-    if algorithm in ['DDPG','TD3','HER']:
-        try:
-            add_param(param_space, 'noise_type', choices=user_config.get('noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise']))
-            if 'NormalNoise' in user_config.get('noise_type_choices', []):
-                add_param(param_space, 'noise_mean', default_min=user_config.get('noise_mean_min', 0.0), default_max=user_config.get('noise_mean_max', 0.0))
-                add_param(param_space, 'noise_stddev', default_min=user_config.get('noise_stddev_min', 0.1), default_max=user_config.get('noise_stddev_max', 0.3))
-            if 'UniformNoise' in user_config.get('noise_type_choices', []):
-                add_param(param_space, 'noise_minval', default_min=user_config.get('noise_minval_min', -1.0), default_max=user_config.get('noise_minval_max', 0.0))
-                add_param(param_space, 'noise_maxval', default_min=user_config.get('noise_maxval_min', 0.0), default_max=user_config.get('noise_maxval_max', 1.0))
-            if 'OUNoise' in user_config.get('noise_type_choices', []):
-                add_param(param_space, 'noise_theta', default_min=user_config.get('noise_theta_min', 0.1), default_max=user_config.get('noise_theta_max', 0.2))
-                add_param(param_space, 'noise_sigma', default_min=user_config.get('noise_sigma_min', 0.1), default_max=user_config.get('noise_sigma_max', 0.3))
-            if (algorithm == 'TD3') or (algorithm == 'HER' and base_algorithm == 'TD3'):
-                add_param(param_space, 'target_noise_type', choices=user_config.get('target_noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise']))
-                if 'NormalNoise' in user_config.get('target_noise_type_choices', []):
-                    add_param(param_space, 'target_noise_mean', default_min=user_config.get('target_noise_mean_min', 0.0), default_max=user_config.get('target_noise_mean_max', 0.0))
-                    add_param(param_space, 'target_noise_stddev', default_min=user_config.get('target_noise_stddev_min', 0.1), default_max=user_config.get('target_noise_stddev_max', 0.3))
-                if 'UniformNoise' in user_config.get('target_noise_type_choices', []):
-                    add_param(param_space, 'target_noise_minval', default_min=user_config.get('target_noise_minval_min', -1.0), default_max=user_config.get('target_noise_minval_max', 0.0))
-                    add_param(param_space, 'target_noise_maxval', default_min=user_config.get('target_noise_maxval_min', 0.0), default_max=user_config.get('target_noise_maxval_max', 1.0))
-                if 'OUNoise' in user_config.get('target_noise_type_choices', []):
-                    add_param(param_space, 'target_noise_theta', default_min=user_config.get('target_noise_theta_min', 0.1), default_max=user_config.get('target_noise_theta_max', 0.2))
-                    add_param(param_space, 'target_noise_sigma', default_min=user_config.get('target_noise_sigma_min', 0.1), default_max=user_config.get('target_noise_sigma_max', 0.3))
-                add_param(param_space, 'target_noise_clip', choices=user_config.get('target_noise_clip_choices', [0.1, 0.5]))
-        except KeyError as e:
-            raise KeyError(f"Noise type {e} not found in user_config")
+    if 'noise_type' in user_config or 'noise_type_choices' in user_config:
+        add_param(param_space, 'noise_type', choices=user_config.get('noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise', None]))
+        if 'NormalNoise' in user_config.get('noise_type_choices', []) or user_config.get('noise_type') == 'NormalNoise':
+            add_param(param_space, 'noise_mean', default_min=user_config.get('noise_mean_min', 0.0), default_max=user_config.get('noise_mean_max', 0.0))
+            add_param(param_space, 'noise_stddev', default_min=user_config.get('noise_stddev_min', 0.1), default_max=user_config.get('noise_stddev_max', 0.3))
+        if 'UniformNoise' in user_config.get('noise_type_choices', []) or user_config.get('noise_type') == 'UniformNoise':
+            add_param(param_space, 'noise_minval', default_min=user_config.get('noise_minval_min', -1.0), default_max=user_config.get('noise_minval_max', 0.0))
+            add_param(param_space, 'noise_maxval', default_min=user_config.get('noise_maxval_min', 0.0), default_max=user_config.get('noise_maxval_max', 1.0))
+        if 'OUNoise' in user_config.get('noise_type_choices', []) or user_config.get('noise_type') == 'OUNoise':
+            add_param(param_space, 'noise_theta', default_min=user_config.get('noise_theta_min', 0.1), default_max=user_config.get('noise_theta_max', 0.2))
+            add_param(param_space, 'noise_sigma', default_min=user_config.get('noise_sigma_min', 0.1), default_max=user_config.get('noise_sigma_max', 0.3))
 
-    # Normalizer
-    add_param(param_space, 'normalizer_type', choices=['Normalizer'])
-    add_param(param_space, 'normalizer_clip_range', choices=user_config.get('normalizer_clip_range_choices', [1.0, 5.0, 10.0]))
-    add_param(param_space, 'normalizer_eps', default_min=1e-8, default_max=1e-4, is_log=True)
+    if 'target_noise_type' in user_config or 'target_noise_type_choices' in user_config:
+        add_param(param_space, 'target_noise_type', choices=user_config.get('target_noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise', None]))
+        if 'NormalNoise' in user_config.get('target_noise_type_choices', []) or user_config.get('target_noise_type') == 'NormalNoise':
+            add_param(param_space, 'target_noise_mean', default_min=user_config.get('target_noise_mean_min', 0.0), default_max=user_config.get('target_noise_mean_max', 0.0))
+            add_param(param_space, 'target_noise_stddev', default_min=user_config.get('target_noise_stddev_min', 0.1), default_max=user_config.get('target_noise_stddev_max', 0.3))
+        if 'UniformNoise' in user_config.get('target_noise_type_choices', []) or user_config.get('target_noise_type') == 'UniformNoise':
+            add_param(param_space, 'target_noise_minval', default_min=user_config.get('target_noise_minval_min', -1.0), default_max=user_config.get('target_noise_minval_max', 0.0))
+            add_param(param_space, 'target_noise_maxval', default_min=user_config.get('target_noise_maxval_min', 0.0), default_max=user_config.get('target_noise_maxval_max', 1.0))
+        if 'OUNoise' in user_config.get('target_noise_type_choices', []) or user_config.get('target_noise_type') == 'OUNoise':
+            add_param(param_space, 'target_noise_theta', default_min=user_config.get('target_noise_theta_min', 0.1), default_max=user_config.get('target_noise_theta_max', 0.2))
+            add_param(param_space, 'target_noise_sigma', default_min=user_config.get('target_noise_sigma_min', 0.1), default_max=user_config.get('target_noise_sigma_max', 0.3))
+        add_param(param_space, 'target_noise_clip', choices=user_config.get('target_noise_clip_choices', [0.1, 0.5]))
+
+    # Normalizers
+    if 'state_normalizer_type' in user_config or 'state_normalizer_type_choices' in user_config:
+        add_param(param_space, 'state_normalizer_type', choices=user_config.get('state_normalizer_type_choices', ['Normalizer']))
+        add_param(param_space, 'state_normalizer_clip_range', choices=user_config.get('state_normalizer_clip_range_choices', [1.0, 5.0, 10.0]))
+        add_param(param_space, 'state_normalizer_eps', default_min=1e-8, default_max=1e-4, is_log=True)
+    if 'goal_normalizer_type' in user_config or 'goal_normalizer_type_choices' in user_config:
+        add_param(param_space, 'goal_normalizer_type', choices=user_config.get('goal_normalizer_type_choices', ['Normalizer']))
+        add_param(param_space, 'goal_normalizer_clip_range', choices=user_config.get('goal_normalizer_clip_range_choices', [1.0, 5.0, 10.0]))
+        add_param(param_space, 'goal_normalizer_eps', default_min=1e-8, default_max=1e-4, is_log=True)
+    if 'action_normalizer_type' in user_config or 'action_normalizer_type_choices' in user_config:
+        add_param(param_space, 'action_normalizer_type', choices=user_config.get('action_normalizer_type_choices', ['Normalizer']))
+        add_param(param_space, 'action_normalizer_clip_range', choices=user_config.get('action_normalizer_clip_range_choices', [1.0, 5.0, 10.0]))
+        add_param(param_space, 'action_normalizer_eps', default_min=1e-8, default_max=1e-4, is_log=True)
 
     # ICM
     add_param(param_space, 'use_icm', choices=[True])
