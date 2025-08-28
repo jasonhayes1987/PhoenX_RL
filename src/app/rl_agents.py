@@ -1066,7 +1066,7 @@ class DDPG(Agent):
         tau: float=0.001,
         action_epsilon: float = 0.2,
         batch_size: int = 64,
-        noise: Noise,
+        noise: Optional[Noise]=None,
         noise_schedule: Optional[ScheduleWrapper]=None,
         grad_clip: Optional[float]=None,
         warmup: int=1000,
