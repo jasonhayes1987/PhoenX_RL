@@ -155,144 +155,56 @@ def rl_trainable(config):
 def run_ray_tune_sweep(user_config):
     ray.init(ignore_reinit_error=True)
 
-    algorithm = user_config['algorithm']
-    if algorithm == 'HER':
-        try:
-            base_algorithm = user_config['base_algorithm']
-            if base_algorithm not in ['DDPG','TD3','SAC']:
-                raise ValueError(f"Base algorithm {base_algorithm} not supported for HER")
-        except KeyError as e:
-            raise KeyError(f"Base algorithm {e} not found in user_config")
+    """Formats user config for ray tune sweep
 
-    def add_param(space, name, default_min=None, default_max=None, default=None, is_log=False, is_int=False, choices=None):
-        if default is not None:
-            space[name] = default
-        elif choices:
-            space[name] = tune.choice(choices)
-        elif default_min is not None and default_max is not None:
-            if is_log:
-                space[name] = tune.loguniform(default_min, default_max)
-            elif is_int:
-                space[name] = tune.randint(default_min, default_max)
-            else:
-                space[name] = tune.uniform(default_min, default_max)
+    Args:
+        user_config (dict): User config for ray tune sweep
 
+    Returns:
+        dict: Formatted config for ray tune sweep
+    """
+    params = user_config['param_space']  # params to be formatted
     param_space = {
-        'env_name': user_config['env_name'],
-        'algorithm': algorithm,
-        'wandb_project': user_config.get('wandb_project', 'phoenx-rl'),
+        'env_name': user_config['env'],
+        'algorithm': user_config['algorithm'],
+        'wandb_project': user_config['wandb_project'],
         'max_iterations': user_config['max_iterations'],
-        'save_dir': user_config.get('save_dir', 'HumanoidStandup_N3'),
-        'device': user_config.get('device', 'cuda'),
-        'buffer_device': user_config.get('buffer_device', 'cpu'),
+        'save_dir': user_config.get('save_dir', 'Tune_Results'),
     }
 
-    # Common
-    add_param(param_space, 'discount', choices=user_config.get('discount_choices', [0.99, 0.98]))
+    def add_param(space, name, param_type, value):
+        if param_type == "choice":
+            space[name] = tune.choice(value)
+        elif param_type == "log":
+            space[name] = tune.loguniform(value[0], value[1])
+        elif param_type == "int":
+            space[name] = tune.randint(value[0], value[1])
+        elif param_type == "uniform":
+            space[name] = tune.uniform(value[0], value[1])
 
-    # Buffer
-    if 'buffer_type' in user_config or 'buffer_type_choices' in user_config:
-        add_param(param_space, 'buffer_type', choices=user_config.get('buffer_type_choices', ['ReplayBuffer']))
-        add_param(param_space, 'buffer_size', default=user_config.get('buffer_size', 1000000))
-
-    # Noise
-    if 'noise_type' in user_config or 'noise_type_choices' in user_config:
-        add_param(param_space, 'noise_type', choices=user_config.get('noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise', None]))
-        if 'NormalNoise' in user_config.get('noise_type_choices', []) or user_config.get('noise_type') == 'NormalNoise':
-            add_param(param_space, 'noise_mean', default_min=user_config.get('noise_mean_min', 0.0), default_max=user_config.get('noise_mean_max', 0.0))
-            add_param(param_space, 'noise_stddev', default_min=user_config.get('noise_stddev_min', 0.1), default_max=user_config.get('noise_stddev_max', 0.3))
-        if 'UniformNoise' in user_config.get('noise_type_choices', []) or user_config.get('noise_type') == 'UniformNoise':
-            add_param(param_space, 'noise_minval', default_min=user_config.get('noise_minval_min', -1.0), default_max=user_config.get('noise_minval_max', 0.0))
-            add_param(param_space, 'noise_maxval', default_min=user_config.get('noise_maxval_min', 0.0), default_max=user_config.get('noise_maxval_max', 1.0))
-        if 'OUNoise' in user_config.get('noise_type_choices', []) or user_config.get('noise_type') == 'OUNoise':
-            add_param(param_space, 'noise_theta', default_min=user_config.get('noise_theta_min', 0.1), default_max=user_config.get('noise_theta_max', 0.2))
-            add_param(param_space, 'noise_sigma', default_min=user_config.get('noise_sigma_min', 0.1), default_max=user_config.get('noise_sigma_max', 0.3))
-
-    if 'target_noise_type' in user_config or 'target_noise_type_choices' in user_config:
-        add_param(param_space, 'target_noise_type', choices=user_config.get('target_noise_type_choices', ['NormalNoise', 'UniformNoise', 'OUNoise', None]))
-        if 'NormalNoise' in user_config.get('target_noise_type_choices', []) or user_config.get('target_noise_type') == 'NormalNoise':
-            add_param(param_space, 'target_noise_mean', default_min=user_config.get('target_noise_mean_min', 0.0), default_max=user_config.get('target_noise_mean_max', 0.0))
-            add_param(param_space, 'target_noise_stddev', default_min=user_config.get('target_noise_stddev_min', 0.1), default_max=user_config.get('target_noise_stddev_max', 0.3))
-        if 'UniformNoise' in user_config.get('target_noise_type_choices', []) or user_config.get('target_noise_type') == 'UniformNoise':
-            add_param(param_space, 'target_noise_minval', default_min=user_config.get('target_noise_minval_min', -1.0), default_max=user_config.get('target_noise_minval_max', 0.0))
-            add_param(param_space, 'target_noise_maxval', default_min=user_config.get('target_noise_maxval_min', 0.0), default_max=user_config.get('target_noise_maxval_max', 1.0))
-        if 'OUNoise' in user_config.get('target_noise_type_choices', []) or user_config.get('target_noise_type') == 'OUNoise':
-            add_param(param_space, 'target_noise_theta', default_min=user_config.get('target_noise_theta_min', 0.1), default_max=user_config.get('target_noise_theta_max', 0.2))
-            add_param(param_space, 'target_noise_sigma', default_min=user_config.get('target_noise_sigma_min', 0.1), default_max=user_config.get('target_noise_sigma_max', 0.3))
-        add_param(param_space, 'target_noise_clip', choices=user_config.get('target_noise_clip_choices', [0.1, 0.5]))
-
-    # Normalizers
-    if 'state_normalizer_type' in user_config or 'state_normalizer_type_choices' in user_config:
-        add_param(param_space, 'state_normalizer_type', choices=user_config.get('state_normalizer_type_choices', ['Normalizer']))
-        add_param(param_space, 'state_normalizer_clip_range', choices=user_config.get('state_normalizer_clip_range_choices', [1.0, 5.0, 10.0]))
-        add_param(param_space, 'state_normalizer_eps', default_min=1e-8, default_max=1e-4, is_log=True)
-    if 'goal_normalizer_type' in user_config or 'goal_normalizer_type_choices' in user_config:
-        add_param(param_space, 'goal_normalizer_type', choices=user_config.get('goal_normalizer_type_choices', ['Normalizer']))
-        add_param(param_space, 'goal_normalizer_clip_range', choices=user_config.get('goal_normalizer_clip_range_choices', [1.0, 5.0, 10.0]))
-        add_param(param_space, 'goal_normalizer_eps', default_min=1e-8, default_max=1e-4, is_log=True)
-    if 'action_normalizer_type' in user_config or 'action_normalizer_type_choices' in user_config:
-        add_param(param_space, 'action_normalizer_type', choices=user_config.get('action_normalizer_type_choices', ['Normalizer']))
-        add_param(param_space, 'action_normalizer_clip_range', choices=user_config.get('action_normalizer_clip_range_choices', [1.0, 5.0, 10.0]))
-        add_param(param_space, 'action_normalizer_eps', default_min=1e-8, default_max=1e-4, is_log=True)
-
-    # ICM
-    add_param(param_space, 'use_icm', choices=[True])
-    add_param(param_space, 'icm_reward_weight', default=user_config.get('icm_reward_weight', 0.2))
-    add_param(param_space, 'icm_beta', default=user_config.get('icm_beta', 0.2))
-    add_param(param_space, 'icm_extrinsic_threshold', default=user_config.get('icm_extrinsic_threshold', 1000))
-    add_param(param_space, 'icm_warmup', default=user_config.get('icm_warmup', 1000))
-    for sub in ['encoder', 'inverse_model', 'forward_model']:
-        add_param(param_space, f'icm_{sub}_num_layers', choices=user_config[f'icm_{sub}_num_layers_choices'])
-        for i in range(1, 7):
-            add_param(param_space, f'icm_{sub}_layer{i}_type', choices=user_config[f'icm_{sub}_layer{i}_type_choices'])
-            add_param(param_space, f'icm_{sub}_layer{i}_units', choices=user_config[f'icm_{sub}_layer{i}_units_choices'])
-            add_param(param_space, f'icm_{sub}_layer{i}_init', choices=user_config[f'icm_{sub}_layer{i}_init_choices'])
-        add_param(param_space, f'icm_{sub}_output_layer_init', choices=user_config[f'icm_{sub}_output_layer_init_choices'])
-    add_param(param_space, 'icm_scheduler_type', choices=user_config['icm_scheduler_type_choices'])
-    add_param(param_space, 'icm_scheduler_start_factor', choices=user_config['icm_scheduler_start_factor_choices'])
-    add_param(param_space, 'icm_scheduler_end_factor', choices=user_config['icm_scheduler_end_factor_choices'])
-    add_param(param_space, 'icm_scheduler_total_iters', choices=user_config['icm_scheduler_total_iters_choices'])
-    add_param(param_space, 'icm_optimizer_type', choices=['Adam'])
-    add_param(param_space, 'icm_lr', default_min=user_config['icm_lr_min'], default_max=user_config['icm_lr_max'], is_log=True)
-
-
-    #TODO
-    add_param(param_space, 'batch_size', choices=user_config.get('batch_size_choices', [256, 512, 1024]))
-    add_param(param_space, 'n_step_n', choices=user_config.get('n_step_n_choices', [1, 3, 5]))
-
-    # Models
-    layer_choices = ['dense', 'batchnorm1d', 'relu']
-    weight_choices = ['default', 'XavierUniform', 'KaimingUniform']
-    units_choices = [128, 256, 512]
-    max_layers = 6
-
-    for prefix in ['actor', 'value']:
-        add_param(param_space, f'{prefix}_num_layers', choices=user_config[f'{prefix}_num_layers_choices'])
-        for i in range(1, max_layers + 1):
-            add_param(param_space, f'{prefix}_layer{i}_type', choices=user_config[f'{prefix}_layer{i}_type_choices'])
-            # Customize units for layer 3
-            if i == 3:
-                add_param(param_space, f'{prefix}_layer{i}_units', choices=[128, 256])
+    def _flatten_config(current_dict, current_prefix=""):
+        """Recursive helper to flatten nested dict and build prefixed keys."""
+        for key, value in current_dict.items():
+            # Build the full key with prefix (use '_' as separator)
+            full_key = f"{current_prefix}{key}" if current_prefix else key
+            
+            if isinstance(value, dict):
+                # Recurse deeper, appending current key to prefix
+                if list(value.keys())[0] in ["choice", "uniform", "log", "int", "default"]:
+                    # It's a leaf: extract param_type and value, then add to space
+                    param_type = list(value.keys())[0]
+                    param_value = value[param_type]
+                    add_param(param_space, full_key, param_type, param_value)
+                else:
+                    # Not a leaf: recurse with updated prefix
+                    _flatten_config(value, current_prefix=f"{full_key}_")
             else:
-                add_param(param_space, f'{prefix}_layer{i}_units', choices=user_config[f'{prefix}_layer{i}_units_choices'])
-            add_param(param_space, f'{prefix}_layer{i}_init', choices=user_config[f'{prefix}_layer{i}_init_choices'])
-            add_param(param_space, f'{prefix}_layer{i}_kernel_params', default={})
-        add_param(param_space, f'{prefix}_output_layer_init', choices=user_config[f'{prefix}_output_layer_init_choices'])
-        add_param(param_space, f'{prefix}_optimizer_type', choices=[user_config[f'{prefix}_optimizer_type']])
-        add_param(param_space, f'{prefix}_lr', default_min=user_config[f'{prefix}_lr_min'], default_max=user_config[f'{prefix}_lr_max'], is_log=True)
+                # Handle non-dict (though your structure seems to always have dicts at leaves)
+                # If needed, adapt this for direct values (e.g., assume "default" type)
+                add_param(param_space, full_key, "default", value)
 
-    # Critic uses actor's merged_layers
-    add_param(param_space, 'critic_optimizer_type', choices=[user_config['critic_optimizer_type']])
-    add_param(param_space, 'critic_lr', default_min=user_config['critic_lr_min'], default_max=user_config['critic_lr_max'], is_log=True)
-
-    # SAC-specific
-    add_param(param_space, 'tau', choices=user_config['tau_choices'])
-    add_param(param_space, 'alpha', choices=user_config['alpha_choices'])
-    add_param(param_space, 'auto_entropy_tuning', choices=user_config['auto_entropy_tuning_choices'])
-    add_param(param_space, 'alpha_lr', default_min=user_config['alpha_lr_min'], default_max=user_config['alpha_lr_max'], is_log=True)
-    add_param(param_space, 'grad_clip', choices=user_config['grad_clip_choices'])
-    add_param(param_space, 'warmup', choices=user_config['warmup_choices'])
-
+    # Start the recursion from the top-level params
+    _flatten_config(params)
     searcher = {
         'optuna': OptunaSearch(),
         'hyperopt': HyperOptSearch()
@@ -300,7 +212,7 @@ def run_ray_tune_sweep(user_config):
 
     scheduler = ASHAScheduler(
         max_t=user_config['max_iterations'],
-        grace_period=user_config.get('grace_period', 1000),
+        grace_period=user_config.get('grace_period', 10000),
         reduction_factor=3
     )
 

@@ -1061,9 +1061,7 @@ class CriticModel(Model):
         # self.add_module('merged_layers', self.merged_layers)
 
         # Create the output layer
-        self.output_layer = nn.ModuleDict({
-            'state_action_value': nn.LazyLinear(1)
-        })
+        self.output_layer = nn.ModuleDict({'state_action_value': nn.LazyLinear(1)})
         # self.add_module('critic_output_layer', self.output_layer)
 
          # Move the model to the specified device
