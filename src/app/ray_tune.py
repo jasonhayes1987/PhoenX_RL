@@ -51,16 +51,16 @@ def rl_trainable(config):
         env = gym.make(config['env_name'])
         env_spec = env.spec
         wrappers = [
-            {"type": "NStepReward", "params": {"n": config['n_step_n']}}
+            {"type": "NStepReward", "params": {"n": config['N']}}
         ]
         env_wrap = GymnasiumWrapper(env_spec, wrappers)
         # env = SyncVectorEnv([lambda: GymnasiumWrapper(env_spec, wrappers) for _ in range(config.get('num_envs', 1))])
 
         # Component instantiation
-        if 'buffer_type' in config:
-            buffer_params = {k.replace('buffer_', ''): config[k] for k in config if k.startswith('buffer_')}
-            buffer_params['device'] = config.get('buffer_device', 'cpu')
-            buffer = Buffer.create_instance(config['buffer_type'], env=env_wrap, **buffer_params)
+        if 'replay_buffer_type' in config:
+            buffer_params = {k.replace('replay_buffer_', ''): config[k] for k in config if k.startswith('replay_buffer_')}
+            # buffer_params['device'] = config.get('replay_buffer_device', 'cpu')
+            buffer = Buffer.create_instance(config['replay_buffer_type'], env=env_wrap, **buffer_params)
 
         if 'noise_type' in config:
             noise_params = {k.replace('noise_', ''): config[k] for k in config if k.startswith('noise_')}
@@ -153,16 +153,15 @@ def rl_trainable(config):
         return {'mean_reward': -float('inf')}
 
 def run_ray_tune_sweep(user_config):
-    ray.init(ignore_reinit_error=True)
-
-    """Formats user config for ray tune sweep
+    """Runs ray tune sweep
 
     Args:
         user_config (dict): User config for ray tune sweep
 
     Returns:
-        dict: Formatted config for ray tune sweep
+        dict: Formatted config for ray tune sweep (with samplers set up, no sampling done)
     """
+    ray.init(ignore_reinit_error=True)
     params = user_config['param_space']  # params to be formatted
     param_space = {
         'env_name': user_config['env'],
@@ -172,39 +171,140 @@ def run_ray_tune_sweep(user_config):
         'save_dir': user_config.get('save_dir', 'Tune_Results'),
     }
 
-    def add_param(space, name, param_type, value):
+    def add_param(name, param_type, value):
         if param_type == "choice":
-            space[name] = tune.choice(value)
+            param_space[name] = tune.choice(value)
         elif param_type == "log":
-            space[name] = tune.loguniform(value[0], value[1])
+            param_space[name] = tune.loguniform(value[0], value[1])
         elif param_type == "int":
-            space[name] = tune.randint(value[0], value[1])
+            param_space[name] = tune.randint(value[0], value[1])
         elif param_type == "uniform":
-            space[name] = tune.uniform(value[0], value[1])
+            param_space[name] = tune.uniform(value[0], value[1])
+        elif param_type == "conditional":
+            # value is the dict with 'depends_on' and 'conditions'
+            depends_on = value['depends_on']
+            conditions = value['conditions']
+            
+            def conditional_sampler(spec):
+                parent_value = spec.config.get(depends_on)  # Get the sampled parent value
+                sub_params = conditions.get(parent_value, {})  # Get matching sub-dict or empty
+                #DEBUG
+                print(f'conditional_sampler: depends_on: {depends_on}')
+                print(f'conditional_sampler: parent_value: {parent_value}')
+                print(f'conditional_sampler: sub_params: {sub_params}')
+                result = {}
+                for sub_key, sub_def in sub_params.items():
+                    sub_type = list(sub_def.keys())[0]  # e.g., "uniform"
+                    sub_value = sub_def[sub_type]
+                    if sub_type == "choice":
+                        result[sub_key] = tune.choice(sub_value).sample()
+                    elif sub_type == "uniform":
+                        result[sub_key] = tune.uniform(sub_value[0], sub_value[1]).sample()
+                    elif sub_type == "log":
+                        result[sub_key] = tune.loguniform(sub_value[0], sub_value[1]).sample()
+                    elif sub_type == "int":
+                        result[sub_key] = tune.randint(sub_value[0], sub_value[1]).sample()
+                    elif sub_type == "default":
+                        result[sub_key] = sub_value  # Fixed value
+                    else:
+                        result[sub_key] = None  # Or raise error if unsupported
+                return result
+            
+            param_space[name] = tune.sample_from(conditional_sampler)
 
     def _flatten_config(current_dict, current_prefix=""):
         """Recursive helper to flatten nested dict and build prefixed keys."""
         for key, value in current_dict.items():
-            # Build the full key with prefix (use '_' as separator)
             full_key = f"{current_prefix}{key}" if current_prefix else key
             
             if isinstance(value, dict):
-                # Recurse deeper, appending current key to prefix
-                if list(value.keys())[0] in ["choice", "uniform", "log", "int", "default"]:
-                    # It's a leaf: extract param_type and value, then add to space
+                if "conditional" in value:  # Existing: Handle explicit conditionals
+                    add_param(full_key, "conditional", value["conditional"])
+                    # Process non-conditional parts
+                    non_conditional = {k: v for k, v in value.items() if k != "conditional"}
+                    _flatten_config(non_conditional, current_prefix=f"{full_key}_")
+                elif key.endswith("layer_config"):  # New: Special handling for layer configs
+                    # Assume depends_on is sibling "num_layers" (e.g., "actor_model_num_layers")
+                    stem = key[:-len("layer_config")]  # "" | "state_" | "merged_"
+                    if stem:
+                        depends_on = f"{current_prefix}{stem}num_layers"
+                    else:
+                        depends_on = f"{current_prefix}num_layers"
+
+                    def layer_sampler(spec):
+                        num_layers = spec.config.get(depends_on, 0)
+                        result = {}
+                        for layer_num_str, layer_def in value.items():
+                            layer_num = int(layer_num_str)
+                            if num_layers >= layer_num:
+                                layer_result = {}
+                                if isinstance(layer_def, dict):
+                                    dependent_values = {}
+                                    for sub_k, sub_v in layer_def.items():
+                                        if sub_k == "conditional":
+                                            continue
+                                        sub_type = list(sub_v.keys())[0]
+                                        sub_val = sub_v[sub_type]
+                                        if sub_type == "choice":
+                                            sampled_value = tune.choice(sub_val).sample()
+                                            layer_result[sub_k] = sampled_value
+                                            dependent_values[sub_k] = sampled_value
+                                        elif sub_type == "uniform":
+                                            sampled_value = tune.uniform(sub_val[0], sub_val[1]).sample()
+                                            layer_result[sub_k] = sampled_value
+                                            dependent_values[sub_k] = sampled_value
+                                        elif sub_type == "log":
+                                            # BUGFIX: use sub_val for both bounds
+                                            sampled_value = tune.loguniform(sub_val[0], sub_val[1]).sample()
+                                            layer_result[sub_k] = sampled_value
+                                            dependent_values[sub_k] = sampled_value
+                                        elif sub_type == "int":
+                                            sampled_value = tune.randint(sub_val[0], sub_val[1]).sample()
+                                            layer_result[sub_k] = sampled_value
+                                            dependent_values[sub_k] = sampled_value
+                                        elif sub_type == "default":
+                                            layer_result[sub_k] = sub_val
+                                            dependent_values[sub_k] = sub_val
+
+                                    if "conditional" in layer_def:
+                                        cond_value = layer_def["conditional"]
+                                        cond_depends_on = cond_value["depends_on"]  # e.g., "actor_model_layer_config_1_type"
+                                        dependent_key = cond_depends_on.split("_")[-1]  # "type"
+                                        parent_value = dependent_values.get(dependent_key)
+                                        sub_params = cond_value["conditions"].get(parent_value, {})
+                                        for sub_key, sub_def in sub_params.items():
+                                            sub_type = list(sub_def.keys())[0]
+                                            sub_val = sub_def[sub_type]
+                                            if sub_type == "choice":
+                                                layer_result[sub_key] = tune.choice(sub_val).sample()
+                                            elif sub_type == "uniform":
+                                                layer_result[sub_key] = tune.uniform(sub_val[0], sub_val[1]).sample()
+                                            elif sub_type == "log":
+                                                layer_result[sub_key] = tune.loguniform(sub_val[0], sub_val[1]).sample()
+                                            elif sub_type == "int":
+                                                layer_result[sub_key] = tune.randint(sub_val[0], sub_val[1]).sample()
+                                            elif sub_type == "default":
+                                                layer_result[sub_key] = sub_val
+
+                                result[layer_num_str] = layer_result
+                        return result
+
+                    param_space[full_key] = tune.sample_from(layer_sampler)
+                elif list(value.keys())[0] in ["choice", "uniform", "log", "int", "default"]:
+                    # Leaf node
                     param_type = list(value.keys())[0]
                     param_value = value[param_type]
-                    add_param(param_space, full_key, param_type, param_value)
+                    add_param(full_key, param_type, param_value)
                 else:
-                    # Not a leaf: recurse with updated prefix
+                    # Recurse into sub-dict
                     _flatten_config(value, current_prefix=f"{full_key}_")
             else:
-                # Handle non-dict (though your structure seems to always have dicts at leaves)
-                # If needed, adapt this for direct values (e.g., assume "default" type)
-                add_param(param_space, full_key, "default", value)
+                # Direct value (assume default)
+                add_param(full_key, "default", value)
 
     # Start the recursion from the top-level params
     _flatten_config(params)
+    
     searcher = {
         'optuna': OptunaSearch(),
         'hyperopt': HyperOptSearch()
@@ -224,7 +324,7 @@ def run_ray_tune_sweep(user_config):
         tune_config=tune.TuneConfig(
             metric='mean_reward',
             mode='max',
-            searcher=searcher,
+            search_alg=searcher,
             scheduler=scheduler,
             num_samples=user_config['num_samples'],
             max_concurrent_trials=user_config.get('max_concurrent', 4)
