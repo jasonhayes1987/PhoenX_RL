@@ -5,6 +5,8 @@ from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.search.hyperopt import HyperOptSearch
 from ray.air.integrations.wandb import WandbLoggerCallback
+from rl_callbacks import WandbCallback as RLWandbCallback
+import inspect
 import gymnasium as gym
 from gymnasium.vector import SyncVectorEnv
 from agent_utils import get_agent_class_from_type
@@ -47,102 +49,442 @@ def build_layer_config(config, prefix, max_layers=6):
 
 def rl_trainable(config):
     try:
+        # Helpers to parse flattened config produced by _flatten_config
+        def _collect_kernel_params(cfg, base_prefix: str):
+            params = {}
+            # Accept both "<base>_kernel_params_<suffix>" and "<base>_<suffix>"
+            for suffix in ["mode", "gain", "scale", "distribution"]:
+                key1 = f"{base_prefix}_kernel_params_{suffix}"
+                key2 = f"{base_prefix}_{suffix}"
+                if key1 in cfg:
+                    params[suffix] = cfg[key1]
+                if key2 in cfg:
+                    params[suffix] = cfg[key2]
+            return params
+
+        def _sanitize_kernel_params(kernel_name: str | None, params: dict) -> dict:
+            if not kernel_name or not isinstance(params, dict):
+                return params or {}
+            k = str(kernel_name).lower()
+            allowed = {}
+            if 'kaiming' in k:
+                for name in ['mode', 'nonlinearity', 'a']:
+                    if name in params:
+                        allowed[name] = params[name]
+                return allowed
+            if 'xavier' in k:
+                if 'gain' in params:
+                    allowed['gain'] = params['gain']
+                return allowed
+            if k == 'variance_scaling':
+                for name in ['scale', 'mode', 'distribution']:
+                    if name in params:
+                        allowed[name] = params[name]
+                return allowed
+            return params
+
+        def _build_layer_list(layer_dict: dict, kernel: str | None, kernel_params: dict):
+            """Convert dict of {'1': {...}, '2': {...}} → ordered list expected by models."""
+            if not isinstance(layer_dict, dict):
+                return []
+
+            layer_list = []
+            for idx in sorted(layer_dict.keys(), key=lambda x: int(x)):
+                spec = layer_dict[idx] if isinstance(idx, int) else layer_dict[str(idx)]
+                if not isinstance(spec, dict):
+                    continue
+                layer_type = spec.get("type")
+                params = {}
+                if layer_type == "dense":
+                    if "units" in spec:
+                        params["units"] = spec["units"]
+                elif layer_type == "conv":
+                    for k in ["out_channels", "kernel_size", "stride", "padding"]:
+                        if k in spec:
+                            params[k] = spec[k]
+                elif layer_type == "dropout":
+                    if "rate" in spec:
+                        params["rate"] = spec["rate"]
+                elif layer_type == "pool":
+                    for k in ["pool_type", "kernel_size", "stride"]:
+                        if k in spec:
+                            params[k] = spec[k]
+                # Add initializer if applicable
+                if layer_type in ["dense", "conv"] and kernel is not None:
+                    params["kernel"] = kernel
+                    params["kernel params"] = _sanitize_kernel_params(kernel, kernel_params)
+                layer_list.append({"type": layer_type, "params": params})
+            return layer_list
+
+        def _build_scheduler(cfg, prefix: str, suffix: str):
+            # suffix in {'lr_scheduler','reward_scheduler'}
+            type_key = f"{prefix}_{suffix}_type"
+            sched_type = cfg.get(type_key, None)
+            if not sched_type:
+                return None
+            stype = str(sched_type).lower()
+            params = {}
+            def get(name: str):
+                return cfg.get(f"{prefix}_{suffix}_{name}")
+            if stype == 'linear':
+                for k in ['start_factor', 'end_factor', 'total_iters']:
+                    v = get(k)
+                    if v is not None:
+                        params[k] = v
+            elif stype == 'step':
+                if get('step_size') is not None:
+                    params['step_size'] = get('step_size')
+                gamma = get('gamma') or get('step_gamma')
+                if gamma is not None:
+                    params['gamma'] = gamma
+                # Ensure required step_size exists
+                if 'step_size' not in params:
+                    # Fallback to a reasonable default if not provided
+                    params['step_size'] = int(cfg.get('max_iterations', 10000))
+            elif stype == 'cosineannealing':
+                total_iters = get('total_iters')
+                params['T_max'] = total_iters if total_iters is not None else 100000
+                if get('min_lr') is not None:
+                    params['eta_min'] = get('min_lr')
+            elif stype == 'exponential':
+                gamma = get('gamma') or get('exponential_gamma')
+                if gamma is None:
+                    return None
+                params['gamma'] = gamma
+            else:
+                return None
+            return ScheduleWrapper({"type": stype, "params": params})
+
+        def _build_model_scheduler(cfg, base_prefix: str):
+            return _build_scheduler(cfg, base_prefix, 'lr_scheduler')
+
         # Create environment with wrappers
         env = gym.make(config['env_name'])
         env_spec = env.spec
         wrappers = [
-            {"type": "NStepReward", "params": {"n": config['N']}}
+            {"type": "NStepReward", "params": {"n": config.get('N', 1)}}
         ]
         env_wrap = GymnasiumWrapper(env_spec, wrappers)
         # env = SyncVectorEnv([lambda: GymnasiumWrapper(env_spec, wrappers) for _ in range(config.get('num_envs', 1))])
 
         # Component instantiation
+        buffer = None
         if 'replay_buffer_type' in config:
-            buffer_params = {k.replace('replay_buffer_', ''): config[k] for k in config if k.startswith('replay_buffer_')}
-            # buffer_params['device'] = config.get('replay_buffer_device', 'cpu')
-            buffer = Buffer.create_instance(config['replay_buffer_type'], env=env_wrap, **buffer_params)
+            buffer_type = config['replay_buffer_type']
+            # Map flattened keys to Buffer constructor
+            buffer_params = {}
+            if 'replay_buffer_size' in config:
+                buffer_params['buffer_size'] = config['replay_buffer_size']
+            if 'replay_buffer_device' in config:
+                buffer_params['device'] = config['replay_buffer_device']
+            # Optional N-step for buffers
+            if 'N' in config:
+                buffer_params['N'] = config['N']
+            # Prioritized-specific
+            key_map = {
+                'replay_buffer_alpha': 'alpha',
+                'replay_buffer_beta_start': 'beta_start',
+                'replay_buffer_beta_iter': 'beta_iter',
+                'replay_buffer_beta_update_freq': 'beta_update_freq',
+                'replay_buffer_priority_type': 'priority',
+                'replay_buffer_normalize': 'normalize',
+            }
+            for k_flat, k_buf in key_map.items():
+                if k_flat in config:
+                    buffer_params[k_buf] = config[k_flat]
+            buffer = Buffer.create_instance(buffer_type, env=env_wrap, **buffer_params)
 
+        noise = None
         if 'noise_type' in config:
             noise_params = {k.replace('noise_', ''): config[k] for k in config if k.startswith('noise_')}
-            noise_params['device'] = config.get('device', 'cuda')
+            noise_params['device'] = config.get('device', 'cpu')
             noise = Noise.create_instance(config['noise_type'], **noise_params)
 
-        normalizer_params = {k.replace('normalizer_', ''): config[k] for k in config if k.startswith('normalizer_')}
-        normalizer_params['size'] = env_wrap.single_observation_space.shape[0]
-        normalizer_params['device'] = config.get('buffer_device', 'cpu')
-        normalizer = Normalizer.create_instance(config['normalizer_type'], **normalizer_params)
+        # State/Goal normalizers from flattened keys
+        state_normalizer = None
+        goal_normalizer = None
+        if any(k.startswith('state_normalizer_') for k in config.keys()):
+            state_normalizer_size = env_wrap.single_observation_space.shape[0]
+            state_normalizer = Normalizer.create_instance(
+                size=state_normalizer_size,
+                clip_range=config.get('state_normalizer_clip_range', 5.0),
+                device=config.get('state_normalizer_device', 'cpu')
+            )
+        if any(k.startswith('goal_normalizer_') for k in config.keys()):
+            goal_normalizer_size = env_wrap.single_observation_space.shape[0]
+            goal_normalizer = Normalizer.create_instance(
+                size=goal_normalizer_size,
+                clip_range=config.get('goal_normalizer_clip_range', 5.0),
+                device=config.get('goal_normalizer_device', 'cpu')
+            )
 
+        # Curiosity (ICM) from flattened keys under curiosity_*
         icm = None
-        if config.get('use_icm', False):
-            encoder_config = build_layer_config(config, 'icm_encoder_')
-            inverse_config = build_layer_config(config, 'icm_inverse_')
-            forward_config = build_layer_config(config, 'icm_forward_')
+        if config.get('curiosity_use_icm', False):
+            # Encoder
+            enc_kernel = config.get('curiosity_encoder_kernel', 'default')
+            enc_kparams = _collect_kernel_params(config, 'curiosity_encoder')
+            enc_layers = _build_layer_list(
+                config.get('curiosity_encoder_layer_config', {}), enc_kernel, enc_kparams
+            )
+            enc_out_kernel = config.get('curiosity_encoder_output_layer_kernel', 'default')
+            enc_out_kparams = _sanitize_kernel_params(
+                enc_out_kernel, _collect_kernel_params(config, 'curiosity_encoder_output')
+            )
+            enc_output = [{'type': 'dense', 'params': {'kernel': enc_out_kernel, 'kernel params': enc_out_kparams}}]
+
+            # Inverse
+            inv_kernel = config.get('curiosity_inverse_model_kernel', 'default')
+            inv_kparams = _collect_kernel_params(config, 'curiosity_inverse_model')
+            inv_layers = _build_layer_list(
+                config.get('curiosity_inverse_model_layer_config', {}), inv_kernel, inv_kparams
+            )
+            inv_out_kernel = config.get('curiosity_inverse_model_output_layer_kernel', 'default')
+            inv_out_kparams = _sanitize_kernel_params(
+                inv_out_kernel, _collect_kernel_params(config, 'curiosity_inverse_model_output')
+            )
+            inv_output = [{'type': 'dense', 'params': {'kernel': inv_out_kernel, 'kernel params': inv_out_kparams}}]
+
+            # Forward
+            fwd_kernel = config.get('curiosity_forward_model_kernel', 'default')
+            fwd_kparams = _collect_kernel_params(config, 'curiosity_forward_model')
+            fwd_layers = _build_layer_list(
+                config.get('curiosity_forward_model_layer_config', {}), fwd_kernel, fwd_kparams
+            )
+            fwd_out_kernel = config.get('curiosity_forward_model_output_layer_kernel', 'default')
+            fwd_out_kparams = _sanitize_kernel_params(
+                fwd_out_kernel, _collect_kernel_params(config, 'curiosity_forward_model_output')
+            )
+            fwd_output = [{'type': 'dense', 'params': {'kernel': fwd_out_kernel, 'kernel params': fwd_out_kparams}}]
+
             model_configs = {
-                'encoder': {'layer_config': encoder_config, 'output_layer': {'type': 'dense', 'params': {'kernel': config['icm_encoder_output_layer_init'], 'kernel params': {}}}},
-                'inverse_model': {'layer_config': inverse_config, 'output_layer': {'type': 'dense', 'params': {'kernel': config['icm_inverse_output_layer_init'], 'kernel params': {}}}},
-                'forward_model': {'layer_config': forward_config, 'output_layer': {'type': 'dense', 'params': {'kernel': config['icm_forward_output_layer_init'], 'kernel params': {}}}},
+                'encoder': {'layer_config': enc_layers, 'output_layer': enc_output},
+                'inverse_model': {'layer_config': inv_layers, 'output_layer': inv_output},
+                'forward_model': {'layer_config': fwd_layers, 'output_layer': fwd_output},
             }
-            icm_params = {k.replace('icm_', ''): config[k] for k in config if k.startswith('icm_') and not k.startswith(('icm_encoder_', 'icm_inverse_', 'icm_forward_'))}
-            icm_params['model_configs'] = model_configs
-            icm_params['reward_scheduler'] = ScheduleWrapper({
-                'type': config['icm_scheduler_type'],
-                'params': {
-                    'start_factor': config['icm_scheduler_start_factor'],
-                    'end_factor': config['icm_scheduler_end_factor'],
-                    'total_iters': config['icm_scheduler_total_iters']
-                }
-            })
-            icm_params['device'] = config.get('device', 'cuda')
-            icm = ICM.create_instance(env=env_wrap, **icm_params)
+            icm_optimizer = {
+                'type': config.get('curiosity_optimizer_params_type', 'adam'),
+                'params': {'lr': config.get('curiosity_optimizer_params_lr', 1e-3)}
+            }
+            reward_scheduler = _build_scheduler(config, 'curiosity_reward', 'scheduler')
+
+            icm = ICM.create_instance(
+                env=env_wrap,
+                model_configs=model_configs,
+                optimizer_params=icm_optimizer,
+                reward_weight=config.get('curiosity_reward_weight', 0.1),
+                reward_scheduler=reward_scheduler,
+                beta=config.get('curiosity_beta', 0.2),
+                extrinsic_threshold=config.get('curiosity_extrinsic_threshold', 0),
+                warmup=config.get('curiosity_warmup', 0),
+                device=config.get('curiosity_device', config.get('device', 'cuda'))
+            )
 
         # Build models
-        obs_shape = env.single_observation_space.shape
-        action_dim = env.single_action_space.shape[0] if isinstance(env.single_action_space, gym.spaces.Box) else env.single_action_space.n
-        continuous = isinstance(env.single_action_space, gym.spaces.Box)
+        obs_shape = env_wrap.single_observation_space.shape
+        action_dim = env_wrap.single_action_space.shape[0] if isinstance(env_wrap.single_action_space, gym.spaces.Box) else env_wrap.single_action_space.n
+        continuous = isinstance(env_wrap.single_action_space, gym.spaces.Box)
 
-        actor_layer_config = build_layer_config(config, 'actor_')
-        actor_optimizer_params = {'type': config['actor_optimizer_type'], 'params': {'lr': config['actor_lr']}}
-        output_layer_config = [{'type': 'dense', 'params': {'kernel': config['actor_output_layer_init'], 'kernel params': {}}}]
-        actor_model = ActorModel(env_wrap, layer_config=actor_layer_config, output_layer_config=output_layer_config, optimizer_params=actor_optimizer_params, device=config.get('device', 'cuda'))
+        # ActorModel from flattened keys under actor_model_*
+        actor_kernel = config.get('actor_model_kernel', 'default')
+        actor_kparams = _collect_kernel_params(config, 'actor_model')
+        actor_layers = _build_layer_list(config.get('actor_model_layer_config', {}), actor_kernel, actor_kparams)
+        actor_out_kernel = config.get('actor_model_output_layer_kernel', 'default')
+        actor_out_kparams = _sanitize_kernel_params(
+            actor_out_kernel, _collect_kernel_params(config, 'actor_model_output')
+        )
+        actor_output_layer_kernel = [{'type': 'dense', 'params': {'kernel': actor_out_kernel, 'kernel params': actor_out_kparams}}]
+        actor_optimizer_params = {
+            'type': config.get('actor_model_optimizer_params_type', 'adam'),
+            'params': {'lr': config.get('actor_model_optimizer_params_lr', 1e-3)}
+        }
+        actor_lr_scheduler = _build_model_scheduler(config, 'actor_model')
+        actor_model = ActorModel(
+            env_wrap,
+            layer_config=actor_layers,
+            output_layer_kernel=actor_output_layer_kernel,
+            optimizer_params=actor_optimizer_params,
+            lr_scheduler=actor_lr_scheduler,
+            device=config.get('actor_model_device', config.get('device', 'cuda'))
+        )
 
-        # Critic uses actor's layer_config as merged_layers, empty state_layers
-        critic_optimizer_params = {'type': config['critic_optimizer_type'], 'params': {'lr': config['critic_lr']}}
-        critic_model_a = CriticModel(env_wrap, state_layers=[], merged_layers=actor_layer_config, output_layer_config=output_layer_config, optimizer_params=critic_optimizer_params, device=config.get('device', 'cuda'))
+        # Policy model for on-policy agents (PPO/ActorCritic/Reinforce)
+        policy_model = None
+        try:
+            policy_model_cls = select_policy_model(env)
+            # Many policy models accept 'distribution' arg; use actor_model_distribution if present
+            distribution = config.get('actor_model_distribution', None)
+            policy_kwargs = {
+                'env': env_wrap,
+                'layer_config': actor_layers,
+                'output_layer_kernel': actor_output_layer_kernel,
+                'optimizer_params': actor_optimizer_params,
+                'lr_scheduler': actor_lr_scheduler,
+            }
+            if distribution is not None:
+                policy_kwargs['distribution'] = distribution
+            # Filter kwargs by constructor signature to avoid unexpected params
+            pm_sig = inspect.signature(policy_model_cls.__init__)
+            allowed_pm = set(pm_sig.parameters.keys()) - {'self'}
+            policy_kwargs = {k: v for k, v in policy_kwargs.items() if k in allowed_pm}
+            policy_model = policy_model_cls(**policy_kwargs)
+        except Exception:
+            policy_model = None
+
+        # CriticModel from flattened keys under critic_model_*
+        critic_state_layers = []  # optional
+        state_num = int(config.get('critic_model_state_num_layers', 0) or 0)
+        if state_num > 0 and isinstance(config.get('critic_model_state_layer_config'), dict):
+            state_kernel = config.get('critic_model_state_kernel', 'default')
+            state_kparams = _collect_kernel_params(config, 'critic_model_state')
+            critic_state_layers = _build_layer_list(config.get('critic_model_state_layer_config', {}), state_kernel, state_kparams)
+
+        merged_kernel = config.get('critic_model_merged_kernel', 'default')
+        merged_kparams = _collect_kernel_params(config, 'critic_model_merged')
+        merged_layers = _build_layer_list(config.get('critic_model_merged_layer_config', {}), merged_kernel, merged_kparams)
+        critic_out_kernel = config.get('critic_model_output_layer_kernel', 'default')
+        critic_out_kparams = _sanitize_kernel_params(
+            critic_out_kernel, _collect_kernel_params(config, 'critic_model_output')
+        )
+        critic_output_layer_kernel = [{'type': 'dense', 'params': {'kernel': critic_out_kernel, 'kernel params': critic_out_kparams}}]
+        critic_optimizer_params = {
+            'type': config.get('critic_model_optimizer_params_type', 'adam'),
+            'params': {'lr': config.get('critic_model_optimizer_params_lr', 1e-3)}
+        }
+        critic_lr_scheduler = _build_model_scheduler(config, 'critic_model')
+        critic_model_a = CriticModel(
+            env_wrap,
+            state_layers=critic_state_layers,
+            merged_layers=merged_layers,
+            output_layer_kernel=critic_output_layer_kernel,
+            optimizer_params=critic_optimizer_params,
+            lr_scheduler=critic_lr_scheduler,
+            device=config.get('critic_model_device', config.get('device', 'cuda'))
+        )
         critic_model_b = critic_model_a.clone()
 
-        value_layer_config = build_layer_config(config, 'value_')
-        value_optimizer_params = {'type': config['value_optimizer_type'], 'params': {'lr': config['value_lr']}}
-        value_model = ValueModel(env_wrap, layer_config=value_layer_config, output_layer_config=output_layer_config, optimizer_params=value_optimizer_params, device=config.get('device', 'cuda'))
+        # ValueModel from flattened keys under value_model_*
+        value_kernel = config.get('value_model_kernel', 'default')
+        value_kparams = _collect_kernel_params(config, 'value_model')
+        value_layers = _build_layer_list(config.get('value_model_layer_config', {}), value_kernel, value_kparams)
+        value_out_kernel = config.get('value_model_output_layer_kernel', 'default')
+        value_out_kparams = _sanitize_kernel_params(
+            value_out_kernel, _collect_kernel_params(config, 'value_model_output')
+        )
+        value_output_layer_kernel = [{'type': 'dense', 'params': {'kernel': value_out_kernel, 'kernel params': value_out_kparams}}]
+        value_optimizer_params = {
+            'type': config.get('value_model_optimizer_params_type', 'adam'),
+            'params': {'lr': config.get('value_model_optimizer_params_lr', 1e-3)}
+        }
+        value_lr_scheduler = _build_model_scheduler(config, 'value_model')
+        value_model = ValueModel(
+            env_wrap,
+            layer_config=value_layers,
+            output_layer_kernel=value_output_layer_kernel,
+            optimizer_params=value_optimizer_params,
+            lr_scheduler=value_lr_scheduler,
+            device=config.get('value_model_device', config.get('device', 'cuda'))
+        )
 
-        # Agent
-        agent_class = get_agent_class_from_type('SAC')
-        agent_kwargs = {
-            'env': env,
+        # Agent: dynamically assemble kwargs based on constructor signature
+        agent_class = get_agent_class_from_type(config.get('algorithm'))
+        # Superset of possible kwargs
+        common_kwargs = {
+            'env': env_wrap,
+            'policy_model': policy_model,
             'actor_model': actor_model,
+            'critic_model': critic_model_a,  # alias for algorithms expecting single critic
             'critic_model_a': critic_model_a,
             'critic_model_b': critic_model_b,
             'value_model': value_model,
             'replay_buffer': buffer,
-            'discount': config['gamma'],
-            'tau': config['tau'],
-            'alpha': config['alpha'],
-            'auto_entropy_tuning': config['auto_entropy_tuning'],
-            'alpha_lr': config['alpha_lr'],
-            'batch_size': config['batch_size'],
-            'grad_clip': config['grad_clip'] if config['grad_clip'] != 'inf' else float('inf'),
-            'warmup': config['warmup'],
-            'N': config['buffer_N'],
+            'noise': noise,
             'curiosity': icm,
-            'state_normalizer': normalizer,
-            'callbacks': [WandbCallback(project_name='HumanoidStandup-v5')],
-            'save_dir': config.get('save_dir', 'HumanoidStandup_N3'),
-            'device': config.get('device', 'cuda')
+            'state_normalizer': state_normalizer,
+            'goal_normalizer': goal_normalizer,
+            'callbacks': [RLWandbCallback(project_name=config.get('wandb_project', 'PhoenX_RL'))],
+            'save_dir': config.get('save_dir', 'Tune_Results'),
+            'device': config.get('device', 'cuda'),
+            # Hyperparameters (only pass if present)
+            'discount': config.get('discount'),
+            'policy_trace_decay': config.get('policy_trace_decay'),
+            'value_trace_decay': config.get('value_trace_decay'),
+            'tau': config.get('tau'),
+            'alpha': config.get('alpha'),
+            'auto_entropy_tuning': config.get('auto_entropy_tuning'),
+            'alpha_lr': config.get('alpha_lr'),
+            'batch_size': config.get('batch_size'),
+            'grad_clip': (None if config.get('grad_clip') in [None, 'inf'] else config.get('grad_clip')),
+            'warmup': config.get('warmup'),
+            'N': config.get('N'),
+            'action_epsilon': config.get('action_epsilon'),
+            'noise_schedule': config.get('noise_schedule'),
+            'target_noise': config.get('target_noise'),
+            'target_noise_schedule': config.get('target_noise_schedule'),
+            'target_noise_clip': config.get('target_noise_clip'),
+            'actor_update_delay': config.get('actor_update_delay'),
+            'gae_coefficient': config.get('gae_coefficient'),
+            'policy_clip': config.get('policy_clip'),
+            'value_clip': config.get('value_clip'),
+            'value_loss_coefficient': config.get('value_loss_coefficient'),
+            'entropy_coefficient': config.get('entropy_coefficient'),
+            'entropy_schedule': config.get('entropy_schedule'),
+            'kl_coefficient': config.get('kl_coefficient'),
+            'kl_adapter': config.get('kl_adapter'),
+            'normalize_advantages': config.get('normalize_advantages'),
+            'reward_clip': config.get('reward_clip'),
+            'log_level': config.get('log_level'),
         }
-
+        # Remove None values
+        common_kwargs = {k: v for k, v in common_kwargs.items() if v is not None}
+        # Filter by agent signature
+        sig = inspect.signature(agent_class.__init__)
+        allowed = set(sig.parameters.keys()) - {'self'}
+        agent_kwargs = {k: v for k, v in common_kwargs.items() if k in allowed}
         agent = agent_class(**agent_kwargs)
 
         for iteration in range(config['max_iterations']):
-            metrics = agent.train_step()
+            # Prefer calling agent.train for one episode to ensure env interaction and metrics
+            if hasattr(agent, 'train'):
+                try:
+                    train_sig = inspect.signature(agent.train)
+                    train_kwargs = {}
+                    if 'num_episodes' in train_sig.parameters:
+                        train_kwargs['num_episodes'] = 1
+                    if 'num_envs' in train_sig.parameters:
+                        train_kwargs['num_envs'] = config.get('num_envs', 1)
+                    if 'render_freq' in train_sig.parameters:
+                        train_kwargs['render_freq'] = 0
+                    #DEBUG
+                    print('train_step called')
+                    print(f'train_sig: {train_sig}')
+                    print(f'train_kwargs: {train_kwargs}')
+                    agent.train(**train_kwargs)
+                except Exception:
+                    # Fallback to a single learn step if train signature mismatches
+                    try:
+                        #DEBUG
+                        print('learn called')
+                        agent.learn()
+                    except TypeError:
+                        #DEBUG
+                        print('learn called with goal_normalizer')
+                        agent.learn(goal_normalizer=goal_normalizer)
+            else:
+                # Fallback to learn loop
+                try:
+                    #DEBUG
+                    print('else learn called')
+                    agent.learn()
+                except TypeError:
+                    #DEBUG
+                    print('else learn called with goal_normalizer')
+                    agent.learn(goal_normalizer=goal_normalizer)
+
+            metrics = getattr(agent, '_train_step_config', None) or getattr(agent, '_train_episode_config', None) or {}
+            if 'episode_reward' not in metrics:
+                # Ensure the Tune metric exists even if no episode completed yet
+                metrics['episode_reward'] = metrics.get('avg_reward', 0.0)
             session.report(metrics)
 
         agent.save(config['save_dir'])
@@ -185,13 +527,10 @@ def run_ray_tune_sweep(user_config):
             depends_on = value['depends_on']
             conditions = value['conditions']
             
-            def conditional_sampler(spec):
-                parent_value = spec.config.get(depends_on)  # Get the sampled parent value
-                sub_params = conditions.get(parent_value, {})  # Get matching sub-dict or empty
-                #DEBUG
-                print(f'conditional_sampler: depends_on: {depends_on}')
-                print(f'conditional_sampler: parent_value: {parent_value}')
-                print(f'conditional_sampler: sub_params: {sub_params}')
+            def conditional_sampler(cfg_like, _depends_on=depends_on, _conditions=conditions):
+                cfg = cfg_like.config if hasattr(cfg_like, 'config') else cfg_like
+                parent_value = cfg.get(_depends_on)
+                sub_params = _conditions.get(parent_value, {})  # Get matching sub-dict or empty
                 result = {}
                 for sub_key, sub_def in sub_params.items():
                     sub_type = list(sub_def.keys())[0]  # e.g., "uniform"
@@ -231,11 +570,15 @@ def run_ray_tune_sweep(user_config):
                     else:
                         depends_on = f"{current_prefix}num_layers"
 
-                    def layer_sampler(spec):
-                        num_layers = spec.config.get(depends_on, 0)
+                    def layer_sampler(config, _value=value, _depends_on=depends_on):
+                        num_layers = config.get(_depends_on, 0)
                         result = {}
-                        for layer_num_str, layer_def in value.items():
-                            layer_num = int(layer_num_str)
+                        for layer_num_str, layer_def in _value.items():
+                            # Skip non-numeric keys (e.g., 'default')
+                            try:
+                                layer_num = int(layer_num_str)
+                            except (TypeError, ValueError):
+                                continue
                             if num_layers >= layer_num:
                                 layer_result = {}
                                 if isinstance(layer_def, dict):
@@ -254,7 +597,6 @@ def run_ray_tune_sweep(user_config):
                                             layer_result[sub_k] = sampled_value
                                             dependent_values[sub_k] = sampled_value
                                         elif sub_type == "log":
-                                            # BUGFIX: use sub_val for both bounds
                                             sampled_value = tune.loguniform(sub_val[0], sub_val[1]).sample()
                                             layer_result[sub_k] = sampled_value
                                             dependent_values[sub_k] = sampled_value
@@ -268,8 +610,8 @@ def run_ray_tune_sweep(user_config):
 
                                     if "conditional" in layer_def:
                                         cond_value = layer_def["conditional"]
-                                        cond_depends_on = cond_value["depends_on"]  # e.g., "actor_model_layer_config_1_type"
-                                        dependent_key = cond_depends_on.split("_")[-1]  # "type"
+                                        cond_depends_on = cond_value["depends_on"]
+                                        dependent_key = cond_depends_on.split("_")[-1]
                                         parent_value = dependent_values.get(dependent_key)
                                         sub_params = cond_value["conditions"].get(parent_value, {})
                                         for sub_key, sub_def in sub_params.items():
@@ -322,7 +664,7 @@ def run_ray_tune_sweep(user_config):
         tune.with_resources(rl_trainable, resources_per_trial),
         param_space=param_space,
         tune_config=tune.TuneConfig(
-            metric='mean_reward',
+            metric='episode_reward',
             mode='max',
             search_alg=searcher,
             scheduler=scheduler,
@@ -333,7 +675,7 @@ def run_ray_tune_sweep(user_config):
             name='phoenx_rl_sweep',
             stop={'training_iteration': user_config['max_iterations']},
             verbose=1,
-            callbacks=[WandbLoggerCallback(project=user_config['wandb_project'], log_config=True, upload_checkpoints=True)]
+            callbacks=[WandbLoggerCallback(project=user_config['wandb_project'], api_key_file='/workspaces/PhoenX_RL/src/app/wandb_api_key', log_config=True, upload_checkpoints=True)]
         )
     )
 
