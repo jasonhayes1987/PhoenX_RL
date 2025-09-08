@@ -238,18 +238,19 @@ class Model(nn.Module):
         Returns:
             torch.optim.Optimizer: Configured optimizer.
         """
-        optimizer_type = self.optimizer_params['type']
+        original_optimizer_type = self.optimizer_params['type']
+        optimizer_type = str(original_optimizer_type).lower()
         optimizer_params = self.optimizer_params['params']
-        if optimizer_type == 'Adam':
+        if optimizer_type == 'adam':
             return optim.Adam(self.parameters(), **optimizer_params)
-        elif optimizer_type == 'SGD':
+        elif optimizer_type == 'sgd':
             return optim.SGD(self.parameters(), **optimizer_params)
-        elif optimizer_type == 'RMSprop':
+        elif optimizer_type == 'rmsprop':
             return optim.RMSprop(self.parameters(), **optimizer_params)
-        elif optimizer_type == 'Adagrad':
+        elif optimizer_type == 'adagrad':
             return optim.Adagrad(self.parameters(), **optimizer_params)
         else:
-            raise NotImplementedError(f"Unsupported optimizer type: {optimizer_type}")
+            raise NotImplementedError(f"Unsupported optimizer type: {original_optimizer_type}")
     
     def _preprocess_state(self, state):
         """

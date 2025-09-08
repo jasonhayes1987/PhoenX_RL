@@ -39,8 +39,9 @@ dependencies:
   - mpi4py
   - cupy
   - dash-bootstrap-components
-  # - jaxlib=0.4.26  # If needed
-  # - mujoco         # If needed
+  - ray-tune
+  - optuna
+  - hyperopt
   - pip:
     - expecttest!=0.2.0
     - optree>=0.9.1
