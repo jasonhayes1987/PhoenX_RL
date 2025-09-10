@@ -1788,60 +1788,62 @@ class DDPG(Agent):
     def train(self, num_episodes: int, num_envs: int, seed: int | None = None, render_freq: int = 0, sync_iter: int = 1):
         """Trains the model for 'episodes' number of episodes."""
 
-        # set models to train mode
-        self.actor_model.train()
-        self.critic_model.train()
-        # Set target models to eval mode
-        self.target_actor_model.eval()
-        self.target_critic_model.eval()
+        # # set models to train mode
+        # self.actor_model.train()
+        # self.critic_model.train()
+        # # Set target models to eval mode
+        # self.target_actor_model.eval()
+        # self.target_critic_model.eval()
 
-         # set num_envs as attribute
-        self.num_envs = num_envs
+        #  # set num_envs as attribute
+        # self.num_envs = num_envs
 
-        if seed is None:
-            seed = np.random.randint(100)
+        # if seed is None:
+        #     seed = np.random.randint(100)
 
-        # Set seeds
-        set_seed(seed)
+        # # Set seeds
+        # set_seed(seed)
 
-        # Set sync_interval (for distributed learning)
-        self._sync_iter = sync_iter
+        # # Set sync_interval (for distributed learning)
+        # self._sync_iter = sync_iter
 
-        if self.callbacks:
-            config = self.get_config()
-            for callback in self.callbacks:
-                if isinstance(callback, WandbCallback):
-                    config['num_episodes'] = num_episodes
-                    config['seed'] = seed
-                    config['num_envs'] = self.num_envs
-                    config['distributed'] = self._distributed
-                    config['sync_interval'] = self._sync_iter
-                    models = [self.actor_model, self.critic_model]
-                    if self.curiosity:
-                        models.append(self.curiosity)
-                    callback.on_train_begin(tuple(models), logs=config)
-                    run_number = callback.run_name.split("-")[-1]
-                else:
-                    callback.on_train_begin(logs=config)
+        # if self.callbacks:
+        #     config = self.get_config()
+        #     for callback in self.callbacks:
+        #         if isinstance(callback, WandbCallback):
+        #             config['num_episodes'] = num_episodes
+        #             config['seed'] = seed
+        #             config['num_envs'] = self.num_envs
+        #             config['distributed'] = self._distributed
+        #             config['sync_interval'] = self._sync_iter
+        #             models = [self.actor_model, self.critic_model]
+        #             if self.curiosity:
+        #                 models.append(self.curiosity)
+        #             callback.on_train_begin(tuple(models), logs=config)
+        #             run_number = callback.run_name.split("-")[-1]
+        #         else:
+        #             callback.on_train_begin(logs=config)
         
-        try:
-            # instantiate new vec environment
-            self.env.env = self.env._initialize_env(0, self.num_envs, seed)
-        except Exception as e:
-            self.logger.error(f"Error in DDPG.train self.env")
+        # try:
+        #     # instantiate new vec environment
+        #     self.env.env = self.env._initialize_env(0, self.num_envs, seed)
+        # except Exception as e:
+        #     self.logger.error(f"Error in DDPG.train self.env")
         
-        # Reset step counter (for logging)
-        self._step = 0
-        best_reward = -np.inf
-        score_history = deque(maxlen=100)
-        # trajectories = [[] for _ in range(self.num_envs)]
-        episode_scores = np.zeros(self.num_envs)
-        self.completed_episodes = np.zeros(self.num_envs)
-        # Initialize environments
-        states, _ = self.env.reset()
-        # Add initial observation normalizer if state_normalizer
-        if self.state_normalizer:
-            self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
+        # # Reset step counter (for logging)
+        # self._step = 0
+        # best_reward = -np.inf
+        # score_history = deque(maxlen=100)
+        # # trajectories = [[] for _ in range(self.num_envs)]
+        # episode_scores = np.zeros(self.num_envs)
+        # self.completed_episodes = np.zeros(self.num_envs)
+        # # Initialize environments
+        # states, _ = self.env.reset()
+        # # Add initial observation normalizer if state_normalizer
+        # if self.state_normalizer:
+        #     self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
+
+        self._initialize_train(num_envs, seed, render_freq, sync_iter, num_episodes=num_episodes)
         
         while self.completed_episodes.sum() < num_episodes:
             # If distributed, sync to shared agent
@@ -1857,11 +1859,11 @@ class DDPG(Agent):
             # reset noise
             if type(self.noise) == OUNoise:
                 self.noise.reset()
-            actions = self.get_action(states)
+            actions = self.get_action(self.states)
             # Format actions
             actions = self.env.format_actions(actions)
             next_states, rewards, dones, infos = self.env.step(actions)
-            episode_scores += rewards
+            self.episode_scores += rewards
 
             self.replay_buffer.add(
                 infos['n-step trajectory']['states'],
@@ -1879,14 +1881,14 @@ class DDPG(Agent):
             for i in completed_episodes:
                 # Increment completed episodes for env by 1
                 self.completed_episodes[i] += 1
-                score_history.append(episode_scores[i]) 
-                avg_reward = sum(score_history) / len(score_history)
+                self.score_history.append(self.episode_scores[i]) 
+                avg_reward = sum(self.score_history) / len(self.score_history)
                 self._train_episode_config['episode'] = self.completed_episodes.sum()
-                self._train_episode_config["episode_reward"] = episode_scores[i]
+                self._train_episode_config["episode_reward"] = self.episode_scores[i]
 
                 # check if best reward
-                if avg_reward > best_reward:
-                    best_reward = avg_reward
+                if avg_reward > self.best_reward:
+                    self.best_reward = avg_reward
                     self._train_episode_config["best"] = 1
                     # save model
                     self.save()
@@ -1918,27 +1920,25 @@ class DDPG(Agent):
                 # else:
                 #     rendered = False
 
-                print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {episode_scores[i]}, Avg_Score {avg_reward}")
+                print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {self.episode_scores[i]}, Avg_Score {avg_reward}")
 
-                episode_scores[i] = 0
+                self.episode_scores[i] = 0
                     
-            states = next_states
+            self.states = next_states
             
             # Check if past warmup
-            if self._step > self.warmup:
-                # check if enough samples in replay buffer and if so, learn from experiences
-                if self.replay_buffer.counter > self.batch_size:
-                    # Check if distributed
-                    if self._distributed:
-                        self._distributed_learn(self._step, self._run_number)
-                    else:
-                        actor_loss, critic_loss = self.learn()
-                        self._train_step_config["actor_loss"] = actor_loss
-                        self._train_step_config["critic_loss"] = critic_loss
-                    # Step scheduler if not None
-                    if self.noise_schedule:
-                        self.noise_schedule.step()
-                        self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
+            if self._step > self.warmup and self.replay_buffer.counter > self.batch_size:
+                # Check if distributed
+                if self._distributed:
+                    self._distributed_learn(self._step, self._run_number)
+                else:
+                    actor_loss, critic_loss = self.learn()
+                    self._train_step_config["actor_loss"] = actor_loss
+                    self._train_step_config["critic_loss"] = critic_loss
+                # Step scheduler if not None
+                if self.noise_schedule:
+                    self.noise_schedule.step()
+                    self._train_step_config["noise_anneal"] = self.noise_schedule.get_factor()
 
 
             self._train_step_config["step_reward"] = rewards.mean()
@@ -2194,7 +2194,7 @@ class TD3(Agent):
         log_level: str = 'info'
     ):
         try:
-            super().__init__(env, callbacks, save_dir, device, log_level)
+            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
             self.actor_model = actor_model
             self.critic_model_a = critic_model_a
             self.critic_model_b = critic_model_b
@@ -3273,50 +3273,9 @@ class TD3(Agent):
 
     def train(self, num_episodes: int, num_envs: int, seed: int = None, render_freq: int = 0, sync_iter: int = 1):
         """Trains the TD3 agent for a given number of episodes."""
-        # Set models to train mode
-        self.actor_model.train()
-        self.critic_model_a.train()
-        self.critic_model_b.train()
-        # Set target models to eval mode
-        self.target_actor_model.eval()
-        self.target_critic_model_a.eval()
-        self.target_critic_model_b.eval()
 
-        self.num_envs = num_envs
-        if seed is None:
-            seed = np.random.randint(1000)
-        set_seed(seed)
-        # Set sync_interval (for distributed learning)
-        self._sync_iter = sync_iter
-        if self.callbacks:
-            config = self.get_config()
-            for callback in self.callbacks:
-                if isinstance(callback, WandbCallback):
-                    config['num_episodes'] = num_episodes
-                    config['seed'] = seed
-                    config['num_envs'] = self.num_envs
-                    config['distributed'] = self._distributed
-                    config['sync_interval'] = self._sync_iter
-                    models = [self.critic_model_a, self.critic_model_b, self.actor_model]
-                    if self.curiosity:
-                        models.append(self.curiosity)
-                    callback.on_train_begin(tuple(models), logs=config)
-                    run_number = callback.run_name.split("-")[-1]
-                else:
-                    callback.on_train_begin(logs=config)
-        try:
-            # Use the EnvWrapper's _initialize_env method
-            self.env.env = self.env._initialize_env(render_freq, num_envs, seed)
-        except Exception as e:
-            self.logger.error("Error in TD3.train during env initialization", exc_info=True)
-        self._step = 0
-        best_reward = -np.inf
-        score_history = deque(maxlen=100)
-        episode_scores = np.zeros(self.num_envs)
-        self.completed_episodes = np.zeros(self.num_envs)
-        states, _ = self.env.reset()
-        # Add initial observation and goal to normalizer
-        self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
+        self._initialize_train(num_envs, seed, render_freq, sync_iter, num_episodes=num_episodes)
+
         while self.completed_episodes.sum() < num_episodes:
             # If distributed, sync to shared agent
             if self._distributed and self._step % self._sync_iter == 0:
@@ -3327,11 +3286,11 @@ class TD3(Agent):
             if self.callbacks:
                 for callback in self.callbacks:
                     callback.on_train_epoch_begin(epoch=self._step, logs=None)
-            actions = self.get_action(states)
+            actions = self.get_action(self.states)
             actions = self.env.format_actions(actions)
             next_states, rewards, dones, infos = self.env.step(actions)
             self._train_step_config["step_reward"] = rewards.mean()
-            episode_scores += rewards
+            self.episode_scores += rewards
             self.replay_buffer.add(
                 infos['n-step trajectory']['states'],
                 infos['n-step trajectory']['actions'],
@@ -3348,12 +3307,12 @@ class TD3(Agent):
             for i in completed_episodes:
                 # increment completed episodes for env by 1
                 self.completed_episodes[i] += 1
-                score_history.append(episode_scores[i])
-                avg_reward = sum(score_history) / len(score_history)
+                self.score_history.append(self.episode_scores[i])
+                avg_reward = sum(self.score_history) / len(self.score_history)
                 self._train_episode_config['episode'] = int(self.completed_episodes.sum())
-                self._train_episode_config['episode_reward'] = episode_scores[i]
-                if avg_reward > best_reward:
-                    best_reward = avg_reward
+                self._train_episode_config['episode_reward'] = self.episode_scores[i]
+                if avg_reward > self.best_reward:
+                    self.best_reward = avg_reward
                     self._train_episode_config["best"] = 1
                     self.save()
                 else:
@@ -3376,9 +3335,10 @@ class TD3(Agent):
                 if self.callbacks:
                     for callback in self.callbacks:
                         callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
-                print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {episode_scores[i]}, Avg Score {avg_reward}")
-                episode_scores[i] = 0
-            states = next_states
+                print(f"Environment {i}: Episode {int(self.completed_episodes.sum())}, Score {self.episode_scores[i]}, Avg Score {avg_reward}")
+                self.episode_scores[i] = 0
+            self.states = next_states
+
             if self._step > self.warmup and self.replay_buffer.counter > self.batch_size:
                 # Check if distributed
                 if self._distributed:
@@ -3616,9 +3576,9 @@ class TD3(Agent):
             replay_buffer=replay_buffer,
             batch_size=config["batch_size"],
             noise=noise,
-            noise_schedule=ScheduleWrapper(config["noise_schedule"]),
+            noise_schedule=ScheduleWrapper(config["noise_schedule"]) if config["noise_schedule"] else None,
             target_noise=target_noise,
-            target_noise_schedule=ScheduleWrapper(config["target_noise_schedule"]),
+            target_noise_schedule=ScheduleWrapper(config["target_noise_schedule"]) if config["target_noise_schedule"] else None,
             target_noise_clip=config["target_noise_clip"],
             actor_update_delay=config["actor_update_delay"],
             grad_clip=config["grad_clip"],
@@ -4075,65 +4035,6 @@ class SAC(Agent):
 
     def train(self, num_episodes: int, num_envs: int, seed: int | None = None, render_freq: int = 0, sync_iter: int = 1):
         """Trains the model for 'episodes' number of episodes."""
-
-        # # set models to train mode
-        # self.actor_model.train()
-        # self.critic_model_a.train()
-        # self.critic_model_b.train()
-        # self.value_model.train()
-        # # Set target models to eval mode
-        # self.target_value_model.eval()
-
-        #  # set num_envs as attribute
-        # self.num_envs = num_envs
-
-        # if seed is None:
-        #     seed = np.random.randint(100)
-
-        # # Set render freq to 0 if None is passed
-        # # if render_freq == None:
-        # #     render_freq = 0
-
-        # # Set seeds
-        # set_seed(seed)
-
-        # # Set sync_interval (for distributed learning)
-        # self._sync_iter = sync_iter
-
-        # if self.callbacks:
-        #     config = self.get_config()
-        #     for callback in self.callbacks:
-        #         if isinstance(callback, WandbCallback):
-        #             config['num_episodes'] = num_episodes
-        #             config['seed'] = seed
-        #             config['num_envs'] = self.num_envs
-        #             config['distributed'] = self._distributed
-        #             config['sync_interval'] = self._sync_iter
-        #             models = [self.actor_model, self.critic_model_a, self.critic_model_b, self.value_model]
-        #             if self.curiosity:
-        #                 models.append(self.curiosity)
-        #             callback.on_train_begin(tuple(models), logs=config)
-        #             run_number = callback.run_name.split("-")[-1]
-        #         else:
-        #             callback.on_train_begin(logs=config)
-        
-        # try:
-        #     # instantiate new vec environment
-        #     self.env.env = self.env._initialize_env(0, self.num_envs, seed)
-        # except Exception as e:
-        #     self.logger.error(f"Error in DDPG.train self.env")
-        
-        # # Reset step counter (for logging)
-        # self._step = 0
-        # best_reward = -np.inf
-        # score_history = deque(maxlen=100)
-        # # trajectories = [[] for _ in range(self.num_envs)]
-        # episode_scores = np.zeros(self.num_envs)
-        # self.completed_episodes = np.zeros(self.num_envs)
-        # # Initialize environments
-        # states, _ = self.env.reset()
-        # # Add initial observation and goal to normalizer
-        # self.state_normalizer.update_local_stats(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
 
         # Initialize training
         self._initialize_train(num_envs, seed, render_freq, sync_iter, num_episodes=num_episodes)
