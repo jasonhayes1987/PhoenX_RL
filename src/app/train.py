@@ -116,19 +116,7 @@ def train_agent(agent_config, train_config):
                         ray.get(futures)
                 else:
                     agent = load_agent_from_config(agent_config, load_weights)
-                    report_dir = os.path.join(os.curdir, 'profiles')
-                    os.makedirs(report_dir, exist_ok=True)  # Ensure dir exists
-                    with profile(
-                        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],  # Capture CPU and GPU events
-                        schedule=T.profiler.schedule(wait=1, warmup=1, active=3, repeat=4),  # Limit to a few cycles to avoid huge files
-                        on_trace_ready=tensorboard_trace_handler(os.path.join(report_dir, "torch_profiler_logs")),  # Save to mounted dir for TensorBoard
-                        record_shapes=True,  # Log tensor shapes (e.g., in model forward passes)
-                        profile_memory=True,  # Track GPU memory (useful for buffer/replay in rl_agents.py)
-                        with_stack=True  # Include call stacks (trace back to specific lines in models.py or rl_agents.py)
-                    ) as prof:
-                        with record_function("full_training_loop"):  # Label the entire training for easy navigation
-                            # Your training call (e.g., for HER/DDPG based on config.json)
-                            agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed, profiler=prof)
+                    agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, num_envs, seed)
 
                     # Export a Chrome trace for manual viewing (optional) -- MOVED OUTSIDE THE WITH BLOCK
                     # try:
