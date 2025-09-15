@@ -1,3 +1,4 @@
+from pathlib import Path
 import os
 import ray
 import json
@@ -86,6 +87,20 @@ class WandbCallback(Callback):
         self.model_type = None
         self.initialized = False
 
+    def _ensure_wandb_login(self) -> None:
+        if wandb.run is not None:
+            return
+        api_key = os.getenv("WANDB_API_KEY")
+        if not api_key:
+            key_path = Path(__file__).with_name("wandb_api_key")
+            if key_path.exists():
+                api_key = key_path.read_text(encoding="utf-8").strip()
+                if api_key:
+                    os.environ["WANDB_API_KEY"] = api_key
+
+        if api_key:
+            wandb.login(key=api_key, relogin=False)
+
     def initialize_run(self, models, logs=None, run_number:str=None, run_name_prefix:str=None):
         # Only get a new run number if we're initializing and none was provided
         if run_number is None:
@@ -105,6 +120,7 @@ class WandbCallback(Callback):
             wandb.watch(model, log='all', log_freq=100, idx=i, log_graph=True)
 
     def on_train_begin(self, models, logs=None):
+        self._ensure_wandb_login()
         if not self._sweep:
             if not self.initialized:
                 self.initialize_run(models, logs, run_name_prefix="train")
@@ -153,7 +169,6 @@ class WandbCallback(Callback):
         """Configures callback internal state for wandb integration."""
         self.model_type = type(agent).__name__
         self.save_dir = agent.save_dir
-        # return agent.get_config()
 
     def get_config(self):
         return {
