@@ -71,8 +71,8 @@ class ICM(Model):
             self.to(self.device)
 
             # Warmup models by training on synthetic data
-            if self.warmup > 0:
-                self._warmup_models()
+            # if self.warmup > 0:
+            #     self._warmup_models()
 
         except Exception as e:
             self.logger.error(f"Error in ICM init: {e}", exc_info=True)
@@ -251,7 +251,7 @@ class ICM(Model):
         self.inverse_model.eval()
         self.forward_model.eval()
 
-        return loss.item()
+        return loss
 
     def get_config(self):
         """Returns the configuration of the ICM model."""

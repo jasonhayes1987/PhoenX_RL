@@ -603,7 +603,7 @@ def load(agent_data, env_name):
         #DEBUG
         # print('env name matches!')
         # Load the agent
-        return rl_agents.load_agent_from_config(agent_data)
+        return rl_agents.load_agent(agent_data)
 
     # else (they don't match) change params to match new environment action space
     # check what the agent type is to update params accordingly
