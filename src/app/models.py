@@ -469,17 +469,18 @@ class StochasticDiscretePolicy(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, config, load_weights=True):
+    def load(cls, config_dir:Path | str, load_weights:bool=True):
         """
         Load a policy model from a saved configuration.
 
         Args:
-            config (dict): Configuration dictionary.
+            config_dir (Path | str): Configuration directory.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             StochasticDiscretePolicy: Loaded policy model instance.
         """
+        config = json.load(open(config_dir / 'config.json'))
         env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
@@ -493,10 +494,9 @@ class StochasticDiscretePolicy(Model):
                     device = config.get("device", "cpu")
                     )
 
-        # Load weights if True
         if load_weights:
             try:
-                model_path = Path(config.get("save_dir")) / "value_model" / "pytorch_model.pt"
+                model_path = Path(config_dir) / "pytorch_model.pt"
                 model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
@@ -651,17 +651,18 @@ class StochasticContinuousPolicy(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, config, load_weights=True):
+    def load(cls, config_dir:Path | str, load_weights:bool=True):
         """
         Load a policy model from a saved configuration.
 
         Args:
-            config (dict): Configuration dictionary.
+            config_dir (Path | str): Configuration directory.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             StochasticContinuousPolicy: Loaded policy model instance.
         """
+        config = json.load(open(Path(config_dir) / 'config.json'))
         env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
@@ -678,7 +679,7 @@ class StochasticContinuousPolicy(Model):
         # Load weights if True
         if load_weights:
             try:
-                model_path = Path(config.get("save_dir")) / "value_model" / "pytorch_model.pt"
+                model_path = Path(config_dir) / "pytorch_model.pt"
                 model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
@@ -708,7 +709,8 @@ class ValueModel(Model):
         output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
-        device = None
+        device = None,
+        log_level: str = 'info'
     ):
         """
         Initialize the value model.
@@ -721,7 +723,7 @@ class ValueModel(Model):
             lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
             device (str): Device for computation (default: 'cuda').
         """
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
         self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -834,35 +836,18 @@ class ValueModel(Model):
 
 
     @classmethod
-    def load(cls, config, load_weights:bool=True):
+    def load(cls, config_dir:Path | str, load_weights:bool=True):
         """
         Load a value model from a saved configuration.
 
         Args:
-            config (dict): Configuration dictionary.
+            config_dir (Path | str): Configuration directory.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             ValueModel: Loaded value model instance.
         """
-        # model_dir = Path(config) / "value_model"
-        # config = model_dir / "config.json"
-        # model_path = model_dir / 'pytorch_model.onnx'
-
-        # if config.is_file():
-        #     with open(config, "r", encoding="utf-8") as f:
-        #         config = json.load(f)
-        # else:
-        #     raise FileNotFoundError(f"No configuration file found in {config}")
-        
-        # Determine the wrapper type from the environment configuration
-        # wrapper_dict = json.loads(config['env'])
-        # wrapper_type = wrapper_dict.get("type")
-        # if wrapper_type == 'GymnasiumWrapper':
-        #     env = GymnasiumWrapper(wrapper_dict.get("env"))
-        # else:
-        #     raise ValueError(f"Unsupported wrapper type: {wrapper_type}")
-
+        config = json.load(open(Path(config_dir) / 'config.json'))
         env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
@@ -877,7 +862,7 @@ class ValueModel(Model):
         # Load weights if True
         if load_weights:
             try:
-                model_path = Path(config.get("save_dir")) / "value_model" / "pytorch_model.pt"
+                model_path = Path(config_dir) / "pytorch_model.pt"
                 model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
@@ -892,9 +877,10 @@ class ActorModel(Model):
                  output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper=None,
-                 device: str=None
+                 device: str=None,
+                 log_level: str='info'
                  ):
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
         self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -985,27 +971,18 @@ class ActorModel(Model):
 
 
     @classmethod
-    def load(cls, config, load_weights=True):
+    def load(cls, config_dir:Path | str, load_weights:bool=True):
         """
         Load an actor model from a saved configuration.
 
         Args:
-            config (dict): Configuration dictionary.
+            config_dir (Path | str): Path to the configuration directory.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             ActorModel: Loaded actor model instance.
         """
-        # model_dir = Path(config_path) / "actor_model"
-        # config_path = model_dir / "config.json"
-        # model_path = model_dir / 'pytorch_model.onnx'
-
-        # if config_path.is_file():
-        #     with open(config_path, "r", encoding="utf-8") as f:
-        #         config = json.load(f)
-        # else:
-        #     raise FileNotFoundError(f"No configuration file found in {config_path}")
-        
+        config = json.load(open(config_dir / 'config.json'))
         env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
@@ -1019,10 +996,9 @@ class ActorModel(Model):
                     device = config.get("device")
                     )
 
-        # Load weights if True
         if load_weights:
             try:
-                model_path = Path(config.get("save_dir")) / "actor_model" / "pytorch_model.pt"
+                model_path = Path(config_dir) / "pytorch_model.pt"
                 model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
@@ -1039,9 +1015,10 @@ class CriticModel(Model):
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper=None,
-                 device: str=None
+                 device: str=None,
+                 log_level: str='info'
                  ):
-        super().__init__(env, state_layers, optimizer_params, lr_scheduler, device)
+        super().__init__(env, state_layers, optimizer_params, lr_scheduler, device, log_level)
         self.env = env
         # self.state_config = state_layers # Stored as layer config in parent
         self.merged_config = merged_layers
@@ -1161,27 +1138,18 @@ class CriticModel(Model):
 
 
     @classmethod
-    def load(cls, config, load_weights=True):
+    def load(cls, config_dir:Path | str, load_weights:bool=True):
         """
         Load a critic model from a saved configuration.
 
         Args:
-            config (dict): Configuration dictionary.
+            config_dir (Path | str): Path to the configuration directory.
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             CriticModel: Loaded critic model instance.
         """
-        # model_dir = Path(config_path) / "critic_model"
-        # config_path = model_dir / "config.json"
-        # model_path = model_dir / 'pytorch_model.onnx'
-
-        # if config_path.is_file():
-        #     with open(config_path, "r", encoding="utf-8") as f:
-        #         config = json.load(f)
-        # else:
-        #     raise FileNotFoundError(f"No configuration file found in {config_path}")
-        
+        config = json.load(open(Path(config_dir) / 'config.json'))
         env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
@@ -1199,7 +1167,7 @@ class CriticModel(Model):
         # Load weights if True
         if load_weights:
             try:
-                model_path = Path(config.get("save_dir")) / "critic_model" / "pytorch_model.pt"
+                model_path = Path(config_dir) / "pytorch_model.pt"
                 model.load_state_dict(T.load(model_path, map_location=model.device))
             except Exception as e:
                 print(f"Error loading model: {e}")
@@ -1223,7 +1191,7 @@ def build_layers(types: List[str], units_per_layer: List[int], initializers: Lis
         
     return layers
 
-def select_policy_model(env):
+def select_policy_model(env: EnvWrapper):
     """
     Select the appropriate policy model based on the environment's action space.
 

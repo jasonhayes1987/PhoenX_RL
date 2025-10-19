@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import ray
 import json
+from typing import Optional
 import numpy as np
 import torch as T
 import wandb
@@ -77,11 +78,11 @@ class WandbCallback(Callback):
         _sweep (bool): Whether this run is part of a W&B sweep.
     """
 
-    def __init__(self, project_name: str, run_name: str = None, chkpt_freq: int = 100, _sweep: bool = False):
+    def __init__(self, project_name: str, run_name: str = None, _sweep: bool = False):
         # super().__init__()
         self.project_name = project_name
         self.run_name = run_name
-        self.chkpt_freq = chkpt_freq
+        # self.chkpt_freq = chkpt_freq
         self._sweep = _sweep
         self.save_dir = None
         self.model_type = None
@@ -100,8 +101,10 @@ class WandbCallback(Callback):
 
         if api_key:
             wandb.login(key=api_key, relogin=False)
+        else:
+            raise ValueError("WANDB_API_KEY not found. Please set the WANDB_API_KEY environment variable or create a wandb_api_key file in the app directory.")
 
-    def initialize_run(self, models, logs=None, run_number:str=None, run_name_prefix:str=None):
+    def initialize_run(self, logs: dict, models: list[T.nn.Module] = None, run_number: Optional[int] = None, run_name_prefix:Optional[str] = None, tags: list[str]=[], job_type: str="train"):
         # Only get a new run number if we're initializing and none was provided
         if run_number is None:
             run_number = wandb_support.get_next_run_number(self.project_name)
@@ -109,21 +112,22 @@ class WandbCallback(Callback):
         run = wandb.init(
             project=self.project_name,
             name=f"{run_name_prefix}-{run_number}",
-            tags=["train", self.model_type],
+            tags=tags.append(self.model_type),
             group=f"group-{run_number}",
-            job_type="train",
+            job_type=job_type,
             config=logs,
         )
         self.run_name = run.name
         self.initialized = True
-        for i, model in enumerate(models):
-            wandb.watch(model, log='all', log_freq=100, idx=i, log_graph=True)
+        if models:
+            for i, model in enumerate(models):
+                wandb.watch(model, log='all', log_freq=100, idx=i, log_graph=True)
 
-    def on_train_begin(self, models, logs=None):
+    def on_train_begin(self, logs: dict, run_number: Optional[int] = None, models: Optional[list[T.nn.Module]] = None):
         self._ensure_wandb_login()
         if not self._sweep:
             if not self.initialized:
-                self.initialize_run(models, logs, run_name_prefix="train")
+                self.initialize_run(logs, models, run_number, run_name_prefix="train", tags=["train"], job_type="train")
             
 
     def on_train_end(self, logs=None):
@@ -133,8 +137,10 @@ class WandbCallback(Callback):
         pass
 
     def on_train_epoch_end(self, epoch: int, logs=None):
+        if logs is None:
+            logs = {}
         wandb.log(logs, step=epoch)
-        if (logs["best"]) & (logs["episode"] % self.chkpt_freq == 0):
+        if logs.get("best", False):
             # Create save dir if not exist
             os.makedirs(self.save_dir, exist_ok=True)
             wandb_support.save_model_artifact(self.save_dir, self.project_name, model_is_best=True)
@@ -143,11 +149,13 @@ class WandbCallback(Callback):
         pass
 
     def on_train_step_end(self, step: int, logs=None):
+        if logs is None:
+            logs = {}
         wandb.log(logs, step=step)
 
-    def on_test_begin(self, logs=None, run_number: int = None):
+    def on_test_begin(self, logs:dict, run_number: Optional[str] = None):
         if not self.initialized:
-            self.initialize_run(logs, run_name_prefix="test")
+            self.initialize_run(logs=logs, run_number=run_number, run_name_prefix="test", tags=["test"], job_type="test")
 
     def on_test_end(self, logs=None):
         if not self._sweep:
@@ -157,12 +165,16 @@ class WandbCallback(Callback):
         pass
 
     def on_test_epoch_end(self, epoch: int, logs=None):
+        if logs is None:
+            logs = {}
         wandb.log(logs, step=epoch)
 
     def on_test_step_begin(self, step: int, logs=None):
         pass
 
     def on_test_step_end(self, step: int, logs=None):
+        if logs is None:
+            logs = {}
         wandb.log(logs, step=step)
 
     def _config(self, agent):
@@ -176,7 +188,6 @@ class WandbCallback(Callback):
             'config': {
                 'project_name': self.project_name,
                 'run_name': self.run_name,
-                'chkpt_freq': self.chkpt_freq,
                 '_sweep': self._sweep
             }
         }

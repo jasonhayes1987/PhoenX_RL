@@ -133,9 +133,8 @@ class NormalNoise(Noise):
     """
     Normal (Gaussian) noise generator.
     """
-    def __init__(self, shape, mean=0.0, stddev=1.0, device=None):
+    def __init__(self, mean=0.0, stddev=1.0, device=None):
         super().__init__(device)
-        self.shape = shape
         # self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
         self.mean = T.tensor(mean, dtype=T.float32, device=self.device)
         self.stddev = T.tensor(stddev, dtype=T.float32, device=self.device)
@@ -147,15 +146,19 @@ class NormalNoise(Noise):
         """
         self.noise_gen = normal.Normal(loc=self.mean, scale=self.stddev)
 
-    def __call__(self, shape: tuple=None) -> T.Tensor:
+    def __call__(self, shape: Optional[tuple[int, ...]]=(1,1)) -> T.Tensor:
         """
         Generate normal noise.
+        
+        Args:
+            shape (Optional[Tuple[int, ...]]): Shape for the noise tensor (e.g., (batch_size, action_dim)).
+            Defaults to (1,1) for single-sample.
 
         Returns:
             T.Tensor: Generated noise.
         """
-        if shape is None:
-            shape = self.shape
+        if isinstance(shape, (np.ndarray, T.Tensor)):
+           shape = tuple(shape)
         return self.noise_gen.sample(shape)
 
     def __getstate__(self):
@@ -180,7 +183,6 @@ class NormalNoise(Noise):
         return {
             'class_name': 'NormalNoise',
             'config': {
-                'shape': self.shape,
                 'mean': self.mean.item(),
                 'stddev': self.stddev.item(),
                 'device': self.device.type,
@@ -199,7 +201,7 @@ class NormalNoise(Noise):
         else:
             device = self.device
 
-        return NormalNoise(self.shape, self.mean.item(), self.stddev.item(), device)
+        return NormalNoise(self.mean.item(), self.stddev.item(), device)
     
 class OUNoise(Noise):
     """

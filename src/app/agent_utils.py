@@ -1,10 +1,17 @@
+import os
+import json
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 import torch as T
 import torch.nn as nn
-from models import ValueModel, StochasticContinuousPolicy, ActorModel, CriticModel, StochasticDiscretePolicy
-from env_wrapper import EnvWrapper
-from buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
-from noise import Noise
+# from models import ValueModel, StochasticContinuousPolicy, ActorModel, CriticModel, StochasticDiscretePolicy
+from models import *
+# from env_wrapper import EnvWrapper
+from env_wrapper import *
+# from buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
+from buffer import *
+# from noise import Noise
+from noise import *
 from normalizer import Normalizer
 from rl_callbacks import load as callback_load, WandbCallback, RayWandbCallback
 from schedulers import ScheduleWrapper
@@ -53,17 +60,18 @@ def compute_full_return(rewards, gamma):
     returns.reverse()
     return returns
 
-def load_agent_from_config(config: Dict[str, Any], load_weights: bool = True):
+def load_agent(config_dir:str | Path, load_weights: bool = True):
     """
-    Load an agent from a configuration dictionary.
+    Load an agent from a configuration file.
     
     Args:
-        config: Configuration dictionary
+        config_dir: Path to the configuration directory
         load_weights: Whether to load the model weights
         
     Returns:
         The loaded agent
     """
+    config = json.load(open(Path(config_dir) / 'config.json'))
     agent_type = config.get("agent_type")
     if agent_type is None:
         raise ValueError("agent_type must be specified in config")
@@ -72,9 +80,31 @@ def load_agent_from_config(config: Dict[str, Any], load_weights: bool = True):
     if agent_class is None:
         raise ValueError(f"Unknown agent type: {agent_type}")
         
-    agent = agent_class.load(config, load_weights)
+    agent = agent_class.load(config_dir, load_weights)
         
     return agent
+
+def get_agent_class_from_type(agent_type: str):
+    """
+    Get the agent class from its type name.
+    
+    Args:
+        agent_type: The type name of the agent
+        
+    Returns:
+        The agent class
+    """
+    from rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, HER, SAC
+    agent_classes = {
+        "PPO": PPO,
+        "DDPG": DDPG,
+        "Reinforce": Reinforce,
+        "ActorCritic": ActorCritic,
+        "TD3": TD3,
+        "HER": HER,
+        "SAC": SAC
+    }
+    return agent_classes.get(agent_type) 
 
 def convert_to_distributed_callbacks(callbacks, role: str, worker_id=0):
     """
@@ -113,25 +143,3 @@ def convert_to_distributed_callbacks(callbacks, role: str, worker_id=0):
             distributed_callbacks.append(callback)
             
     return distributed_callbacks
-
-def get_agent_class_from_type(agent_type: str):
-    """
-    Get the agent class from its type name.
-    
-    Args:
-        agent_type: The type name of the agent
-        
-    Returns:
-        The agent class
-    """
-    from rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, HER, SAC
-    agent_classes = {
-        "PPO": PPO,
-        "DDPG": DDPG,
-        "Reinforce": Reinforce,
-        "ActorCritic": ActorCritic,
-        "TD3": TD3,
-        "HER": HER,
-        "SAC": SAC
-    }
-    return agent_classes.get(agent_type) 
