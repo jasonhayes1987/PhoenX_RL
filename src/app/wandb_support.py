@@ -54,7 +54,7 @@ def load_model_from_artifact(artifact, load_weights: bool = True):
     # Download the artifact files to a directory
     artifact_dir = Path(artifact.download())
 
-    return rl_agents.load_agent_from_config(artifact_dir, load_weights)
+    return rl_agents.load_agent(artifact_dir, load_weights)
 
 
 def format_layers(sweep_config):
