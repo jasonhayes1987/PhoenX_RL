@@ -44,6 +44,7 @@ dependencies:
   - python-dotenv
   - python-dotenv-with-cli
   - ray-all
+  - isaaclab
   - pip:
     - expecttest!=0.2.0
     - optree>=0.9.1
