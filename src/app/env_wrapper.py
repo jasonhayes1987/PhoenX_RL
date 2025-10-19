@@ -15,7 +15,7 @@ from gymnasium.wrappers import (
 )
 from gymnasium.vector import VectorEnv, SyncVectorEnv
 # Register gymnasium robotics with gymnasium
-gym.register_envs(gymnasium_robotics)
+# gym.register_envs(gymnasium_robotics)
 
 class NStepReward(gym.Wrapper):
     def __init__(self, env, n, discount=0.99):
@@ -309,34 +309,38 @@ class EnvWrapper(ABC):
             Tuple: Observation, reward, done flag, and additional info.
         """
         pass
-    
-    # @abstractmethod
-    # def render(self, mode="rgb_array"):
-    #     """
-    #     Render the environment.
-
-    #     Args:
-    #         mode (str): The render mode (default: "rgb_array").
-
-    #     Returns:
-    #         Any: Rendered frame or visualization.
-    #     """
-    #     pass
 
     @abstractmethod
-    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: Optional[int] = None):
+    def _initialize_env(self, num_envs: int = 1, seed: Optional[int] = None, render_mode: Optional[str] = None):
         """
         Initialize the environment with optional rendering and seeding.
 
         Args:
-            render_freq (int): Frequency of rendering (default: 0).
             num_envs (int): Number of parallel environments (default: 1).
             seed (int): Random seed for the environment (default: None).
+            render_mode (Optional[str]): Render mode for the environment (default: None).
 
         Returns:
             Any: The initialized environment.
         """
         pass
+
+    def clone(self, num_envs: int = 1, seed: Optional[int] = None, render_mode: Optional[str] = None) -> 'EnvWrapper':
+        """
+        Create a new instance of the environment wrapper with the passed parameters.
+
+        Args:
+            num_envs (int): Number of parallel environments (default: 1).
+            seed (Optional[int]): Seed for the environment. If None, a random seed is used. (default: None).
+            render_mode (Optional[str]): Render mode for the environment (default: None).
+
+        Returns:
+            EnvWrapper: A new instance of the environment wrapper.
+        """
+        json_config = self.to_json()
+        clone = self.from_json(json_config)
+        clone.env = clone._initialize_env(num_envs, seed, render_mode)
+        return clone
 
     @abstractmethod
     def format_actions(self, actions, testing: bool = False):
@@ -441,33 +445,33 @@ class GymnasiumWrapper(EnvWrapper):
     This wrapper supports initialization, resetting, stepping, rendering,
     and JSON-based serialization of Gymnasium environments.
     """
-    def __init__(self, env_spec: EnvSpec, wrappers: Optional[list[dict]] = None, worker_id: int = 0):
+    def __init__(self, env_spec: EnvSpec, wrappers: Optional[list[dict]] = None):
         self.env_spec = env_spec
         self.wrappers = wrappers
-        self.worker_id = worker_id
-        self.traj_counters = []  # Per-environment counters
-        self.unique_env_ids = []  # Unique IDs for each env
+        # self.worker_id = worker_id
+        # self.traj_counters = []  # Per-environment counters
+        # self.unique_env_ids = []  # Unique IDs for each env
         self.num_envs = 1
-        self.traj_ids = []
-        self.step_indices = []
+        # self.traj_ids = []
+        # self.step_indices = []
         self.env = self._initialize_env()
         
 
-    def _initialize_env(self, render_freq: int = 0, num_envs: int = 1, seed: Optional[int] = None):
+    def _initialize_env(self, num_envs: int = 1, seed: Optional[int] = None, render_mode: Optional[str] = None):
         """
         Initialize the Gymnasium environment with unique seeds for each environment.
 
         Args:
-            render_freq (int): Frequency of rendering (default: 0).
             num_envs (int): Number of parallel environments (default: 1).
-            seed (int): Base random seed for the environment (default: None).
+            seed (Optional[int]): Base random seed for the environment (default: None).
+            render_mode (Optional[str]): Render mode for the environment (default: None).
 
         Returns:
             gym.Env: The initialized Gymnasium environment.
         """
         self.seed = seed
         if self.seed is None:
-            seeds = [None] * num_envs
+            seeds = [np.random.randint(1000) for _ in range(num_envs)]
         else:
             seeds = [self.seed + i for i in range(num_envs)]  # Create different seeds for each environment
         
@@ -475,7 +479,7 @@ class GymnasiumWrapper(EnvWrapper):
         env_fns = []
         for i in range(num_envs):
             def make_env(i=i):  # Use default argument to capture i
-                env = gym.make(self.env_spec.id, render_mode="rgb_array" if render_freq > 0 else None)
+                env = gym.make(self.env_spec.id, render_mode=render_mode)
                 if seeds[i] is not None:
                     env.reset(seed=seeds[i])  # Set seed for each environment
                     env.action_space.seed(seeds[i])  # Also seed the action space
@@ -494,15 +498,15 @@ class GymnasiumWrapper(EnvWrapper):
 
         # Initialize self.num_envs and internal env tracking
         self.num_envs = num_envs
-        self.traj_counters = [0] * num_envs
-        self.unique_env_ids = [(self.worker_id * num_envs) + i for i in range(num_envs)]
-        self.traj_ids = [self._compute_traj_id(i) for i in range(num_envs)]
-        self.step_indices = [0] * num_envs
+        # self.traj_counters = [0] * num_envs
+        # self.unique_env_ids = [(self.worker_id * num_envs) + i for i in range(num_envs)]
+        # self.traj_ids = [self._compute_traj_id(i) for i in range(num_envs)]
+        # self.step_indices = [0] * num_envs
 
         return vec_env
     
-    def _compute_traj_id(self, env_idx):
-        return (self.unique_env_ids[env_idx] << 32) + self.traj_counters[env_idx]
+    # def _compute_traj_id(self, env_idx):
+    #     return (self.unique_env_ids[env_idx] << 32) + self.traj_counters[env_idx]
 
     def reset(self):
         #DEBUG
@@ -515,43 +519,18 @@ class GymnasiumWrapper(EnvWrapper):
         # print(f'GymnasiumWrapper reset state:{state}, info:{info}')
         return state, info
 
-    def step(self, action, testing=False):
+    def step(self, action):
         states, rewards, terms, truncs, infos = self.env.step(action)
         dones = np.logical_or(terms, truncs)
-        #DEBUG
-        # print(f'GymnasiumWrapper step states:{states}, rewards:{rewards}, dones:{dones}, infos:{infos}')
+        
         return states, rewards, dones, infos
     
-        # if testing:
-        #     return states, rewards, dones, infos
-        # else:
-        #     for i in range(self.num_envs):
-        #         if dones[i]:
-        #             self.traj_counters[i] += 1
-        #             self.traj_ids[i] = self._compute_traj_id(i)
-        #             self.step_indices[i] = 0
-        #         else:
-        #             self.step_indices[i] += 1
-        #     return states, rewards, dones, infos, self.traj_ids, self.step_indices
-    
-    # def render(self, mode="rgb_array"):
-    #     """
-    #     Render the environment.
-
-    #     Args:
-    #         mode (str): The render mode (default: "rgb_array").
-
-    #     Returns:
-    #         Any: Rendered frame or visualization.
-    #     """
-    #     return self.env.render(mode=mode)
-    
-    def format_actions(self, actions: np.ndarray, testing=False):
+    def format_actions(self, actions: np.ndarray):
         if isinstance(self.action_space, gym.spaces.Box):
-            if testing:
-                num_envs = 1
-            else:
-                num_envs = self.env.num_envs
+            # if testing:
+            #     num_envs = 1
+            # else:
+            num_envs = self.env.num_envs
             num_actions = self.action_space.shape[-1]
             return actions.reshape(num_envs, num_actions)
         if isinstance(self.action_space, gym.spaces.Discrete) or isinstance(self.action_space, gym.spaces.MultiDiscrete):
@@ -621,8 +600,7 @@ class GymnasiumWrapper(EnvWrapper):
         return {
             "type": self.__class__.__name__,
             "env": self.env_spec.to_json(),
-            "wrappers": self.wrappers,
-            "worker_id": self.worker_id
+            "wrappers": self.wrappers
         }
     
     def to_json(self):
@@ -645,17 +623,10 @@ class GymnasiumWrapper(EnvWrapper):
         Returns:
             GymnasiumWrapper: A new Gymnasium wrapper instance.
         """
-        #DEBUG
-        # print('GymnasiumWrapper from_json called')
-        # print(f'from json env spec:{json_env_spec}, type:{type(json_env_spec)}')
         config = json.loads(json_env_spec)
-        #DEBUG
-        # print(f'from json config:{config}, type:{type(config)}')
         env_spec = EnvSpec.from_json(config['env'])
-        #DEBUG
-        # print(f'wrappers in gym from json:{config["wrappers"]}')
         try:
-            return cls(env_spec, config["wrappers"], config["worker_id"])
+            return cls(env_spec, config["wrappers"])
         except Exception as e:
             raise ValueError(f"Environment wrapper error: {config}, {e}")
     
