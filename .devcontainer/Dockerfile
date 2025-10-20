@@ -1,5 +1,5 @@
 # Use the CUDA 12.6.2 devel base image
-FROM nvidia/cuda:12.6.2-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 # Install necessary system packages
 RUN apt-get update && apt-get install -y \
@@ -71,7 +71,7 @@ ENV CONDA_DEFAULT_ENV=rl_env
 SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 
 # Install PyTorch with CUDA support (ensure it's CUDA 12.6 compatible; adjust if needed)
-RUN pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
+RUN pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
 
 # Install Gymnasium Robotics directly from Repo for Mujoco v4 support
 RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
@@ -91,7 +91,14 @@ ENV PYOPENGL_PLATFORM="osmesa"
 ENV PYTHONPATH="/workspaces/PhoenX_RL"
 
 # Run accept license command for AutoROM do download all roms needed for Atari ale
-RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.12/site-packages/ale_py/roms
+RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.11/site-packages/ale_py/roms
+
+# Install Isaac Sim via pip (requires EULA acceptance)
+RUN pip install "isaacsim[all,extscache]==5.0.0" --extra-index-url https://pypi.nvidia.com
+
+# Set up Isaac Sim environment and install Isaac Lab
+RUN git clone git@github.com:isaac-sim/IsaacLab.git
+RUN ./isaaclab.sh --install
 
 # Set working directory
 WORKDIR /app
