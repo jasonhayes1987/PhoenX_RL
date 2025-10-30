@@ -12,7 +12,7 @@ import logging
 from logging_config import get_logger
 import copy
 from encoder import CustomJSONEncoder, serialize_env_spec
-from moviepy.editor import ImageSequenceClip
+# from moviepy.editor import ImageSequenceClip
 from umap import UMAP
 import plotly.express as px
 
@@ -29,7 +29,8 @@ import wandb
 import wandb_support
 from torch_utils import set_seed, get_device, move_to_device, VarianceScaling_
 from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
-from utils import render_video, build_env_wrapper_obj, check_for_inf_or_NaN
+# from utils import render_video, build_env_wrapper_obj, check_for_inf_or_NaN
+from utils import *
 
 import torch as T
 import torch.nn as nn

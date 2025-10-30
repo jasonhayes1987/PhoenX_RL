@@ -5,15 +5,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-  - python=3.12
-=======
   - python=3.11
->>>>>>> Stashed changes
-=======
-  - python=3.11
->>>>>>> Stashed changes
   - pip
   - pylint
   - pytest
@@ -47,22 +39,15 @@ dependencies:
   - ffmpeg
   - mpi4py
   - dash-bootstrap-components
-<<<<<<< Updated upstream
   - mujoco>=2.2.0,<3.2.0
   - python-dotenv
   - python-dotenv-with-cli
   - ray-all
-  - isaaclab
-=======
   - ray-tune
   - optuna
   - hyperopt
-  - opencv==4.11
-  - moviepy
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+  # - opencv==4.11
+  # - moviepy
   - pip:
     - expecttest!=0.2.0
     - optree>=0.9.1
@@ -73,13 +58,5 @@ dependencies:
     - gymnasium[all]==1.2.0
     # - gymnasium-robotics
     - decorator==4.0.2
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
     - mcp
     - ipywidgets
-=======
-    
->>>>>>> Stashed changes
-=======
-    
->>>>>>> Stashed changes

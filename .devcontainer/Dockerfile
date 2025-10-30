@@ -1,116 +1,57 @@
-# Use the CUDA 12.6.2 devel base image
-FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
+# Base on official Isaac Lab image (headless Isaac Sim + Isaac Lab pre-installed)
+FROM nvcr.io/nvidia/isaac-lab:2.2.0
+# If 2.2.1 is available to you, prefer it:
+# FROM nvcr.io/nvidia/isaac-lab:2.2.1
 
-# Install necessary system packages
+ENV DEBIAN_FRONTEND=noninteractive TZ=UTC
+
+RUN apt-get update && apt-get install -y libosmesa6-dev && rm -rf /var/lib/apt/lists/*
+
+# Install Vulkan runtime and tools
 RUN apt-get update && apt-get install -y \
-    sudo \
-    wget \
-    build-essential \
-    htop \
-    git \
-    swig \
-    cmake \
-    gcc \
-    curl \
-    nodejs \
-    npm \
-    libglfw3-dev \
-    libglew-dev \
-    libopengl0 \
-    python3-opengl \
-    libglu1-mesa-dev \
-    libgl1-mesa-dev \
-    libosmesa6-dev \
-    patchelf \
-    ffmpeg \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    gdb \
-    mesa-utils \
-    libsdl2-dev \
-    libsdl2-image-dev \
-    libsdl2-mixer-dev \
-    libsdl2-ttf-dev \
-    libfreetype6-dev \
-    # nsight-systems-2024.5.1 \
-    # nsight-compute-2024.3.2 \
+    vulkan-tools \
+    libvulkan1 \
+    libvulkan-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install NVIDIA Nsight Systems and Compute via apt (compatible with CUDA 12.6 on Ubuntu 22.04)
-RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates && \
-    wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/7fa2af80.pub && \
-    gpg --dearmor -o /usr/share/keyrings/nvidia-devtools-archive-keyring.gpg 7fa2af80.pub && \
-    rm 7fa2af80.pub && \
-    echo "deb [signed-by=/usr/share/keyrings/nvidia-devtools-archive-keyring.gpg] http://developer.download.nvidia.com/devtools/repos/ubuntu2204/amd64 /" | tee /etc/apt/sources.list.d/nvidia-devtools.list && \
-    apt-get update && apt-get install -y nsight-systems-cli nsight-compute && \
-    rm -rf /var/lib/apt/lists/*
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 
-# Install Miniconda
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
-    bash /tmp/miniconda.sh -b -p /opt/conda && \
-    rm /tmp/miniconda.sh && \
-    /opt/conda/bin/conda init
+# Create NVIDIA Vulkan ICD JSON (points to libGLX_nvidia.so.0 after mounting/symlink)
+# RUN mkdir -p /etc/vulkan/icd.d && \
+#     printf '{ "file_format_version": "1.0.0", "ICD": { "library_path": "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0", "api_version": "1.3.204" } }' > /etc/vulkan/icd.d/nvidia_icd.json
 
-# Set PATH to include conda
-ENV PATH=/opt/conda/bin:$PATH
+# Set env vars for Vulkan loader and Mesa (force NVIDIA adapter)
+# ENV VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+# ENV MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
 
-# Copy over environment.yml for RL API and app
-COPY src/environment.yml .
+# Optional: Suppress XDG/DISPLAY warnings (create runtime dir)
+ENV XDG_RUNTIME_DIR=/tmp/runtime-root
+RUN mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 
-# Accept Anaconda Terms of Service for the channels
-RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
-RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+WORKDIR /workspaces/PhoenX_RL
 
-# Create the conda environment from environment.yml
-RUN conda env create -f environment.yml
+# Use Isaac Sim Python
+RUN /isaac-sim/python.sh -m pip install --upgrade pip setuptools wheel
 
-# Set the default environment (replace 'rl_env' with the name in your environment.yml)
-ENV CONDA_DEFAULT_ENV=rl_env
+COPY requirements.txt .
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir -r requirements.txt
 
-# Use the conda environment in subsequent commands
-SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
+# Explicitly install AutoROM in Isaac Sim Python (ensures it's available)
+# RUN /isaac-sim/python.sh -m pip install --no-cache-dir AutoROM
 
-# Install PyTorch with CUDA support (ensure it's CUDA 12.6 compatible; adjust if needed)
-RUN pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+# RUN /isaac-sim/python.sh AutoROM --accept-license
 
-# Install Gymnasium Robotics directly from Repo for Mujoco v4 support
-RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
+# Tell ale-py where the ROMs are (root is the user in this image)
+ENV ALE_PY_ROM_PATH=/root/.local/share/AutoROM/
 
-# Install additional Python packages for profiling (e.g., TensorBoard for Torch Profiler visualization)
-RUN pip install tensorboard torch-tb-profiler
+# (Optional) Gymnasium Robotics
+RUN /isaac-sim/python.sh -m pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 
-# # Set environment variables for MuJoCo
-# ENV MUJOCO_GL="egl"
-# ENV PYOPENGL_PLATFORM="egl"
-ENV MUJOCO_GL="osmesa"
-ENV PYOPENGL_PLATFORM="osmesa"
-# ENV LD_LIBRARY_PATH="/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}"
-# ENV MUJOCO_PATH="/root/.mujoco/mujoco-3.1.4"
 
-# Add app directory to python path
-ENV PYTHONPATH="/workspaces/PhoenX_RL"
 
-# Run accept license command for AutoROM do download all roms needed for Atari ale
-RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.11/site-packages/ale_py/roms
+# Mujoco headless (if you use mujoco outside Isaac Sim)
+ENV MUJOCO_GL=osmesa
+ENV PYOPENGL_PLATFORM=osmesa
 
-# Install Isaac Sim via pip (requires EULA acceptance)
-RUN pip install "isaacsim[all,extscache]==5.0.0" --extra-index-url https://pypi.nvidia.com
-
-# Set up Isaac Sim environment and install Isaac Lab
-RUN git clone git@github.com:isaac-sim/IsaacLab.git
-RUN ./isaaclab.sh --install
-
-# Set working directory
-WORKDIR /app
-
-# Copy your app from your host to the container
-COPY src/ /app/
-
-# Verify CUDA installation with nvcc
-RUN nvcc --version
-
-# Verify CUDA availability in PyTorch
-# RUN python -c "import torch; print(f'CUDA version: {torch.version.cuda}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Number of CUDA devices: {torch.cuda.device_count()}')"
-
-# (Optional) Set the entry point to your application
-# CMD ["conda", "run", "-n", "rl_env", "python", "your_script.py"]
+# Keep your project on sys.path
+ENV PYTHONPATH=/workspaces/PhoenX_RL
