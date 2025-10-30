@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 import ray
 import json
 from typing import Optional
