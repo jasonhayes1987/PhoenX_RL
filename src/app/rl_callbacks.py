@@ -8,7 +8,7 @@ import numpy as np
 import torch as T
 import wandb
 
-import wandb_support
+from . import wandb_support
 
 
 class Callback():

@@ -9,28 +9,28 @@ from pathlib import Path
 import time
 from collections import deque
 import logging
-from logging_config import get_logger
+from .logging_config import get_logger
 import copy
-from encoder import CustomJSONEncoder, serialize_env_spec
+from .encoder import CustomJSONEncoder, serialize_env_spec
 # from moviepy.editor import ImageSequenceClip
 from umap import UMAP
 import plotly.express as px
 
-from icm import ICM
-from rl_callbacks import WandbCallback, Callback
-from rl_callbacks import load as callback_load
-from models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, CriticModel, ActorModel
-from schedulers import ScheduleWrapper
-from adaptive_kl import AdaptiveKL
-from buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, Buffer
-from normalizer import Normalizer, SharedNormalizer
-from noise import Noise, NormalNoise, UniformNoise, OUNoise
+from .icm import ICM
+from .rl_callbacks import WandbCallback, Callback
+from .rl_callbacks import load as callback_load
+from .models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, CriticModel, ActorModel
+from .schedulers import ScheduleWrapper
+from .adaptive_kl import AdaptiveKL
+from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, Buffer
+from .normalizer import Normalizer, SharedNormalizer
+from .noise import Noise, NormalNoise, UniformNoise, OUNoise
 import wandb
-import wandb_support
-from torch_utils import set_seed, get_device, move_to_device, VarianceScaling_
-from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from . import wandb_support
+from .torch_utils import set_seed, get_device, move_to_device, VarianceScaling_
+from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 # from utils import render_video, build_env_wrapper_obj, check_for_inf_or_NaN
-from utils import *
+from .utils import *
 
 import torch as T
 import torch.nn as nn
@@ -42,9 +42,10 @@ import gymnasium_robotics
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
 
+from isaaclab.app import AppLauncher
 
 
-from agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_full_return
+from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_full_return
 
 
 # Agent class
@@ -55,6 +56,8 @@ class Agent:
                  env: EnvWrapper,
                  curiosity: Optional[ICM] = None,
                  callbacks: Optional[list[Callback]] = None,
+                 obs_key: str = 'observation',
+                 goal_key: str | None = None,
                  save_dir: str = "models/",
                  device: Optional[str | T.device] = None,
                  log_level: str = 'info',
@@ -67,6 +70,8 @@ class Agent:
             self.env = env
             self.curiosity = curiosity
             self.callbacks = self._initialize_callbacks(callbacks)
+            self.obs_key = obs_key
+            self.goal_key = goal_key
             self.device = get_device(device)
 
             # Set internal attributes
@@ -115,9 +120,14 @@ class Agent:
         except Exception as e:
             self.logger.error(f"Error initializing callbacks: {e}", exc_info=True)
 
-    def _initialize_run(self, num_envs: int, seed: int | None = None, training: bool = True, **kwargs):
+    def _initialize_run(self, seed: int | None = None, training: bool = True, **kwargs):
         """
         Initializes the environment, seeds, and tracking variables for training.
+        Args:
+            seed (int | None): Seed for the environment. If None, a random seed is used.
+            training (bool): Whether the agent is training or testing.
+            render_mode (str|None): Render mode for the environment. Defaults to None. 'headless' or 'gui' if using Isaac Sim.
+            **kwargs: Additional keyword arguments.
         """
         if getattr(self, '_initialized', False):
             return
@@ -138,24 +148,30 @@ class Agent:
         # Set internal attributes
         seed = seed if seed else np.random.randint(1000)
         set_seed(seed)
-        env = self.base_agent.env.clone(num_envs, seed)
-        states, _ = env.reset()
+        # Launch Isaac Sim AppLauncher if render_mode == 'headless' or 'gui'
+        # if render_mode == 'headless' or render_mode == 'gui':
+        #     DEVICE = "cuda:0"
+        #     headless = render_mode == 'headless'
+        #     app_launcher = AppLauncher(headless=headless, device=DEVICE)
+        #     simulation_app = app_launcher.app
+        # env = self.base_agent.env.clone(num_envs, seed, render_mode)
+        states, _ = self.base_agent.env.reset()
 
         # Add initial states to normalizer if it exists and training
         if training:
             if self.base_agent.state_normalizer:
                 if isinstance(states, dict):
-                    self.base_agent.state_normalizer.add(T.tensor(states['observation'], dtype=T.float32, device=self.base_agent.state_normalizer.device.type))
+                    self.base_agent.state_normalizer.add(T.tensor(states[self.base_agent.obs_key], dtype=T.float32, device=self.base_agent.state_normalizer.device.type))
                 else:
                     self.base_agent.state_normalizer.add(T.tensor(states, dtype=T.float32, device=self.base_agent.state_normalizer.device.type))
 
             if self.base_agent.goal_normalizer:
-                self.base_agent.goal_normalizer.add(T.tensor(states['desired_goal'], dtype=T.float32, device=self.base_agent.goal_normalizer.device.type))
+                self.base_agent.goal_normalizer.add(T.tensor(states[self.base_agent.goal_key], dtype=T.float32, device=self.base_agent.goal_normalizer.device.type))
 
         # Set callbacks
         if self.base_agent.callbacks:
             config = self.get_config()
-            config.update({'num_envs': num_envs, 'seed': seed})
+            config.update({'num_envs': self.env.num_envs, 'seed': seed})
             config.update(kwargs)
             #DEBUG
             print(config)
@@ -185,16 +201,16 @@ class Agent:
 
         # Return dict with initialized params
         return {
-            'env': env,
+            # 'env': env,
             'step': 0,
             'states': states,
             'best_reward': -np.inf,
-            'completed_episodes': np.zeros(num_envs),
-            'episode_scores': np.zeros(num_envs),
+            'completed_episodes': np.zeros(self.env.num_envs),
+            'episode_scores': np.zeros(self.env.num_envs),
             'score_history': deque(maxlen=100)
         }
 
-    def _preprocess_inputs(self, states: np.ndarray | dict | list[dict]):
+    def _preprocess_inputs(self, states: np.ndarray | T.Tensor | dict | list[dict]):
         """Preprocess the inputs for the agent by separating states into observation and desired goal
         if the observation space is goal-aware, then normalizes the state if the agent class has a state_normalizer
         attribute and goal if goal_normalizer is provided.
@@ -211,29 +227,39 @@ class Agent:
             goals_list = []
             for step_data in states:
                 if isinstance(step_data, dict):
-                    if not self.obs_key or not self.goal_key:
-                        raise ValueError("Goal-aware observation spaces require obs_key and goal_key to be set")
+                    if not self.obs_key:
+                        raise ValueError("Goal-aware observation spaces require obs_key to be set")
                     step_obs = step_data.get(self.obs_key)
-                    step_goal = step_data.get(self.goal_key)
+                    if self.goal_key:
+                        step_goal = step_data.get(self.goal_key)
+                    else:
+                        step_goal = None
                 else:
                     break
 
                 # Convert to tensor if needed
                 if not isinstance(step_obs, T.Tensor):
                     step_obs = T.tensor(step_obs, dtype=T.float32, device=self.device)
-                if not isinstance(step_goal, T.Tensor):
-                    step_goal = T.tensor(step_goal, dtype=T.float32, device=self.device)
-                    
+                if self.goal_key:
+                    if not isinstance(step_goal, T.Tensor):
+                        step_goal = T.tensor(step_goal, dtype=T.float32, device=self.device)
+                    goals_list.append(step_goal)
                 obs_list.append(step_obs)
-                goals_list.append(step_goal)
             obs = T.stack(obs_list, dim=0)
-            goals = T.stack(goals_list, dim=0)
+            
+            if self.goal_key:
+                goals = T.stack(goals_list, dim=0)
+            else:
+                goals = None
 
         elif isinstance(states, dict):
-            if not self.obs_key or not self.goal_key:
-                raise ValueError("Goal-aware observation spaces require obs_key and goal_key to be set")
+            if not self.obs_key:
+                raise ValueError("Goal-aware observation spaces require obs_key to be set")
             obs = states.get(self.obs_key)
-            goals = states.get(self.goal_key)
+            if self.goal_key:
+                goals = states.get(self.goal_key)
+            else:
+                goals = None
         else:
             obs = states
             goals = None
@@ -264,6 +290,12 @@ class Agent:
             obs_key (str | None): Key for observation in the state space dict (required for goal-aware observation spaces). Defaults to None.
             goal_key (str | None): Key for desired goal in the state space dict (required for goal-aware observation spaces). Defaults to None.
         """
+        if not isinstance(self.base_agent.env, GymnasiumWrapper):
+            self.base_agent.logger.info(
+                "Skipping render_episode for IsaacSim. Use render_mode='gui' to watch live "
+                "or run a separate post-training render pass."
+            )
+            return
 
         self.base_agent.logger.info(f"Rendering episode {episode} in {context} with seed {seed} and render_mode {render_mode}")
         env = self.base_agent.env.clone(seed=seed, render_mode=render_mode)
@@ -1273,7 +1305,7 @@ class DDPG(Agent):
         state_normalizer: Optional[Normalizer] = None,
         goal_normalizer: Optional[Normalizer] = None,
         obs_key: str = 'observation',
-        goal_key: str = 'desired_goal',
+        goal_key: str | None = None,
         achieved_goal_key: str = 'achieved_goal',
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
@@ -1281,7 +1313,7 @@ class DDPG(Agent):
         log_level: str = 'info'
     ):
         try:
-            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
+            super().__init__(env, curiosity, callbacks, obs_key, goal_key, save_dir, device, log_level)
             self.actor_model = actor_model
             self.critic_model = critic_model
             # set target actor and critic models
@@ -1387,13 +1419,12 @@ class DDPG(Agent):
     #     self.target_actor_model.load_state_dict(params['target_actor_model'])
     #     self.target_critic_model.load_state_dict(params['target_critic_model'])
 
-    def get_action(self, env: EnvWrapper, states: np.ndarray | dict, step: Optional[int] = None,
+    def get_action(self, states: np.ndarray | dict, step: Optional[int] = None,
                    testing: bool = False, rendering: bool = False)->np.ndarray:
         """
         Select an action based on the current policy.
 
         Args:
-            env: EnvWrapper: The environment wrapper.
             states: np.ndarray: The current states.
             step: Optional[int]: The current step.
             testing: bool: if testing the action.
@@ -1412,10 +1443,10 @@ class DDPG(Agent):
                 
         # if random number is less than epsilon or in warmup, sample random action
         elif np.random.random() < self.action_epsilon or step <= self.warmup:
-            return env.action_space.sample()
+            return self.env.action_space.sample()
         
         else:
-            noise = self.noise(env.action_space.shape)
+            noise = self.noise(self.env.action_space.shape)
             if self.noise_schedule:
                 noise *= self.noise_schedule.get_factor()
             
@@ -1423,8 +1454,8 @@ class DDPG(Agent):
                 _, pi = self.actor_model(states, goals)
             
             # Convert the action space bounds to a tensor on the same device
-            action_space_high = T.tensor(env.action_space.high, dtype=T.float32, device=self.actor_model.device)
-            action_space_low = T.tensor(env.action_space.low, dtype=T.float32, device=self.actor_model.device)
+            action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
+            action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
             action = (pi + noise).clip(action_space_low, action_space_high)
 
             # noise_np = noise.cpu().detach().numpy()
@@ -1654,7 +1685,7 @@ class DDPG(Agent):
                 if name in target_buffers:
                     target_buffers[name].copy_(main_buffers[name])
 
-    def _step(self, env: EnvWrapper, step: int, states: np.ndarray, max_episodes: int, episode_scores: np.ndarray,
+    def _step(self, step: int, states: np.ndarray, max_episodes: int, episode_scores: np.ndarray,
               completed_episodes: np.ndarray, score_history: deque[float], best_reward: float,
               learn: bool = True, training: bool = True):
 
@@ -1662,11 +1693,11 @@ class DDPG(Agent):
         if training:
             if type(self.noise) == OUNoise:
                 self.noise.reset()
-        actions = self.get_action(env, states, step, testing=not training)
+        actions = self.get_action(states, step, testing=not training)
         # Format actions
-        actions = env.format_actions(actions)
-        next_states, rewards, dones, infos = env.step(actions)
-        episode_scores += rewards
+        actions = self.env.format_actions(actions)
+        next_states, rewards, dones, infos = self.env.step(actions)
+        episode_scores += rewards.flatten().cpu().numpy()
 
         if training:
             self.replay_buffer.add(
@@ -1678,9 +1709,14 @@ class DDPG(Agent):
             )
             # Update normalizer if state_normalizer
             if self.state_normalizer:
-                self.state_normalizer.add(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
+                if not isinstance(next_states, T.Tensor):
+                    next_states = T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type)
+                self.state_normalizer.add(next_states)
             if self.goal_normalizer:
-                self.goal_normalizer.add(T.tensor(next_states[self.achieved_goal_key], dtype=T.float32, device=self.goal_normalizer.device.type))
+                if not isinstance(next_states[self.goal_key], T.Tensor):
+                    next_states[self.goal_key] = T.tensor(next_states[self.goal_key], dtype=T.float32, device=self.goal_normalizer.device.type)
+                
+                self.goal_normalizer.add(next_states[self.goal_key])
 
         done_episodes = np.flatnonzero(dones) # Get indices of completed episodes
         episode_logs = []
@@ -1736,11 +1772,10 @@ class DDPG(Agent):
             'done': completed_episodes.sum() >= max_episodes
         }
 
-    def train(self, num_episodes: int, num_envs: int = 1, steps_per_learn: int = 1, render_freq: int = 0, seed: int | None = None):
+    def train(self, num_episodes: int, steps_per_learn: int = 1, render_freq: int = 0, seed: int | None = None):
         """Trains the model for 'episodes' number of episodes."""
 
-        init_dict = self._initialize_run(num_envs, seed, num_episodes=num_episodes)
-        env = init_dict['env']
+        init_dict = self._initialize_run(seed=seed, num_episodes=num_episodes)
         step = init_dict['step']
         states = init_dict['states']
         episode_scores = init_dict['episode_scores']
@@ -1759,7 +1794,7 @@ class DDPG(Agent):
             # Determine if step should perform update
             learn = step % steps_per_learn == 0
             # Perform train step
-            step_result = self._step(env, step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn)
+            step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn)
             # Update states, episode scores, completed episodes, and score history
             states = step_result['next_states']
             episode_scores = step_result['episode_scores']
@@ -1794,13 +1829,12 @@ class DDPG(Agent):
             for callback in self.callbacks:
                 callback.on_train_end(logs=episode_log)
         
-        env.close()
+        self.env.close()
        
-    def test(self, num_episodes: int, num_envs: int = 1, render_freq: int = 0, seed: int | None = None):
+    def test(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
         """Runs a test over 'num_episodes'."""
 
-        init_dict = self._initialize_run(num_envs, seed, training=False)
-        env = init_dict['env']
+        init_dict = self._initialize_run(seed, training=False)
         step = init_dict['step']
         states = init_dict['states']
         episode_scores = init_dict['episode_scores']
@@ -1811,7 +1845,7 @@ class DDPG(Agent):
         while completed_episodes.sum() < num_episodes:
             # Increment step counter
             step += 1
-            step_result = self._step(env, step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn = False, training = False)
+            step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn = False, training = False)
             states = step_result['next_states']
             episode_scores = step_result['episode_scores']
             completed_episodes = step_result['completed_episodes']
@@ -1840,7 +1874,7 @@ class DDPG(Agent):
             for callback in self.callbacks:
                 callback.on_test_end(logs=episode_log)
 
-        env.close()
+        self.env.close()
 
     def get_config(self):
         return {
@@ -2843,7 +2877,7 @@ class SAC(Agent):
     #     self.value_model.load_state_dict(params['value_model'])
     #     self.target_value_model.load_state_dict(params['target_value_model'])
 
-    def get_action(self, env: EnvWrapper, states: np.ndarray, step: Optional[int] = None, testing: bool = False, rendering: bool = False)->np.ndarray:
+    def get_action(self, env: EnvWrapper, states: np.ndarray | T.Tensor | dict | list[dict], step: Optional[int] = None, testing: bool = False, rendering: bool = False)->np.ndarray:
         """
         Select an action based on the current policy.
 
@@ -2864,7 +2898,7 @@ class SAC(Agent):
             with T.no_grad():
                 dist, _, _ = self.actor_model(states, goals)
                 action = dist.mean
-            return action.cpu().detach().numpy()
+            return action.detach()
                 
         # if random number is less than epsilon or in warmup, sample random action
         elif step <= self.warmup:
@@ -2880,7 +2914,7 @@ class SAC(Agent):
             action_space_low = T.tensor(env.action_space.low, dtype=T.float32, device=self.actor_model.device)
             action = action.clip(action_space_low, action_space_high)
 
-            return action.cpu().detach().numpy()
+            return action.detach()
 
     def learn(self, step: int):
         
@@ -3135,7 +3169,7 @@ class SAC(Agent):
                 if name in target_buffers:
                     target_buffers[name].copy_(main_buffers[name])
 
-    def _step(self, env: EnvWrapper, step: int, states: np.ndarray, max_episodes: int, episode_scores: np.ndarray,
+    def _step(self, env: EnvWrapper, step: int, states: np.ndarray | T.Tensor | dict | list[dict], max_episodes: int, episode_scores: np.ndarray,
               completed_episodes: np.ndarray, score_history: deque[float], best_reward: float,
               learn: bool = True, training: bool = True):
 
@@ -3208,10 +3242,10 @@ class SAC(Agent):
             'done': completed_episodes.sum() >= max_episodes
         }
 
-    def train(self, num_episodes: int, num_envs: int, steps_per_learn: int = 1, render_freq: int = 0, seed: int | None = None):
+    def train(self, num_episodes: int, num_envs: int, steps_per_learn: int = 1, render_mode: str = 'headless', render_freq: int = 0, seed: int | None = None):
         """Trains the model for 'episodes' number of episodes."""
 
-        init_dict = self._initialize_run(num_envs, seed, num_episodes=num_episodes)
+        init_dict = self._initialize_run(num_envs, seed, num_episodes=num_episodes, render_mode=render_mode)
         env = init_dict['env']
         step = init_dict['step']
         states = init_dict['states']

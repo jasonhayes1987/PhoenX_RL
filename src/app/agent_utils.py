@@ -5,16 +5,16 @@ from typing import Dict, Any, List, Optional
 import torch as T
 import torch.nn as nn
 # from models import ValueModel, StochasticContinuousPolicy, ActorModel, CriticModel, StochasticDiscretePolicy
-from models import *
+from .models import *
 # from env_wrapper import EnvWrapper
-from env_wrapper import *
+from .env_wrapper import *
 # from buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
-from buffer import *
+from .buffer import *
 # from noise import Noise
-from noise import *
-from normalizer import Normalizer
-from rl_callbacks import load as callback_load, WandbCallback, RayWandbCallback
-from schedulers import ScheduleWrapper
+from .noise import *
+from .normalizer import Normalizer
+from .rl_callbacks import load as callback_load, WandbCallback, RayWandbCallback
+from .schedulers import ScheduleWrapper
 
 def compute_n_step_return(
     rewards: T.Tensor,           # [batch_size, N]
@@ -94,7 +94,7 @@ def get_agent_class_from_type(agent_type: str):
     Returns:
         The agent class
     """
-    from rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, HER, SAC
+    from .rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, HER, SAC
     agent_classes = {
         "PPO": PPO,
         "DDPG": DDPG,
