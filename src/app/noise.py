@@ -1,7 +1,7 @@
 import torch as T
 from torch.distributions import uniform, normal
 import numpy as np
-from torch_utils import get_device
+from .torch_utils import get_device
 from typing import Optional
 
 class Noise:

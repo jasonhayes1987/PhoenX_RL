@@ -14,7 +14,7 @@ import gymnasium as gym
 import wandb
 from scipy.stats import zscore
 import plotly.graph_objs as go
-import utils
+from .utils import *
 
 
 def save_model_artifact(file_path: str, project_name: str, model_is_best: bool = False):

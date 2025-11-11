@@ -1,7 +1,7 @@
 import json
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec, WrapperSpec
-from env_wrapper import GymnasiumWrapper
+from .env_wrapper import GymnasiumWrapper
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):

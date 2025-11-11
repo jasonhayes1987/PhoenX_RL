@@ -1,9 +1,9 @@
 import torch as T
 import numpy as np
 import gymnasium as gym
-from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
-from utils import build_env_wrapper_obj
-from torch_utils import get_device
+from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from .utils import build_env_wrapper_obj
+from .torch_utils import get_device
 from typing import Optional, Tuple, List, Any, Dict
 from collections import defaultdict
 import math
@@ -222,17 +222,26 @@ class ReplayBuffer(Buffer):
         self,
         env: EnvWrapper,
         buffer_size: int = 100000,
-        goal_shape: Optional[Tuple[int]] = None,
+        # goal_shape: Optional[Tuple[int]] = None,
         N: int = 1,
-        device: Optional[str] = None,
+        obs_key: str = 'observation',
+        goal_key: str | None = None,
+        device: str | T.device | None = None,
     ):
         super().__init__(env, buffer_size, N, device)
-        self.goal_shape = goal_shape
+        # self.goal_shape = goal_shape
+        self.obs_key = obs_key
+        self.goal_key = goal_key
         
         if isinstance(self.env.single_observation_space, gym.spaces.Dict):
-            self._obs_space_shape = self.env.single_observation_space['observation'].shape
+            self._obs_space_shape = self.env.single_observation_space[self.obs_key].shape
+            if self.goal_key is not None:
+                self._goal_space_shape = self.env.single_observation_space[self.goal_key].shape
+            else:
+                self._goal_space_shape = None
         else:
             self._obs_space_shape = self.env.single_observation_space.shape
+            self._goal_space_shape = None
 
         self.states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
         self.actions = T.zeros((buffer_size, N, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
@@ -240,10 +249,10 @@ class ReplayBuffer(Buffer):
         self.next_states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
         self.dones = T.zeros((buffer_size, N), dtype=T.int8, device=self.device)
         
-        if self.goal_shape is not None:
-            self.desired_goals = T.zeros((buffer_size, N, *self.goal_shape), dtype=T.float32, device=self.device)
-            self.state_achieved_goals = T.zeros((buffer_size, N, *self.goal_shape), dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals = T.zeros((buffer_size, N, *self.goal_shape), dtype=T.float32, device=self.device)
+        if self.goal_key is not None and self._goal_space_shape is not None:
+            self.desired_goals = T.zeros((buffer_size, N, *self._goal_space_shape), dtype=T.float32, device=self.device)
+            self.state_achieved_goals = T.zeros((buffer_size, N, *self._goal_space_shape), dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals = T.zeros((buffer_size, N, *self._goal_space_shape), dtype=T.float32, device=self.device)
         
         # self.counter = 0
         self.gen = np.random.default_rng()
@@ -285,7 +294,7 @@ class ReplayBuffer(Buffer):
             dones = dones[:, np.newaxis]
             # dones = dones.unsqueeze(1)
 
-        if self.goal_shape is not None:
+        if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             if state_achieved_goals.ndim == 2:
@@ -304,7 +313,7 @@ class ReplayBuffer(Buffer):
         self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
         self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
 
-        if self.goal_shape is not None:
+        if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
@@ -325,7 +334,7 @@ class ReplayBuffer(Buffer):
         # sorted_sequences = zip(*sequences) # zips metrics together
         # sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
         # return sequence_stack
-        if self.goal_shape is not None:
+        if self.goal_key is not None and self._goal_space_shape is not None:
             return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices], self.desired_goals[indices])
         else:
             return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices])
@@ -341,7 +350,7 @@ class ReplayBuffer(Buffer):
         self.dones.zero_()
         self.counter = 0
         
-        if self.goal_shape is not None:
+        if self.goal_key is not None and self._goal_space_shape is not None:
             self.desired_goals.zero_()
             self.state_achieved_goals.zero_()
             self.next_state_achieved_goals.zero_()
@@ -359,7 +368,7 @@ class ReplayBuffer(Buffer):
             device = self.device
 
         env = build_env_wrapper_obj(self.env.config)
-        return ReplayBuffer(env, self.buffer_size, self.goal_shape, device)
+        return ReplayBuffer(env, self.buffer_size, self.obs_key, self.goal_key, device)
     
     def get_config(self) -> Dict[str, Any]:
         return {
@@ -367,7 +376,8 @@ class ReplayBuffer(Buffer):
             'config': {
                 "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,
-                "goal_shape": self.goal_shape,
+                "obs_key": self.obs_key,
+                "goal_key": self.goal_key,
                 "N": self.N,
                 "device": self.device.type
             }
@@ -679,7 +689,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         beta_update_freq: int = 10,
         priority: str = 'rank',
         normalize: bool = False,  # Only applies to proportional priority strategy
-        goal_shape: Optional[Tuple[int]] = None,
+        obs_key: str = 'observation',
+        goal_key: str = 'desired_goal',
         epsilon: float = 1e-6,
         N: int = 1,
         device: Optional[str] = None,
@@ -687,13 +698,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         if priority not in ['proportional', 'rank']:
             raise ValueError(f"Invalid priority type: {priority} (must be 'proportional' or 'rank')")
 
-        super().__init__(env, buffer_size, goal_shape, N, device)
+        super().__init__(env, buffer_size, obs_key, goal_key, N, device)
         self.alpha = alpha
         self.beta_start = beta_start
         self.beta_iter = beta_iter
         self.priority = priority
         self.normalize = normalize
-        self.goal_shape = goal_shape
+        self.obs_key = obs_key
+        self.goal_key = goal_key
         self.epsilon = epsilon
         self.beta_update_freq = beta_update_freq
         self.beta = self.beta_start
@@ -750,7 +762,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             dones = dones[:, np.newaxis]
             # dones = dones.unsqueeze(1)
 
-        if self.goal_shape is not None:
+        if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             if state_achieved_goals.ndim == 2:
@@ -770,7 +782,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
         self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
 
-        if self.goal_shape is not None:
+        if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
@@ -839,7 +851,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         # sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
         # return sequence_stack, weights, probs, indices
 
-        if self.goal_shape is not None: 
+        if self.goal_key is not None and self._goal_space_shape is not None: 
             return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices], self.desired_goals[indices], weights, probs, indices)
         else:
             return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], weights, probs, indices)
@@ -902,7 +914,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
                 "beta_update_freq": self.beta_update_freq,
                 "priority": self.priority,
                 "normalize": self.normalize,
-                "goal_shape": self.goal_shape,
+                "obs_key": self.obs_key,
+                "goal_key": self.goal_key,
                 "epsilon": self.epsilon,
                 "N": self.N,
                 "device": self.device.type
@@ -926,7 +939,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.beta_update_freq,
             self.priority, 
             self.normalize,
-            self.goal_shape, 
+            self.obs_key,
+            self.goal_key,
             self.epsilon,
             device,
             self.N

@@ -3,7 +3,7 @@ import os
 import torch as T
 import numpy as np
 from moviepy import ImageSequenceClip
-from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from gymnasium.envs.registration import EnvSpec
 
 

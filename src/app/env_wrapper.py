@@ -1,8 +1,23 @@
+import sys
+import os
+
+from pydantic_core.core_schema import str_schema
+
+# Use environment variable for IsaacLab path, with fallback to relative path
+ISAACLAB_PATH = os.environ.get('ISAACLAB_PATH', os.path.join(os.path.dirname(__file__), '..', '..', 'IsaacLab', 'source'))
+ISAACLAB_TASKS_PATH = os.path.join(ISAACLAB_PATH, 'isaaclab_tasks')
+
+sys.path.append(ISAACLAB_PATH)
+sys.path.append(ISAACLAB_TASKS_PATH)
+
 import json
+import dataclasses
 from typing import Optional, Dict, List
 from abc import ABC, abstractmethod
 from collections import deque
 import numpy as np
+import torch as T
+
 import gymnasium as gym
 import gymnasium_robotics
 from gymnasium.envs.registration import EnvSpec, WrapperSpec
@@ -175,6 +190,22 @@ class NStepReward(gym.Wrapper):
         # print(f'n-step trajectory step info:{info}')
         return next_state, reward, terminated, truncated, info
 
+    @property
+    def observation_space(self):
+        return self.env.observation_space
+    
+    @property
+    def action_space(self):
+        return self.env.action_space
+
+    @property
+    def single_action_space(self):
+        return self.env.single_action_space
+
+    @property
+    def single_observation_space(self):
+        return self.env.single_observation_space
+
 WRAPPER_REGISTRY = {
     "AtariPreprocessing": {
         "cls": AtariPreprocessing,
@@ -339,11 +370,11 @@ class EnvWrapper(ABC):
         """
         json_config = self.to_json()
         clone = self.from_json(json_config)
-        clone.env = clone._initialize_env(num_envs, seed, render_mode)
+        # clone.env = clone._initialize_env(num_envs, seed, render_mode)
         return clone
 
     @abstractmethod
-    def format_actions(self, actions, testing: bool = False):
+    def format_actions(self, actions: np.ndarray | T.Tensor, testing: bool = False):
         """
         Format actions for the environment.
 
@@ -430,6 +461,8 @@ class EnvWrapper(ABC):
             if config['type'] == 'GymnasiumWrapper':
                 return GymnasiumWrapper.from_json(json_string)
             # Add more conditions here for other subclasses if they exist
+            elif config['type'] == 'IsaacSimWrapper':
+                return IsaacSimWrapper.from_json(json_string)
             else:
                 raise ValueError(f"Unknown environment wrapper type: {config['type']}")
         except KeyError as e:
@@ -525,7 +558,9 @@ class GymnasiumWrapper(EnvWrapper):
         
         return states, rewards, dones, infos
     
-    def format_actions(self, actions: np.ndarray):
+    def format_actions(self, actions: np.ndarray | T.Tensor):
+        if isinstance(actions, T.Tensor):
+            actions = actions.cpu().numpy()
         if isinstance(self.action_space, gym.spaces.Box):
             # if testing:
             #     num_envs = 1
@@ -631,27 +666,134 @@ class GymnasiumWrapper(EnvWrapper):
             raise ValueError(f"Environment wrapper error: {config}, {e}")
     
 class IsaacSimWrapper(EnvWrapper):
-    def __init__(self, env_spec):
+    def __init__(self, cfg: str, num_envs: int = 1, wrappers: Optional[list[dict]] = None, render_mode: Optional[str] = 'headless',
+                 seed: Optional[int] = None, obs_key: str = 'observation', goal_key: str | None = None):
         """
         Placeholder wrapper for Isaac Sim environments.
 
         This class is a template and needs implementation based on Isaac Sim's API.
         """
-        pass
+        self.cfg = cfg
+        self.num_envs = num_envs
+        self.wrappers = wrappers
+        self.render_mode = render_mode
+        self.obs_key = obs_key
+        self.goal_key = goal_key
+        if seed is None:
+            seed = np.random.randint(1000)
+        self.seed = seed
+        self.env = self._initialize_env()
+
+    def _initialize_env(self):
+        """
+        Initialize the Isaac Sim environment with unique seeds for each environment.
+        """
+        import importlib
+
+        try:
+            import omni.kit.app as kit_app
+            self.app = kit_app.get_app()
+        except Exception:
+            self.app = None
+        if self.app is None:
+            from isaaclab.app import AppLauncher
+            app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0")
+            self.app = app_launcher.app
+        
+        from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
+
+        module_path, class_name = self.cfg.split(':')
+        cfg_class = getattr(importlib.import_module(module_path), class_name)
+        cfg = cfg_class()
+        #DEBUG
+        # print(f'IsaacSimWrapper initialize_env cfg: {cfg}')
+        cfg.scene.num_envs = self.num_envs
+        cfg.sim.device = "cuda:0"
+        cfg.seed = self.seed
+
+        # Need to close env at self.env before instantiating new
+        # if hasattr(self, 'env'):
+        #     self.env.close()
+        #     self.env = None
+
+        env = ManagerBasedRLEnv(cfg=cfg)
+        if self.wrappers:
+            for wrapper in self.wrappers:
+                if wrapper['type'] in WRAPPER_REGISTRY:
+                    default_params = WRAPPER_REGISTRY[wrapper['type']]["default_params"].copy()
+                    override_params = wrapper.get("params", {})
+                    final_params = {**default_params, **override_params}
+                    env = WRAPPER_REGISTRY[wrapper['type']]["cls"](env, **final_params)
+        return env
     
-    def format_actions(self, actions, testing: bool = False):
+    def format_actions(self, actions: np.ndarray | T.Tensor):
         """
         Format actions for Isaac Sim environment.
         
         Args:
             actions: Actions to format.
-            testing (bool): Whether in testing mode (default: False).
             
         Returns:
             Any: Formatted actions.
         """
-        # Placeholder implementation - needs to be implemented based on Isaac Sim's API
+        if isinstance(actions, np.ndarray):
+            return T.tensor(actions, dtype=T.float32)
         return actions
+
+    @property
+    def observation_space(self):
+        return self.env.observation_space
+    
+    @property
+    def action_space(self):
+        return self.env.action_space
+
+    @property
+    def single_action_space(self):
+        return self.env.single_action_space
+
+    @property
+    def single_observation_space(self):
+        return self.env.single_observation_space
+    
+    def reset(self):
+        if self.seed is not None:
+            return self.env.reset(seed=self.seed)
+        return self.env.reset()
+
+    def close(self):
+        self.env.close()
+        self.app.close()
+
+    def step(self, action: T.Tensor):
+        states, rewards, terms, truncs, info = self.env.step(action)
+        dones = T.logical_or(terms, truncs)
+        return states, rewards, dones, info
+
+    @property
+    def config(self):
+        return {
+            "type": self.__class__.__name__,
+            "cfg": self.cfg,
+            "num_envs": self.num_envs,
+            "wrappers": self.wrappers if self.wrappers else [],
+            "render_mode": self.render_mode,
+            "seed": self.seed,
+            "obs_key": self.obs_key,
+            "goal_key": self.goal_key,
+        }
+
+    def to_json(self):
+        return json.dumps(self.config)
+
+    @classmethod
+    def from_json(cls, json_string):
+        config = json.loads(json_string)
+        cfg = config['cfg']
+        # cfg = ManagerBasedRLEnvCfg(**cfg_dict)
+        wrappers = config.get("wrappers", [])
+        return cls(cfg, wrappers)
+
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):

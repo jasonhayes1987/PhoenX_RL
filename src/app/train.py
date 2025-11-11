@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 import json
 import time
-from logging_config import get_logger
+from .logging_config import get_logger
 import argparse
 import subprocess
 import ray
@@ -13,8 +13,8 @@ import torch as T
 import wandb
 from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
 
-from rl_agents import load_agent
-from distributed_trainer import DistributedAgents
+from .rl_agents import load_agent
+from .distributed_trainer import DistributedAgents
 
 # Configure logging
 logger = get_logger(__name__, 'info')

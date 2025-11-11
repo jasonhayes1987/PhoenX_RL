@@ -1,6 +1,6 @@
 import torch as T
 import numpy as np
-from torch_utils import get_device
+from .torch_utils import get_device
 from typing import Optional
 
 class Normalizer:

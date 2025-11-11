@@ -17,11 +17,11 @@ from torch.distributions import Categorical, Beta, Normal
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
-from torch_utils import get_device, VarianceScaling_
-from logging_config import get_logger
-from env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
-from utils import check_for_inf_or_NaN
-from schedulers import ScheduleWrapper
+from app.torch_utils import get_device, VarianceScaling_
+from app.logging_config import get_logger
+from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from app.utils import check_for_inf_or_NaN
+from app.schedulers import ScheduleWrapper
 
 class Model(nn.Module):
     """
@@ -38,7 +38,8 @@ class Model(nn.Module):
         device (str): The device ('cpu' or 'cuda') to run the model on.
     """
     def __init__(self, env: EnvWrapper, layer_config, optimizer_params: dict = None,
-                 lr_scheduler: ScheduleWrapper = None, device=None, log_level: str = 'info'):
+                 lr_scheduler: ScheduleWrapper = None, obs_key: str = 'observation', goal_key: str = 'desired_goal',
+                 device=None, log_level: str = 'info'):
         """
         Sets up the module dictionary of layers (most of which
         will be lazy).
@@ -56,6 +57,8 @@ class Model(nn.Module):
         self.layers = nn.ModuleDict()
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
         self.lr_scheduler = lr_scheduler
+        self.obs_key = obs_key
+        self.goal_key = goal_key
         self.device = get_device(device)
         self.logger = get_logger(__name__, log_level)
 
@@ -84,10 +87,14 @@ class Model(nn.Module):
         obs_space = (self.env.single_observation_space if hasattr(self.env, "single_observation_space") 
                         else self.env.observation_space)
         # Dry run forward pass to initialize lazy modules
-        # Check if the observation space is a dictionary for goal-aware environments
-        if isinstance(obs_space, gym.spaces.Dict):
-            obs_shape = obs_space['observation'].shape
-            goal_shape = obs_space['desired_goal'].shape
+        # Check if the observation space is a dictionary AND contains goal-conditioned keys
+        is_goal_conditioned = (isinstance(obs_space, gym.spaces.Dict) and 
+                              self.obs_key in obs_space and 
+                              self.goal_key in obs_space)
+        
+        if is_goal_conditioned:
+            obs_shape = obs_space[self.obs_key].shape
+            goal_shape = obs_space[self.goal_key].shape
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
             goal_input = T.ones((32, *goal_shape), device=self.device, dtype=T.float)
             # Check if CriticModel instance to pass action dummy values
@@ -100,7 +107,19 @@ class Model(nn.Module):
                 with T.no_grad():
                     _ = self.forward(state_input, goal_input)
         else:
-            obs_shape = obs_space.shape
+            # Handle both regular Box spaces and non-goal-conditioned Dict spaces
+            if isinstance(obs_space, gym.spaces.Dict):
+                # For non-goal-conditioned Dict spaces (like Isaac Sim), use the obs_key if it exists
+                # Otherwise, this might need to be handled differently based on your Isaac Sim setup
+                if self.obs_key in obs_space:
+                    obs_shape = obs_space[self.obs_key].shape
+                else:
+                    # Fallback: try to get the shape from the first available key
+                    # This is a heuristic - you may need to adjust based on your Isaac Sim environments
+                    first_key = list(obs_space.keys())[0]
+                    obs_shape = obs_space[first_key].shape
+            else:
+                obs_shape = obs_space.shape
             #DEBUG
             # print(f'init model obs_shape:{obs_shape}')
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
@@ -354,6 +373,8 @@ class StochasticDiscretePolicy(Model):
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
         distribution: str = 'categorical',
+        obs_key: str = 'observation',
+        goal_key: str | None = None,
         device: Optional[str | T.device] = None,
         log_level: str = 'info'
     ):
@@ -371,7 +392,7 @@ class StochasticDiscretePolicy(Model):
             log_level (str): logger level. Default=info.
         """
         
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
         self.output_config = output_layer_kernel
         self.distribution = distribution
 
@@ -529,6 +550,8 @@ class StochasticContinuousPolicy(Model):
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
         distribution: str = 'beta',
+        obs_key: str = 'observation',
+        goal_key: str | None = None,
         device: Optional[str | T.device] = None,
         log_level: str = 'info'
     ):
@@ -545,7 +568,7 @@ class StochasticContinuousPolicy(Model):
             device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
             log_level (str): logger level. Default=info.
         """
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
         self.output_config = output_layer_kernel
         self.distribution = distribution
         # Get the action space of the environment
@@ -709,6 +732,8 @@ class ValueModel(Model):
         output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
+        obs_key: str = 'observation',
+        goal_key: str | None = None,
         device = None,
         log_level: str = 'info'
     ):
@@ -723,7 +748,7 @@ class ValueModel(Model):
             lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
             device (str): Device for computation (default: 'cuda').
         """
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
         self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -793,7 +818,10 @@ class ValueModel(Model):
         else:
             device = self.device
 
-        env = GymnasiumWrapper(self.env.env_spec)
+        if isinstance(self.env, IsaacSimWrapper):
+            env = self.env  # Reuse existing instance
+        else:
+            env = EnvWrapper.from_json(self.env.to_json())
 
         cloned_model = ValueModel(
             env=env,
@@ -877,10 +905,12 @@ class ActorModel(Model):
                  output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper=None,
+                 obs_key: str = 'observation',
+                 goal_key: str | None = None,
                  device: str=None,
                  log_level: str='info'
                  ):
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, device, log_level)
+        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
         self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -933,7 +963,11 @@ class ActorModel(Model):
         else:
             device = self.device
 
-        env = GymnasiumWrapper(self.env.env_spec, self.env.wrappers)
+        if isinstance(self.env, IsaacSimWrapper):
+            env = self.env  # Reuse existing instance
+        else:
+            env = EnvWrapper.from_json(self.env.to_json())
+
         cloned_model = ActorModel(
             env=env,
             layer_config=self.layer_config.copy(),
@@ -1015,10 +1049,12 @@ class CriticModel(Model):
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper=None,
+                 obs_key: str = 'observation',
+                 goal_key: str | None = None,
                  device: str=None,
                  log_level: str='info'
                  ):
-        super().__init__(env, state_layers, optimizer_params, lr_scheduler, device, log_level)
+        super().__init__(env, state_layers, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
         self.env = env
         # self.state_config = state_layers # Stored as layer config in parent
         self.merged_config = merged_layers
@@ -1094,7 +1130,11 @@ class CriticModel(Model):
         else:
             device = self.device
 
-        env = GymnasiumWrapper(self.env.env_spec)
+        if isinstance(self.env, IsaacSimWrapper):
+            env = self.env  # Reuse existing instance
+        else:
+            env = EnvWrapper.from_json(self.env.to_json())
+            
         cloned_model = CriticModel(
             env=env,
             state_layers=self.layer_config.copy(),
