@@ -7,16 +7,22 @@ channels:
 dependencies:
   - python=3.11
   - pip
+  # Compiler toolchain (needed for building C++ extensions like box2d-py)
+  - cxx-compiler
+  - c-compiler
+  - make
+  - cmake=3.27  # Use CMake 3.x (4.x doesn't support projects requiring < 3.5 like egl_probe)
   - pylint
   - pytest
   - numpy
   - pandas
-  - numba
+  # - numba
   - umap-learn
   - pynndescent
   - matplotlib
   - seaborn
   - scikit-learn
+  - swig
   - astunparse
   - hypothesis
   - psutil
@@ -49,6 +55,7 @@ dependencies:
   # - opencv==4.11
   # - moviepy
   - pip:
+    # Core dependencies
     - expecttest!=0.2.0
     - optree>=0.9.1
     - ale-py
@@ -56,7 +63,9 @@ dependencies:
     - wandb
     - types-dataclasses
     - gymnasium[all]==1.2.0
-    # - gymnasium-robotics
     - decorator==4.0.2
-    - mcp
+    # - mcp
     - ipywidgets
+    # Note: PyTorch, Isaac Sim, and Gymnasium Robotics are installed separately
+    # via setup script because they require special index URLs or GitHub installs
+    # See setup_complete.sh for details
