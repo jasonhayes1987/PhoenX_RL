@@ -32,6 +32,7 @@ RENDER_MODE = 'headless' # 'headless' or 'gui'
 N = 1 # N-step return
 OBS_KEY = 'policy'
 GOAL_KEY = None
+ACH_GOAL_KEY = None
 
 # Launch the simulator in headless mode
 # app_launcher = AppLauncher(headless=True, device=DEVICE)
@@ -52,16 +53,19 @@ cfg = 'isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEn
 
 wrappers = [
     {
-        "type": "NStepReward",
+        "type": "VectorNStepReward",
         "params": {
-            "n": N
+            "n": N,
+            "obs_key": OBS_KEY,
+            "goal_key": GOAL_KEY,
+            "ach_goal_key": ACH_GOAL_KEY,
         }
     }
 ]
 
 # Create the env
 # env = ManagerBasedRLEnv(cfg=cfg)
-env = IsaacSimWrapper(cfg=cfg, num_envs=NUM_ENVS, wrappers=wrappers, render_mode=RENDER_MODE, seed=SEED)
+env = IsaacSimWrapper(cfg=cfg, num_envs=NUM_ENVS, wrappers=wrappers, render_mode=RENDER_MODE, seed=SEED, obs_key=OBS_KEY, goal_key=GOAL_KEY)
 
 
 # Your PhoenX RL agent (pseudo-code - replace with your class)
