@@ -1,27 +1,40 @@
 #!/bin/bash
+set -e  # Exit on error
 
-# Ensure Conda is available
-source /opt/conda/etc/profile.d/conda.sh
+echo "Setting up PhoenX RL environment..."
 
-# Create and activate the Conda environment from environment.yml
+# Step 1: Create Conda environment from environment.yml
+echo "Creating Conda environment from environment.yml..."
 conda env create -f environment.yml
+
+# Step 2: Activate environment
+echo "Activating rl_env..."
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate rl_env
 
-# Upgrade pip
-python -m pip install --upgrade pip
+# Step 3: Configure Poetry (disable virtualenv creation since we're in Conda)
+echo "Configuring Poetry..."
+poetry config virtualenvs.create false
 
-# Install CUDA-enabled PyTorch (matching your guide)
-pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+# Step 4: Install Poetry dependencies
+echo "Installing Poetry dependencies..."
+poetry install --with dev
 
-# Install Isaac Lab and Isaac Sim dependencies
-pip install isaaclab[isaacsim,all]==2.3.0 --extra-index-url https://pypi.nvidia.com
+# Step 5: Install special packages manually
+echo "Installing special packages (torch, torchvision, isaaclab, gymnasium-robotics)..."
 
-# Install Gymnasium Robotics from GitHub
+# PyTorch: Use CPU version (no GPU in Codespaces; change to cu128 if on GPU cloud)
+pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cpu
+
+# IsaacLab: Install base (Isaac Sim integration may fail without GPU/Isaac Sim installed)
+pip install isaaclab[all]==2.3.0 --extra-index-url https://pypi.nvidia.com
+# Note: Skip [isaacsim] extra to avoid GPU-dependent errors; add it if needed
+
+# Gymnasium Robotics
 pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 
-# Optional: Verify installations
-python -c "import torch; print('PyTorch CUDA:', torch.cuda.is_available())"
-python -c "import isaaclab; print('Isaac Lab installed')"
-python -c "import gymnasium_robotics; print('Gymnasium Robotics installed')"
+# Step 6: Verify setup (CUDA will be False due to no GPU)
+echo "Verifying setup..."
+poetry run python -c "import torch, isaaclab, gymnasium_robotics; print('Imports OK'); print('CUDA:', torch.cuda.is_available())"
 
-echo "Setup complete! Environment 'rl_env' is ready."
+echo "Setup complete! Environment is ready (activate with 'conda activate rl_env')."
