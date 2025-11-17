@@ -27,7 +27,7 @@ echo "Installing special packages (torch, torchvision, isaaclab, gymnasium-robot
 pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cpu
 
 # IsaacLab: Install base (Isaac Sim integration may fail without GPU/Isaac Sim installed)
-pip install isaaclab[all]==2.3.0 --extra-index-url https://pypi.nvidia.com
+pip install isaaclab[isaacsim,all]==2.3.0 --extra-index-url https://pypi.nvidia.com
 # Note: Skip [isaacsim] extra to avoid GPU-dependent errors; add it if needed
 
 # Gymnasium Robotics
