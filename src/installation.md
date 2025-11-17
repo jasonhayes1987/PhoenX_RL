@@ -11,16 +11,34 @@ This guide provides step-by-step instructions for setting up the PhoenX RL envir
 
 ## Installation Steps
 
-### 1. Create Conda Environment
+### Automated Setup (Recommended)
+
+For a quick setup, run the automated script in the project root:
+
+```
+./setup.ps1  # On Windows PowerShell (run as administrator if needed)
+```
+
+This script will:
+- Create the conda environment from environment.yml
+- Configure Poetry
+- Install all dependencies (Poetry + manual pip for specials)
+- Verify the setup
+
+If the script fails, follow the manual steps below.
+
+### Manual Setup Steps
+
+#### 1. Create Conda Environment
 
 Navigate to the project directory and create the conda environment:
 
 ```
-cd E:\Documents\Programming\Projects\Reinforcement\PhoenX_RL\src
+cd {PATH TO REPO}\PhoenX_RL
 conda env create -f environment.yml
 ```
 
-### 2. Activate Environment
+#### 2. Activate Environment
 
 Activate the newly created environment:
 
@@ -28,35 +46,24 @@ Activate the newly created environment:
 conda activate rl_env
 ```
 
-### 3. Upgrade pip
+#### 3. Configure Poetry
 
-Ensure pip is up to date:
-
-```
-python.exe -m pip install --upgrade pip
-```
-
-### 4. Install CUDA-Enabled PyTorch
-
-Install PyTorch with CUDA 12.8 support:
+Set Poetry to use the conda environment:
 
 ```
-pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+poetry config virtualenvs.create false
+poetry install --with dev
 ```
 
-### 5. Install Isaac Lab and Isaac Sim
+#### 4. Install Special Packages
 
-Install Isaac Lab along with Isaac Sim dependencies:
+Install PyTorch, IsaacLab, and Gymnasium Robotics:
 
 ```
+pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 pip install isaaclab[isaacsim,all]==2.3.0 --extra-index-url https://pypi.nvidia.com
+pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 ```
-
-### 6. Install Gymnasium Robotics
-
-'''
--m pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
-'''
 
 ## Verification
 
