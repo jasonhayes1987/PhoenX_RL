@@ -1,0 +1,27 @@
+name: rl_env
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - cudatoolkit
+  - cxx-compiler
+  - c-compiler
+  - make
+  - cmake=3.27
+  - swig  # For building wrappers (e.g., box2d-py in Gymnasium)
+  - mujoco=3.1.6  # GPU physics (conda provides optimized binary)
+  - mpi4py  # Distributed training (compiled, GPU-aware)
+  - ffmpeg  # Video processing (binary, often used with GPU)
+  - ipykernel  # For Jupyter (base)
+  - pip  # Needed for Poetry/pip interop
+  # Optional: Keep if you need conda's optimized versions (e.g., MKL for speed)
+  # - numpy
+  # - pandas
+  # - matplotlib
+  # - seaborn
+  # - scikit-learn
+  - pip:  # Pip-installed packages (added here for reproducibility)
+    - poetry>=1.8.0  # Installs Poetry in the env
