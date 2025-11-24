@@ -1,25 +1,25 @@
 {
-    "name": "PhoenX RL Dev Container",
-    "image": "mcr.microsoft.com/devcontainers/miniconda:1-miniconda3",
-    "features": {
-      "ghcr.io/devcontainers/features/python:1": {
-        "version": "3.11"
-      },
-      "ghcr.io/devcontainers-contrib/features/cuda:1": {
-        "version": "12.8"
-      },
-      "ghcr.io/devcontainers-contrib/features/conda:1": {
-        "version": "latest"
-      }
+  "name": "PhoenX RL Environment",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+  "features": {
+    "ghcr.io/devcontainers-contrib/features/miniconda:2": {
+      "minicondaVersion": "latest"
     },
-    "postCreateCommand": "bash .devcontainer/post-create.sh",
-    "customizations": {
-      "vscode": {
-        "extensions": [
-          "ms-python.python",
-          "ms-toolsai.jupyter",
-          "github.copilot"
-        ]
-      }
+    "ghcr.io/devcontainers-contrib/features/poetry:2": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-vscode.powershell"  // Optional: For any PowerShell needs
+      ]
     }
   }
+}
