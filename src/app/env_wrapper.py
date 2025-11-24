@@ -1,6 +1,5 @@
 import sys
 import os
-from tkinter import N
 
 from pydantic_core.core_schema import str_schema
 
@@ -211,18 +210,22 @@ class NStepReward(gym.Wrapper):
         return self.env.single_observation_space
 
 class VectorNStepReward(gym.Wrapper):
-    def __init__(self, env: VectorEnv, n: int,
+    def __init__(self, env: VectorEnv, n: int, goal_aware: bool = False,
                  obs_key: str = 'observation', goal_key: str | None = None, ach_goal_key: str | None = None):
         """
         Initialize the vectorized wrapper for n-step trajectories.
         Args:
             env (gym.VectorEnv | ManagerBasedRLEnv): The vectorized environment to wrap.
             n (int): The number of previous steps to include in the trajectory.
+            goal_aware (bool): Is the observation space goal-aware?
+            obs_key (str): The key for the observation space.
+            goal_key (str | None): The key for the goal space.
+            ach_goal_key (str | None): The key for the achieved goal space.
         """
         super().__init__(env)
         self.n = n
         self.num_envs = env.num_envs if hasattr(env, 'num_envs') else 1
-        self.is_dict_obs = isinstance(self.env.single_observation_space, gym.spaces.Dict) if hasattr(self.env, 'single_observation_space') else isinstance(self.env.observation_space, gym.spaces.Dict)
+        self.goal_aware = goal_aware
         self.obs_key = obs_key
         self.goal_key = goal_key
         self.ach_goal_key = ach_goal_key
@@ -234,13 +237,16 @@ class VectorNStepReward(gym.Wrapper):
         self.n_next_states = [deque(maxlen=self.n) for _ in range(self.num_envs)]
         self.n_dones = [deque(maxlen=self.n) for _ in range(self.num_envs)]
 
-        if self.is_dict_obs:
+        if self.goal_aware:
             self.n_state_achieved_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
             self.n_next_state_achieved_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
             self.n_desired_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
 
+        # Initialize trajectory buffers
+        self._initialize_trajectory_buffers()
+
         self.current_states = None
-        self.step_counts = np.zeros(self.num_envs, dtype=np.int32)
+        self.step_counts = T.zeros(self.num_envs, dtype=T.int32)
 
     def reset(self, **kwargs):
         """
@@ -263,30 +269,13 @@ class VectorNStepReward(gym.Wrapper):
             self.n_rewards[i].clear()
             self.n_next_states[i].clear()
             self.n_dones[i].clear()
-            if self.is_dict_obs:
+            if self.goal_aware:
                 self.n_state_achieved_goals[i].clear()
                 self.n_next_state_achieved_goals[i].clear()
                 self.n_desired_goals[i].clear()
 
-        # Get shapes from single spaces
-        single_obs_space = self.env.single_observation_space if hasattr(self.env, 'single_observation_space') else self.env.observation_space
-        single_act_space = self.env.single_action_space if hasattr(self.env, 'single_action_space') else self.env.action_space
-        state_shape = single_obs_space[self.obs_key].shape if self.is_dict_obs else single_obs_space.shape
-        action_shape = single_act_space.shape
-        goal_shape = single_obs_space[self.goal_key].shape if self.is_dict_obs and self.goal_key is not None else None
-
-        # Initialize deques with zeros per env
-        for i in range(self.num_envs):
-            for _ in range(self.n):
-                self.n_states[i].append(np.zeros(state_shape))
-                self.n_actions[i].append(np.zeros(action_shape))
-                self.n_rewards[i].append(0.0)
-                self.n_next_states[i].append(np.zeros(state_shape))
-                self.n_dones[i].append(0)
-                if self.is_dict_obs:
-                    self.n_state_achieved_goals[i].append(np.zeros(goal_shape))
-                    self.n_next_state_achieved_goals[i].append(np.zeros(goal_shape))
-                    self.n_desired_goals[i].append(np.zeros(goal_shape))
+        # Initialize trajectory buffers (reset to zeros)
+        self._initialize_trajectory_buffers()
 
         self.current_states = states
 
@@ -310,8 +299,8 @@ class VectorNStepReward(gym.Wrapper):
         self.step_counts += 1
 
         for i in range(self.num_envs):
-            state = self.current_states[self.obs_key][i] if self.is_dict_obs else self.current_states[i]
-            next_state = next_states[self.obs_key][i] if self.is_dict_obs else next_states[i]
+            state = self.current_states[self.obs_key][i] if self.obs_key is not None else self.current_states[i]
+            next_state = next_states[self.obs_key][i] if self.obs_key is not None else next_states[i]
 
             if self.step_counts[i] == 1:
                 # Bootstrap first step across n
@@ -321,7 +310,7 @@ class VectorNStepReward(gym.Wrapper):
                     self.n_rewards[i].append(rewards[i])
                     self.n_next_states[i].append(next_state)
                     self.n_dones[i].append(dones[i])
-                    if self.is_dict_obs:
+                    if self.goal_aware:
                         self.n_state_achieved_goals[i].append(self.current_states[self.ach_goal_key][i] if self.ach_goal_key is not None else None)
                         self.n_next_state_achieved_goals[i].append(next_states[self.ach_goal_key][i] if self.ach_goal_key is not None else None)
                         self.n_desired_goals[i].append(self.current_states[self.goal_key][i] if self.goal_key is not None else None)
@@ -333,7 +322,7 @@ class VectorNStepReward(gym.Wrapper):
                 self.n_rewards[i].append(rewards[i])
                 self.n_next_states[i].append(next_state)
                 self.n_dones[i].append(dones[i])
-                if self.is_dict_obs:
+                if self.goal_aware:
                     self.n_state_achieved_goals[i].append(self.current_states[self.ach_goal_key][i] if self.ach_goal_key is not None else None)
                     self.n_next_state_achieved_goals[i].append(next_states[self.ach_goal_key][i] if self.ach_goal_key is not None else None)
                     self.n_desired_goals[i].append(self.current_states[self.goal_key][i] if self.goal_key is not None else None)
@@ -348,19 +337,47 @@ class VectorNStepReward(gym.Wrapper):
 
     def _build_trajectory(self):
         """Construct batched n-step trajectory dict from per-env deques."""
+        print(f'self.n_states:{self.n_states}')
+        print(f'self.n_actions:{self.n_actions}')
+        print(f'self.n_rewards:{self.n_rewards}')
+        print(f'self.n_next_states:{self.n_next_states}')
+        print(f'self.n_dones:{self.n_dones}')
+
         trajectory = {
-            'states': np.stack([np.array(d) for d in self.n_states]),
-            'actions': np.stack([np.array(d) for d in self.n_actions]),
-            'rewards': np.stack([np.array(d) for d in self.n_rewards]),
-            'next_states': np.stack([np.array(d) for d in self.n_next_states]),
-            'dones': np.stack([np.array(d) for d in self.n_dones])
+            'states': T.stack([T.stack(list(d)) for d in self.n_states]),
+            'actions': T.stack([T.stack(list(d)) for d in self.n_actions]),
+            'rewards': T.stack([T.stack(list(d)) for d in self.n_rewards]),
+            'next_states': T.stack([T.stack(list(d)) for d in self.n_next_states]),
+            'dones': T.stack([T.stack(list(d)) for d in self.n_dones])
         }
-        if self.is_dict_obs:
-            trajectory['state_achieved_goals'] = np.stack([np.array(d) for d in self.n_state_achieved_goals])
-            trajectory['next_state_achieved_goals'] = np.stack([np.array(d) for d in self.n_next_state_achieved_goals])
-            trajectory['desired_goals'] = np.stack([np.array(d) for d in self.n_desired_goals])
+        if self.goal_aware:
+            trajectory['state_achieved_goals'] = T.stack([T.stack(list(d)) for d in self.n_state_achieved_goals])
+            trajectory['next_state_achieved_goals'] = T.stack([T.stack(list(d)) for d in self.n_next_state_achieved_goals])
+            trajectory['desired_goals'] = T.stack([T.stack(list(d)) for d in self.n_desired_goals])
         
         return trajectory
+
+    def _initialize_trajectory_buffers(self):
+        """Initialize trajectory deques with zeros."""
+        # Get shapes from single spaces
+        single_obs_space = self.env.single_observation_space if hasattr(self.env, 'single_observation_space') else self.env.observation_space
+        single_act_space = self.env.single_action_space if hasattr(self.env, 'single_action_space') else self.env.action_space
+        state_shape = single_obs_space[self.obs_key].shape if self.obs_key is not None else single_obs_space.shape
+        action_shape = single_act_space.shape
+        goal_shape = single_obs_space[self.goal_key].shape if self.goal_aware and self.goal_key is not None else None
+
+        # Initialize deques with zeros per env
+        for i in range(self.num_envs):
+            for _ in range(self.n):
+                self.n_states[i].append(T.zeros(state_shape))
+                self.n_actions[i].append(T.zeros(action_shape))
+                self.n_rewards[i].append(T.zeros(1))
+                self.n_next_states[i].append(T.zeros(state_shape))
+                self.n_dones[i].append(T.zeros(1))
+                if self.goal_aware:
+                    self.n_state_achieved_goals[i].append(T.zeros(goal_shape))
+                    self.n_next_state_achieved_goals[i].append(T.zeros(goal_shape))
+                    self.n_desired_goals[i].append(T.zeros(goal_shape))
 
     @property
     def single_action_space(self):
@@ -876,6 +893,8 @@ class IsaacSimWrapper(EnvWrapper):
         """
         import importlib
 
+        # Initialize Omniverse app FIRST - this is critical for Isaac Lab
+        # The app must be running before importing ManagerBasedRLEnv
         try:
             import omni.kit.app as kit_app
             self.app = kit_app.get_app()
@@ -886,7 +905,7 @@ class IsaacSimWrapper(EnvWrapper):
             app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0")
             self.app = app_launcher.app
         
-        from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
+        from isaaclab.envs import ManagerBasedRLEnv
 
         module_path, class_name = self.cfg.split(':')
         cfg_class = getattr(importlib.import_module(module_path), class_name)
