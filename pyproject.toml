@@ -19,29 +19,26 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
-# Moved from yml (pure Python or wheels)
 pylint = "^3.2.0"
 pytest = "^7.4.0"
 umap-learn = "^0.5.5"
 pynndescent = "^0.5.12"
 astunparse = "^1.6.3"
 hypothesis = "^6.1.0"
-psutil = "^6.0.0"
 pyyaml = "^6.0.1"
 requests = "^2.31.0"
 setuptools = "^70.0.0"
-typing-extensions = ">=4.8.0"
-numpy = "^1.26.4"
+typing-extensions = "4.12.2"
+numpy = "^2.1.0"
 pandas = "^2.2.3"
 matplotlib = "^3.9.2"
 seaborn = "^0.13.2"
 scikit-learn = "^1.5.2"
 sympy = "^1.13.0"
-filelock = "^3.15.0"
 networkx = "^3.3.0"
 jinja2 = "^3.1.0"
 fsspec = "^2024.6.0"
-packaging = "^24.1"
+packaging = "23.0"
 lark = "^1.2.0"
 ale-py = "^0.9.0"
 flask = "^3.0.0"
@@ -51,19 +48,14 @@ dash-bootstrap-components = "^1.6.0"
 python-dotenv = "^1.0.0"
 ray = {extras = ["tune", "default"], version = "^2.10.0"}  # ray-all
 optuna = "^3.6.0"
+opencv-python = "4.11.0.86"
 hyperopt = "^0.2.7"
 ipywidgets = "^8.1.0"
 decorator = "==4.0.2"
 expecttest = "^0.3.0"
 optree = ">=0.9.1"
-wandb = "^0.17.0"
-gymnasium = {extras = ["all"], version = "==1.1.0"}
-
-# Specials: Install manually after Poetry (see installation steps)
-# torch = "==2.7.0"  # pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
-# torchvision = "==0.22.0"  # Same
-# isaaclab = {version = "==2.3.0", extras = ["isaacsim", "all"]}  # pip install isaaclab[isaacsim,all]==2.3.0 --extra-index-url https://pypi.nvidia.com
-# gymnasium-robotics = {git = "https://github.com/Farama-Foundation/Gymnasium-Robotics.git", tag = "v1.4.0"}  # pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
+wandb = "^0.16.4"
+gymnasium = {extras = ["all"], version = "==1.2.0"}
 
 [tool.poetry.group.dev.dependencies]  # Development dependencies (testing, linting)
 pytest = "^7.4.0"

@@ -259,66 +259,66 @@ class ReplayBuffer(Buffer):
 
     def add(
         self,
-        states: np.ndarray,
-        actions: np.ndarray,
-        rewards: np.ndarray,
-        next_states: np.ndarray,
-        dones: np.ndarray,
-        state_achieved_goals: Optional[np.ndarray] = None,
-        next_state_achieved_goals: Optional[np.ndarray] = None,
-        desired_goals: Optional[np.ndarray] = None,
+        states: T.Tensor,
+        actions: T.Tensor,
+        rewards: T.Tensor,
+        next_states: T.Tensor,
+        dones: T.Tensor,
+        state_achieved_goals: Optional[T.Tensor] = None,
+        next_state_achieved_goals: Optional[T.Tensor] = None,
+        desired_goals: Optional[T.Tensor] = None,
     ) -> None:
         batch_size = len(states)
         start_idx = self.counter % self.buffer_size
         end_idx = (self.counter + batch_size) % self.buffer_size
 
         if end_idx > start_idx:
-            indices = np.arange(start_idx, end_idx)
+            indices = T.arange(start_idx, end_idx, device=self.device)
         else:
-            indices = np.concatenate([np.arange(start_idx, self.buffer_size), np.arange(0, end_idx)])
+            indices = T.cat([T.arange(start_idx, self.buffer_size, device=self.device), T.arange(0, end_idx, device=self.device)])
 
         # Add N dimension of 1 at index 1 if values are 2d
         if states.ndim == 2:
-            states = states[:, np.newaxis, :]
+            states = states[:, T.newaxis, :]
             # states = states.unsqueeze(1)
         if actions.ndim == 2:
-            actions = actions[:, np.newaxis, :]
+            actions = actions[:, T.newaxis, :]
             # actions = actions.unsqueeze(1)
         if rewards.ndim == 1:
-            rewards = rewards[:, np.newaxis]
+            rewards = rewards[:, T.newaxis]
             # rewards = rewards.unsqueeze(1)
         if next_states.ndim == 2:
-            next_states = next_states[:, np.newaxis, :]
+            next_states = next_states[:, T.newaxis, :]
             # next_states = next_states.unsqueeze(1)
         if dones.ndim == 1:
-            dones = dones[:, np.newaxis]
+            dones = dones[:, T.newaxis]
             # dones = dones.unsqueeze(1)
 
         if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             if state_achieved_goals.ndim == 2:
-                state_achieved_goals = state_achieved_goals[:, np.newaxis, :]
+                state_achieved_goals = state_achieved_goals[:, T.newaxis, :]
                 # state_achieved_goals = state_achieved_goals.unsqueeze(1)
             if next_state_achieved_goals.ndim == 2:
-                next_state_achieved_goals = next_state_achieved_goals[:, np.newaxis, :]
+                next_state_achieved_goals = next_state_achieved_goals[:, T.newaxis, :]
                 # next_state_achieved_goals = next_state_achieved_goals.unsqueeze(1)
             if desired_goals.ndim == 2:
-                desired_goals = desired_goals[:, np.newaxis, :]
+                desired_goals = desired_goals[:, T.newaxis, :]
                 # desired_goals = desired_goals.unsqueeze(1)
 
-        self.states[indices] = T.tensor(states, dtype=T.float32, device=self.device)
-        self.actions[indices] = T.tensor(actions, dtype=T.float32, device=self.device)
-        self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
-        self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
-        self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
+        # self.states[indices] = T.tensor(states, dtype=T.float32, device=self.device)
+        # self.actions[indices] = T.tensor(actions, dtype=T.float32, device=self.device)
+        # self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
+        # self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
+        # self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
 
-        if self.goal_key is not None and self._goal_space_shape is not None:
-            if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
-                raise ValueError("Goal data must be provided when using goals")
-            self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals[indices] = T.tensor(next_state_achieved_goals, dtype=T.float32, device=self.device)
-            self.desired_goals[indices] = T.tensor(desired_goals, dtype=T.float32, device=self.device)
+        # if self.goal_key is not None and self._goal_space_shape is not None:
+        #     if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
+        #         raise ValueError("Goal data must be provided when using goals")
+        #     self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
+        #     self.next_state_achieved_goals[indices] = T.tensor(next_state_achieved_goals, dtype=T.float32, device=self.device)
+        #     self.desired_goals[indices] = T.tensor(desired_goals, dtype=T.float32, device=self.device)
 
         self.counter += batch_size
 

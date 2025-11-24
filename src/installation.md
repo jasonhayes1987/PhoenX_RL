@@ -61,7 +61,7 @@ Install PyTorch, IsaacLab, and Gymnasium Robotics:
 
 ```
 pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
-pip install isaaclab[isaacsim,all]==2.3.0 --extra-index-url https://pypi.nvidia.com
+pip install isaaclab[isaacsim,all]==2.2.0 --extra-index-url https://pypi.nvidia.com
 pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 ```
 
