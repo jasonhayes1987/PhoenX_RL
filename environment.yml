@@ -23,5 +23,5 @@ dependencies:
   # - matplotlib
   # - seaborn
   # - scikit-learn
-  - pip:  # Pip-installed packages (added here for reproducibility)
-    - poetry>=1.8.0  # Installs Poetry in the env
+  # - pip:
+  #   - poetry==1.8.3
