@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Test script for IsaacSimWrapper outside of Jupyter notebook.
-This avoids the event loop conflicts that occur in notebooks.
-"""
-
 import sys
 import os
 
