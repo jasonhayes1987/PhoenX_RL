@@ -1,5 +1,5 @@
-import nest_asyncio
-nest_asyncio.apply()
+# import nest_asyncio
+# nest_asyncio.apply()
 
 import sys
 import os
@@ -24,15 +24,17 @@ from app.env_wrapper import IsaacSimWrapper
 import app.rl_callbacks as rl_callbacks
 
 # PARAMS
-NUM_ENVS = 32
-NUM_EPISODES = 100
+NUM_ENVS = 10
+NUM_EPISODES = 1000
 DEVICE = "cuda:0"
 SEED = 42
 RENDER_MODE = 'headless' # 'headless' or 'gui'
-N = 1 # N-step return
+N = 3 # N-step return
 OBS_KEY = 'policy'
 GOAL_KEY = None
 ACH_GOAL_KEY = None
+STEPS_PER_LEARN = 1
+RENDER_FREQ = 100
 
 # Launch the simulator in headless mode
 # app_launcher = AppLauncher(headless=True, device=DEVICE)
@@ -67,49 +69,6 @@ wrappers = [
 # env = ManagerBasedRLEnv(cfg=cfg)
 env = IsaacSimWrapper(cfg=cfg, num_envs=NUM_ENVS, wrappers=wrappers, render_mode=RENDER_MODE, seed=SEED, obs_key=OBS_KEY, goal_key=GOAL_KEY)
 
-
-# Your PhoenX RL agent (pseudo-code - replace with your class)
-# from your_phoenx_api import YourAgent  # Adjust to your module/agent class
-
-# agent = YourAgent(
-#     state_dim=env.observation_space.shape[0],
-#     action_dim=env.action_space.shape[0],
-#     device="cuda:0"
-# )  # e.g., SAC, PPO, etc.
-
-# Simple training loop (adapt to your API's train method)
-# num_episodes = 1000
-# obs, _ = env.reset()
-# print(f'observation space: {env.observation_space}')
-# print(f'observation space shape: {env.observation_space.shape}')
-# print(f'observation: {obs}')
-# print(f'action space: {env.action_space}')
-# print(f'action space shape: {env.action_space.sample().shape}')
-# print(f'action: {env.action_space.sample()}')
-# episode_rewards = torch.zeros(NUM_ENVS, device=DEVICE)
-# completed_episodes = torch.zeros(NUM_ENVS, device=DEVICE)
-
-# while completed_episodes.sum() < NUM_EPISODES:
-#     # done = False
-#     # while not done:
-#     # action = agent.act(obs)  # Your agent's policy
-#     action = env.action_space.sample()
-#     action = torch.Tensor(action)
-#     states, rewards, dones, info = env.step(action)
-#     #DEBUG
-#     # print(f'reward: {reward}')
-#     # print(f'episode_rewards: {episode_rewards}')
-#     episode_rewards += rewards
-#     # dones = torch.logical_or(terminated, truncated)
-#     done_episodes = torch.nonzero(dones)
-#     for episode in done_episodes:
-#         completed_episodes[episode] += 1
-#         print(f"Episode {completed_episodes.sum()}: Reward = {episode_rewards[episode].item()}")
-#         episode_rewards[episode] = 0
-#     obs = states
-
-# # Close the env and app
-# env.close()
 
 # build actor
 actor_optimizer = {'type': 'Adam','params': { 'lr': 0.001 }}
@@ -163,7 +122,7 @@ ddpg_agent = DDPG(
                 action_epsilon=0.2,
                 batch_size=128,
                 noise=noise,
-                grad_clip=40.0,
+                grad_clip=None,
                 warmup=100,
                 N=N,
                 state_normalizer=state_normalizer,
@@ -180,9 +139,10 @@ config = ddpg_agent.get_config()
 
 # Set train config and path
 train_config = {
-    'num_episodes': 100,
-    'steps_per_learn': 1,
-    'seed': 42,
+    'num_episodes': NUM_EPISODES,
+    'steps_per_learn': STEPS_PER_LEARN,
+    'render_freq': RENDER_FREQ,
+    'seed': SEED,
 }
 train_config_path = config["save_dir"] + 'train_config.json'
 with open(train_config_path, 'w') as f:

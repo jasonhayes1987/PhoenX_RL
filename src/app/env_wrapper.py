@@ -293,8 +293,15 @@ class VectorNStepReward(gym.Wrapper):
         # Convert to numpy if tensors
         # if isinstance(actions, T.Tensor):
         #     actions = actions.cpu().numpy()
-
+        #DEBUG
+        # print(f"VectorNStepReward step actions: {actions}")
         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
+        # #DEBUG
+        # print(f"VectorNStepReward step next_states: {next_states}")
+        # print(f"VectorNStepReward step rewards: {rewards}")
+        # print(f"VectorNStepReward step terminations: {terminations}")
+        # print(f"VectorNStepReward step truncations: {truncations}")
+        # print(f"VectorNStepReward step infos: {infos}")
         dones = terminations | truncations
         self.step_counts += 1
 
@@ -337,12 +344,6 @@ class VectorNStepReward(gym.Wrapper):
 
     def _build_trajectory(self):
         """Construct batched n-step trajectory dict from per-env deques."""
-        print(f'self.n_states:{self.n_states}')
-        print(f'self.n_actions:{self.n_actions}')
-        print(f'self.n_rewards:{self.n_rewards}')
-        print(f'self.n_next_states:{self.n_next_states}')
-        print(f'self.n_dones:{self.n_dones}')
-
         trajectory = {
             'states': T.stack([T.stack(list(d)) for d in self.n_states]),
             'actions': T.stack([T.stack(list(d)) for d in self.n_actions]),
@@ -542,7 +543,7 @@ class EnvWrapper(ABC):
         """
         pass
 
-    def clone(self, num_envs: int = 1, seed: Optional[int] = None, render_mode: Optional[str] = None) -> 'EnvWrapper':
+    def clone(self, **kwargs) -> 'EnvWrapper':
         """
         Create a new instance of the environment wrapper with the passed parameters.
 
@@ -550,14 +551,14 @@ class EnvWrapper(ABC):
             num_envs (int): Number of parallel environments (default: 1).
             seed (Optional[int]): Seed for the environment. If None, a random seed is used. (default: None).
             render_mode (Optional[str]): Render mode for the environment (default: None).
+            **kwargs: Additional keyword arguments to pass to the environment wrapper to override original values.
 
         Returns:
             EnvWrapper: A new instance of the environment wrapper.
         """
-        json_config = self.to_json()
-        clone = self.from_json(json_config)
-        # clone.env = clone._initialize_env(num_envs, seed, render_mode)
-        return clone
+        config = json.load(self.to_json())
+        config.update(kwargs)
+        return self.__class__.from_json(json.dumps(config))
 
     @abstractmethod
     def format_actions(self, actions: np.ndarray | T.Tensor, testing: bool = False):
@@ -665,14 +666,16 @@ class GymnasiumWrapper(EnvWrapper):
     and JSON-based serialization of Gymnasium environments.
     """
     def __init__(self, env_spec: EnvSpec, wrappers: Optional[list[dict]] = None, num_envs: int = 1,
-                 seed: Optional[int] = None, render_mode: Optional[str] = None):
+                 seed: Optional[int] = None, render: Optional[bool] = False):
         self.env_spec = env_spec
         self.wrappers = wrappers
         self.num_envs = 1
         if seed is None:
             seed = np.random.randint(1000)
         self.seed = seed
-        self.render_mode = render_mode
+        self.render_mode = None
+        if render:
+            self.render_mode = "rgb_array"
         self.env = self._initialize_env()
         
 
@@ -729,19 +732,21 @@ class GymnasiumWrapper(EnvWrapper):
             render_mode=self.render_mode
         )
 
-        # # Manually seed each sub-env
-        # for i, sub_env in enumerate(vec_env.envs):
-        #     sub_env.action_space.seed(seeds[i])
-        #     if hasattr(sub_env, 'seed'):
-        #         sub_env.seed(seeds[i])
-        #     if hasattr(sub_env.observation_space, 'seed'):
-        #         sub_env.observation_space.seed(seeds[i])
-
         # Apply vector-aware wrappers to the entire vec_env
         for cls, params in vector_wrappers:
             vec_env = cls(vec_env, **params)
 
         return vec_env
+
+    def render_frame(self)->np.ndarray:
+        """Renders a frame from the environment.
+        
+        Returns:
+            np.ndarray: The rendered frame.
+        """
+        frame = self.env.render()
+        
+        return frame[0] if frame.ndim == 4 else frame # Get only first env frame if envs > 1
         
 
     def reset(self):
@@ -837,8 +842,10 @@ class GymnasiumWrapper(EnvWrapper):
         """
         return {
             "type": self.__class__.__name__,
-            "env": self.env_spec.to_json(),
-            "wrappers": self.wrappers
+            "env_spec": self.env_spec.to_json(),
+            "wrappers": self.wrappers,
+            "num_envs": self.num_envs,
+            "seed": self.seed,
         }
     
     def to_json(self):
@@ -869,8 +876,8 @@ class GymnasiumWrapper(EnvWrapper):
             raise ValueError(f"Environment wrapper error: {config}, {e}")
     
 class IsaacSimWrapper(EnvWrapper):
-    def __init__(self, cfg: str, num_envs: int = 1, wrappers: Optional[list[dict]] = None, render_mode: Optional[str] = 'headless',
-                 seed: Optional[int] = None, obs_key: str = 'observation', goal_key: str | None = None):
+    def __init__(self, cfg:str, num_envs:int=1, wrappers:Optional[list[dict]]=None, render_mode:Optional[str]='headless',
+                 seed:Optional[int]=None, obs_key:str='observation', goal_key:str|None=None, _record_video:bool=False):
         """
         Placeholder wrapper for Isaac Sim environments.
 
@@ -886,6 +893,9 @@ class IsaacSimWrapper(EnvWrapper):
             seed = np.random.randint(1000)
         self.seed = seed
         self.env = self._initialize_env()
+        # Set internal attrs
+        self._record_video = _record_video
+        self._cam_name = None
 
     def _initialize_env(self):
         """
@@ -893,8 +903,6 @@ class IsaacSimWrapper(EnvWrapper):
         """
         import importlib
 
-        # Initialize Omniverse app FIRST - this is critical for Isaac Lab
-        # The app must be running before importing ManagerBasedRLEnv
         try:
             import omni.kit.app as kit_app
             self.app = kit_app.get_app()
@@ -902,10 +910,10 @@ class IsaacSimWrapper(EnvWrapper):
             self.app = None
         if self.app is None:
             from isaaclab.app import AppLauncher
-            app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0")
+            app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0", enable_cameras=True)
             self.app = app_launcher.app
         
-        from isaaclab.envs import ManagerBasedRLEnv
+        from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
 
         module_path, class_name = self.cfg.split(':')
         cfg_class = getattr(importlib.import_module(module_path), class_name)
@@ -915,6 +923,10 @@ class IsaacSimWrapper(EnvWrapper):
         cfg.scene.num_envs = self.num_envs
         cfg.sim.device = "cuda:0"
         cfg.seed = self.seed
+        if self._record_video:
+            cfg.scene.num_envs = 1
+            cfg.scene.clone_in_fabric = False
+            self._cam_name = self.get_rgb_camera(cfg)
 
         env = ManagerBasedRLEnv(cfg=cfg)
         if self.wrappers:
@@ -924,8 +936,72 @@ class IsaacSimWrapper(EnvWrapper):
                     override_params = wrapper.get("params", {})
                     final_params = {**default_params, **override_params}
                     env = WRAPPER_REGISTRY[wrapper['type']]["cls"](env, **final_params)
+        #DEBUG
+        print(f'scene: {env.env.scene}')
         return env
-    
+
+    def get_rgb_camera(self, cfg:'ManagerBasedRLEnvCfg', *, cam_name:str="render_cam", width:int=640, height:int=480)->str:
+        """Gets the RGB camera name from the scene if it exists, otherwise injects a new RGB camera with
+           name 'cam_name' into cfg
+           
+        Args:
+            cfg (ManagerBasedRLEnvCfg): The config object to modify.
+            cam_name (str): The name of the camera to inject if it doesn't exist.
+            width (int): The width of the camera.
+            height (int): The height of the camera.
+            
+        Returns:
+            str: The name of the RGB camera.
+        """
+        import isaaclab.sim as sim_utils
+        from isaaclab.sensors import TiledCameraCfg
+
+        # Check to see if RGB camera already exists in scene
+        for name, val in vars(cfg.scene).items():
+            if isinstance(val, TiledCameraCfg) and ("rgb" in (val.data_types or [])):
+                return name
+
+        # If no RGB camera exists, inject a new one
+        setattr(
+            cfg.scene,
+            cam_name,
+            TiledCameraCfg(
+                prim_path="{ENV_REGEX_NS}/Camera",
+                offset=TiledCameraCfg.OffsetCfg(
+                    pos=(-7.0, 0.0, 3.0),     # generic-ish fallback; tune if you want
+                    rot=(1.0, 0.0, 0.0, 0.0), # fallback quaternion; see note below
+                    convention="world",
+                ),
+                data_types=["rgb"],
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=24.0,
+                    focus_distance=400.0,
+                    horizontal_aperture=20.955,
+                    clipping_range=(0.1, 1000.0),
+                ),
+                width=width,
+                height=height,
+            ),
+        )
+        return cam_name
+
+    def render_frame(self)->np.ndarray:
+        """Renders a frame from the environment.
+        
+        Returns:
+            np.ndarray: The rendered frame.
+        """
+        cam = getattr(self.env.scene, self._cam_name)
+        frame = cam.data.output["rgb"]
+        frame = frame[0] if frame.ndim == 4 else frame # Get only first env frame if envs > 1
+
+        frame = frame.detach().cpu().numpy()
+        if frame.dtype != np.uint8:
+            frame = (frame * 255.0).clip(0, 255).astype(np.uint8)
+        
+        return frame
+
+        
     def format_actions(self, actions: np.ndarray | T.Tensor):
         """
         Format actions for Isaac Sim environment.
@@ -966,8 +1042,8 @@ class IsaacSimWrapper(EnvWrapper):
         self.app.close()
 
     def step(self, action: T.Tensor):
-        states, rewards, terms, truncs, info = self.env.step(action)
-        dones = T.logical_or(terms, truncs)
+        states, rewards, dones, info = self.env.step(action)
+
         return states, rewards, dones, info
 
     @property
@@ -989,10 +1065,12 @@ class IsaacSimWrapper(EnvWrapper):
     @classmethod
     def from_json(cls, json_string):
         config = json.loads(json_string)
+        #DEBUG
+        print(f'IsaacSimWrapper from_json config: {config}')
         cfg = config['cfg']
         # cfg = ManagerBasedRLEnvCfg(**cfg_dict)
         wrappers = config.get("wrappers", [])
-        return cls(cfg, wrappers)
+        return cls(cfg, wrappers=wrappers)
 
 
 class CustomJSONEncoder(json.JSONEncoder):

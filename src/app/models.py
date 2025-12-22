@@ -929,7 +929,6 @@ class ActorModel(Model):
     def forward(self, x, goal=None):
         x = self._preprocess_state(x)
         x = x.to(self.device)
-
         if goal is not None:
             goal = goal.to(self.device)
             x = T.cat([x, goal], dim=-1)
@@ -939,7 +938,9 @@ class ActorModel(Model):
 
         mu = self.output_layer["actor_mu"](x)
         pi = self.output_layer["actor_pi"](mu)
-        pi = pi * T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
+        if not T.isinf(T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)).any():
+             pi = pi * T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
+           
         return mu, pi
 
     def get_config(self):
