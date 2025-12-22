@@ -307,18 +307,17 @@ class ReplayBuffer(Buffer):
                 desired_goals = desired_goals[:, T.newaxis, :]
                 # desired_goals = desired_goals.unsqueeze(1)
 
-        # self.states[indices] = T.tensor(states, dtype=T.float32, device=self.device)
-        # self.actions[indices] = T.tensor(actions, dtype=T.float32, device=self.device)
-        # self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
-        # self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
-        # self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
+        # Store transitions (detach to avoid holding computation graphs)
+        self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
+        self.actions[indices] = actions.detach().to(device=self.device, dtype=T.float32)
+        self.rewards[indices] = rewards.detach().to(device=self.device, dtype=T.float32)
+        self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
+        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.int8)
 
-        # if self.goal_key is not None and self._goal_space_shape is not None:
-        #     if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
-        #         raise ValueError("Goal data must be provided when using goals")
-        #     self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
-        #     self.next_state_achieved_goals[indices] = T.tensor(next_state_achieved_goals, dtype=T.float32, device=self.device)
-        #     self.desired_goals[indices] = T.tensor(desired_goals, dtype=T.float32, device=self.device)
+        if self.goal_key is not None and self._goal_space_shape is not None:
+            self.state_achieved_goals[indices] = state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
+            self.next_state_achieved_goals[indices] = next_state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
+            self.desired_goals[indices] = desired_goals.detach().to(device=self.device, dtype=T.float32)
 
         self.counter += batch_size
 

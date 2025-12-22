@@ -210,18 +210,15 @@ class Agent:
             'score_history': deque(maxlen=100)
         }
 
-    def _preprocess_inputs(self, states: np.ndarray | T.Tensor | dict | list[dict]):
-        """Preprocess the inputs for the agent by separating states into observation and desired goal
-        if the observation space is goal-aware, then normalizes the state if the agent class has a state_normalizer
-        attribute and goal if goal_normalizer is provided.
-
+    def extract_states_goals(self, states: np.ndarray | T.Tensor | dict | list[dict]):
+        """Extract the states and goals from the passed states argument.
+        
         Args:
-            states (np.ndarray | dict | list[dict]): States to preprocess.
-
+            states (np.ndarray | T.Tensor | dict | list[dict]): States to extract from.
+        
         Returns:
-            tuple: Tuple of observation and desired goal.
+            tuple: Tuple of states and goals.
         """
-
         if isinstance(states, list):
             obs_list = []
             goals_list = []
@@ -268,6 +265,20 @@ class Agent:
             obs = T.tensor(obs, dtype=T.float32, device=self.device)
         if goals is not None and not isinstance(goals, T.Tensor):
             goals = T.tensor(goals, dtype=T.float32, device=self.device)
+        
+        return obs, goals
+
+    def _preprocess_inputs(self, states: np.ndarray | T.Tensor | dict | list[dict]):
+        """Preprocess the inputs for the agent by separating states into observation and desired goal
+        if the observation space is goal-aware.
+
+        Args:
+            states (np.ndarray | dict | list[dict]): States to preprocess.
+
+        Returns:
+            tuple: Tuple of observation and desired goal.
+        """
+        obs, goals = self.extract_states_goals(states)
         if self.state_normalizer:
             obs = self.state_normalizer.normalize(obs)
         if self.goal_normalizer:
@@ -279,26 +290,19 @@ class Agent:
         """Step function for the agent."""
         raise NotImplementedError("Subclasses must implement _step.")
 
-    def render_episode(self, episode: int, step: int, context: str = 'train', seed: Optional[int] = None, render_mode: str = "rgb_array"):
+    def render_episode(self, episode: int, step: int, context: str = 'train', seed: Optional[int] = None):
         """Render a single episode in a temporary environment, collect metrics, create video, and log to wandb.
 
         Args:
             episode (int): Episode number to render.
+            step (int): Current training/testing step (for wandb logging).
             context (str): Context of the episode (train or test). Defaults to 'train'.
             seed (Optional[int]): Seed for the episode. Defaults to None. If None, a random seed is used.
             render_mode (str): Render mode for the environment (default: "rgb_array").
-            obs_key (str | None): Key for observation in the state space dict (required for goal-aware observation spaces). Defaults to None.
-            goal_key (str | None): Key for desired goal in the state space dict (required for goal-aware observation spaces). Defaults to None.
         """
-        if not isinstance(self.base_agent.env, GymnasiumWrapper):
-            self.base_agent.logger.info(
-                "Skipping render_episode for IsaacSim. Use render_mode='gui' to watch live "
-                "or run a separate post-training render pass."
-            )
-            return
 
         self.base_agent.logger.info(f"Rendering episode {episode} in {context} with seed {seed} and render_mode {render_mode}")
-        env = self.base_agent.env.clone(seed=seed, render_mode=render_mode)
+        env = self.base_agent.env.clone()
         states, _ = env.reset()
         frames = []
         done = False
@@ -315,7 +319,7 @@ class Agent:
             actions = env.format_actions(actions)
             states, rewards, dones, _ = env.step(actions)
             episode_reward += rewards[0]
-            frame = env.env.render()[0]
+            frame = env.render_frame()
             frames.append(frame)
             done = dones[0]
             # states = next_states
@@ -1452,12 +1456,10 @@ class DDPG(Agent):
             
             with T.no_grad():
                 _, pi = self.actor_model(states, goals)
-            
             # Convert the action space bounds to a tensor on the same device
             action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.actor_model.device)
             action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.actor_model.device)
             action = (pi + noise).clip(action_space_low, action_space_high)
-
             # noise_np = noise.cpu().detach().numpy()
             # action_np = action.cpu().detach().numpy()
 
@@ -1708,17 +1710,14 @@ class DDPG(Agent):
                 infos['n-step trajectory']['dones']
             )
             # Update normalizer if state_normalizer
+            obs, goals = self.extract_states_goals(next_states)
             if self.state_normalizer:
-                if not isinstance(next_states, T.Tensor):
-                    next_states = T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type)
-                self.state_normalizer.add(next_states)
+                self.state_normalizer.add(obs)
             if self.goal_normalizer:
-                if not isinstance(next_states[self.goal_key], T.Tensor):
-                    next_states[self.goal_key] = T.tensor(next_states[self.goal_key], dtype=T.float32, device=self.goal_normalizer.device.type)
-                
-                self.goal_normalizer.add(next_states[self.goal_key])
+                self.goal_normalizer.add(goals)
 
-        done_episodes = np.flatnonzero(dones) # Get indices of completed episodes
+        # done_episodes = np.flatnonzero(dones) # Get indices of completed episodes
+        done_episodes = T.nonzero(dones, as_tuple=False).flatten() # Get indices of completed episodes
         episode_logs = []
         for i in done_episodes:
             # Increment completed episodes for env by 1
@@ -1732,12 +1731,12 @@ class DDPG(Agent):
             episode_log = {
                 'env': i,
                 'episode': int(completed_episodes.sum()),
-                'episode_reward': episode_scores[i].round(2),
-                'avg_reward': avg_reward.round(2)
+                'episode_reward': round(float(episode_scores[i]), 2),
+                'avg_reward': round(float(avg_reward), 2)
             }
             if training:
                 episode_log.update({
-                    'best_reward': best_reward.round(2),
+                    'best_reward': round(float(best_reward), 2),
                     'best': 1 if avg_reward > best_reward else 0
                 })
             episode_logs.append(episode_log)
@@ -1759,7 +1758,8 @@ class DDPG(Agent):
 
         # self._train_step_config["step_reward"] = rewards.mean()
         step_log.update({
-            'step_reward': rewards.mean()
+            'step_reward': rewards.mean(),
+            'actions': actions.mean()
         })
 
         return{
