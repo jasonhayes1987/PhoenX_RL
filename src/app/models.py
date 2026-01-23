@@ -86,6 +86,15 @@ class Model(nn.Module):
         """
         obs_space = (self.env.single_observation_space if hasattr(self.env, "single_observation_space") 
                         else self.env.observation_space)
+        #DEBUG
+        print(f'init model obs_space:{obs_space}')
+        print(f'init model obs_space type:{type(obs_space)}')
+        print(f'hasattr(obs_space, "spaces"): {hasattr(obs_space, "spaces")}')
+        if hasattr(obs_space, 'spaces'):
+            print(f'self.obs_key in obs_space.spaces: {self.obs_key in obs_space.spaces}')
+            print(f'obs_space.spaces keys: {list(obs_space.spaces.keys())}')
+        print(f'list(obs_space.keys()): {list(obs_space.keys()) if hasattr(obs_space, "keys") else "no keys method"}')
+        print(f'dir(obs_space): {[attr for attr in dir(obs_space) if not attr.startswith("_")]}')
         # Dry run forward pass to initialize lazy modules
         # Check if the observation space is a dictionary AND contains goal-conditioned keys
         is_goal_conditioned = (isinstance(obs_space, gym.spaces.Dict) and 
@@ -109,19 +118,17 @@ class Model(nn.Module):
         else:
             # Handle both regular Box spaces and non-goal-conditioned Dict spaces
             if isinstance(obs_space, gym.spaces.Dict):
-                # For non-goal-conditioned Dict spaces (like Isaac Sim), use the obs_key if it exists
-                # Otherwise, this might need to be handled differently based on your Isaac Sim setup
-                if self.obs_key in obs_space:
-                    obs_shape = obs_space[self.obs_key].shape
-                else:
-                    # Fallback: try to get the shape from the first available key
-                    # This is a heuristic - you may need to adjust based on your Isaac Sim environments
-                    first_key = list(obs_space.keys())[0]
-                    obs_shape = obs_space[first_key].shape
+                #DEBUG
+                print(f'init model obs_space is a dict')
+                print(f'init model obs_space key:{self.obs_key}')
+                if self.obs_key in obs_space.spaces:
+                    obs_shape = obs_space.spaces[self.obs_key].shape
             else:
+                #DEBUG
+                print(f'init model obs_space is not a dict')
                 obs_shape = obs_space.shape
             #DEBUG
-            # print(f'init model obs_shape:{obs_shape}')
+            print(f'init model obs_shape:{obs_shape}')
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
             #DEBUG
             # print(f'state input shape:{state_input.shape}')
@@ -356,12 +363,14 @@ class StochasticDiscretePolicy(Model):
 
     Attributes:
         env (EnvWrapper): The environment wrapper.
-        layer_config (list[dict]): Configuration of hidden layers.
-        output_layer_kernel (list[dict]): Configuration of the output layer weights.
-        optimizer_params (dict): Parameters for the optimizer. (default: Adam with lr=0.001)
-        lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
+        layer_config (list[dict]): Configuration of hidden layers (default: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]).
+        output_layer_kernel (list[dict]): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
+        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
         distribution (str): Type of distribution for action selection (default: 'categorical').
-        device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+        obs_key (str): Observation key (default: 'observation').
+        goal_key (str): Goal key (default: 'desired_goal').
+        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
         log_level (str): logger level. Default=info.
     """
 
@@ -388,7 +397,9 @@ class StochasticDiscretePolicy(Model):
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
             distribution (str): Type of distribution for actions (default: 'categorical').
-            device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+            obs_key (str): Observation key (default: 'observation').
+            goal_key (str | None): Goal key (default: None).
+            device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
             log_level (str): logger level. Default=info.
         """
         
@@ -465,6 +476,8 @@ class StochasticDiscretePolicy(Model):
             'optimizer_params': self.optimizer_params,
             'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
             'distribution': self.distribution,
+            'obs_key': self.obs_key,
+            'goal_key': self.goal_key,
             'device': self.device.type,
         }
         return config
@@ -490,7 +503,7 @@ class StochasticDiscretePolicy(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, config_dir:Path | str, load_weights:bool=True):
+    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load a policy model from a saved configuration.
 
@@ -501,8 +514,10 @@ class StochasticDiscretePolicy(Model):
         Returns:
             StochasticDiscretePolicy: Loaded policy model instance.
         """
+        config_dir = Path(config_dir)
         config = json.load(open(config_dir / 'config.json'))
-        env = EnvWrapper.from_json(config.get("env"))
+        if env is None:
+            env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
@@ -512,6 +527,8 @@ class StochasticDiscretePolicy(Model):
                     optimizer_params = config.get("optimizer_params", {}),
                     lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "categorical"),
+                    obs_key = config.get("obs_key", "observation"),
+                    goal_key = config.get("goal_key", "desired_goal"),
                     device = config.get("device", "cpu")
                     )
 
@@ -538,7 +555,9 @@ class StochasticContinuousPolicy(Model):
         optimizer_params (dict): Parameters for the optimizer.
         lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
         distribution (str): Type of distribution for actions (default: 'categorical').
-        device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+        obs_key (str): Observation key (default: 'observation').
+        goal_key (str | None): Goal key (default: None).
+        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
         log_level (str): logger level. Default=info.
     """
 
@@ -565,7 +584,9 @@ class StochasticContinuousPolicy(Model):
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
             distribution (str): Type of distribution for actions (default: 'beta').
-            device (str | T.device, optional): Device to run the model on (default: None = Cuda if available else CPU).
+            obs_key (str): Observation key (default: 'observation').
+            goal_key (str | None): Goal key (default: None).
+            device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
             log_level (str): logger level. Default=info.
         """
         super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
@@ -650,6 +671,8 @@ class StochasticContinuousPolicy(Model):
             'optimizer_params': self.optimizer_params,
             'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
             'distribution': self.distribution,
+            'obs_key': self.obs_key,
+            'goal_key': self.goal_key,
             'device': self.device.type,
         }
         return config
@@ -674,7 +697,7 @@ class StochasticContinuousPolicy(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, config_dir:Path | str, load_weights:bool=True):
+    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load a policy model from a saved configuration.
 
@@ -685,8 +708,10 @@ class StochasticContinuousPolicy(Model):
         Returns:
             StochasticContinuousPolicy: Loaded policy model instance.
         """
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env = EnvWrapper.from_json(config.get("env"))
+        config_dir = Path(config_dir)
+        config = json.load(open(config_dir / 'config.json'))
+        if env is None:
+            env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
@@ -696,6 +721,8 @@ class StochasticContinuousPolicy(Model):
                     optimizer_params = config.get("optimizer_params", {}),
                     lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "beta"),
+                    obs_key = config.get("obs_key", "observation"),
+                    goal_key = config.get("goal_key", "desired_goal"),
                     device = config.get("device", "cpu")
                     )
 
@@ -718,11 +745,13 @@ class ValueModel(Model):
 
     Attributes:
         env (EnvWrapper): The environment wrapper.
-        layer_config (list): Configuration of hidden layers.
-        output_layer_kernel (dict): Configuration of the output layer weights.
-        optimizer_params (dict): Parameters for the optimizer.
-        scheduler_params (dict): Parameters for the learning rate scheduler (optional).
-        device (str): Device to run the model on (default: 'cuda').
+        layer_config (list): Configuration of hidden layers (default: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]).
+        output_layer_kernel (dict): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
+        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
+        obs_key (str): Observation key (default: 'observation').
+        goal_key (str): Goal key (default: 'desired_goal').
+        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
     """
 
     def __init__(
@@ -746,6 +775,8 @@ class ValueModel(Model):
             output_layer_kernel (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
+            obs_key (str): Observation key (default: 'observation').
+            goal_key (str): Goal key (default: 'desired_goal').
             device (str): Device for computation (default: 'cuda').
         """
         super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
@@ -806,6 +837,8 @@ class ValueModel(Model):
             'output_layer_kernel': self.output_config,
             'optimizer_params': self.optimizer_params,
             'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
+            'obs_key': self.obs_key,
+            'goal_key': self.goal_key,
             'device': self.device.type,
         }
 
@@ -829,6 +862,8 @@ class ValueModel(Model):
             output_layer_kernel=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
+            obs_key=self.obs_key,
+            goal_key=self.goal_key,
             device=device
         )
         
@@ -864,7 +899,7 @@ class ValueModel(Model):
 
 
     @classmethod
-    def load(cls, config_dir:Path | str, load_weights:bool=True):
+    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load a value model from a saved configuration.
 
@@ -875,8 +910,10 @@ class ValueModel(Model):
         Returns:
             ValueModel: Loaded value model instance.
         """
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env = EnvWrapper.from_json(config.get("env"))
+        config_dir = Path(config_dir)
+        config = json.load(open(config_dir / 'config.json'))
+        if env is None:
+            env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
@@ -885,6 +922,8 @@ class ValueModel(Model):
                     output_layer_kernel = config.get("output_layer_kernel"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
+                    obs_key=config.get("obs_key"),
+                    goal_key=config.get("goal_key"),
                     device = config.get("device")
                     )
         # Load weights if True
@@ -898,6 +937,20 @@ class ValueModel(Model):
         return model
 
 class ActorModel(Model):
+    """
+    Actor model for continuous action spaces.
+
+    Attributes:
+        env (EnvWrapper): The environment wrapper.
+        layer_config (list): List of dictionaries specifying hidden layer configurations.
+        output_layer_kernel (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
+        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
+        obs_key (str): Observation key (default: 'observation').
+        goal_key (str): Goal key (default: 'desired_goal').
+        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+        log_level (str): Log level (default: 'info').
+    """
     
     def __init__(self,
                  env: EnvWrapper,
@@ -914,6 +967,8 @@ class ActorModel(Model):
         self.output_config = output_layer_kernel
 
         # Create the output layer
+        #DEBUG
+        print(f'ActorModel single_action_space:{self.env.single_action_space.shape}')
         self.output_layer = nn.ModuleDict({
             'actor_mu': nn.LazyLinear(self.env.single_action_space.shape[-1]),
             'actor_pi': nn.Tanh()
@@ -951,6 +1006,8 @@ class ActorModel(Model):
             'output_layer_kernel':self.output_config,
             'optimizer_params': self.optimizer_params,
             'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
+            'obs_key': self.obs_key,
+            'goal_key': self.goal_key,
             'device': self.device.type,
         }
 
@@ -975,6 +1032,8 @@ class ActorModel(Model):
             output_layer_kernel=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
+            obs_key=self.obs_key,
+            goal_key=self.goal_key,
             device=device
         )
         
@@ -1006,7 +1065,7 @@ class ActorModel(Model):
 
 
     @classmethod
-    def load(cls, config_dir:Path | str, load_weights:bool=True):
+    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load an actor model from a saved configuration.
 
@@ -1017,8 +1076,10 @@ class ActorModel(Model):
         Returns:
             ActorModel: Loaded actor model instance.
         """
+        config_dir = Path(config_dir)
         config = json.load(open(config_dir / 'config.json'))
-        env = EnvWrapper.from_json(config.get("env"))
+        if env is None:
+            env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
@@ -1028,6 +1089,8 @@ class ActorModel(Model):
                     # goal_shape = config.get("goal_shape", None)
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
+                    obs_key=config.get("obs_key"),
+                    goal_key=config.get("goal_key"),
                     device = config.get("device")
                     )
 
@@ -1042,6 +1105,21 @@ class ActorModel(Model):
 
 
 class CriticModel(Model):
+    """
+    Critic model for continuous action spaces.
+
+    Attributes:
+        env (EnvWrapper): The environment wrapper.
+        state_layers (list): List of dictionaries specifying hidden layer configurations for the state.
+        merged_layers (list): List of dictionaries specifying hidden layer configurations for the merged state and action.
+        output_layer_kernel (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
+        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
+        obs_key (str): Observation key (default: 'observation').
+        goal_key (str): Goal key (default: 'desired_goal').
+        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+        log_level (str): Log level (default: 'info').
+    """
     def __init__(self,
                  env: EnvWrapper,
                  state_layers: List[Dict],
@@ -1116,9 +1194,10 @@ class CriticModel(Model):
             'state_layers': self.layer_config,
             'merged_layers': self.merged_config,
             'output_layer_kernel': self.output_config,
-            # 'goal_shape': self.goal_shape,
             'optimizer_params': self.optimizer_params,
             'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
+            'obs_key': self.obs_key,
+            'goal_key': self.goal_key,
             'device': self.device.type,
         }
 
@@ -1144,6 +1223,8 @@ class CriticModel(Model):
             # goal_shape=self.goal_shape.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
+            obs_key=self.obs_key,
+            goal_key=self.goal_key,
             device=device
         )
         
@@ -1179,7 +1260,7 @@ class CriticModel(Model):
 
 
     @classmethod
-    def load(cls, config_dir:Path | str, load_weights:bool=True):
+    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load a critic model from a saved configuration.
 
@@ -1190,8 +1271,10 @@ class CriticModel(Model):
         Returns:
             CriticModel: Loaded critic model instance.
         """
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env = EnvWrapper.from_json(config.get("env"))
+        config_dir = Path(config_dir)
+        config = json.load(open(config_dir / 'config.json'))
+        if env is None:
+            env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
         lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
         
@@ -1202,6 +1285,8 @@ class CriticModel(Model):
                     # goal_shape = config.get("goal_shape", None)
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
+                    obs_key=config.get("obs_key"),
+                    goal_key=config.get("goal_key"),
                     device = config.get("device")
                     )
 
