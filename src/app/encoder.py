@@ -14,7 +14,7 @@ class CustomJSONEncoder(json.JSONEncoder):
         if isinstance(obj, GymnasiumWrapper):
             return {
                 "type": obj.__class__.__name__,
-                "env": obj.env_spec.to_json(),
+                "env": obj.env_id.to_json(),
                 "wrappers": obj.wrappers if obj.wrappers else []
             }
         if callable(obj):

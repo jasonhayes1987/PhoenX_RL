@@ -1,26 +1,20 @@
-import os
 import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import numpy as np
 import torch as T
 import torch.nn as nn
-# from models import ValueModel, StochasticContinuousPolicy, ActorModel, CriticModel, StochasticDiscretePolicy
-from .models import *
-# from env_wrapper import EnvWrapper
-from .env_wrapper import *
-# from buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
-from .buffer import *
-# from noise import Noise
-from .noise import *
+from .models import ActorModel, CriticModel, ValueModel, StochasticContinuousPolicy, StochasticDiscretePolicy
+from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, NStepReward, VectorNStepReward
+from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
+from .noise import Noise, NormalNoise, UniformNoise, OUNoise
 from .normalizer import Normalizer
 from .rl_callbacks import load as callback_load, WandbCallback, RayWandbCallback
 from .schedulers import ScheduleWrapper
 
 def compute_n_step_return(
     rewards: T.Tensor,           # [batch_size, N]
-    dones: T.Tensor,            # [batch_size, N]
     gamma: float,
-    N: int,
     device: str = "cpu"
 ) -> T.Tensor:
     """
@@ -28,7 +22,6 @@ def compute_n_step_return(
 
     Args:
         rewards: Tensor of rewards [batch_size, N].
-        dones: Tensor of done flags [batch_size, N].
         gamma: Discount factor.
         N: Number of steps for the return.
         device: Device for tensor operations.
@@ -36,7 +29,7 @@ def compute_n_step_return(
     Returns:
         Tensor of N-step returns [batch_size].
     """
-    batch_size = rewards.size(0)
+    batch_size, N = rewards.shape
     discount_factors = T.pow(gamma, T.arange(N, device=device).float()).unsqueeze(0).expand(batch_size, N)
 
     return (rewards * discount_factors).sum(dim=1)

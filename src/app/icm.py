@@ -278,7 +278,7 @@ class ICM(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, env: EnvWrapper | None = None):
         """Load a model from a saved configuration."""
         model_dir = Path(folder) / "curiosity"
         config_path = model_dir / "config.json"
@@ -290,8 +290,8 @@ class ICM(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        # Load EnvWrapper
-        env_wrapper = EnvWrapper.from_json(config["env"])
+        # Load EnvWrapper (or reuse injected env to avoid duplicate Isaac Sim SimulationContext)
+        env_wrapper = env if env is not None else EnvWrapper.from_json(config["env"])
         if config['reward_scheduler'] is not None:
             scheduler = ScheduleWrapper(config['reward_scheduler'])
         else:
