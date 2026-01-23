@@ -66,6 +66,10 @@ class Callback():
     def on_test_step_end(self, step: int, logs=None):
         pass
 
+    @classmethod
+    def load(cls, config):
+        return cls(**config)
+
 
 
 class WandbCallback(Callback):
@@ -185,7 +189,7 @@ class WandbCallback(Callback):
 
     def get_config(self):
         return {
-            'class_name': self.__class__.__name__,
+            'type': "WandbCallback",
             'config': {
                 'project_name': self.project_name,
                 'run_name': self.run_name,
@@ -201,7 +205,7 @@ class WandbCallback(Callback):
 
     @classmethod
     def load(cls, config):
-        return cls(**config)
+        return cls(**config['config'])
     
 class RayWandbCallback(WandbCallback):
     """
@@ -209,9 +213,10 @@ class RayWandbCallback(WandbCallback):
     Only the main worker (worker_id=0) logs to W&B.
     """
     def __init__(self, project_name, role, run_name=None, chkpt_freq=100, worker_id=0, _sweep=False):
-        super().__init__(project_name, run_name, chkpt_freq, _sweep)
+        super().__init__(project_name, run_name, _sweep)
         self.worker_id = worker_id
         self.role = role
+        self.chkpt_freq = chkpt_freq
         # self.is_main_worker = (worker_id == 0)
         self.initialized = False
 
@@ -304,7 +309,7 @@ class RayWandbCallback(WandbCallback):
         
     def get_config(self):
         return {
-            'class_name': self.__class__.__name__,
+            'type': "RayWandbCallback",
             'config': {
                 'project_name': self.project_name,
                 'role': self.role,
@@ -318,7 +323,7 @@ class RayWandbCallback(WandbCallback):
     
     @classmethod
     def load(cls, config):
-        return cls(**config)
+        return cls(**config['config'])
 
     
 class DashCallback(Callback):
@@ -406,7 +411,7 @@ class DashCallback(Callback):
 
     def get_config(self):
         return {
-            'class_name': self.__class__.__name__,
+            'type': "DashCallback",
             'config': {
                 'dash_app_url': self.dash_app_url
             }
@@ -417,14 +422,13 @@ class DashCallback(Callback):
 
     @classmethod
     def load(cls, config: dict):
-        return cls(**config)
+        return cls(**config['config'])
     
-def load(class_name: str, config: dict):
+def load(config:dict):
     """
     Load a callback class from its name and configuration.
 
     Args:
-        class_name (str): Name of the callback class.
         config (dict): Configuration dictionary for the callback.
 
     Returns:
@@ -436,7 +440,7 @@ def load(class_name: str, config: dict):
         "DashCallback": DashCallback,
     }
 
-    if class_name in types:
-        return types[class_name].load(config)
+    if config['type'] in types:
+        return types[config['type']].load(config)
 
-    raise ValueError(f"Unknown callback type: {class_name}")
+    raise ValueError(f"Unknown callback type: {config['type']}")

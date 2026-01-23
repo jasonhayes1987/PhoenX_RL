@@ -142,7 +142,7 @@ class Normalizer:
         """
 
         device = get_device(config['device'])
-        state = T.load(state_path, map_location='cpu')
+        state = T.load(state_path, map_location='cpu', weights_only=False)
         normalizer = cls(size=config['size'], momentum=config['momentum'], update_freq=config['update_freq'], eps=config['eps'], clip_range=config['clip_range'], device=device)
         target_device = normalizer.device
         

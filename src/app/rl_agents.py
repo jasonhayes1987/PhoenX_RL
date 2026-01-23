@@ -126,7 +126,6 @@ class Agent:
         Args:
             seed (int | None): Seed for the environment. If None, a random seed is used.
             training (bool): Whether the agent is training or testing.
-            render_mode (str|None): Render mode for the environment. Defaults to None. 'headless' or 'gui' if using Isaac Sim.
             **kwargs: Additional keyword arguments.
         """
         if getattr(self, '_initialized', False):
@@ -148,13 +147,6 @@ class Agent:
         # Set internal attributes
         seed = seed if seed else np.random.randint(1000)
         set_seed(seed)
-        # Launch Isaac Sim AppLauncher if render_mode == 'headless' or 'gui'
-        # if render_mode == 'headless' or render_mode == 'gui':
-        #     DEVICE = "cuda:0"
-        #     headless = render_mode == 'headless'
-        #     app_launcher = AppLauncher(headless=headless, device=DEVICE)
-        #     simulation_app = app_launcher.app
-        # env = self.base_agent.env.clone(num_envs, seed, render_mode)
         states, _ = self.base_agent.env.reset()
 
         # Add initial states to normalizer if it exists and training
@@ -290,19 +282,19 @@ class Agent:
         """Step function for the agent."""
         raise NotImplementedError("Subclasses must implement _step.")
 
-    def render_episode(self, episode: int, step: int, context: str = 'train', seed: Optional[int] = None):
+    def render_episode(self, episode: int, step: int, context: str = 'train', num_envs:int=1, **kwargs):
         """Render a single episode in a temporary environment, collect metrics, create video, and log to wandb.
-
+            **Only works with Gymnasium Environments**
         Args:
             episode (int): Episode number to render.
             step (int): Current training/testing step (for wandb logging).
             context (str): Context of the episode (train or test). Defaults to 'train'.
-            seed (Optional[int]): Seed for the episode. Defaults to None. If None, a random seed is used.
-            render_mode (str): Render mode for the environment (default: "rgb_array").
+            **kwargs: Additional keyword arguments to pass to the environment wrapper to override original values.
         """
-
-        self.base_agent.logger.info(f"Rendering episode {episode} in {context} with seed {seed} and render_mode {render_mode}")
-        env = self.base_agent.env.clone()
+        if isinstance(self.base_agent.env, IsaacSimWrapper):
+            raise ValueError("Rendering episodes is not supported for IsaacSim environments. Test using one environment with render_mode='gui' instead.")
+        self.base_agent.logger.info(f"Rendering episode {episode} in {context} with kwargs: {kwargs}")
+        env = self.base_agent.env.clone(num_envs, **kwargs)
         states, _ = env.reset()
         frames = []
         done = False
@@ -312,10 +304,10 @@ class Agent:
         while not done:
             local_step += 1
             if hasattr(self, 'action_adapter'):
-                actions, _ = self.base_agent.get_action(env, states, rendering=True)
+                actions, _ = self.base_agent.get_action(states, step, testing=True)
                 actions = self.action_adapter(env, actions)
             else:
-                actions = self.base_agent.get_action(env, states, rendering=True)
+                actions = self.base_agent.get_action(states, step, testing=True)
             actions = env.format_actions(actions)
             states, rewards, dones, _ = env.step(actions)
             episode_reward += rewards[0]
@@ -819,11 +811,10 @@ class ActorCritic(Agent):
     def load(cls, config, load_weights=True):
         """Loads the model."""
         env_wrapper = EnvWrapper.from_json(config["env"])
-        policy_model = StochasticDiscretePolicy.load(config['save_dir'], load_weights)
-        value_model = ValueModel.load(config['save_dir'], load_weights)
+        policy_model = StochasticDiscretePolicy.load(config['save_dir'], load_weights, env=env_wrapper)
+        value_model = ValueModel.load(config['save_dir'], load_weights, env=env_wrapper)
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
-        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
-                    if config['callbacks'] else None
+        callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
         agent = cls(
             env=env_wrapper,
             policy_model=policy_model,
@@ -1263,13 +1254,12 @@ class Reinforce(Agent):
     def load(cls, config, load_weights=True):
         """Loads the model."""
         env_wrapper = EnvWrapper.from_json(config["env"])
-        policy_model = StochasticDiscretePolicy.load(config['policy_model'], load_weights)
+        policy_model = StochasticDiscretePolicy.load(config['policy_model'], load_weights, env=env_wrapper)
         if config["value_model"]:
-            value_model = ValueModel.load(config['value_model'], load_weights)
-        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
+            value_model = ValueModel.load(config['value_model'], load_weights, env=env_wrapper)
+        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
-        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
-                    if config['callbacks'] else None
+        callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
         # return reinforce agent
         agent = cls(
@@ -1310,7 +1300,7 @@ class DDPG(Agent):
         goal_normalizer: Optional[Normalizer] = None,
         obs_key: str = 'observation',
         goal_key: str | None = None,
-        achieved_goal_key: str = 'achieved_goal',
+        achieved_goal_key: str = 'achieved_goal', # For HER
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
@@ -1321,8 +1311,8 @@ class DDPG(Agent):
             self.actor_model = actor_model
             self.critic_model = critic_model
             # set target actor and critic models
-            self.target_actor_model = self.clone_model(actor_model)
-            self.target_critic_model = self.clone_model(critic_model)
+            self.target_actor_model = self.clone_model(actor_model, device=self.actor_model.device)
+            self.target_critic_model = self.clone_model(critic_model, device=self.critic_model.device)
             self.discount = discount
             self.tau = tau
             self.action_epsilon = action_epsilon
@@ -1424,7 +1414,7 @@ class DDPG(Agent):
     #     self.target_critic_model.load_state_dict(params['target_critic_model'])
 
     def get_action(self, states: np.ndarray | dict, step: Optional[int] = None,
-                   testing: bool = False, rendering: bool = False)->np.ndarray:
+                   testing: bool = False)->np.ndarray:
         """
         Select an action based on the current policy.
 
@@ -1432,7 +1422,6 @@ class DDPG(Agent):
             states: np.ndarray: The current states.
             step: Optional[int]: The current step.
             testing: bool: if testing the action.
-            rendering: bool: if rendering the action.
         
         Returns:
             np.ndarray: Selected actions.
@@ -1440,7 +1429,7 @@ class DDPG(Agent):
 
         states, goals = self._preprocess_inputs(states)
 
-        if testing or rendering:
+        if testing:
             with T.no_grad():
                 _, action = self.target_actor_model(states, goals)
             return action.cpu().detach().numpy()
@@ -1515,9 +1504,9 @@ class DDPG(Agent):
                 })
         else:  # Standard replay buffer
             if self._use_her:
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
             else:
-                states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
             
             weights = None
             indices = None
@@ -1533,13 +1522,20 @@ class DDPG(Agent):
 
         rewards = rewards.to(self.target_critic_model.device)
         dones = dones.to(self.target_critic_model.device)
+        trajectory_lengths = trajectory_lengths.to(self.target_critic_model.device)
 
         # Train ICM if curiosity and update _use_extrinsic flag
         if self.curiosity:
             # Reshape arrays to (batch_size * N, -1) to train on all steps in N
+            dones_reshaped = dones.view(self.batch_size * self.N)
+            mask = (dones_reshaped == 0)
             states_reshaped = states.view(self.batch_size * self.N, -1)
             next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
             actions_reshaped = actions.view(self.batch_size * self.N, -1)
+            # Apply mask to remove terminal observations from batches
+            states_reshaped = states_reshaped[mask]
+            next_states_reshaped = next_states_reshaped[mask]
+            actions_reshaped = actions_reshaped[mask]
             curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
             if step > self.curiosity.extrinsic_threshold:
                 self.curiosity._use_extrinsic = True
@@ -1563,9 +1559,7 @@ class DDPG(Agent):
 
             targets = compute_n_step_return(
                 rewards,
-                dones,
                 self.discount,
-                self.N,
                 device=self.target_critic_model.device
             ).squeeze()
 
@@ -1580,8 +1574,9 @@ class DDPG(Agent):
                 desired_goals[:,-1,:] if desired_goals is not None else None
             ).squeeze()
 
-            not_done_mask = (1 - dones[:,-1]).squeeze()
-            targets += not_done_mask * (self.discount ** self.N) * target_critic_values
+            no_dones_mask = (dones.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
+            gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
+            targets += no_dones_mask * gamma_pow * target_critic_values
 
             # Apply HER-specific clamping if needed
             if self._use_her:
@@ -1606,8 +1601,8 @@ class DDPG(Agent):
         if weights is not None:
             critic_loss = (weights.to(self.critic_model.device) * error.pow(2)).mean()
         else:
-            # critic_loss = error.pow(2).mean()
-            critic_loss = F.mse_loss(predictions, targets)
+            critic_loss = error.pow(2).mean()
+            # critic_loss = F.mse_loss(predictions, targets)
 
         # Update critic
         self.critic_model.optimizer.zero_grad()
@@ -1703,11 +1698,12 @@ class DDPG(Agent):
 
         if training:
             self.replay_buffer.add(
-                infos['n-step trajectory']['states'],
-                infos['n-step trajectory']['actions'],
-                infos['n-step trajectory']['rewards'],
-                infos['n-step trajectory']['next_states'],
-                infos['n-step trajectory']['dones']
+                states = infos['n-step trajectory']['states'],
+                actions = infos['n-step trajectory']['actions'],
+                rewards = infos['n-step trajectory']['rewards'],
+                next_states = infos['n-step trajectory']['next_states'],
+                dones = infos['n-step trajectory']['dones'],
+                trajectory_lengths = infos['n-step trajectory']['trajectory_lengths']
             )
             # Update normalizer if state_normalizer
             obs, goals = self.extract_states_goals(next_states)
@@ -1822,7 +1818,7 @@ class DDPG(Agent):
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during training...")
                     # Call the test function to render an episode
-                    self.render_episode(episode_log['episode'], step, context='train')
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array')
                     render = False
 
         if self.callbacks:
@@ -1925,8 +1921,8 @@ class DDPG(Agent):
         """Loads the model."""
         config = json.load(open(Path(config_dir) / 'config.json'))
         env_wrapper = EnvWrapper.from_json(config["env"])
-        actor_model = ActorModel.load(Path(config_dir) / 'actor_model', load_weights)
-        critic_model = CriticModel.load(Path(config_dir) / 'critic_model', load_weights)
+        actor_model = ActorModel.load(Path(config_dir) / 'actor_model', load_weights, env=env_wrapper)
+        critic_model = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
             if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
@@ -1936,11 +1932,10 @@ class DDPG(Agent):
         else:
             replay_buffer = None
         noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
-        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
+        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = Normalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
-                    if config['callbacks'] else None
+        callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
         agent = cls(
             env = env_wrapper,
@@ -1999,7 +1994,7 @@ class TD3(Agent):
         goal_normalizer: Optional[Normalizer] = None,
         obs_key: str = 'observation',
         goal_key: str = 'desired_goal',
-        achieved_goal_key: str = 'achieved_goal',
+        achieved_goal_key: str = 'achieved_goal', # For HER
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
@@ -2679,9 +2674,9 @@ class TD3(Agent):
         """Loads the model."""
         config = json.load(open(Path(config_dir) / 'config.json'))
         env_wrapper = EnvWrapper.from_json(config["env"])
-        actor_model = ActorModel.load(Path(config_dir) / 'actor_model', load_weights)
-        critic_model_a = CriticModel.load(Path(config_dir) / 'critic_model', load_weights)
-        critic_model_b = CriticModel.load(Path(config_dir) / 'critic_model', load_weights)
+        actor_model = ActorModel.load(Path(config_dir) / 'actor_model', load_weights, env=env_wrapper)
+        critic_model_a = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
+        critic_model_b = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
             if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
@@ -2691,14 +2686,13 @@ class TD3(Agent):
         else:
             replay_buffer = None
         # load curiosity
-        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
+        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
         # load state normalizer
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = Normalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
         noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
         target_noise = Noise.create_instance(config["target_noise"]["class_name"], **config["target_noise"]["config"])
-        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
-                    if config['callbacks'] else None
+        callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
         agent = cls(
             env=env_wrapper,
@@ -3401,14 +3395,14 @@ class SAC(Agent):
         env_wrapper = EnvWrapper.from_json(config["env"])
         distribution = config['actor_model']['distribution']
         if distribution == 'categorical':
-            actor_model = StochasticDiscretePolicy.load(Path(config_dir) / 'policy_model', load_weights)
+            actor_model = StochasticDiscretePolicy.load(Path(config_dir) / 'policy_model', load_weights, env=env_wrapper)
         elif distribution in ['beta', 'normal']:
-            actor_model = StochasticContinuousPolicy.load(Path(config_dir) / 'policy_model', load_weights)
+            actor_model = StochasticContinuousPolicy.load(Path(config_dir) / 'policy_model', load_weights, env=env_wrapper)
         else:
             raise ValueError(f"Invalid distribution: {distribution}")
-        value_model = ValueModel.load(Path(config_dir) / 'value_model', load_weights)
-        critic_model_a = CriticModel.load(Path(config_dir) / 'critic_model', load_weights)
-        critic_model_b = CriticModel.load(Path(config_dir) / 'critic_model', load_weights)
+        value_model = ValueModel.load(Path(config_dir) / 'value_model', load_weights, env=env_wrapper)
+        critic_model_a = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
+        critic_model_b = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
             if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
@@ -3417,11 +3411,10 @@ class SAC(Agent):
                 replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
-        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
+        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = Normalizer.load(config["goal_normalizer"], config["save_dir"] + "/goal_normalizer.pt") if config["goal_normalizer"] else None
-        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
-                    if config['callbacks'] else None
+        callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
         agent = cls(
             env = env_wrapper,
@@ -4748,17 +4741,16 @@ class PPO(Agent):
         env_wrapper = EnvWrapper.from_json(config["env"])
         distribution = config['policy_model']['distribution']
         if distribution == 'categorical':
-            policy_model = StochasticDiscretePolicy.load(Path(config_dir) / 'policy_model', load_weights)
+            policy_model = StochasticDiscretePolicy.load(Path(config_dir) / 'policy_model', load_weights, env=env_wrapper)
         elif distribution in ['beta', 'normal']:
-            policy_model = StochasticContinuousPolicy.load(Path(config_dir) / 'policy_model', load_weights)
+            policy_model = StochasticContinuousPolicy.load(Path(config_dir) / 'policy_model', load_weights, env=env_wrapper)
         else:
             raise ValueError(f"Invalid distribution: {distribution}")
-        value_model = ValueModel.load(Path(config_dir) / 'value_model', load_weights)
-        curiosity = ICM.load(config["save_dir"]) if config["curiosity"] else None
+        value_model = ValueModel.load(Path(config_dir) / 'value_model', load_weights, env=env_wrapper)
+        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = Normalizer.load(config["goal_normalizer"], config["save_dir"] + "/goal_normalizer.pt") if config["goal_normalizer"] else None
-        callbacks = [callback_load(callback_info['class_name'], callback_info['config']) for callback_info in config['callbacks']]\
-                    if config['callbacks'] else None
+        callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
         agent = cls(
             env_wrapper,
             policy_model = policy_model,

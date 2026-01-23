@@ -1,26 +1,65 @@
-import os
-from pathlib import Path
 import sys
-import json
-import time
-from .logging_config import get_logger
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import argparse
-import subprocess
-import ray
-import random
+import json
 import numpy as np
-import torch as T
-import wandb
-from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
+from pathlib import Path
+from app.logging_config import get_logger
+from app.agent_utils import load_agent
 
-from .rl_agents import load_agent
-from .distributed_trainer import DistributedAgents
+# import os
+# from pathlib import Path
+# import json
+# import time
+# import subprocess
+# import ray
+# import random
+# import numpy as np
+# import torch as T
+# import wandb
+# from torch.profiler import profile, record_function, ProfilerActivity, tensorboard_trace_handler
+
+# from .distributed_trainer import DistributedAgents
 
 # Configure logging
 logger = get_logger(__name__, 'info')
 
 parser = argparse.ArgumentParser(description='Train Agent')
-parser.add_argument('--agent_dir', type=str, required=True, help='Path to the agent configuration directory')
+parser.add_argument(
+    '--agent_dir',
+    type=str,
+    required=True,
+    help='Path to the agent configuration directory')
+parser.add_argument(
+    '--load_weights',
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help='Load weights from the agent configuration directory (default: None)')
+parser.add_argument(
+    '--render_freq',
+    type=int,
+    default=None,
+    help='Render frequency (default: None)'
+)
+parser.add_argument(
+    '--num_episodes',
+    type=int,
+    default=None,
+    help='Number of episodes (default: None)'
+)
+parser.add_argument(
+    '--steps_per_learn',
+    type=int,
+    default=None,
+    help='Steps per learn (default: None)'
+)
+parser.add_argument(
+    '--seed',
+    type=int,
+    default=None,
+    help='Seed (default: None)'
+)
 # parser.add_argument('--distributed_workers', type=int, default=1, help='Number of distributed workers (default: 1)')
 # parser.add_argument('--learner_device', type=str, default=None, help='Device for the learner (default: None)')
 # parser.add_argument('--learner_num_cpus', type=int, default=1, help='Number of CPUs for the learner (default: 1)')
@@ -32,7 +71,6 @@ parser.add_argument('--agent_dir', type=str, required=True, help='Path to the ag
 # parser.add_argument('--sync_iter', type=int, default=10, help='Sync interval for the distributed workers (default: 10)')
 
 args = parser.parse_args()
-
 agent_config_dir = args.agent_dir
 
 def train_agent(agent_config_dir):
@@ -42,12 +80,10 @@ def train_agent(agent_config_dir):
         agent_config = json.load(open(Path(agent_config_dir) / 'config.json'))
         train_config = json.load(open(Path(agent_config_dir) / 'train_config.json'))
         agent_type = agent_config.get('agent_type')
-        load_weights = train_config.get('load_weights', False)
-        render_freq = train_config.get('render_freq', 0)
-        num_envs = train_config.get('num_envs')
-        run_number = train_config.get('run_number', None)
-        num_episodes = train_config.get('num_episodes')
-        seed = train_config['seed'] if 'seed' in train_config else None
+        load_weights = args.load_weights if args.load_weights is not None else train_config.get('load_weights', False)
+        render_freq = args.render_freq if args.render_freq is not None else train_config.get('render_freq', 0)
+        num_episodes = args.num_episodes if args.num_episodes is not None else train_config.get('num_episodes')
+        seed = args.seed if args.seed is not None else train_config.get('seed', np.random.randint(1000))
 
         assert agent_type in ['Reinforce', 'ActorCritic', 'DDPG', 'TD3', 'HER', 'PPO', 'SAC'], f"Unsupported agent type: {agent_type}"
 
@@ -72,9 +108,9 @@ def train_agent(agent_config_dir):
                 #     if futures:
                 #         ray.get(futures)
                 # else:
-                steps_per_learn = train_config.get('steps_per_learn', 1)
+                steps_per_learn = args.steps_per_learn if args.steps_per_learn is not None else train_config.get('steps_per_learn', 1)
                 # agent = load_agent(agent_config_dir, load_weights)
-                agent.train(num_episodes, num_envs, steps_per_learn, render_freq, seed)
+                agent.train(num_episodes, steps_per_learn, render_freq, seed)
 
             elif agent_type == 'Reinforce':
                 trajectories_per_update = train_config['trajectories_per_update']
