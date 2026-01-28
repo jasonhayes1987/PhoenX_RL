@@ -53,6 +53,26 @@ def compute_full_return(rewards, gamma):
     returns.reverse()
     return returns
 
+def compute_gae(td_errors:T.Tensor, dones:T.Tensor, gamma:float, gae_lambda:float, device:str="cpu"):
+    """
+    Compute Generalized Advantage Estimation (GAE) for a batch of TD errors.
+    
+    Args:
+        td_errors: Tensor of TD errors [timesteps, num_envs].
+        dones: Tensor of done flags [timesteps, num_envs].
+        gamma: Discount factor.
+        gae_lambda: GAE lambda parameter.
+        device: Device for tensor operations.
+    """
+    timesteps, num_envs = td_errors.shape
+    advantages = T.zeros(timesteps, num_envs, device=device)
+    advantage = T.zeros(num_envs, device=device)
+
+    for t in reversed(range(timesteps)):
+        advantage = td_errors[t] + gamma * gae_lambda * advantage * (1 - dones[t])
+        advantages[t] = advantage
+    return advantages
+
 def load_agent(config_dir:str | Path, load_weights: bool = True):
     """
     Load an agent from a configuration file.

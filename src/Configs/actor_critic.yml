@@ -1,0 +1,80 @@
+obs_key: &obs_key null
+goal_key: &goal_key null
+achieved_goal_key: &achieved_goal_key null
+device: &device "cuda"
+seed: &seed 42
+save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/Taxi-v3_E4_4/ActorCritic/"
+log_level: "info"
+
+agent:
+  discount: 0.99
+  policy_trace_decay: 0.0
+  value_trace_decay: 0.0
+  entropy_coefficient: 0.1
+  gae_coefficient: 0.95
+  trajectory_length: 10
+
+env:
+  type: "gymnasium" # "isaacsim" or "gymnasium"
+  config:
+    # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
+    cfg: "Taxi-v3"
+    num_envs: 4
+    wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
+    render_mode: null
+    seed: *seed
+    obs_key: *obs_key
+    goal_key: *goal_key
+
+models:
+  policy:
+    layer_config:
+      - type: dense
+        params: {units: 512, kernel: default, kernel_params: {}}
+      # - type: relu
+      - type: dense
+        params: {units: 256, kernel: default, kernel_params: {}}
+      # - type: relu
+    output_layer_kernel:
+      - type: dense
+        params: {kernel: default, kernel_params: {}}
+    optimizer_params: {type: Adam, params: {lr: 0.001}}
+    obs_key: *obs_key
+    device: *device
+
+  value:
+    layer_config:
+      - type: dense
+        params: {units: 512, kernel: default, kernel_params: {}}
+      # - type: relu
+      - type: dense
+        params: {units: 256, kernel: default, kernel_params: {}}
+      # - type: relu
+    output_layer_kernel:
+      - type: dense
+        params: {kernel: default, kernel_params: {}}
+    optimizer_params: {type: Adam, params: {lr: 0.001}}
+    obs_key: *obs_key
+    device: *device
+
+# normalizers:
+#   state:
+#     momentum: 0.99
+#     update_freq: 200
+#     clip_range: 5.0
+
+callbacks:
+  - type: "WandbCallback"
+    config: {project_name: "Taxi-v3"}
+
+train_config:
+  load_weights: false
+  num_episodes: 10000
+  render_freq: 1000
+  seed: 42
+
+test_config:
+  load_weights: true
+  num_episodes: 20
+  render_freq: 1
+  seed: 42

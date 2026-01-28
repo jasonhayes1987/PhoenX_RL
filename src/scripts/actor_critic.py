@@ -31,7 +31,7 @@ def infer_dim(env, key=None):
     return int(np.prod(space.shape))
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Create DDPG Agent from config file')
+    parser = argparse.ArgumentParser(description='Create ActorCritic Agent from config file')
     parser.add_argument('--config_file', type=str, required=True, help='Path to the agent configuration file (.yml)')
     args = parser.parse_args()
     config = load_config(args.config_file)
@@ -52,87 +52,45 @@ if __name__ == '__main__':
 
 
 # # build actor
-actor_config = config['models']['actor']
-actor_config['env'] = env
-actor = ActorModel(**actor_config)
+policy_config = config['models']['policy']
+policy_config['env'] = env
+policy = StochasticDiscretePolicy(**policy_config)
 
 # # build critic
-critic_config = config['models']['critic']
-critic_config['env'] = env
-critic = CriticModel(**critic_config)
-
-# build replay buffer
-config['replay_buffer']['config']['env'] = env
-if config['replay_buffer']['class_name'] == 'ReplayBuffer':
-    replay_buffer = ReplayBuffer(**config['replay_buffer']['config'])
-elif config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
-    replay_buffer = PrioritizedReplayBuffer(**config['replay_buffer']['config'])
-else:
-    raise ValueError(f"Invalid replay buffer class name: {config['replay_buffer']['class_name']}")
-
-# create noise object if present in config
-noise = Noise.create_instance(config['noise']['type'], **config['noise']['params']) if config.get('noise') else None
-
-# create noise scheduler object if present in config
-noise_schedule = ScheduleWrapper(**config["noise_schedule"]) if config.get("noise_schedule") else None
-
-# create curiosity object if present in config
-if config.get('curiosity'):
-    config['curiosity']['env'] = env
-    if config['curiosity'].get('reward_scheduler'):
-        config['curiosity']['reward_scheduler'] = ScheduleWrapper(config['curiosity']['reward_scheduler'])
-    else:
-        config['curiosity']['reward_scheduler'] = None
-    curiosity = ICM.create_instance(**config['curiosity'])
-else:
-    curiosity = None
+value_config = config['models']['value']
+value_config['env'] = env
+value = ValueModel(**value_config)
 
 # create state normalizer object if present in config
-if config['normalizers'].get('state', None):
+if config.get('normalizers', {}).get('state', None):
     size = infer_dim(env, config['obs_key'])
     state_normalizer = Normalizer(size=size, **config['normalizers']['state'])
 else:
     state_normalizer = None
 
-# create goal normalizer object if present in config
-if config['normalizers'].get('goal', None):
-    size = infer_dim(env, config['goal_key'])
-    goal_normalizer = Normalizer(size=size, **config['normalizers']['goal'])
-else:
-    goal_normalizer = None
-
 # create callbacks object if present in config
 callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
 # Create DDPG Agent
-agent_class = get_agent_class_from_type('DDPG')
-ddpg = agent_class(
+agent_class = get_agent_class_from_type('ActorCritic')
+actor_critic = agent_class(
                 env=env,
-                actor_model=actor,
-                critic_model=critic,
-                replay_buffer=replay_buffer,
+                policy_model=policy,
+                value_model=value,
                 discount=config['agent']['discount'],
-                tau=config['agent']['tau'],
-                action_epsilon=config['agent']['action_epsilon'],
-                batch_size=config['agent']['batch_size'],
-                noise=noise,
-                noise_schedule=noise_schedule,
-                grad_clip=config['agent']['grad_clip'],
-                warmup=config['agent']['warmup'],
-                N=config['agent']['N'],
-                curiosity=curiosity,
+                policy_trace_decay=config['agent']['policy_trace_decay'],
+                value_trace_decay=config['agent']['value_trace_decay'],
+                entropy_coefficient=config['agent']['entropy_coefficient'],
+                gae_coefficient=config['agent']['gae_coefficient'],
+                trajectory_length=config['agent']['trajectory_length'],
                 state_normalizer=state_normalizer,
-                goal_normalizer=goal_normalizer,
-                obs_key=config['obs_key'],
-                goal_key=config['goal_key'],
-                achieved_goal_key=config['achieved_goal_key'],
                 callbacks=callbacks,
                 save_dir=config['save_dir'],
                 device=config['device'],
                 log_level=config['log_level'])
 
 # # Save Agent
-ddpg.save()
+actor_critic.save()
 
 # Set train config
 train_config = config['train_config']
