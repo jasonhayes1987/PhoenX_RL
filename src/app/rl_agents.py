@@ -45,7 +45,7 @@ import numpy as np
 from isaaclab.app import AppLauncher
 
 
-from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_full_return
+from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_full_return, compute_gae
 
 
 # Agent class
@@ -54,9 +54,8 @@ class Agent:
 
     def __init__(self,
                  env: EnvWrapper,
-                 curiosity: Optional[ICM] = None,
                  callbacks: Optional[list[Callback]] = None,
-                 obs_key: str = 'observation',
+                 obs_key: str | None = None,
                  goal_key: str | None = None,
                  save_dir: str = "models/",
                  device: Optional[str | T.device] = None,
@@ -68,7 +67,6 @@ class Agent:
         try:
             self.save_dir = self._setup_save_dir(save_dir)
             self.env = env
-            self.curiosity = curiosity
             self.callbacks = self._initialize_callbacks(callbacks)
             self.obs_key = obs_key
             self.goal_key = goal_key
@@ -151,13 +149,13 @@ class Agent:
 
         # Add initial states to normalizer if it exists and training
         if training:
-            if self.base_agent.state_normalizer:
+            if getattr(self.base_agent, 'state_normalizer', None):
                 if isinstance(states, dict):
                     self.base_agent.state_normalizer.add(T.tensor(states[self.base_agent.obs_key], dtype=T.float32, device=self.base_agent.state_normalizer.device.type))
                 else:
                     self.base_agent.state_normalizer.add(T.tensor(states, dtype=T.float32, device=self.base_agent.state_normalizer.device.type))
 
-            if self.base_agent.goal_normalizer:
+            if getattr(self.base_agent, 'goal_normalizer', None):
                 self.base_agent.goal_normalizer.add(T.tensor(states[self.base_agent.goal_key], dtype=T.float32, device=self.base_agent.goal_normalizer.device.type))
 
         # Set callbacks
@@ -165,17 +163,14 @@ class Agent:
             config = self.get_config()
             config.update({'num_envs': self.env.num_envs, 'seed': seed})
             config.update(kwargs)
-            #DEBUG
-            print(config)
-            
-            
+
             models = [model for model in [getattr(self.base_agent, "actor_model", None),
                                           getattr(self.base_agent, "critic_model", None),
                                           getattr(self.base_agent, "critic_model_a", None),
                                           getattr(self.base_agent, "critic_model_b", None),
                                           getattr(self.base_agent, "value_model", None),
                                           getattr(self.base_agent, "policy_model", None),
-                                          self.base_agent.curiosity] if model is not None]
+                                          self.base_agent.curiosity if hasattr(self.base_agent, 'curiosity') else None] if model is not None]
             
             func_name = 'on_train_begin' if training else 'on_test_begin'
 
@@ -196,20 +191,20 @@ class Agent:
             # 'env': env,
             'step': 0,
             'states': states,
-            'best_reward': -np.inf,
-            'completed_episodes': np.zeros(self.env.num_envs),
-            'episode_scores': np.zeros(self.env.num_envs),
+            'best_reward': -T.inf,
+            'completed_episodes': T.zeros(self.env.num_envs, dtype=T.int32, device=self.device),
+            'episode_scores': T.zeros(self.env.num_envs, dtype=T.float32, device=self.device),
             'score_history': deque(maxlen=100)
         }
 
     def extract_states_goals(self, states: np.ndarray | T.Tensor | dict | list[dict]):
-        """Extract the states and goals from the passed states argument.
+        """Extract the states and goals from the passed states argument and returns them as Tensors.
         
         Args:
             states (np.ndarray | T.Tensor | dict | list[dict]): States to extract from.
         
         Returns:
-            tuple: Tuple of states and goals.
+            tuple: Tuple of states and goals as Tensors.
         """
         if isinstance(states, list):
             obs_list = []
@@ -268,7 +263,7 @@ class Agent:
             states (np.ndarray | dict | list[dict]): States to preprocess.
 
         Returns:
-            tuple: Tuple of observation and desired goal.
+            tuple: Tuple of observation and desired goal as Tensors.
         """
         obs, goals = self.extract_states_goals(states)
         if self.state_normalizer:
@@ -303,11 +298,19 @@ class Agent:
 
         while not done:
             local_step += 1
-            if hasattr(self, 'action_adapter'):
-                actions, _ = self.base_agent.get_action(states, step, testing=True)
-                actions = self.action_adapter(env, actions)
+            # Condition get_action call on agent type
+            agent_type = self.base_agent.__class__.__name__
+            if agent_type == 'ActorCritic':
+                actions, _, _ = self.base_agent.get_action(states)
+            elif agent_type in ['Reinforce', 'PPO']:
+                actions, _ = self.base_agent.get_action(states, testing=True)
             else:
                 actions = self.base_agent.get_action(states, step, testing=True)
+
+            if hasattr(self, 'action_adapter'):
+                actions = self.action_adapter(env, actions)
+            
+
             actions = env.format_actions(actions)
             states, rewards, dones, _ = env.step(actions)
             episode_reward += rewards[0]
@@ -409,7 +412,7 @@ class Agent:
 
         return clone
 
-    def get_action(self, states):
+    def get_action(self, states:np.ndarray|T.Tensor|dict|list[dict], step:int|None=None, testing:bool=False):
         """Returns an action given a state."""
         raise NotImplementedError("Subclasses must implement get_action.")
 
@@ -449,7 +452,9 @@ class ActorCritic(Agent):
         discount: float=0.99,
         policy_trace_decay: float=0.0,
         value_trace_decay: float=0.0,
-        curiosity: Optional[ICM] = None,
+        entropy_coefficient: float=0.01,
+        gae_coefficient: float=0.95,
+        trajectory_length: int=10,
         state_normalizer: Optional[Normalizer] = None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models/",
@@ -457,16 +462,26 @@ class ActorCritic(Agent):
         log_level: str = 'info'
     ):
         try:
-            super().__init__(env, callbacks, save_dir, device, log_level)
+            super().__init__(env, callbacks, save_dir=save_dir, device=device, log_level=log_level)
             self.policy_model = policy_model
             self.value_model = value_model
             self.discount = discount
             self.policy_trace_decay = policy_trace_decay
             self.value_trace_decay = value_trace_decay
+            self.entropy_coefficient = entropy_coefficient
+            self.gae_coefficient = gae_coefficient
+            self.trajectory_length = trajectory_length
             self.state_normalizer = state_normalizer
-
-            # set self.action to None
-            self.action = None
+            
+            # instantiate trajectory buffers for rollouts
+            self.states = []
+            self.actions = []
+            self.rewards = []
+            self.next_states = []
+            self.dones = []
+            self.log_probs = []
+            self.entropies = []
+            
             # instantiate and set policy and value traces
             self.policy_trace = []
             self.value_trace = []
@@ -489,169 +504,211 @@ class ActorCritic(Agent):
             for i, weights in enumerate(self.value_model.parameters()):
                 self.value_trace[i] = (self.discount * self.value_trace_decay * self.value_trace[i]) + weights.grad
 
-    def get_action(self, states):
-        states = T.tensor(states, dtype=T.float32, device=self.policy_model.device)
+    def get_action(self, states:np.ndarray|T.Tensor, step=None, testing=False):
+        states = T.tensor(states, dtype=T.float32, device=self.policy_model.device) if isinstance(states, np.ndarray) else states.to(self.policy_model.device)
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
         dist, logits = self.policy_model(states)
         actions = dist.sample()
-        actions = actions.detach().cpu().numpy()
+        actions = actions.detach()
         return actions, dist, logits
 
-    def train(self, num_episodes: int, num_envs: int, seed: int | None = None, render_freq: int = 0, sync_iter: int = 1):
-        """Trains the model for 'episodes' number of episodes."""
-        # set models to train mode
-        self.policy_model.train()
-        self.value_model.train()
-
-        self.num_envs = num_envs
-
-        if seed is None:
-            seed = np.random.randint(100)
-
-        # Set seeds
-        set_seed(seed)
-
-        if self.callbacks:
-            for callback in self.callbacks:
-                if isinstance(callback, WandbCallback):
-                    self._config['num_episodes'] = num_episodes
-                    self._config['seed'] = seed
-                    self._config['num_envs'] = self.num_envs
-                    models = [self.policy_model, self.value_model]
-                    if self.curiosity is not None:
-                        models.append(self.curiosity)
-                    callback.on_train_begin(tuple(models), logs=self._config)
-                else:
-                    callback.on_train_begin(logs=self._config)
+    def _step(self, step: int, states: np.ndarray | T.Tensor, max_episodes: int, episode_scores: np.ndarray,
+              completed_episodes: np.ndarray, score_history: deque[float], best_reward: float, training: bool = True):
+        """
+        Performs a single step of training/testing.
         
-        try:
-            # instantiate new vec environment
-            self.env.env = self.env._initialize_env(0, self.num_envs, seed)
-        except Exception as e:
-            self.logger.error(f"Error in ActorCritic.train self.env._initialize_env process: {e}", exc_info=True)
-
-        # set step counter
-        self._step = 0
-        # Instantiate counter to keep track of number of episodes completed
-        self.completed_episodes = 0
-        # set best reward
-        best_reward = -np.inf
-        # Instantiate a deque to track last 10 scores for computing avg
-        completed_scores = deque(maxlen=10)
-        episode_scores = np.zeros(self.num_envs)
-        states, _ = self.env.reset()
-        # Add initial observation normalizer if state_normalizer
-        if self.state_normalizer:
-            self.state_normalizer.add(T.tensor(states, dtype=T.float32, device=self.state_normalizer.device))
+        Args:
+        step: int: The current step.
+        states: np.ndarray | T.Tensor: The current states.
+        max_episodes: int: The maximum number of episodes.
+        episode_scores: np.ndarray: The current episode scores.
+        completed_episodes: np.ndarray: The current completed episodes.
+        score_history: deque[float]: The current score history.
+        best_reward: float: The current best reward.
+        training: bool: Whether the step is for training or testing.
         
-        while self.completed_episodes < num_episodes:
-            # If distributed, sync to shared agent
-            if self._distributed and self._step % self._sync_iter == 0:
-                params = self.get_parameters()
-                self.apply_parameters(params)
-            # Increment step counter
-            self._step += 1
-            rendered = False # Flag to keep track of render status to avoid rendering multiple times per step
-            
-            if self.callbacks:
-                for callback in self.callbacks:
-                    callback.on_train_step_begin(step=self._step, logs=None)
-            
-            actions, dist, logits = self.get_action(states)
-            actions = self.env.format_actions(actions)
-            next_states, rewards, terms, truncs, _ = self.env.step(actions)
+        Returns:
+        dict: A dictionary containing the step metrics.
+        """
+        step_log = {}
+        episode_logs = []
+
+        actions, dist, logits = self.get_action(states)
+        actions = self.env.format_actions(actions)
+        next_states, rewards, dones, infos = self.env.step(actions)
+
+        # Ensure states, actions, rewards, next_states, and dones are tensors
+        states, actions, rewards, next_states, dones = (
+            T.tensor(states, dtype=T.float32, device=self.device) if isinstance(states, np.ndarray) else states,
+            T.tensor(actions, dtype=T.long, device=self.device) if isinstance(actions, np.ndarray) else actions,
+            T.tensor(rewards, dtype=T.float32, device=self.device) if isinstance(rewards, np.ndarray) else rewards,
+            T.tensor(next_states, dtype=T.float32, device=self.device) if isinstance(next_states, np.ndarray) else next_states,
+            T.tensor(dones, dtype=T.int, device=self.device) if isinstance(dones, np.ndarray) else dones,
+        )
+
+        # Get log probs and entropy values from distribution
+        log_probs = dist.log_prob(actions)
+        entropies = dist.entropy().to(self.device)
+
+        # Add transitions to rollout buffers
+        self.states.append(states)
+        self.actions.append(actions)
+        self.rewards.append(rewards)
+        self.next_states.append(next_states)
+        self.dones.append(dones)
+        self.log_probs.append(log_probs)
+        self.entropies.append(entropies)
+
+        episode_scores += rewards.flatten()
+
+        # Add step metrics to step log
+        step_log.update({
+            'step_reward': rewards.mean().item()
+        })
+        
+        if training:
             # Update normalizer if state_normalizer
             if self.state_normalizer:
-                self.state_normalizer.add(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
-                self.state_normalizer.update_running_stats()
-            self._train_step_config["step_reward"] = rewards.mean()
-            episode_scores += rewards
-            dones = np.logical_or(terms, truncs)
-            self.learn(states, rewards, next_states, actions, dist, dones)
+                self.state_normalizer.add(next_states)
+            # Check if trajectory length has been reached
+            if len(self.states) >= self.trajectory_length:
+                # Learn from the trajectory buffers
+                learn_metrics = self.learn()
+                step_log.update(learn_metrics)
+                # Clear the trajectory buffers
+                self.states = []
+                self.actions = []
+                self.rewards = []
+                self.next_states = []
+                self.dones = []
+                self.log_probs = []
+                self.entropies = []
 
-            for i in range(self.num_envs):
-                if dones[i]:
-                    # Increment completed episodes
-                    self.completed_episodes += 1
-                    # Append episode score to completed scores deque
-                    completed_scores.append(episode_scores[i])
-                    self._train_episode_config["episode_reward"] = episode_scores[i]
-                    self._train_episode_config["episode"] = self.completed_episodes
-                    # Reset episode score
-                    episode_scores[i] = 0
-                    avg_reward = sum(completed_scores) / len(completed_scores)
+        done_episodes = T.nonzero(dones, as_tuple=False).flatten()
 
-                    # check if best reward
-                    if avg_reward > best_reward:
-                        best_reward = avg_reward
-                        self._train_episode_config["best"] = 1
-                        # save model
-                        self.save()
-                    else:
-                        self._train_episode_config["best"] = 0
+        for i in done_episodes:
+            # Increment completed episodes for env by 1
+            completed_episodes[i] += 1
+            score_history.append(float(episode_scores[i].item()))
+            avg_reward = sum(score_history) / len(score_history)
+            # check if best reward
+            if training and avg_reward > best_reward:
+                best_reward = avg_reward
+                self.save()
+            episode_log = {
+                'env': i,
+                'episode': int(completed_episodes.sum()),
+                'episode_reward': round(float(episode_scores[i]), 2),
+                'avg_reward': round(float(avg_reward), 2)
+            }
+            if training:
+                episode_log.update({
+                    'best_reward': round(float(best_reward), 2),
+                    'best': 1 if avg_reward > best_reward else 0
+                })
+            episode_logs.append(episode_log)
 
-                    if self.callbacks:
-                        for callback in self.callbacks:
-                            callback.on_train_epoch_end(epoch=self._step, logs=self._train_episode_config)
+        return{
+        'episode_scores': episode_scores,
+        'completed_episodes': completed_episodes,
+        'score_history': score_history,
+        'next_states': next_states,
+        'step_log': step_log,
+        'episode_logs': episode_logs,
+        'done': completed_episodes.sum() >= max_episodes
+    }    
+              
 
-                    # Check if number of completed episodes should trigger render
-                    if render_freq > 0:
-                        if self.completed_episodes % render_freq == 0 and not rendered:
-                            print(f"Rendering episode {self.completed_episodes} during training...")
-                            # Call the test function to render an episode
-                            self.test(num_episodes=1, seed=seed, render_freq=1, training=True)
-                            # Add render to wandb log
-                            video_path = os.path.join(self.save_dir, f"renders/train/episode_{self.completed_episodes}.mp4")
-                            # Log the video to wandb
-                            if self.callbacks:
-                                for callback in self.callbacks:
-                                    if isinstance(callback, WandbCallback):
-                                        wandb.log({"training_video": wandb.Video(video_path, caption="Training process", format="mp4")}, step=self._step)
-                            rendered = True
-                            # Switch models back to train mode after rendering
-                            self.policy_model.train()
-                            self.value_model.train()
-                        else:
-                            rendered = False
-
-                    print(f"episode {self.completed_episodes}, score {completed_scores[-1]}, avg_score {avg_reward}")
+    def train(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
+        """Trains the model for 'episodes' number of episodes."""
+        init_dict = self._initialize_run(seed=seed, num_episodes=num_episodes)
+        step = init_dict['step']
+        states = init_dict['states']
+        episode_scores = init_dict['episode_scores']
+        completed_episodes = init_dict['completed_episodes']
+        score_history = init_dict['score_history']
+        best_reward = init_dict['best_reward']
+        
+        while completed_episodes.sum() < num_episodes:
+            # # If distributed, sync to shared agent
+            # if self._distributed and self._step % self._sync_iter == 0:
+            #     params = self.get_parameters()
+            #     self.apply_parameters(params)
+            # Increment step counter
+            step += 1
+            step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward)
+            # Update states, episode scores, completed episodes, and score history
+            states = step_result['next_states']
+            episode_scores = step_result['episode_scores']
+            completed_episodes = step_result['completed_episodes']
+            score_history = step_result['score_history']
 
             if self.callbacks:
                 for callback in self.callbacks:
-                    callback.on_train_step_end(step=self._step, logs=self._train_step_config)
-            
-            states = next_states
+                    callback.on_train_step_end(step=step, logs=step_result['step_log'])
+
+            render = True # Flag to keep track of render status to avoid rendering multiple times per step
+            for episode_log in step_result['episode_logs']:
+                # Print complete episode metrics to console
+                print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
+                # Reset episode score
+                episode_scores[episode_log['env']] = 0
+                best_reward = episode_log['best_reward']
+
+                if self.callbacks:
+                    for callback in self.callbacks:
+                        callback.on_train_epoch_end(epoch=step, logs=episode_log)
+
+                # Check if number of completed episodes should trigger render
+                if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
+                    print(f"Rendering episode {episode_log['episode']} during training...")
+                    # Call the test function to render an episode
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array')
+                    render = False
 
         if self.callbacks:
             for callback in self.callbacks:
-                callback.on_train_end(logs=self._train_episode_config)
+                callback.on_train_end(logs=episode_log)
 
-    def learn(self, states, rewards, next_states, actions, dist, dones):
+        self.env.close()
+
+    def learn(self):
+
+        learn_metrics = {}
+
         self.policy_model.optimizer.zero_grad()
         self.value_model.optimizer.zero_grad()
 
-        states = T.tensor(states, dtype=T.float32, device=self.device)
-        rewards = T.tensor(rewards, dtype=T.float32, device=self.device)
-        next_states = T.tensor(next_states, dtype=T.float32, device=self.device)
-        actions = T.tensor(actions, dtype=T.long, device=self.device)
-        dones = T.tensor(dones, dtype=T.int, device=self.device)
+        # Convert trajectory buffers to tensors
+        states = T.stack(self.states, dim=0)
+        actions = T.stack(self.actions, dim=0)
+        rewards = T.stack(self.rewards, dim=0)
+        next_states = T.stack(self.next_states, dim=0)
+        dones = T.stack(self.dones, dim=0)
+        log_probs = T.stack(self.log_probs, dim=0)
+        entropies = T.stack(self.entropies, dim=0)
+
+        # Get trajectory length and num_envs dims
+        trajectory_length, num_envs, obs_dim = states.shape
 
         # Normalize states if self.normalize_inputs
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
 
-        log_probs = dist.log_prob(actions)
-        state_values = self.value_model(states)
-        next_state_values = self.value_model(next_states).detach()
-        temporal_difference = (
-            rewards + self.discount * next_state_values.squeeze() * (1 - dones) - state_values.squeeze())
-        value_loss = temporal_difference.square().mean()
+        state_values = self.value_model(states.view(trajectory_length * num_envs, obs_dim))
+        next_state_values = self.value_model(next_states.view(trajectory_length * num_envs, obs_dim)).detach()
+        td_errors = (
+            rewards + self.discount * next_state_values.reshape(trajectory_length, num_envs, -1).squeeze() * (1 - dones) - state_values.reshape(trajectory_length, num_envs, -1).squeeze())
+        
+        advantages = compute_gae(td_errors, dones, self.discount, self.gae_coefficient, device=self.device)
+        returns = (advantages + state_values.reshape(trajectory_length, num_envs, -1).squeeze()).detach()
+        value_loss = (state_values.reshape(trajectory_length, num_envs, -1).squeeze() - returns).square().mean()
 
         value_loss.backward()
 
-        policy_loss = -(log_probs * temporal_difference.detach()).mean()
+        policy_loss = -(log_probs * advantages.detach() + self.entropy_coefficient * entropies).mean()
         policy_loss.backward()
 
         self._update_traces()
@@ -667,15 +724,16 @@ class ActorCritic(Agent):
         self.value_model.optimizer.step()
         self.policy_model.optimizer.step()
 
-        
-        self._train_step_config["policy_loss"] = policy_loss.item()
-        self._train_step_config["value_loss"] = value_loss.item()
-        self._train_step_config["temporal_difference"] = temporal_difference.mean()
-        # self._train_step_config[f"logits"] = wandb.Histogram(logits.detach().cpu().numpy())
-        self._train_step_config[f"actions"] = wandb.Histogram(actions.detach().cpu().numpy())
-        self._train_step_config[f"log_probabilities"] = wandb.Histogram(log_probs.detach().cpu().numpy())
-        self._train_step_config[f"action_probabilities"] = wandb.Histogram(dist.probs.detach().cpu().numpy())
-        self._train_step_config["entropy"] = dist.entropy().mean().item()
+        learn_metrics.update({
+            'policy_loss': policy_loss.item(),
+            'value_loss': value_loss.item(),
+            'temporal_difference': td_errors.mean().item(),
+            'advantages': advantages.mean().item(),
+            'returns': returns.mean().item(),
+            'entropy': entropies.mean().item(),
+        })
+
+        return learn_metrics
 
     def test(self, num_episodes:int, num_envs: int=1, seed: int=None, render_freq: int=0, training: bool=False):
         """Runs a test over 'num_episodes'."""
@@ -790,6 +848,9 @@ class ActorCritic(Agent):
             "discount": self.discount,
             "policy_trace_decay": self.policy_trace_decay,
             "value_trace_decay": self.value_trace_decay,
+            "entropy_coefficient": self.entropy_coefficient,
+            "gae_coefficient": self.gae_coefficient,
+            "trajectory_length": self.trajectory_length,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir
@@ -808,12 +869,13 @@ class ActorCritic(Agent):
             self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
 
     @classmethod
-    def load(cls, config, load_weights=True):
+    def load(cls, config_dir:str | Path, load_weights=True):
         """Loads the model."""
+        config = json.load(open(Path(config_dir) / 'config.json'))
         env_wrapper = EnvWrapper.from_json(config["env"])
-        policy_model = StochasticDiscretePolicy.load(config['save_dir'], load_weights, env=env_wrapper)
-        value_model = ValueModel.load(config['save_dir'], load_weights, env=env_wrapper)
-        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
+        policy_model = StochasticDiscretePolicy.load(Path(config_dir) / 'policy_model', load_weights, env=env_wrapper)
+        value_model = ValueModel.load(Path(config_dir) / 'value_model', load_weights, env=env_wrapper)
+        state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
         agent = cls(
             env=env_wrapper,
@@ -822,6 +884,9 @@ class ActorCritic(Agent):
             discount=config["discount"],
             policy_trace_decay=config["policy_trace_decay"],
             value_trace_decay=config["value_trace_decay"],
+            entropy_coefficient=config["entropy_coefficient"],
+            gae_coefficient=config["gae_coefficient"],
+            trajectory_length=config["trajectory_length"],
             state_normalizer=state_normalizer,
             callbacks=callbacks,
             save_dir=config["save_dir"],
@@ -1413,13 +1478,13 @@ class DDPG(Agent):
     #     self.target_actor_model.load_state_dict(params['target_actor_model'])
     #     self.target_critic_model.load_state_dict(params['target_critic_model'])
 
-    def get_action(self, states: np.ndarray | dict, step: Optional[int] = None,
-                   testing: bool = False)->np.ndarray:
+    def get_action(self, states:np.ndarray|T.Tensor|dict|list[dict], step:int|None=None,
+                   testing:bool=False)->np.ndarray:
         """
         Select an action based on the current policy.
 
         Args:
-            states: np.ndarray: The current states.
+            states: np.ndarray | T.Tensor | dict: The current states.
             step: Optional[int]: The current step.
             testing: bool: if testing the action.
         
@@ -1520,6 +1585,7 @@ class DDPG(Agent):
         else:
             desired_goals = None
 
+        actions = actions.to(self.target_actor_model.device)
         rewards = rewards.to(self.target_critic_model.device)
         dones = dones.to(self.target_critic_model.device)
         trajectory_lengths = trajectory_lengths.to(self.target_critic_model.device)
@@ -1532,10 +1598,9 @@ class DDPG(Agent):
             states_reshaped = states.view(self.batch_size * self.N, -1)
             next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
             actions_reshaped = actions.view(self.batch_size * self.N, -1)
-            # Apply mask to remove terminal observations from batches
-            states_reshaped = states_reshaped[mask]
-            next_states_reshaped = next_states_reshaped[mask]
-            actions_reshaped = actions_reshaped[mask]
+            # Replace next state with state value where done = True b/c next state value could be reset observation
+            # returned by environment (IsaacSim)
+            next_states_reshaped = T.where(mask.unsqueeze(1), next_states_reshaped, states_reshaped)
             curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
             if step > self.curiosity.extrinsic_threshold:
                 self.curiosity._use_extrinsic = True
@@ -1682,7 +1747,7 @@ class DDPG(Agent):
                 if name in target_buffers:
                     target_buffers[name].copy_(main_buffers[name])
 
-    def _step(self, step: int, states: np.ndarray, max_episodes: int, episode_scores: np.ndarray,
+    def _step(self, step: int, states: np.ndarray | T.Tensor | dict, max_episodes: int, episode_scores: np.ndarray,
               completed_episodes: np.ndarray, score_history: deque[float], best_reward: float,
               learn: bool = True, training: bool = True):
 
@@ -1696,15 +1761,21 @@ class DDPG(Agent):
         next_states, rewards, dones, infos = self.env.step(actions)
         episode_scores += rewards.flatten().cpu().numpy()
 
+        buffer_trajectories = {
+            'states': infos['n-step trajectory']['states'],
+            'actions': infos['n-step trajectory']['actions'],
+            'rewards': infos['n-step trajectory']['rewards'],
+            'next_states': infos['n-step trajectory']['next_states'],
+            'dones': infos['n-step trajectory']['dones'],
+            'trajectory_lengths': infos['n-step trajectory']['trajectory_lengths']
+        }
+        if self.goal_key:
+            buffer_trajectories['desired_goals'] = infos['n-step trajectory']['desired_goals']
+            buffer_trajectories['state_achieved_goals'] = infos['n-step trajectory']['state_achieved_goals']
+            buffer_trajectories['next_state_achieved_goals'] = infos['n-step trajectory']['next_state_achieved_goals']
+
         if training:
-            self.replay_buffer.add(
-                states = infos['n-step trajectory']['states'],
-                actions = infos['n-step trajectory']['actions'],
-                rewards = infos['n-step trajectory']['rewards'],
-                next_states = infos['n-step trajectory']['next_states'],
-                dones = infos['n-step trajectory']['dones'],
-                trajectory_lengths = infos['n-step trajectory']['trajectory_lengths']
-            )
+            self.replay_buffer.add(**buffer_trajectories)
             # Update normalizer if state_normalizer
             obs, goals = self.extract_states_goals(next_states)
             if self.state_normalizer:
@@ -1712,13 +1783,12 @@ class DDPG(Agent):
             if self.goal_normalizer:
                 self.goal_normalizer.add(goals)
 
-        # done_episodes = np.flatnonzero(dones) # Get indices of completed episodes
         done_episodes = T.nonzero(dones, as_tuple=False).flatten() # Get indices of completed episodes
         episode_logs = []
         for i in done_episodes:
             # Increment completed episodes for env by 1
             completed_episodes[i] += 1
-            score_history.append(episode_scores[i]) 
+            score_history.append(float(episode_scores[i].item()))
             avg_reward = sum(score_history) / len(score_history)
             # check if best reward
             if training and avg_reward > best_reward:
@@ -2438,14 +2508,21 @@ class TD3(Agent):
         next_states, rewards, dones, infos = env.step(actions)
         episode_scores += rewards
 
+        buffer_trajectories = {
+            'states': infos['n-step trajectory']['states'],
+            'actions': infos['n-step trajectory']['actions'],
+            'rewards': infos['n-step trajectory']['rewards'],
+            'next_states': infos['n-step trajectory']['next_states'],
+            'dones': infos['n-step trajectory']['dones'],
+            'trajectory_lengths': infos['n-step trajectory']['trajectory_lengths']
+        }
+        if self.goal_key:
+            buffer_trajectories['desired_goals'] = infos['n-step trajectory']['desired_goals']
+            buffer_trajectories['state_achieved_goals'] = infos['n-step trajectory']['state_achieved_goals']
+            buffer_trajectories['next_state_achieved_goals'] = infos['n-step trajectory']['next_state_achieved_goals']
+
         if training:
-            self.replay_buffer.add(
-                infos['n-step trajectory']['states'],
-                infos['n-step trajectory']['actions'],
-                infos['n-step trajectory']['rewards'],
-                infos['n-step trajectory']['next_states'],
-                infos['n-step trajectory']['dones']
-            )
+            self.replay_buffer.add(**buffer_trajectories)
             # Update normalizer if state_normalizer
             if self.state_normalizer:
                 self.state_normalizer.add(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
@@ -2457,7 +2534,7 @@ class TD3(Agent):
         for i in done_episodes:
             # Increment completed episodes for env by 1
             completed_episodes[i] += 1
-            score_history.append(episode_scores[i]) 
+            score_history.append(float(episode_scores[i].item()))
             avg_reward = sum(score_history) / len(score_history)
             
             # check if best reward
@@ -3172,14 +3249,21 @@ class SAC(Agent):
         next_states, rewards, dones, infos = env.step(actions)
         episode_scores += rewards
 
+        buffer_trajectories = {
+            'states': infos['n-step trajectory']['states'],
+            'actions': infos['n-step trajectory']['actions'],
+            'rewards': infos['n-step trajectory']['rewards'],
+            'next_states': infos['n-step trajectory']['next_states'],
+            'dones': infos['n-step trajectory']['dones'],
+            'trajectory_lengths': infos['n-step trajectory']['trajectory_lengths']
+        }
+        if self.goal_key:
+            buffer_trajectories['desired_goals'] = infos['n-step trajectory']['desired_goals']
+            buffer_trajectories['state_achieved_goals'] = infos['n-step trajectory']['state_achieved_goals']
+            buffer_trajectories['next_state_achieved_goals'] = infos['n-step trajectory']['next_state_achieved_goals']
+
         if training:
-            self.replay_buffer.add(
-                infos['n-step trajectory']['states'],
-                infos['n-step trajectory']['actions'],
-                infos['n-step trajectory']['rewards'],
-                infos['n-step trajectory']['next_states'],
-                infos['n-step trajectory']['dones']
-            )
+            self.replay_buffer.add(**buffer_trajectories)
             # Update normalizer if state_normalizer
             if self.state_normalizer:
                 self.state_normalizer.add(T.tensor(next_states, dtype=T.float32, device=self.state_normalizer.device.type))
@@ -3191,7 +3275,7 @@ class SAC(Agent):
         for i in done_episodes:
             # Increment completed episodes for env by 1
             completed_episodes[i] += 1
-            score_history.append(episode_scores[i]) 
+            score_history.append(float(episode_scores[i].item()))
             avg_reward = sum(score_history) / len(score_history)
             
             # check if best reward
@@ -3636,7 +3720,7 @@ class HER(Agent):
         successes = 0
         for i in done_episodes:
             completed_episodes[i] += 1
-            score_history.append(episode_scores[i]) 
+            score_history.append(float(episode_scores[i].item()))
             avg_reward = sum(score_history) / len(score_history)
             
             # Store hindsight trajectory if training
@@ -3844,7 +3928,7 @@ class HER(Agent):
         
         Args:
             trajectory (list): List of tuples or dicts with transition data:
-                (state, action, reward, next_state, done, achieved_goal, next_achieved_goal, desired_goal, traj_id, step_idx)
+                (state, action, reward, next_state, done, achieved_goal, next_achieved_goal, desired_goal)
         """
         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = zip(*trajectory)
         
@@ -4123,7 +4207,7 @@ class PPO(Agent):
 
         return advantages, returns, values
 
-    def get_action(self, env: EnvWrapper, states: np.ndarray, testing: bool = False, rendering: bool = False)->tuple[np.ndarray, np.ndarray]:
+    def get_action(self, states:np.ndarray|T.Tensor|dict|list[dict], step=None, testing:bool=False)->tuple[np.ndarray, np.ndarray]:
         """
         Select an action based on the current policy.
 
@@ -4142,7 +4226,7 @@ class PPO(Agent):
 
         states, goals = self._preprocess_inputs(states)
 
-        if testing or rendering:
+        if testing:
             with T.no_grad():
                 if self.policy_model.distribution == 'categorical':
                     dist, logits = self.policy_model(states, goals)
@@ -4484,7 +4568,7 @@ class PPO(Agent):
         episode_logs = []
         for i in done_episodes:
             completed_episodes[i] += 1
-            score_history.append(episode_scores[i])
+            score_history.append(float(episode_scores[i].item()))
             avg_reward = sum(score_history) / len(score_history)
 
             # check if best reward

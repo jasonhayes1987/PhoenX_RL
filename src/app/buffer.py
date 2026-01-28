@@ -294,7 +294,6 @@ class ReplayBuffer(Buffer):
             # next_states = next_states.unsqueeze(1)
         if dones.ndim == 1:
             dones = dones[:, T.newaxis]
-            # dones = dones.unsqueeze(1)
 
         if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
@@ -307,7 +306,6 @@ class ReplayBuffer(Buffer):
                 # next_state_achieved_goals = next_state_achieved_goals.unsqueeze(1)
             if desired_goals.ndim == 2:
                 desired_goals = desired_goals[:, T.newaxis, :]
-                # desired_goals = desired_goals.unsqueeze(1)
 
         # Store transitions (detach to avoid holding computation graphs)
         self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
@@ -316,6 +314,7 @@ class ReplayBuffer(Buffer):
         self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
         self.dones[indices] = dones.detach().to(device=self.device, dtype=T.int8)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
+        
         if self.goal_key is not None and self._goal_space_shape is not None:
             self.state_achieved_goals[indices] = state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
             self.next_state_achieved_goals[indices] = next_state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
@@ -441,14 +440,15 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
     def add(
         self,
-        states: np.ndarray,
-        actions: np.ndarray,
-        rewards: np.ndarray,
-        next_states: np.ndarray,
-        dones: np.ndarray,
-        state_achieved_goals: Optional[np.ndarray] = None,
-        next_state_achieved_goals: Optional[np.ndarray] = None,
-        desired_goals: Optional[np.ndarray] = None,
+        states: T.Tensor,
+        actions: T.Tensor,
+        rewards: T.Tensor,
+        next_states: T.Tensor,
+        dones: T.Tensor,
+        state_achieved_goals: Optional[T.Tensor] = None,
+        next_state_achieved_goals: Optional[T.Tensor] = None,
+        desired_goals: Optional[T.Tensor] = None,
+        trajectory_lengths: Optional[T.Tensor] = None,
     ) -> None:
         batch_size = len(states)
         start_idx = self.counter % self.buffer_size
@@ -462,33 +462,32 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
         # Add N dimension of 1 at index 1 if values are 2d
         if states.ndim == 2:
-            states = states[:, np.newaxis, :]
+            states = states[:, T.newaxis, :]
             # states = states.unsqueeze(1)
         if actions.ndim == 2:
-            actions = actions[:, np.newaxis, :]
+            actions = actions[:, T.newaxis, :]
             # actions = actions.unsqueeze(1)
         if rewards.ndim == 1:
-            rewards = rewards[:, np.newaxis]
+            rewards = rewards[:, T.newaxis]
             # rewards = rewards.unsqueeze(1)
         if next_states.ndim == 2:
-            next_states = next_states[:, np.newaxis, :]
+            next_states = next_states[:, T.newaxis, :]
             # next_states = next_states.unsqueeze(1)
         if dones.ndim == 1:
-            dones = dones[:, np.newaxis]
-            # dones = dones.unsqueeze(1)
+            dones = dones[:, T.newaxis]
+
 
         if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             if state_achieved_goals.ndim == 2:
-                state_achieved_goals = state_achieved_goals[:, np.newaxis, :]
+                state_achieved_goals = state_achieved_goals[:, T.newaxis, :]
                 # state_achieved_goals = state_achieved_goals.unsqueeze(1)
             if next_state_achieved_goals.ndim == 2:
-                next_state_achieved_goals = next_state_achieved_goals[:, np.newaxis, :]
+                next_state_achieved_goals = next_state_achieved_goals[:, T.newaxis, :]
                 # next_state_achieved_goals = next_state_achieved_goals.unsqueeze(1)
             if desired_goals.ndim == 2:
-                desired_goals = desired_goals[:, np.newaxis, :]
-                # desired_goals = desired_goals.unsqueeze(1)
+                desired_goals = desired_goals[:, T.newaxis, :]
 
         # Add to buffer tensors
         self.states[indices] = T.tensor(states, dtype=T.float32, device=self.device)
@@ -496,6 +495,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
         self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
         self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
+        self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
 
         if self.goal_key is not None and self._goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:

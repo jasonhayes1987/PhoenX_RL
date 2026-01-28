@@ -282,7 +282,7 @@ class VectorNStepReward(VectorWrapper):
     def step(self, actions: T.Tensor):
         """
         Step all envs with batched actions, update per-env trajectories, clears env trajectory deques if done is True
-        Returns batched (next_states, rewards, dones, infos)
+        Returns batched (next_states, rewards, terminations, truncations, infos)
         """
         device = get_device()
         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
@@ -338,14 +338,6 @@ class VectorNStepReward(VectorWrapper):
         # Build batched trajectory
         trajectory = self.build_trajectories()
         infos['n-step trajectory'] = trajectory
-
-        #DEBUG
-        if dones.any():
-            print(f'dones: {dones}')
-            print(f'states: {self.current_states}')
-            print(f'next states: {next_states}')
-            print(f'rewards: {rewards}')
-            print(f'infos: {infos}')
         
         # Clear done trajectories
         for i in range(self.num_envs):
@@ -362,7 +354,7 @@ class VectorNStepReward(VectorWrapper):
 
         self.current_states = next_states
 
-        return next_states, rewards, dones, infos
+        return next_states, rewards, terminations, truncations, infos
 
     def build_trajectories(self):
         """Construct batched n-step trajectory dict from per-env deques."""
@@ -428,6 +420,17 @@ class VectorNStepReward(VectorWrapper):
     def single_observation_space(self):
         return self.env.single_observation_space
 
+class OneHotObservationWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        assert isinstance(self.observation_space, gym.spaces.Discrete), "Observation space must be Discrete."
+        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.observation_space.n,), dtype=np.float32)
+    
+    def observation(self, obs):
+        one_hot = np.zeros(self.observation_space.shape[0], dtype=np.float32)
+        one_hot[obs] = 1.0
+        return one_hot
+
 
 WRAPPER_REGISTRY = {
     "AtariPreprocessing": {
@@ -471,6 +474,10 @@ WRAPPER_REGISTRY = {
         "cls": VectorNStepReward,
         "vector_aware": True,
         "default_params": {"n": 1, "obs_key": None, "goal_key": None, "ach_goal_key": None}
+    },
+    "OneHotObservationWrapper": {
+        "cls": OneHotObservationWrapper,
+        "default_params": {}
     }
 }
 
@@ -595,11 +602,7 @@ class EnvWrapper(ABC):
             EnvWrapper: A new instance of the environment wrapper with the passed parameters.
         """
         config = json.loads(self.to_json())
-        #DEBUG
-        print(f'EnvWrapper clone loaded config:{config}')
         config['config'].update(num_envs=num_envs, **kwargs)
-        #DEBUG
-        print(f'EnvWrapper clone updated config:{config}')
         return self.from_json(json.dumps(config))
 
     @abstractmethod
@@ -686,8 +689,6 @@ class EnvWrapper(ABC):
             ValueError: If the type in the JSON is not recognized or if instantiation fails.
         """
         config = json.loads(json_string)
-        #DEBUG
-        print(f'EnvWrapper from_json config:{config}')
         try:
             if config['type'] == 'gymnasium':
                 return GymnasiumWrapper.from_json(json_string)
@@ -710,7 +711,7 @@ class GymnasiumWrapper(EnvWrapper):
     and JSON-based serialization of Gymnasium environments.
     """
     def __init__(self, cfg:str, num_envs:int=1, wrappers:list[dict]|None=None,
-                 render_mode:str|None=None, seed:int|None=None, obs_key:str='observation', goal_key:str|None=None):
+                 render_mode:str|None=None, seed:int|None=None, obs_key:str|None=None, goal_key:str|None=None):
         self.env_id = cfg
         self.wrappers = wrappers
         self.num_envs = num_envs
@@ -759,7 +760,7 @@ class GymnasiumWrapper(EnvWrapper):
                 
                 override_params = wrapper.get("params", {})
                 final_params = {**default_params, **override_params}
-                final_params.update({"obs_key": self.obs_key, "goal_key": self.goal_key})
+                # final_params.update({"obs_key": self.obs_key, "goal_key": self.goal_key})
                 
                 if vector_aware:
                     vector_wrappers.append((cls, final_params))
@@ -790,11 +791,7 @@ class GymnasiumWrapper(EnvWrapper):
         Returns:
             np.ndarray: The rendered frame.
         """
-        frame = self.env.render()
-
-        #DEBUG
-        print(f'rendered frame: {frame}')
-        
+        frame = self.env.render()        
         return frame[0]
         
 
@@ -810,8 +807,8 @@ class GymnasiumWrapper(EnvWrapper):
         return state, info
 
     def step(self, action):
-        states, rewards, dones, infos = self.env.step(action)
-        # dones = np.logical_or(terms, truncs)
+        states, rewards, terminations, truncations, infos = self.env.step(action)
+        dones = terminations | truncations
         
         return states, rewards, dones, infos
     
@@ -1051,7 +1048,8 @@ class IsaacSimWrapper(EnvWrapper):
         self.app.close()
 
     def step(self, action: T.Tensor):
-        states, rewards, dones, info = self.env.step(action)
+        states, rewards, terminations, truncations, info = self.env.step(action)
+        dones = terminations | truncations
 
         return states, rewards, dones, info
 
