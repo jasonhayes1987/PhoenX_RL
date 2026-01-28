@@ -91,7 +91,7 @@ def train_agent(agent_config_dir):
         agent = load_agent(agent_config_dir, load_weights)
 
         if agent_type:
-            if agent_type in ['ActorCritic', 'DDPG', 'TD3', 'SAC']:
+            if agent_type in ['DDPG', 'TD3', 'SAC']:
                 # if args.distributed_workers > 1:
                 #     distributed_agents = DistributedAgents(
                 #         agent_config,
@@ -109,8 +109,10 @@ def train_agent(agent_config_dir):
                 #         ray.get(futures)
                 # else:
                 steps_per_learn = args.steps_per_learn if args.steps_per_learn is not None else train_config.get('steps_per_learn', 1)
-                # agent = load_agent(agent_config_dir, load_weights)
                 agent.train(num_episodes, steps_per_learn, render_freq, seed)
+
+            elif agent_type == 'ActorCritic':
+                agent.train(num_episodes, render_freq, seed)
 
             elif agent_type == 'Reinforce':
                 trajectories_per_update = train_config['trajectories_per_update']

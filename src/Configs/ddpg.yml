@@ -1,10 +1,10 @@
 n: &n 3 # n-step reward
-obs_key: &obs_key 'policy'
+obs_key: &obs_key null
 goal_key: &goal_key null
 achieved_goal_key: &achieved_goal_key null
 device: &device "cuda"
 seed: &seed 100
-save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/Isaac_Cartpole_N3/DDPG/"
+save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_N3_E4_ICM/DDPG/"
 log_level: "info"
 
 agent:
@@ -17,11 +17,11 @@ agent:
   N: *n
 
 env:
-  type: "isaacsim" # "isaacsim" or "gymnasium"
+  type: "gymnasium" # "isaacsim" or "gymnasium"
   config:
-    cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    # cfg: "LunarLanderContinuous-v3"
-    num_envs: 16
+    # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
+    cfg: "LunarLanderContinuous-v3"
+    num_envs: 4
     wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *achieved_goal_key}}]
     render_mode: null
     seed: *seed
@@ -40,7 +40,7 @@ models:
     output_layer_kernel:
       - type: dense
         params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-    optimizer_params: {type: Adam, params: {lr: 0.001}}
+    optimizer_params: {type: Adam, params: {lr: 0.0001}}
     obs_key: *obs_key
     device: *device
 
@@ -79,9 +79,46 @@ noise:
   type: NormalNoise
   params: {stddev: 0.1}
 
+curiosity:
+  model_configs: {
+    # 'encoder': {
+    #     'layer_config': [
+    #         {'type': 'dense', 'params': {'units': 64, 'kernel': 'ones', 'kernel params':{}}},
+    #         {'type': 'relu'},
+    #     ],
+    #     'output_layer': [
+    #         {'type': 'dense', 'params': {'units': 256, 'kernel': 'ones', 'kernel params':{}}}
+    #     ]
+    # },
+    'inverse_model': {
+        'layer_config': [
+            {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+            {'type': 'relu'},
+        ],
+        'output_layer': [
+            {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+        ]
+    },
+    'forward_model': {
+        'layer_config': [
+            {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+            {'type': 'relu'},
+        ],
+        'output_layer': [
+            {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+        ]
+    }
+  }
+  optimizer_params: {type: Adam, params: {lr: 0.001}}
+  reward_weight: 0.01
+  reward_scheduler: {type: linear, params: {start_factor: 1.0, end_factor: 0.1, total_iters: 25000}}
+  beta: 0.2
+  extrinsic_threshold: 0
+  device: *device
+
 callbacks:
   - type: "WandbCallback"
-    config: {project_name: "Isaac_Cartpole-v1"}
+    config: {project_name: "LunarLanderContinuous-v3"}
 
 train_config:
   load_weights: false

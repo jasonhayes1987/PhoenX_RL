@@ -86,15 +86,6 @@ class Model(nn.Module):
         """
         obs_space = (self.env.single_observation_space if hasattr(self.env, "single_observation_space") 
                         else self.env.observation_space)
-        #DEBUG
-        print(f'init model obs_space:{obs_space}')
-        print(f'init model obs_space type:{type(obs_space)}')
-        print(f'hasattr(obs_space, "spaces"): {hasattr(obs_space, "spaces")}')
-        if hasattr(obs_space, 'spaces'):
-            print(f'self.obs_key in obs_space.spaces: {self.obs_key in obs_space.spaces}')
-            print(f'obs_space.spaces keys: {list(obs_space.spaces.keys())}')
-        print(f'list(obs_space.keys()): {list(obs_space.keys()) if hasattr(obs_space, "keys") else "no keys method"}')
-        print(f'dir(obs_space): {[attr for attr in dir(obs_space) if not attr.startswith("_")]}')
         # Dry run forward pass to initialize lazy modules
         # Check if the observation space is a dictionary AND contains goal-conditioned keys
         is_goal_conditioned = (isinstance(obs_space, gym.spaces.Dict) and 
@@ -118,20 +109,11 @@ class Model(nn.Module):
         else:
             # Handle both regular Box spaces and non-goal-conditioned Dict spaces
             if isinstance(obs_space, gym.spaces.Dict):
-                #DEBUG
-                print(f'init model obs_space is a dict')
-                print(f'init model obs_space key:{self.obs_key}')
                 if self.obs_key in obs_space.spaces:
                     obs_shape = obs_space.spaces[self.obs_key].shape
             else:
-                #DEBUG
-                print(f'init model obs_space is not a dict')
                 obs_shape = obs_space.shape
-            #DEBUG
-            print(f'init model obs_shape:{obs_shape}')
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
-            #DEBUG
-            # print(f'state input shape:{state_input.shape}')
             if isinstance(self, CriticModel):
                 action_shape = self.env.single_action_space.shape
                 action_input = T.ones((32, *action_shape), device=self.device, dtype=T.float)
@@ -216,7 +198,7 @@ class Model(nn.Module):
             # If the params of the layer config dict contains a kernel, apply it to layer
             # if config['type'] in ['dense', 'transformer']:
             kernel = config.get('params', {}).get('kernel', 'default')  # Get kernel or 'default'
-            kernel_params = config.get('params', {}).get('kernel params', {}) # Get kernel params or empty dict
+            kernel_params = config.get('params', {}).get('kernel_params', {}) # Get kernel params or empty dict
             # Apply the specified initialization scheme
             if kernel == 'kaiming_uniform':
                 nn.init.kaiming_uniform_(layer.weight, **kernel_params)
