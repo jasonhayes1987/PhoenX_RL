@@ -120,12 +120,12 @@ class Normalizer:
         """
         T.save({
             'step': self.step,
-            'local_sum': self.local_sum.cpu().numpy(),
-            'local_sum_sq': self.local_sum_sq.cpu().numpy(),
-            'local_cnt': self.local_cnt.cpu().numpy(),
-            'running_mean': self.running_mean.cpu().numpy(),
-            'running_var': self.running_var.cpu().numpy(),
-            'running_std': self.running_std.cpu().numpy(),
+            'local_sum': self.local_sum.cpu().detach().numpy(),
+            'local_sum_sq': self.local_sum_sq.cpu().detach().numpy(),
+            'local_cnt': self.local_cnt.cpu().detach().numpy(),
+            'running_mean': self.running_mean.cpu().detach().numpy(),
+            'running_var': self.running_var.cpu().detach().numpy(),
+            'running_std': self.running_std.cpu().detach().numpy(),
         }, file_path)
 
     @classmethod

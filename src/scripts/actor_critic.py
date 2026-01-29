@@ -61,6 +61,12 @@ value_config = config['models']['value']
 value_config['env'] = env
 value = ValueModel(**value_config)
 
+# create advantage normalizer object if present in config
+if config.get('normalizers', {}).get('advantage', None):
+    advantage_normalizer = Normalizer(size=1, **config['normalizers']['advantage'])
+else:
+    advantage_normalizer = None
+
 # create state normalizer object if present in config
 if config.get('normalizers', {}).get('state', None):
     size = infer_dim(env, config['obs_key'])
@@ -84,6 +90,7 @@ actor_critic = agent_class(
                 gae_coefficient=config['agent']['gae_coefficient'],
                 trajectory_length=config['agent']['trajectory_length'],
                 state_normalizer=state_normalizer,
+                advantage_normalizer=advantage_normalizer,
                 callbacks=callbacks,
                 save_dir=config['save_dir'],
                 device=config['device'],
