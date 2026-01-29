@@ -456,6 +456,7 @@ class ActorCritic(Agent):
         gae_coefficient: float=0.95,
         trajectory_length: int=10,
         state_normalizer: Optional[Normalizer] = None,
+        advantage_normalizer: Normalizer|None=None,
         callbacks: Optional[list[Callback]] = None,
         save_dir: str = "models/",
         device: Optional[str | T.device] = None,
@@ -469,6 +470,7 @@ class ActorCritic(Agent):
             self.policy_trace_decay = policy_trace_decay
             self.value_trace_decay = value_trace_decay
             self.entropy_coefficient = entropy_coefficient
+            self.advantage_normalizer = advantage_normalizer
             self.gae_coefficient = gae_coefficient
             self.trajectory_length = trajectory_length
             self.state_normalizer = state_normalizer
@@ -703,8 +705,13 @@ class ActorCritic(Agent):
             rewards + self.discount * next_state_values.reshape(trajectory_length, num_envs, -1).squeeze() * (1 - dones) - state_values.reshape(trajectory_length, num_envs, -1).squeeze())
         
         advantages = compute_gae(td_errors, dones, self.discount, self.gae_coefficient, device=self.device)
-        returns = (advantages + state_values.reshape(trajectory_length, num_envs, -1).squeeze()).detach()
-        value_loss = (state_values.reshape(trajectory_length, num_envs, -1).squeeze() - returns).square().mean()
+        if self.advantage_normalizer:
+            self.advantage_normalizer.add(advantages.view(trajectory_length * num_envs, 1))
+            advantages = self.advantage_normalizer.normalize(advantages.view(trajectory_length * num_envs, 1))
+            advantages = advantages.view(trajectory_length, num_envs)
+        returns = (advantages + state_values.reshape(trajectory_length, num_envs, -1).squeeze())
+        value_loss = (state_values.reshape(trajectory_length, num_envs, -1).squeeze() - returns.detach()).square().mean()
+        # value_loss = returns.square().mean()
 
         value_loss.backward()
 
@@ -852,6 +859,7 @@ class ActorCritic(Agent):
             "gae_coefficient": self.gae_coefficient,
             "trajectory_length": self.trajectory_length,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
             "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             "save_dir": self.save_dir
         }
@@ -867,6 +875,8 @@ class ActorCritic(Agent):
         self.value_model.save(self.save_dir)
         if self.state_normalizer:
             self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
+        if self.advantage_normalizer:
+            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
 
     @classmethod
     def load(cls, config_dir:str | Path, load_weights=True):
@@ -876,6 +886,7 @@ class ActorCritic(Agent):
         policy_model = StochasticDiscretePolicy.load(Path(config_dir) / 'policy_model', load_weights, env=env_wrapper)
         value_model = ValueModel.load(Path(config_dir) / 'value_model', load_weights, env=env_wrapper)
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
+        advantage_normalizer = Normalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
         callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
         agent = cls(
             env=env_wrapper,
@@ -888,6 +899,7 @@ class ActorCritic(Agent):
             gae_coefficient=config["gae_coefficient"],
             trajectory_length=config["trajectory_length"],
             state_normalizer=state_normalizer,
+            advantage_normalizer=advantage_normalizer,
             callbacks=callbacks,
             save_dir=config["save_dir"],
         )
