@@ -1,10 +1,10 @@
 from typing import Optional
 import torch as T
-from models import Model
+from .models import Model
 import numpy as np
-from env_wrapper import EnvWrapper
-from schedulers import ScheduleWrapper
-from logging_config import get_logger
+from .env_wrapper import EnvWrapper
+from .schedulers import ScheduleWrapper
+from .logging_config import get_logger
 import gymnasium as gym
 from pathlib import Path
 import json
@@ -14,7 +14,7 @@ class ICM(Model):
     """Intrinsic Curiousity Module."""
     def __init__(self, env:EnvWrapper, model_configs:dict, optimizer_params:dict, reward_weight:float=0.1,
                  reward_scheduler: Optional[ScheduleWrapper]=None, beta:float=0.2,
-                 extrinsic_threshold: int=0, warmup:int=0, log_level: str = 'info',
+                 extrinsic_threshold: int=0, log_level: str = 'info',
                  device:Optional[str | T.device]=None):
         try:
             super().__init__(env, [], optimizer_params, device=device)
@@ -23,7 +23,6 @@ class ICM(Model):
             self.reward_scheduler = reward_scheduler
             self.beta = beta
             self.extrinsic_threshold = extrinsic_threshold
-            self.warmup = warmup
             # Internal Attributes
             self._use_encoder = False
             self._use_extrinsic = False
@@ -246,6 +245,8 @@ class ICM(Model):
             self.reward_scheduler.step()
 
         # Set models to eval mode
+        # TODO: Do I need to set these to eval mode?  They are never used for inference
+        # So why do they need to be put in eval mode?  Batch_norm/Layer_norm layers? (mean/var/std layer tracking)
         if self._use_encoder:
             self.encoder.eval()
         self.inverse_model.eval()
@@ -263,7 +264,6 @@ class ICM(Model):
             "reward_scheduler": self.reward_scheduler.get_config() if self.reward_scheduler else None,
             "beta": self.beta,
             "extrinsic_threshold": self.extrinsic_threshold,
-            "warmup": self.warmup,
             "log_level": logging.getLevelName(self.logger.getEffectiveLevel()).lower(),
             "device": self.device.type
         }
@@ -278,7 +278,7 @@ class ICM(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, env: EnvWrapper | None = None):
         """Load a model from a saved configuration."""
         model_dir = Path(folder) / "curiosity"
         config_path = model_dir / "config.json"
@@ -290,8 +290,8 @@ class ICM(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        # Load EnvWrapper
-        env_wrapper = EnvWrapper.from_json(config["env"])
+        # Load EnvWrapper (or reuse injected env to avoid duplicate Isaac Sim SimulationContext)
+        env_wrapper = env if env is not None else EnvWrapper.from_json(config["env"])
         if config['reward_scheduler'] is not None:
             scheduler = ScheduleWrapper(config['reward_scheduler'])
         else:
@@ -299,7 +299,7 @@ class ICM(Model):
 
         model = cls(env=env_wrapper, model_configs=config['model_configs'], optimizer_params=config['optimizer_params'],
                     reward_weight=config['reward_weight'], reward_scheduler=scheduler,
-                    beta=config['beta'], extrinsic_threshold=config['extrinsic_threshold'], warmup=config['warmup'],
+                    beta=config['beta'], extrinsic_threshold=config['extrinsic_threshold'],
                     device=config['device'], log_level=config['log_level'])
         model.load_state_dict(T.load(model_path))
         return model

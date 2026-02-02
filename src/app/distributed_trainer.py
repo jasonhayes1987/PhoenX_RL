@@ -5,14 +5,14 @@ import asyncio
 import torch as T
 from typing import Dict, List, Optional
 import logging
-from rl_agents import Agent
-from agent_utils import load_agent, convert_to_distributed_callbacks
-from normalizer import Normalizer
-from buffer import Buffer
-from env_wrapper import EnvWrapper
-from logging_config import get_logger
-from rl_callbacks import RayWandbCallback
-from torch_utils import get_device
+from .rl_agents import Agent
+from .agent_utils import load_agent, convert_to_distributed_callbacks
+from .normalizer import Normalizer
+from .buffer import Buffer
+from .env_wrapper import EnvWrapper
+from .logging_config import get_logger
+from .rl_callbacks import RayWandbCallback
+from .torch_utils import get_device
 # import ray.logger as logger
 
 # Use correct Ray logger import

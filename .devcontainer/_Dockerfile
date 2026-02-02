@@ -1,99 +1,57 @@
-# Use the CUDA 12.5 devel base image
-FROM nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04
+# Base on official Isaac Lab image (headless Isaac Sim + Isaac Lab pre-installed)
+FROM nvcr.io/nvidia/isaac-lab:2.2.0
+# If 2.2.1 is available to you, prefer it:
+# FROM nvcr.io/nvidia/isaac-lab:2.2.1
 
-# Install necessary system packages
+ENV DEBIAN_FRONTEND=noninteractive TZ=UTC
+
+RUN apt-get update && apt-get install -y libosmesa6-dev && rm -rf /var/lib/apt/lists/*
+
+# Install Vulkan runtime and tools
 RUN apt-get update && apt-get install -y \
-    sudo \
-    wget \
-    build-essential \
-    htop \
-    git \
-    swig \
-    cmake \
-    gcc \
-    libglfw3-dev \
-    libglew-dev \
-    libopengl0 \
-    python3-opengl \
-    libglu1-mesa-dev \
-    libgl1-mesa-dev \
-    libosmesa6-dev \
-    python3-opengl \
-    patchelf \
-    ffmpeg \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    gdb \
-    mesa-utils \
-    libsdl2-dev \
-    libsdl2-image-dev \
-    libsdl2-mixer-dev \
-    libsdl2-ttf-dev \
-    libfreetype6-dev \
+    vulkan-tools \
+    libvulkan1 \
+    libvulkan-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Miniconda
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh && \
-    bash ~/miniconda.sh -b -p /opt/conda && \
-    rm ~/miniconda.sh && \
-    /opt/conda/bin/conda init
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 
-# Set PATH to include conda
-ENV PATH /opt/conda/bin:$PATH
+# Create NVIDIA Vulkan ICD JSON (points to libGLX_nvidia.so.0 after mounting/symlink)
+# RUN mkdir -p /etc/vulkan/icd.d && \
+#     printf '{ "file_format_version": "1.0.0", "ICD": { "library_path": "/usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0", "api_version": "1.3.204" } }' > /etc/vulkan/icd.d/nvidia_icd.json
 
-# Create a conda environment and install specific versions of PyTorch in a single RUN command
-RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && \
-    conda create -n myenv python=3.10 -y && \
-    conda activate myenv && \
-    conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch-nightly -c nvidia && \
-    conda install -y -c conda-forge libstdcxx-ng"
+# Set env vars for Vulkan loader and Mesa (force NVIDIA adapter)
+# ENV VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+# ENV MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA
 
-# Ignore uninstall of blinker
-RUN pip install --ignore-installed blinker
+# Optional: Suppress XDG/DISPLAY warnings (create runtime dir)
+ENV XDG_RUNTIME_DIR=/tmp/runtime-root
+RUN mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
 
-# Get and install Mujoco
-RUN mkdir -p /root/.mujoco && \
-    wget https://github.com/google-deepmind/mujoco/releases/download/3.1.4/mujoco-3.1.4-linux-x86_64.tar.gz -O mujoco.tar.gz && \
-    tar -xf mujoco.tar.gz -C /root/.mujoco && \
-    rm mujoco.tar.gz && \
-    echo "export LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:$LD_LIBRARY_PATH" >> /root/.bashrc && \
-    echo "export LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:$LD_LIBRARY_PATH" >> /root/.profile && \
-    ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1.4 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 && \
-    ln -sf /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so.3.1 /root/.mujoco/mujoco-3.1.4/lib/libmujoco.so
+WORKDIR /workspaces/PhoenX_RL
 
-# Set environment variables for Mujoco
-ENV MUJOCO_GL=egl
-ENV PYOPENGL_PLATFORM=egl
-ENV LD_LIBRARY_PATH=/root/.mujoco/mujoco-3.1.4/lib:${LD_LIBRARY_PATH}
-ENV MUJOCO_PATH=/root/.mujoco/mujoco-3.1.4
-ENV CUDA_HOME=/usr/local/cuda
-ENV PATH=/usr/local/cuda/bin:$PATH
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+# Use Isaac Sim Python
+RUN /isaac-sim/python.sh -m pip install --upgrade pip setuptools wheel
 
-# Copy over requirements for RL API and app
-COPY src/requirements.txt .
+COPY requirements.txt .
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir -r requirements.txt
 
-# Activate the conda environment and install packages in requirements
-RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && \
-    conda activate myenv && \
-    pip install --no-cache-dir -r requirements.txt"
+# Explicitly install AutoROM in Isaac Sim Python (ensures it's available)
+# RUN /isaac-sim/python.sh -m pip install --no-cache-dir AutoROM
 
-# Install mpi4py compatible with Python 3.10
-RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && \
-    conda activate myenv && \
-    conda install -y mpi4py=3.1.4"
+# RUN /isaac-sim/python.sh AutoROM --accept-license
 
-# Set working directory
-WORKDIR /app
+# Tell ale-py where the ROMs are (root is the user in this image)
+ENV ALE_PY_ROM_PATH=/root/.local/share/AutoROM/
 
-# Copy your app from your host to the container
-COPY src/ /
+# (Optional) Gymnasium Robotics
+RUN /isaac-sim/python.sh -m pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
 
-# Verify CUDA installation with nvcc
-RUN nvcc --version
 
-# Verify CUDA availability in PyTorch
-RUN /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate myenv && python -c \"import torch; print(f'CUDA version: {torch.version.cuda}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Number of CUDA devices: {torch.cuda.device_count()}')\""
 
-# Set the entry point to your application (modify as needed)
-# CMD ["/bin/bash", "-c", "source /opt/conda/etc/profile.d/conda.sh && conda activate myenv && python your_script.py"]
+# Mujoco headless (if you use mujoco outside Isaac Sim)
+ENV MUJOCO_GL=osmesa
+ENV PYOPENGL_PLATFORM=osmesa
+
+# Keep your project on sys.path
+ENV PYTHONPATH=/workspaces/PhoenX_RL

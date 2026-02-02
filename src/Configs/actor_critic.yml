@@ -1,0 +1,90 @@
+obs_key: &obs_key null
+goal_key: &goal_key null
+achieved_goal_key: &achieved_goal_key null
+device: &device "cuda"
+seed: &seed 42
+save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/Taxi-v3_15/ActorCritic/"
+log_level: "info"
+
+agent:
+  discount: 0.99
+  policy_trace_decay: 0.0
+  value_trace_decay: 0.0
+  entropy_coefficient: 0.5
+  gae_coefficient: 0.95
+  trajectory_length: 32
+
+env:
+  type: "gymnasium" # "isaacsim" or "gymnasium"
+  config:
+    # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
+    cfg: "Taxi-v3"
+    num_envs: 8
+    wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
+    render_mode: null
+    seed: *seed
+    obs_key: *obs_key
+    goal_key: *goal_key
+
+models:
+  policy:
+    layer_config:
+      - type: dense
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+      - type: dense
+        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+    output_layer_kernel:
+      - type: dense
+        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
+    optimizer_params: {type: Adam, params: {lr: 0.0001}}
+    obs_key: *obs_key
+    device: *device
+
+  value:
+    layer_config:
+      - type: dense
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+      - type: dense
+        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+    output_layer_kernel:
+      - type: dense
+        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
+    optimizer_params: {type: Adam, params: {lr: 0.0001}}
+    obs_key: *obs_key
+    device: *device
+
+normalizers:
+  advantage:
+    momentum: 0.99
+    update_freq: 1
+    clip_range: 5.0
+    device: *device
+  # state:
+  #   momentum: 0.99
+  #   update_freq: 200
+  #   clip_range: 5.0
+  #   device: *device
+
+entropy_schedule:
+  type: "linear"
+  params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
+
+callbacks:
+  - type: "WandbCallback"
+    config: {project_name: "Taxi-v3"}
+
+train_config:
+  load_weights: false
+  num_episodes: 50000
+  render_freq: 1000
+  seed: 42
+
+test_config:
+  load_weights: true
+  num_episodes: 20
+  render_freq: 1
+  seed: 42

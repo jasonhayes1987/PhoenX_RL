@@ -1,0 +1,45 @@
+pylint
+pytest
+numpy
+pandas
+numba
+umap-learn
+pynndescent
+matplotlib
+seaborn
+scikit-learn
+astunparse
+hypothesis
+psutil
+pyyaml
+requests
+setuptools
+typing-extensions>=4.8.0
+sympy
+filelock
+networkx
+jinja2
+fsspec
+packaging
+lark
+ipykernel
+dash
+natsort
+ffmpeg
+# mpi4py
+dash-bootstrap-components
+mujoco>=2.2.0,<3.2.0
+# python-dotenv
+# python-dotenv-with-cli
+ray[rllib]
+optuna
+hyperopt
+expecttest!=0.2.0
+optree>=0.9.1
+ale-py
+autorom[accept-rom-license]
+wandb==0.22.2
+# types-dataclasses
+# decorator==4.0.2
+# mcp
+ipywidgets

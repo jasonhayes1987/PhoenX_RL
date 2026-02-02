@@ -9,7 +9,7 @@ from adaptive_kl import AdaptiveKL
 
 ##########################################
 # Training Parameters
-env_string = 'FetchPickAndPlaceDense-v4'
+env_string = 'FetchReachDense-v4'
 timesteps = 500_000
 trajectory_length = 32
 batch_size = 64
