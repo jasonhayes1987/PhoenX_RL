@@ -30,7 +30,7 @@ def infer_dim(env, key=None):
     return int(np.prod(space.shape))
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Create ActorCritic Agent from config file')
+    parser = argparse.ArgumentParser(description='Create Reinforce Agent from config file')
     parser.add_argument('--config_file', type=str, required=True, help='Path to the agent configuration file (.yml)')
     args = parser.parse_args()
     config = load_config(args.config_file)
@@ -56,15 +56,12 @@ policy_config['env'] = env
 policy = StochasticDiscretePolicy(**policy_config)
 
 # # build critic
-value_config = config['models']['value']
-value_config['env'] = env
-value = ValueModel(**value_config)
-
-# create advantage normalizer object if present in config
-if config.get('normalizers', {}).get('advantage', None):
-    advantage_normalizer = Normalizer(size=1, **config['normalizers']['advantage'])
+value_config = config['models'].get('value', None)
+if value_config:
+    value_config['env'] = env
+    value = ValueModel(**value_config)
 else:
-    advantage_normalizer = None
+    value = None
 
 # create state normalizer object if present in config
 if config.get('normalizers', {}).get('state', None):
@@ -76,28 +73,24 @@ else:
 # create callbacks object if present in config
 callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
-# Create DDPG Agent
-agent_class = get_agent_class_from_type('ActorCritic')
-actor_critic = agent_class(
+# Create Reinforce Agent
+agent_class = get_agent_class_from_type('Reinforce')
+reinforce = agent_class(
                 env=env,
                 policy_model=policy,
                 value_model=value,
                 discount=config['agent']['discount'],
-                policy_trace_decay=config['agent']['policy_trace_decay'],
-                value_trace_decay=config['agent']['value_trace_decay'],
+                state_normalizer=state_normalizer,
                 entropy_coefficient=config['agent']['entropy_coefficient'],
                 entropy_schedule=ScheduleWrapper(config['entropy_schedule']) if config.get('entropy_schedule', None) else None,
-                gae_coefficient=config['agent']['gae_coefficient'],
-                trajectory_length=config['agent']['trajectory_length'],
-                state_normalizer=state_normalizer,
-                advantage_normalizer=advantage_normalizer,
+                max_trajectory_length=config['agent']['max_trajectory_length'],
                 callbacks=callbacks,
                 save_dir=config['save_dir'],
                 device=config['device'],
                 log_level=config['log_level'])
 
 # # Save Agent
-actor_critic.save()
+reinforce.save()
 
 # Set train config
 train_config = config['train_config']
