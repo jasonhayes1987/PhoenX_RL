@@ -60,6 +60,12 @@ parser.add_argument(
     default=None,
     help='Seed (default: None)'
 )
+parser.add_argument(
+    '--trajectories_per_update',
+    type=int,
+    default=None,
+    help='Trajectories per update (Reinforce only) (default: None)'
+)
 # parser.add_argument('--distributed_workers', type=int, default=1, help='Number of distributed workers (default: 1)')
 # parser.add_argument('--learner_device', type=str, default=None, help='Device for the learner (default: None)')
 # parser.add_argument('--learner_num_cpus', type=int, default=1, help='Number of CPUs for the learner (default: 1)')
@@ -116,7 +122,7 @@ def train_agent(agent_config_dir):
 
             elif agent_type == 'Reinforce':
                 trajectories_per_update = train_config['trajectories_per_update']
-                agent.train(num_episodes, num_envs, trajectories_per_update, render_freq, seed)
+                agent.train(num_episodes, trajectories_per_update, render_freq, seed)
 
             elif agent_type == 'HER':
                 num_epochs = train_config['num_epochs']
