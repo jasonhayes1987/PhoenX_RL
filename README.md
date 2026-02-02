@@ -26,7 +26,8 @@ The framework emphasizes extensibility, allowing users to customize models, nois
 - **Supported Algorithms:**
    - **On-Policy**: Reinforce, Actor-Critic, Proximal Policy Optimization (PPO) with adaptive KL divergence.
    - **Off-Policy**: Deep Deterministic Policy Gradient (DDPG), Twin Delayed DDPG (TD3), Soft Actor-Critic (SAC).
-   - **Goal-Oriented**: DDPG, TD3, SAC, PPO, Hindsight Experience Replay (HER) with DDPG/TD3/SAC backends.
+   - **Goal-Oriented**: DDPG, TD3, SAC, PPO.
+   - **Hindsight Experience Replay (HER)**: DDPG/TD3/SAC backends.
 - **Modular Components:**
    - **Models**: Stochastic policies (discrete/continuous), value functions, actors, and critics with customizable layers (dense, conv, etc...) and initializers.
    - **Noise Processes**: Ornstein-Uhlenbeck (OU), Normal, Uniform noise for exploration, with optional scheduling.
