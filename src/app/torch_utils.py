@@ -301,14 +301,12 @@ def get_device(device_spec: Optional[str | T.device] = None) -> T.device:
         torch.device: The corresponding device object
     """
 
-    if device_spec is None:
-        return T.device('cuda' if T.cuda.is_available() else 'cpu')
-    elif isinstance(device_spec, str):
+    if isinstance(device_spec, str):
         return T.device('cuda' if device_spec == 'cuda' and T.cuda.is_available() else 'cpu')
     elif isinstance(device_spec, T.device):
         return device_spec
     else:
-        raise ValueError(f"Unsupported device specification: {device_spec}")
+        return T.device('cuda' if T.cuda.is_available() else 'cpu')
 
 def set_seed(seed: int):
     """

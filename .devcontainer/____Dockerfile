@@ -1,5 +1,25 @@
+
 # Use the CUDA 12.6.2 devel base image
+# FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 FROM nvidia/cuda:12.6.2-cudnn-devel-ubuntu22.04
+
+ARG USERNAME=vscode
+ARG USER_UID=1000
+ARG USER_GID=${USER_UID}
+
+
+# Set ENV from ARGs to make them available for expansion in RUN commands
+ENV USERNAME=${USERNAME}
+ENV USER_UID=${USER_UID}
+ENV USER_GID=${USER_GID}
+
+
+# Force non-interactive apt/dpkg to skip ALL prompts (tzdata, etc.)
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+RUN echo 'tzdata tzdata/Areas select Etc' | debconf-set-selections \
+    && echo 'tzdata tzdata/Zones/Etc select UTC' | debconf-set-selections
 
 # Install necessary system packages
 RUN apt-get update && apt-get install -y \
@@ -36,6 +56,32 @@ RUN apt-get update && apt-get install -y \
     # nsight-compute-2024.3.2 \
     && rm -rf /var/lib/apt/lists/*
 
+
+# Install VNC for GUI access (Isaac Sim visualization/custom env building)**
+RUN apt-get update && apt-get install -y \
+    tightvncserver \
+    xvfb \
+    x11vnc \
+    dbus-x11 \
+    xfonts-base \
+    xfonts-75dpi \
+    xfonts-100dpi \
+    xfonts-scalable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Vulkan libs for GPU enumeration
+RUN apt-get update && apt-get install -y \
+    vulkan-tools \
+    libvulkan1 \
+    libvulkan-dev \
+    mesa-vulkan-drivers \
+    nvidia-opencl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy VNC startup script from host (editable without rebuild)
+COPY .devcontainer/start_vnc.sh /usr/local/bin/start_vnc.sh
+RUN chmod +x /usr/local/bin/start_vnc.sh
+
 # Install NVIDIA Nsight Systems and Compute via apt (compatible with CUDA 12.6 on Ubuntu 22.04)
 RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates && \
     wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1804/x86_64/7fa2af80.pub && \
@@ -67,11 +113,21 @@ RUN conda env create -f environment.yml
 # Set the default environment (replace 'rl_env' with the name in your environment.yml)
 ENV CONDA_DEFAULT_ENV=rl_env
 
+ENV LD_LIBRARY_PATH="/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu:/opt/conda/envs/rl_env/lib:$LD_LIBRARY_PATH"
+
+# Create user and set up sudoers before switching shell
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME} \
+    && echo ${USERNAME} ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME} \
+    && chown -R ${USERNAME}:${USERNAME} /opt/conda
+
 # Use the conda environment in subsequent commands
 SHELL ["conda", "run", "-n", "rl_env", "/bin/bash", "-c"]
 
 # Install PyTorch with CUDA support (ensure it's CUDA 12.6 compatible; adjust if needed)
-RUN pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu124
+# RUN pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+RUN pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121
 
 # Install Gymnasium Robotics directly from Repo for Mujoco v4 support
 RUN pip install git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0
@@ -91,7 +147,24 @@ ENV PYOPENGL_PLATFORM="osmesa"
 ENV PYTHONPATH="/workspaces/PhoenX_RL"
 
 # Run accept license command for AutoROM do download all roms needed for Atari ale
-RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.12/site-packages/ale_py/roms
+RUN AutoROM --accept-license --install-dir /opt/conda/envs/rl_env/lib/python3.11/site-packages/ale_py/roms
+
+# Install Isaac Sim via pip (requires EULA acceptance)
+RUN pip install "isaacsim[all,extscache]==5.0.0" --extra-index-url https://pypi.nvidia.com
+
+# Set up Isaac Sim environment and install Isaac Lab
+RUN git clone https://github.com/isaac-sim/IsaacLab.git && cd IsaacLab && ./isaaclab.sh --install
+
+# Add Isaac Lab to Python path
+ENV PYTHONPATH="/IsaacLab/source/isaaclab:/workspaces/PhoenX_RL"
+
+# NVIDIA GPU rendering fixes for Isaac Sim
+ENV __GLX_VENDOR_LIBRARY_NAME=nvidia
+ENV __NV_PRIME_RENDER_OFFLOAD=1
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+
+# Setup Isaac Sim environment
+RUN source /IsaacLab/isaaclab.sh
 
 # Set working directory
 WORKDIR /app
@@ -107,3 +180,12 @@ RUN nvcc --version
 
 # (Optional) Set the entry point to your application
 # CMD ["conda", "run", "-n", "rl_env", "python", "your_script.py"]
+
+# Final ownership changes for directories created after user setup
+RUN mkdir -p /opt/isaac-sim \
+    && if [ -d "/root/.local/share/ov/pkg/isaac-sim-5.0.0" ]; then \
+         mv /root/.local/share/ov/pkg/isaac-sim-5.0.0 /opt/isaac-sim/; \
+       fi \
+    && chown -R ${USERNAME}:${USERNAME} /opt/conda /IsaacLab /app /opt/isaac-sim
+
+USER ${USERNAME}
