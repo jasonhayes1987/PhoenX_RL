@@ -1,10 +1,10 @@
 from typing import Optional
 import torch as T
-from models import Model
+from .models import Model
 import numpy as np
-from env_wrapper import EnvWrapper
-from schedulers import ScheduleWrapper
-from logging_config import get_logger
+from .env_wrapper import EnvWrapper
+from .schedulers import ScheduleWrapper
+from .logging_config import get_logger
 import gymnasium as gym
 from pathlib import Path
 import json
@@ -14,7 +14,7 @@ class ICM(Model):
     """Intrinsic Curiousity Module."""
     def __init__(self, env:EnvWrapper, model_configs:dict, optimizer_params:dict, reward_weight:float=0.1,
                  reward_scheduler: Optional[ScheduleWrapper]=None, beta:float=0.2,
-                 extrinsic_threshold: int=0, warmup:int=0, log_level: str = 'info',
+                 extrinsic_threshold: int=0, log_level: str = 'info',
                  device:Optional[str | T.device]=None):
         try:
             super().__init__(env, [], optimizer_params, device=device)
@@ -23,7 +23,6 @@ class ICM(Model):
             self.reward_scheduler = reward_scheduler
             self.beta = beta
             self.extrinsic_threshold = extrinsic_threshold
-            self.warmup = warmup
             # Internal Attributes
             self._use_encoder = False
             self._use_extrinsic = False
@@ -71,8 +70,8 @@ class ICM(Model):
             self.to(self.device)
 
             # Warmup models by training on synthetic data
-            if self.warmup > 0:
-                self._warmup_models()
+            # if self.warmup > 0:
+            #     self._warmup_models()
 
         except Exception as e:
             self.logger.error(f"Error in ICM init: {e}", exc_info=True)
@@ -81,33 +80,34 @@ class ICM(Model):
         """
         Warmup models by training on synthetic data
         """
-        # Determine observation and action space properties
-        obs_space = (self.env.single_observation_space
-                    if hasattr(self.env, "single_observation_space")
-                    else self.env.observation_space)
-        if isinstance(obs_space, gym.spaces.Dict):
-            obs_high = T.tensor(obs_space['observation'].high, device=self.device).float()
-        else:
-            obs_high = T.tensor(obs_space.high, device=self.device).float()
-        if obs_high.isinf().any():
-            self.logger.warning("Observation space is unbounded, using default value of 10.0")
-            obs_high = T.ones(self.obs_dim, device=self.device).float() * 10.0
-            print(f'obs_high: {obs_high}')
-        action_space = (self.env.single_action_space
-                        if hasattr(self.env, "single_action_space")
-                        else self.env.action_space)
+        raise NotImplementedError("ICM warmup not implemented")
+        # # Determine observation and action space properties
+        # obs_space = (self.env.single_observation_space
+        #             if hasattr(self.env, "single_observation_space")
+        #             else self.env.observation_space)
+        # if isinstance(obs_space, gym.spaces.Dict):
+        #     obs_high = T.tensor(obs_space['observation'].high, device=self.device).float()
+        # else:
+        #     obs_high = T.tensor(obs_space.high, device=self.device).float()
+        # if obs_high.isinf().any():
+        #     self.logger.warning("Observation space is unbounded, using default value of 10.0")
+        #     obs_high = T.ones(self.obs_dim, device=self.device).float() * 10.0
+        # print(f'obs_high: {obs_high}')
+        # action_space = (self.env.single_action_space
+        #                 if hasattr(self.env, "single_action_space")
+        #                 else self.env.action_space)
         
-        for _ in range(self.warmup):
-            states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float) * obs_high
-            next_states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float) * obs_high
-            if self._is_discrete:
-                action = T.randint(0, self.action_dim[0], (512,), device=self.device)
-                action_input = T.nn.functional.one_hot(action.long(), num_classes=int(np.prod(self.action_dim)))
-            else:
-                action_high = T.tensor(action_space.high, device=self.device).float()
-                action_input = T.randn(512, *self.action_dim, device=self.device) * action_high
-            loss = self.train(states, next_states, action_input)
-            # print(f'Warmup loss: {loss}')
+        # for _ in range(self.warmup):
+        #     states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float) * obs_high
+        #     next_states = T.randn((512, *self.obs_dim), device=self.device, dtype=T.float) * obs_high
+        #     if self._is_discrete:
+        #         action = T.randint(0, self.action_dim[0], (512,), device=self.device)
+        #         action_input = T.nn.functional.one_hot(action.long(), num_classes=int(np.prod(self.action_dim)))
+        #     else:
+        #         action_high = T.tensor(action_space.high, device=self.device).float()
+        #         action_input = T.randn(512, *self.action_dim, device=self.device) * action_high
+        #     loss = self.train(states, next_states, action_input)
+        #     # print(f'Warmup loss: {loss}')
 
     def _init_model(self)->None:
         """
@@ -245,12 +245,14 @@ class ICM(Model):
             self.reward_scheduler.step()
 
         # Set models to eval mode
+        # TODO: Do I need to set these to eval mode?  They are never used for inference
+        # So why do they need to be put in eval mode?  Batch_norm/Layer_norm layers? (mean/var/std layer tracking)
         if self._use_encoder:
             self.encoder.eval()
         self.inverse_model.eval()
         self.forward_model.eval()
 
-        return loss.item()
+        return loss
 
     def get_config(self):
         """Returns the configuration of the ICM model."""
@@ -262,7 +264,6 @@ class ICM(Model):
             "reward_scheduler": self.reward_scheduler.get_config() if self.reward_scheduler else None,
             "beta": self.beta,
             "extrinsic_threshold": self.extrinsic_threshold,
-            "warmup": self.warmup,
             "log_level": logging.getLevelName(self.logger.getEffectiveLevel()).lower(),
             "device": self.device.type
         }
@@ -277,7 +278,7 @@ class ICM(Model):
             json.dump(config, f)
 
     @classmethod
-    def load(cls, folder):
+    def load(cls, folder, env: EnvWrapper | None = None):
         """Load a model from a saved configuration."""
         model_dir = Path(folder) / "curiosity"
         config_path = model_dir / "config.json"
@@ -289,8 +290,8 @@ class ICM(Model):
         else:
             raise FileNotFoundError(f"No configuration file found in {config_path}")
 
-        # Load EnvWrapper
-        env_wrapper = EnvWrapper.from_json(config["env"])
+        # Load EnvWrapper (or reuse injected env to avoid duplicate Isaac Sim SimulationContext)
+        env_wrapper = env if env is not None else EnvWrapper.from_json(config["env"])
         if config['reward_scheduler'] is not None:
             scheduler = ScheduleWrapper(config['reward_scheduler'])
         else:
@@ -298,7 +299,11 @@ class ICM(Model):
 
         model = cls(env=env_wrapper, model_configs=config['model_configs'], optimizer_params=config['optimizer_params'],
                     reward_weight=config['reward_weight'], reward_scheduler=scheduler,
-                    beta=config['beta'], extrinsic_threshold=config['extrinsic_threshold'], warmup=config['warmup'],
+                    beta=config['beta'], extrinsic_threshold=config['extrinsic_threshold'],
                     device=config['device'], log_level=config['log_level'])
         model.load_state_dict(T.load(model_path))
         return model
+    
+    @classmethod
+    def create_instance(cls, **kwargs) -> Optional['ICM']:
+        return ICM(**kwargs) if kwargs else None

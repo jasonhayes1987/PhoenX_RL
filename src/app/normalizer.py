@@ -1,6 +1,6 @@
 import torch as T
 import numpy as np
-from torch_utils import get_device
+from .torch_utils import get_device
 from typing import Optional
 
 class Normalizer:
@@ -9,15 +9,22 @@ class Normalizer:
 
     Attributes:
         size (int): Size of the input data to normalize.
+        momentum (float): Momentum for running statistics.
+        update_freq (int): Frequency of updating running statistics.
         eps (float): Small constant to prevent division by zero.
         clip_range (float): Range to clip normalized values.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
     """
-    def __init__(self, size: int, eps: float = 1e-6, clip_range: float = 5.0, device: Optional[str | T.device] = None):
-        self.size = size
+    def __init__(self, size: int, momentum: float = 0.99, update_freq: int = 1, clip_range: float = 5.0, eps: float = 1e-6, device: Optional[str | T.device] = None):
         self.device = get_device(device)
-        self.eps = T.tensor(eps, device=self.device)
+        self.size = size
+        self.momentum = T.tensor(momentum, device=self.device)
+        self.update_freq = update_freq
         self.clip_range = T.tensor(clip_range, device=self.device)
+        self.eps = T.tensor(eps, device=self.device)
+
+        # Initialize internal add counter (step) to 0
+        self.step = 0
 
         # Local statistics
         self.local_sum = T.zeros(self.size, dtype=T.float32, device=self.device)
@@ -26,10 +33,8 @@ class Normalizer:
 
         # Running statistics
         self.running_mean = T.zeros(self.size, dtype=T.float32, device=self.device)
+        self.running_var = T.ones(self.size, dtype=T.float32, device=self.device)
         self.running_std = T.ones(self.size, dtype=T.float32, device=self.device)
-        self.running_sum = T.zeros(self.size, dtype=T.float32, device=self.device)
-        self.running_sum_sq = T.zeros(self.size, dtype=T.float32, device=self.device)
-        self.running_cnt = T.zeros(1, dtype=T.int32, device=self.device)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
@@ -60,38 +65,35 @@ class Normalizer:
         """
         return (v * self.running_std) + self.running_mean
     
-    def update_local_stats(self, new_data: T.Tensor) -> None:
+    def add(self, new_data: T.Tensor) -> None:
         """
         Update local statistics with new data.
 
         Args:
             new_data (T.Tensor): New data to update local statistics.
         """
-        try:
-            self.local_sum += new_data.sum(dim=0).to(self.device)
-            self.local_sum_sq += (new_data**2).sum(dim=0).to(self.device)
-            self.local_cnt += new_data.size(0)
-        except Exception as e:
-            print(f"Error during local stats update: {e}")
+        self.step += 1
+        self.local_sum += new_data.sum(dim=0).to(self.device)
+        self.local_sum_sq += (new_data**2).sum(dim=0).to(self.device)
+        self.local_cnt += new_data.size(0)
+        # Update running statistics if update_freq is reached
+        if self.step % self.update_freq == 0:
+            self.update_running_stats()
     
-    def update_global_stats(self) -> None:
+    def update_running_stats(self) -> None:
         """
         Update running statistics based on local statistics.
         """
-
-        self.running_cnt += self.local_cnt
-        self.running_sum += self.local_sum
-        self.running_sum_sq += self.local_sum_sq
+        batch_mean = self.local_sum / self.local_cnt
+        batch_var = self.local_sum_sq / self.local_cnt - batch_mean**2
+        
+        self.running_mean = self.running_mean * self.momentum + batch_mean * (1 - self.momentum)
+        self.running_var = self.running_var * self.momentum + batch_var * (1 - self.momentum)
+        self.running_std = T.sqrt(T.maximum(self.running_var, self.eps**2))
 
         self.local_cnt.zero_()
         self.local_sum.zero_()
         self.local_sum_sq.zero_()
-
-        # Ensure all calculations remain on the correct device
-        self.running_mean = (self.running_sum / self.running_cnt).to(self.device)
-        tmp = (self.running_sum_sq / self.running_cnt - (self.running_sum / self.running_cnt)**2).to(self.device)
-        eps_squared = self.eps**2
-        self.running_std = T.sqrt(T.maximum(eps_squared, tmp)).to(self.device)
 
     def get_config(self) -> dict:
         """
@@ -102,6 +104,8 @@ class Normalizer:
         """
         return {
             'size':self.size,
+            'momentum':self.momentum.item(),
+            'update_freq':self.update_freq,
             'eps':self.eps.item(),
             'clip_range':self.clip_range.item(),
             'device':self.device.type,
@@ -115,14 +119,13 @@ class Normalizer:
             file_path (str): Path to save the state.
         """
         T.save({
-            'local_sum': self.local_sum.cpu().numpy(),
-            'local_sum_sq': self.local_sum_sq.cpu().numpy(),
-            'local_cnt': self.local_cnt.cpu().numpy(),
-            'running_mean': self.running_mean.cpu().numpy(),
-            'running_std': self.running_std.cpu().numpy(),
-            'running_sum': self.running_sum.cpu().numpy(),
-            'running_sum_sq': self.running_sum_sq.cpu().numpy(),
-            'running_cnt': self.running_cnt.cpu().numpy(),
+            'step': self.step,
+            'local_sum': self.local_sum.cpu().detach().numpy(),
+            'local_sum_sq': self.local_sum_sq.cpu().detach().numpy(),
+            'local_cnt': self.local_cnt.cpu().detach().numpy(),
+            'running_mean': self.running_mean.cpu().detach().numpy(),
+            'running_var': self.running_var.cpu().detach().numpy(),
+            'running_std': self.running_std.cpu().detach().numpy(),
         }, file_path)
 
     @classmethod
@@ -139,21 +142,24 @@ class Normalizer:
         """
 
         device = get_device(config['device'])
-        state = T.load(state_path, map_location='cpu')
-        normalizer = cls(size=config['size'], eps=config['eps'], clip_range=config['clip_range'], device=device)
+        state = T.load(state_path, map_location='cpu', weights_only=False)
+        normalizer = cls(size=config['size'], momentum=config['momentum'], update_freq=config['update_freq'], eps=config['eps'], clip_range=config['clip_range'], device=device)
         target_device = normalizer.device
         
         # Ensure all loaded tensors are moved to the correct device
+        normalizer.step = state['step']
         normalizer.local_sum = T.tensor(state['local_sum'], device=target_device)
         normalizer.local_sum_sq = T.tensor(state['local_sum_sq'], device=target_device)
         normalizer.local_cnt = T.tensor(state['local_cnt'], device=target_device)
         normalizer.running_mean = T.tensor(state['running_mean'], device=target_device)
+        normalizer.running_var = T.tensor(state['running_var'], device=target_device)
         normalizer.running_std = T.tensor(state['running_std'], device=target_device)
-        normalizer.running_sum = T.tensor(state['running_sum'], device=target_device)
-        normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=target_device)
-        normalizer.running_cnt = T.tensor(state['running_cnt'], device=target_device)
         
         return normalizer
+    
+    @classmethod
+    def create_instance(cls, **kwargs) -> 'Normalizer':
+        return cls(**kwargs)
 
     
 class SharedNormalizer:
@@ -310,3 +316,7 @@ class SharedNormalizer:
             normalizer.running_sum_sq = data['running_sum_sq']
             normalizer.running_cnt = data['running_cnt']
         return normalizer
+    
+    @classmethod
+    def create_instance(cls, **kwargs) -> 'SharedNormalizer':
+        return cls(**kwargs)

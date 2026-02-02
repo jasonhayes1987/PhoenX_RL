@@ -5,14 +5,14 @@ import asyncio
 import torch as T
 from typing import Dict, List, Optional
 import logging
-from rl_agents import Agent
-from agent_utils import load_agent_from_config, convert_to_distributed_callbacks
-from normalizer import Normalizer
-from buffer import Buffer
-from env_wrapper import EnvWrapper
-from logging_config import get_logger
-from rl_callbacks import RayWandbCallback
-from torch_utils import get_device
+from .rl_agents import Agent
+from .agent_utils import load_agent, convert_to_distributed_callbacks
+from .normalizer import Normalizer
+from .buffer import Buffer
+from .env_wrapper import EnvWrapper
+from .logging_config import get_logger
+from .rl_callbacks import RayWandbCallback
+from .torch_utils import get_device
 # import ray.logger as logger
 
 # Use correct Ray logger import
@@ -65,7 +65,7 @@ class SharedNormalizer:
             self.logger.debug(f"Before update - local_sum[:3]: {self.normalizer.local_sum[:3] if hasattr(self.normalizer, 'local_sum') else 'N/A'}")
             self.logger.debug(f"Before update - local_cnt: {self.normalizer.local_cnt if hasattr(self.normalizer, 'local_cnt') else 'N/A'}")
             
-            result = self.normalizer.update_local_stats(new_data)
+            result = self.normalizer.add(new_data)
             
             self.logger.debug(f"After update - local_sum[:3]: {self.normalizer.local_sum[:3] if hasattr(self.normalizer, 'local_sum') else 'N/A'}")
             self.logger.debug(f"After update - local_cnt: {self.normalizer.local_cnt if hasattr(self.normalizer, 'local_cnt') else 'N/A'}")
@@ -81,7 +81,7 @@ class SharedNormalizer:
             self.logger.debug(f"Before global update - running_mean[:3]: {self.normalizer.running_mean[:3] if hasattr(self.normalizer, 'running_mean') else 'N/A'}")
             self.logger.debug(f"Before global update - running_cnt: {self.normalizer.running_cnt if hasattr(self.normalizer, 'running_cnt') else 'N/A'}")
             
-            result = self.normalizer.update_global_stats()
+            result = self.normalizer.update_running_stats()
             
             self.logger.debug(f"After global update - running_mean[:3]: {self.normalizer.running_mean[:3] if hasattr(self.normalizer, 'running_mean') else 'N/A'}")
             self.logger.debug(f"After global update - running_cnt: {self.normalizer.running_cnt if hasattr(self.normalizer, 'running_cnt') else 'N/A'}")
@@ -560,7 +560,7 @@ class DistributedAgents:
             self.logger.debug(f'Creating base agent with device=cpu for safe cloning')
             base_agent_config = copy.deepcopy(self.agent_config)
             # self.logger.info(f'Base agent config: {base_agent_config}')
-            base_agent = load_agent_from_config(base_agent_config, load_weights=False)
+            base_agent = load_agent(base_agent_config, load_weights=False)
 
             agent_config = copy.deepcopy(self.agent_config)
             # self.logger.info(f'Agent config copy: {agent_config}')
