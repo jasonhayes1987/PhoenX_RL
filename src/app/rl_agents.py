@@ -270,7 +270,7 @@ class Agent:
         obs, goals = self.extract_states_goals(states)
         if self.state_normalizer:
             obs = self.state_normalizer.normalize(obs)
-        if self.goal_normalizer:
+        if hasattr(self, 'goal_normalizer') and self.goal_normalizer:
             goals = self.goal_normalizer.normalize(goals)
         
         return obs, goals
@@ -511,9 +511,7 @@ class ActorCritic(Agent):
                 self.value_trace[i] = (self.discount * self.value_trace_decay * self.value_trace[i]) + weights.grad
 
     def get_action(self, states:np.ndarray|T.Tensor, step=None, testing=False):
-        states = T.tensor(states, dtype=T.float32, device=self.policy_model.device) if isinstance(states, np.ndarray) else states.to(self.policy_model.device)
-        if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
+        states, _ = self._preprocess_inputs(states)
         dist, logits = self.policy_model(states)
         actions = dist.sample()
         actions = actions.detach()
@@ -671,7 +669,7 @@ class ActorCritic(Agent):
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during training...")
                     # Call the test function to render an episode
-                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array')
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
                     render = False
 
         if self.callbacks:
@@ -794,7 +792,7 @@ class ActorCritic(Agent):
             
                 if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during testing...")
-                    self.render_episode(episode_log['episode'], step, context='test')
+                    self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
 
         if self.callbacks:
             for callback in self.callbacks:
@@ -908,9 +906,7 @@ class Reinforce(Agent):
 
     
     def get_action(self, states:np.ndarray|T.Tensor, step=None, testing=False):
-        states = T.tensor(states, dtype=T.float32, device=self.policy_model.device) if isinstance(states, np.ndarray) else states.to(self.policy_model.device)
-        if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
+        states, _ = self._preprocess_inputs(states)
         dist, logits = self.policy_model(states)
         actions = dist.sample()
         actions = actions.detach()
@@ -1068,7 +1064,7 @@ class Reinforce(Agent):
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during training...")
                     # Call the test function to render an episode
-                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array')
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
                     render = False
 
         if self.callbacks:
@@ -1114,7 +1110,7 @@ class Reinforce(Agent):
             
                 if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during testing...")
-                    self.render_episode(episode_log['episode'], step, context='test')
+                    self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
 
         if self.callbacks:
             for callback in self.callbacks:
@@ -1797,7 +1793,7 @@ class DDPG(Agent):
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during training...")
                     # Call the test function to render an episode
-                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array')
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
                     render = False
 
         if self.callbacks:
@@ -1843,7 +1839,7 @@ class DDPG(Agent):
             
                 if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during testing...")
-                    self.render_episode(episode_log['episode'], step, context='test')
+                    self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
 
         if self.callbacks:
             for callback in self.callbacks:
@@ -2550,7 +2546,7 @@ class TD3(Agent):
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during training...")
                     # Call the test function to render an episode
-                    self.render_episode(episode_log['episode'], step, context='train')
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
                     render = False
 
         if self.callbacks:
@@ -2597,7 +2593,7 @@ class TD3(Agent):
             
                 if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during testing...")
-                    self.render_episode(episode_log['episode'], step, context='test')
+                    self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
 
         if self.callbacks:
             for callback in self.callbacks:
@@ -3278,7 +3274,7 @@ class SAC(Agent):
                 # Check if number of completed episodes should trigger render
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during training...")
-                    self.render_episode(episode_log['episode'], step, context='train')
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
                     render = False
 
         if self.callbacks:
@@ -3325,7 +3321,7 @@ class SAC(Agent):
             
                 if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during testing...")
-                    self.render_episode(episode_log['episode'], step, context='test')
+                    self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
 
         if self.callbacks:
             for callback in self.callbacks:
@@ -4584,7 +4580,7 @@ class PPO(Agent):
                 # Check if number of completed episodes should trigger render
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during training...")
-                    self.render_episode(episode_log['episode'], step, context='train')
+                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
                     render = False
 
         if self.callbacks:
@@ -4652,7 +4648,7 @@ class PPO(Agent):
                 # Check if number of completed episodes should trigger render
                 if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
                     print(f"Rendering episode {episode_log['episode']} during testing...")
-                    self.render_episode(episode_log['episode'], step, context='test')
+                    self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
                     render = False
 
         if self.callbacks:
