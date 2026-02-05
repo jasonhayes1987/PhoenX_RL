@@ -3,24 +3,25 @@ goal_key: &goal_key null
 achieved_goal_key: &achieved_goal_key null
 device: &device "cuda"
 seed: &seed 42
-save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/Taxi-v3_15/ActorCritic/"
+save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/CartPole-v1_8/ActorCritic/"
 log_level: "info"
 
 agent:
   discount: 0.99
-  policy_trace_decay: 0.0
-  value_trace_decay: 0.0
-  entropy_coefficient: 0.5
+  policy_trace_decay: 0.95
+  value_trace_decay: 0.95
+  entropy_coefficient: 0.00
   gae_coefficient: 0.95
-  trajectory_length: 32
+  trajectory_length: 100
 
 env:
   type: "gymnasium" # "isaacsim" or "gymnasium"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    cfg: "Taxi-v3"
-    num_envs: 8
-    wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
+    cfg: "CartPole-v1"
+    num_envs: 4
+    # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
+    wrappers: []
     render_mode: null
     seed: *seed
     obs_key: *obs_key
@@ -30,29 +31,29 @@ models:
   policy:
     layer_config:
       - type: dense
-        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.0}}
       # - type: relu
       - type: dense
-        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 1.0}}
       # - type: relu
     output_layer_kernel:
       - type: dense
-        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
-    optimizer_params: {type: Adam, params: {lr: 0.0001}}
+        params: {kernel: orthogonal, kernel_params: {gain: 1.0}}
+    optimizer_params: {type: Adam, params: {lr: 0.001}}
     obs_key: *obs_key
     device: *device
 
   value:
     layer_config:
       - type: dense
-        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.0}}
       # - type: relu
       - type: dense
-        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 1.0}}
       # - type: relu
     output_layer_kernel:
       - type: dense
-        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
+        params: {kernel: orthogonal, kernel_params: {gain: 1.0}}
     optimizer_params: {type: Adam, params: {lr: 0.0001}}
     obs_key: *obs_key
     device: *device
@@ -63,24 +64,24 @@ normalizers:
     update_freq: 1
     clip_range: 5.0
     device: *device
-  # state:
-  #   momentum: 0.99
-  #   update_freq: 200
-  #   clip_range: 5.0
-  #   device: *device
+  state:
+    momentum: 0.99
+    update_freq: 200
+    clip_range: 5.0
+    device: *device
 
-entropy_schedule:
-  type: "linear"
-  params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
+# entropy_schedule:
+#   type: "linear"
+#   params: {start_factor: 1.0, end_factor: 0.2, total_iters: 5000}
 
 callbacks:
   - type: "WandbCallback"
-    config: {project_name: "Taxi-v3"}
+    config: {project_name: "CartPole-v1"}
 
 train_config:
   load_weights: false
-  num_episodes: 50000
-  render_freq: 1000
+  num_episodes: 5000
+  render_freq: 100
   seed: 42
 
 test_config:
