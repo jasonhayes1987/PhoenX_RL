@@ -63,12 +63,12 @@ critic = CriticModel(**critic_config)
 
 # build replay buffer
 config['replay_buffer']['config']['env'] = env
-if config['replay_buffer']['class_name'] == 'ReplayBuffer':
+if config['replay_buffer']['type'] == 'ReplayBuffer':
     replay_buffer = ReplayBuffer(**config['replay_buffer']['config'])
-elif config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
+elif config['replay_buffer']['type'] == 'PrioritizedReplayBuffer':
     replay_buffer = PrioritizedReplayBuffer(**config['replay_buffer']['config'])
 else:
-    raise ValueError(f"Invalid replay buffer class name: {config['replay_buffer']['class_name']}")
+    raise ValueError(f"Invalid replay buffer type: {config['replay_buffer']['type']}")
 
 # create noise object if present in config
 noise = Noise.create_instance(config['noise']['type'], **config['noise']['params']) if config.get('noise') else None

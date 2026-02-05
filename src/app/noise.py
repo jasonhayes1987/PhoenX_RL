@@ -46,12 +46,12 @@ class Noise:
         pass
 
     @classmethod
-    def create_instance(cls, noise_class_name: str, **kwargs) -> 'Noise':
+    def create_instance(cls, noise_type: str, **kwargs) -> 'Noise':
         """
         Creates an instance of the requested noise class.
 
         Args:
-            noise_class_name (str): Name of the noise class to instantiate.
+            noise_type (str): Name of the noise class to instantiate.
             kwargs: Parameters for the noise class.
 
         Returns:
@@ -69,10 +69,10 @@ class Noise:
             "UniformNoise": UniformNoise,
         }
 
-        if noise_class_name in noise_classes:
-            return noise_classes[noise_class_name](**kwargs)
+        if noise_type in noise_classes:
+            return noise_classes[noise_type](**kwargs)
         else:
-            raise ValueError(f"{noise_class_name} is not a recognized noise class")
+            raise ValueError(f"{noise_type} is not a recognized noise class")
 
 class UniformNoise(Noise):
     """
@@ -106,7 +106,7 @@ class UniformNoise(Noise):
             dict: Configuration details.
         """
         return {
-            'class_name': 'UniformNoise',
+            'type': 'UniformNoise',
             'config': {
                 'shape': self.shape,
                 'minval': self.minval.item(),
@@ -181,7 +181,7 @@ class NormalNoise(Noise):
             dict: Configuration details.
         """
         return {
-            'class_name': 'NormalNoise',
+            'type': 'NormalNoise',
             'config': {
                 'mean': self.mean.item(),
                 'stddev': self.stddev.item(),
@@ -254,7 +254,7 @@ class OUNoise(Noise):
             dict: Configuration details.
         """
         return {
-            'class_name': 'OUNoise',
+            'type': 'OUNoise',
             'config': {
                 "shape": self.shape,
                 "mean": self.mean.item(),

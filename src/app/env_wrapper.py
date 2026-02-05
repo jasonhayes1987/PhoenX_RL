@@ -920,9 +920,9 @@ class GymnasiumWrapper(EnvWrapper):
             GymnasiumWrapper: A new Gymnasium wrapper instance.
         """
         config = json.loads(json_env_spec)
-        config = config['config']
         #DEBUG
-        print(f'GymnasiumWrapper from_json config:{config}')
+        print(f'GymnasiumWrapper from_json config: {config}')
+        config = config['config']
         try:
             return cls(**config)
         except Exception as e:

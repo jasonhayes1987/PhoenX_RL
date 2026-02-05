@@ -131,75 +131,6 @@ class Buffer:
         """
         raise NotImplementedError
 
-    def _get_sequence(self, start_idx: int) -> Tuple[List[T.Tensor], ...]:
-        sequence_states, sequence_actions, sequence_rewards, sequence_next_states, sequence_dones, sequence_traj_ids, sequence_step_indices = [], [], [], [], [], [], []
-        if self.goal_shape is not None:
-            sequence_sag, sequence_nsag, sequence_dg = [], [], []
-
-        traj_id = self.traj_ids[start_idx]
-        start_step_idx = self.step_indices[start_idx]
-        current_idx = start_idx
-
-        for i in range(self.N):
-            sequence_states.append(self.states[current_idx])
-            sequence_actions.append(self.actions[current_idx])
-            sequence_rewards.append(self.rewards[current_idx])
-            sequence_next_states.append(self.next_states[current_idx])
-            sequence_dones.append(self.dones[current_idx])
-            sequence_traj_ids.append(self.traj_ids[current_idx])
-            sequence_step_indices.append(self.step_indices[current_idx])
-            
-            if self.goal_shape is not None:
-                sequence_sag.append(self.state_achieved_goals[current_idx])
-                sequence_nsag.append(self.next_state_achieved_goals[current_idx])
-                sequence_dg.append(self.desired_goals[current_idx])
-            
-            # if (current_idx >= self.buffer_size or 
-            #     self.dones[current_idx] == 1 or 
-            #     self.traj_ids[current_idx] != traj_id or 
-            #     self.step_indices[current_idx] != start_step_idx + i):
-            #     break
-            
-            # Stop if done or last step
-            if self.dones[current_idx] == 1 or i == self.N - 1:
-                break
-
-            # Search for the next step
-            mask = (self.traj_ids == traj_id) & (self.step_indices == abs(start_step_idx) + i + 1)
-            idx = T.where(mask)[0]
-            if len(idx) == 0:
-                break
-            current_idx = idx[0].item()
-
-        seq_len = len(sequence_states)
-        num_padded = 0
-        if seq_len < self.N:
-            num_padded += 1
-            pad_len = self.N - seq_len
-            state_dim = self.states.shape[1:]
-            action_dim = self.actions.shape[1:]
-            sequence_rewards.extend([T.tensor(0.0, device=self.device)] * pad_len)
-            sequence_dones.extend([T.tensor(1, dtype=T.int8, device=self.device)] * pad_len)
-            sequence_states.extend([T.zeros(state_dim, device=self.device)] * pad_len)
-            sequence_actions.extend([T.zeros(action_dim, device=self.device)] * pad_len)
-            sequence_next_states.extend([T.zeros(state_dim, device=self.device)] * pad_len)
-            sequence_traj_ids.extend([T.tensor(traj_id, device=self.device)] * pad_len)
-            sequence_step_indices.extend([T.tensor(start_step_idx + i + 1, device=self.device)] * pad_len)
-
-
-        if self.goal_shape is not None:
-            return (
-                T.stack(sequence_states), T.stack(sequence_actions), T.stack(sequence_rewards),
-                T.stack(sequence_next_states), T.stack(sequence_dones),
-                T.stack(sequence_sag), T.stack(sequence_nsag), T.stack(sequence_dg),
-                T.stack(sequence_traj_ids), T.stack(sequence_step_indices)
-            )
-        return (
-            T.stack(sequence_states), T.stack(sequence_actions), T.stack(sequence_rewards),
-            T.stack(sequence_next_states), T.stack(sequence_dones),
-            T.stack(sequence_traj_ids), T.stack(sequence_step_indices)
-        )
-
     def get_config(self) -> Dict[str, Any]:
         raise NotImplementedError
 
@@ -322,7 +253,7 @@ class ReplayBuffer(Buffer):
 
         self.counter += batch_size
 
-    def sample(self, batch_size: int) -> List[Tuple[T.Tensor, ...]]:
+    def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
         size = min(self.counter, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
@@ -375,7 +306,7 @@ class ReplayBuffer(Buffer):
     
     def get_config(self) -> Dict[str, Any]:
         return {
-            'class_name': self.__class__.__name__,
+            'type': self.__class__.__name__,
             'config': {
                 "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,
@@ -412,7 +343,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         if priority not in ['proportional', 'rank']:
             raise ValueError(f"Invalid priority type: {priority} (must be 'proportional' or 'rank')")
 
-        super().__init__(env, buffer_size, obs_key, goal_key, N, device)
+        super().__init__(env, buffer_size, N, obs_key, goal_key, device)
         self.alpha = alpha
         self.beta_start = beta_start
         self.beta_iter = beta_iter
@@ -489,20 +420,18 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             if desired_goals.ndim == 2:
                 desired_goals = desired_goals[:, T.newaxis, :]
 
-        # Add to buffer tensors
-        self.states[indices] = T.tensor(states, dtype=T.float32, device=self.device)
-        self.actions[indices] = T.tensor(actions, dtype=T.float32, device=self.device)
-        self.rewards[indices] = T.tensor(rewards, dtype=T.float32, device=self.device)
-        self.next_states[indices] = T.tensor(next_states, dtype=T.float32, device=self.device)
-        self.dones[indices] = T.tensor(dones, dtype=T.int8, device=self.device)
+        # Store transitions (detach to avoid holding computation graphs)
+        self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
+        self.actions[indices] = actions.detach().to(device=self.device, dtype=T.float32)
+        self.rewards[indices] = rewards.detach().to(device=self.device, dtype=T.float32)
+        self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
+        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.int8)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
 
         if self.goal_key is not None and self._goal_space_shape is not None:
-            if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
-                raise ValueError("Goal data must be provided when using goals")
-            self.state_achieved_goals[indices] = T.tensor(state_achieved_goals, dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals[indices] = T.tensor(next_state_achieved_goals, dtype=T.float32, device=self.device)
-            self.desired_goals[indices] = T.tensor(desired_goals, dtype=T.float32, device=self.device)
+            self.state_achieved_goals[indices] = state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
+            self.next_state_achieved_goals[indices] = next_state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
+            self.desired_goals[indices] = desired_goals.detach().to(device=self.device, dtype=T.float32)
 
         # Set initial priorities (will be normalized in update)
         if self.priority == "proportional":
@@ -516,7 +445,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self._total_steps += 1
 
 
-    def sample(self, batch_size: int) -> Tuple[List[Tuple[T.Tensor, ...]], T.Tensor, T.Tensor, T.Tensor]:
+    def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
         """Samples a batch of N-step transition sequences based on priority."""
         if self._total_steps % self.beta_update_freq == 0:
             self.update_beta()
@@ -528,11 +457,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         batch_size = min(batch_size, size)
 
         if self.priority == "proportional":
-            if not hasattr(self, '_segment_boundaries'):
-                self._segment_boundaries = T.zeros(batch_size, device=self.device)
-                self._random_offsets = T.zeros(batch_size, device=self.device)
-                self._weights_buffer = T.zeros(batch_size, device=self.device)
-
             total_priority = self.sum_tree.total_priority
             if total_priority <= 0:
                 indices = T.randint(0, size, (batch_size,), device=self.device)
@@ -540,14 +464,13 @@ class PrioritizedReplayBuffer(ReplayBuffer):
                 probs = T.ones(batch_size, device=self.device) / size
             else:
                 segment_size = total_priority / batch_size
-                self._segment_boundaries[:batch_size] = T.arange(0, batch_size, device=self.device) * segment_size
-                self._random_offsets[:batch_size].uniform_(0, 1)
-                self._random_offsets[:batch_size].mul_(segment_size)
-                p_values = self._segment_boundaries[:batch_size] + self._random_offsets[:batch_size]
+                segment_boundaries = T.arange(0, batch_size, device=self.device) * segment_size
+                random_offsets = T.rand(batch_size, device=self.device) * segment_size
+                p_values = segment_boundaries + random_offsets
                 indices, priorities = self.sum_tree.get(p_values)
                 probs = priorities / total_priority
-                self._weights_buffer[:batch_size] = (size * probs) ** (-self.beta)
-                weights = self._weights_buffer[:batch_size] / self._weights_buffer[:batch_size].max()
+                weights = (size * probs) ** (-self.beta)
+                weights = weights / weights.max()
         else:  # rank-based
             self._prepare_rank_based()
             u = T.rand(batch_size, device=self.device)
@@ -560,16 +483,13 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             weights = (size * probs) ** (-self.beta)
             weights = weights / weights.max()
 
-        # Retrieve N-step sequences for each sampled starting index
-        # sequences = [self._get_sequence(idx.item()) for idx in indices]
-        # sorted_sequences = zip(*sequences) # zips metrics together
-        # sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
-        # return sequence_stack, weights, probs, indices
-
         if self.goal_key is not None and self._goal_space_shape is not None: 
-            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices], self.desired_goals[indices], weights, probs, indices)
+            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
+            self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices],
+            self.desired_goals[indices], self.trajectory_lengths[indices], weights, probs, indices)
         else:
-            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices], self.dones[indices], weights, probs, indices)
+            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
+            self.dones[indices], self.trajectory_lengths[indices], weights, probs, indices)
 
     def update_beta(self) -> None:
         """Anneal beta param"""
@@ -619,7 +539,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     def get_config(self) -> Dict[str, Any]:
         """Get buffer config."""
         return {
-            'class_name': self.__class__.__name__,
+            'type': self.__class__.__name__,
             'config': {
                 "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,

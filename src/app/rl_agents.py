@@ -717,9 +717,11 @@ class ActorCritic(Agent):
             self.advantage_normalizer.add(advantages.view(trajectory_length * num_envs, 1))
             advantages = self.advantage_normalizer.normalize(advantages.view(trajectory_length * num_envs, 1))
             advantages = advantages.view(trajectory_length, num_envs)
-        returns = (advantages + state_values.reshape(trajectory_length, num_envs, -1).squeeze())
+        returns = (advantages.detach() + state_values.reshape(trajectory_length, num_envs, -1).squeeze())
         value_loss = (state_values.reshape(trajectory_length, num_envs, -1).squeeze() - returns.detach()).square().mean()
         # value_loss = returns.square().mean()
+        # value_loss = advantages.square().mean()
+        # value_loss = td_errors.square().mean()
 
         value_loss.backward()
 
@@ -1277,7 +1279,7 @@ class DDPG(Agent):
         log_level: str = 'info'
     ):
         try:
-            super().__init__(env, curiosity, callbacks, obs_key, goal_key, save_dir, device, log_level)
+            super().__init__(env, callbacks, obs_key, goal_key, save_dir, device, log_level)
             self.actor_model = actor_model
             self.critic_model = critic_model
             # set target actor and critic models
@@ -1432,11 +1434,11 @@ class DDPG(Agent):
 
         learn_metrics = {}
             
-        if self.replay_buffer.get_config()['class_name'] == 'PrioritizedReplayBuffer':
+        if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
             if self._use_her:  # HER with prioritized replay
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
-                states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
             if self._wandb:
@@ -1664,7 +1666,17 @@ class DDPG(Agent):
         # Format actions
         actions = self.env.format_actions(actions)
         next_states, rewards, dones, infos = self.env.step(actions)
-        episode_scores += rewards.flatten().cpu().numpy()
+
+        # Ensure states, actions, rewards, next_states, and dones are tensors
+        states, actions, rewards, next_states, dones = (
+            T.tensor(states, dtype=T.float32, device=self.device) if isinstance(states, np.ndarray) else states,
+            T.tensor(actions, dtype=T.float32, device=self.device) if isinstance(actions, np.ndarray) else actions,
+            T.tensor(rewards, dtype=T.float32, device=self.device) if isinstance(rewards, np.ndarray) else rewards,
+            T.tensor(next_states, dtype=T.float32, device=self.device) if isinstance(next_states, np.ndarray) else next_states,
+            T.tensor(dones, dtype=T.int8, device=self.device) if isinstance(dones, np.ndarray) else dones,
+        )
+
+        episode_scores += rewards.flatten()
 
         buffer_trajectories = {
             'states': infos['n-step trajectory']['states'],
@@ -1688,7 +1700,7 @@ class DDPG(Agent):
             if self.goal_normalizer:
                 self.goal_normalizer.add(goals)
 
-        done_episodes = T.nonzero(dones, as_tuple=False).flatten() # Get indices of completed episodes
+        done_episodes = T.nonzero(dones, as_tuple=False).flatten()
         episode_logs = []
         for i in done_episodes:
             # Increment completed episodes for env by 1
@@ -1900,13 +1912,13 @@ class DDPG(Agent):
         critic_model = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
-            if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
+            if config['replay_buffer']['type'] == 'PrioritizedReplayBuffer':
                 replay_buffer = PrioritizedReplayBuffer(**config["replay_buffer"]["config"])
             else:
                 replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
         else:
             replay_buffer = None
-        noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
+        noise = Noise.create_instance(config["noise"]["type"], **config["noise"]["config"])
         curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = Normalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
@@ -1976,7 +1988,7 @@ class TD3(Agent):
         log_level: str = 'info'
     ):
         try:
-            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
+            super().__init__(env, callbacks, obs_key, goal_key, save_dir, device, log_level)
             self.actor_model = actor_model
             self.critic_model_a = critic_model_a
             self.critic_model_b = critic_model_b
@@ -2142,15 +2154,15 @@ class TD3(Agent):
         # Create learn_metrics dict
         learn_metrics = {}
             
-        if self.replay_buffer.get_config()['class_name'] == 'PrioritizedReplayBuffer':
+        if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
             if self._use_her:  # HER with prioritized replay
                 #DEBUG
                 # print(f"HER with prioritized replay")
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
                 #DEBUG
                 # print(f"Just prioritized replay")
-                states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
             if self._wandb:
@@ -2661,7 +2673,7 @@ class TD3(Agent):
         critic_model_b = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
-            if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
+            if config['replay_buffer']['type'] == 'PrioritizedReplayBuffer':
                 replay_buffer = PrioritizedReplayBuffer(**config["replay_buffer"]["config"])
             else:
                 replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
@@ -2672,8 +2684,8 @@ class TD3(Agent):
         # load state normalizer
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = Normalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        noise = Noise.create_instance(config["noise"]["class_name"], **config["noise"]["config"])
-        target_noise = Noise.create_instance(config["target_noise"]["class_name"], **config["target_noise"]["config"])
+        noise = Noise.create_instance(config["noise"]["type"], **config["noise"]["config"])
+        target_noise = Noise.create_instance(config["target_noise"]["type"], **config["target_noise"]["config"])
         callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
         agent = cls(
@@ -2740,7 +2752,7 @@ class SAC(Agent):
         log_level: str = 'info'
     ):
         try:
-            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
+            super().__init__(env, callbacks, obs_key, goal_key, save_dir, device, log_level)
             self.actor_model = actor_model
             self.critic_model_a = critic_model_a
             self.critic_model_b = critic_model_b
@@ -2898,11 +2910,11 @@ class SAC(Agent):
         # Create learn_metrics dict
         learn_metrics = {}
             
-        if self.replay_buffer.get_config()['class_name'] == 'PrioritizedReplayBuffer':
+        if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
             if self._use_her:  # HER with prioritized replay
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
             else:  # Just prioritized replay
-                states, actions, rewards, next_states, dones, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
             if self._wandb:
@@ -3394,7 +3406,7 @@ class SAC(Agent):
         critic_model_b = CriticModel.load(Path(config_dir) / 'critic_model', load_weights, env=env_wrapper)
         if config['replay_buffer'] is not None:
             config['replay_buffer']['config']['env'] = env_wrapper
-            if config['replay_buffer']['class_name'] == 'PrioritizedReplayBuffer':
+            if config['replay_buffer']['type'] == 'PrioritizedReplayBuffer':
                 replay_buffer = PrioritizedReplayBuffer(**config["replay_buffer"]["config"])
             else:
                 replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
@@ -4040,7 +4052,7 @@ class PPO(Agent):
             device (str): Device for computations ('cpu' or 'cuda', default: 'cuda').
         """
         try:
-            super().__init__(env, curiosity, callbacks, save_dir, device, log_level)
+            super().__init__(env, callbacks, obs_key, goal_key, save_dir, device, log_level)
             self.policy_model = policy_model
             self.value_model = value_model
             self.discount = discount
