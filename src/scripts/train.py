@@ -186,7 +186,8 @@ def train_agent(agent_config_dir):
     #         wandb.finish()
     #         logging.info("WandB run finished")
 
-if __name__ == '__main__':
+def main():
+    """Main entry point for the training script."""
     try:
         train_agent(agent_config_dir)
 
@@ -195,3 +196,7 @@ if __name__ == '__main__':
 
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON format in configuration file: {str(e)}")
+
+
+if __name__ == '__main__':
+    main()
