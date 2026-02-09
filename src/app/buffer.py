@@ -25,6 +25,40 @@ class SumTree:
         self.debug_last_large_priority = None
         self.debug_last_large_priority_idx = None
     
+    # def update(self, data_indices, priorities):
+    #     # Cap priorities to prevent extreme values
+    #     priorities = T.clamp(priorities, min=1e-6)
+
+    #     # Track maximum priority
+    #     if priorities.numel() > 0:
+    #         self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
+
+    #     # Compute tree indices once
+    #     tree_indices = data_indices + self.capacity - 1
+
+    #     # Update leaf nodes in one operation
+    #     self.tree[tree_indices] = priorities
+
+    #     # Update parent nodes for each leaf individually - less vectorized but correct
+    #     for idx in tree_indices:
+    #         idx_item = idx.item()
+    #         parent = (idx_item - 1) // 2
+
+    #         # Traverse up to the root
+    #         while parent >= 0:
+    #             # Get children of this parent
+    #             left = 2 * parent + 1
+    #             right = 2 * parent + 2
+
+    #             # Update the parent (handle case where right child might not exist)
+    #             if right < self.tree.size(0):
+    #                 self.tree[parent] = self.tree[left] + self.tree[right]
+    #             else:
+    #                 self.tree[parent] = self.tree[left]
+
+    #             # Move to next parent up the tree
+    #             parent = (parent - 1) // 2
+
     def update(self, data_indices, priorities):
         # Cap priorities to prevent extreme values
         priorities = T.clamp(priorities, min=1e-6)
@@ -34,30 +68,28 @@ class SumTree:
             self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
 
         # Compute tree indices once
-        tree_indices = data_indices + self.capacity - 1
+        indices = data_indices + self.capacity - 1
 
         # Update leaf nodes in one operation
-        self.tree[tree_indices] = priorities
+        self.tree[indices] = priorities
 
-        # Update parent nodes for each leaf individually - less vectorized but correct
-        for idx in tree_indices:
-            idx_item = idx.item()
-            parent = (idx_item - 1) // 2
-
-            # Traverse up to the root
-            while parent >= 0:
-                # Get children of this parent
-                left = 2 * parent + 1
-                right = 2 * parent + 2
-
-                # Update the parent (handle case where right child might not exist)
-                if right < self.tree.size(0):
-                    self.tree[parent] = self.tree[left] + self.tree[right]
-                else:
-                    self.tree[parent] = self.tree[left]
-
-                # Move to next parent up the tree
-                parent = (parent - 1) // 2
+        # Vectorized propagation: process level-by-level up the tree
+        while True:
+            parents = (indices - 1) // 2
+            unique_parents, _ = T.unique(parents, return_inverse=True)  # Get unique to avoid redundant updates
+            if unique_parents.min() >= 0:  # Continue until we reach the root
+                left_children = 2 * unique_parents + 1
+                right_children = 2 * unique_parents + 2
+                has_right = right_children < self.tree.size(0)
+                
+                # Sum children for each unique parent
+                sums = self.tree[left_children].clone()  # Start with left
+                sums[has_right] += self.tree[right_children[has_right]]  # Add right if exists
+                
+                self.tree[unique_parents] = sums
+                indices = unique_parents  # Move up to parents for next level
+            else:
+                break
 
     @T.jit.script
     def _traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:

@@ -4,7 +4,7 @@ goal_key: &goal_key null
 achieved_goal_key: &achieved_goal_key null
 device: &device "cuda"
 seed: &seed 42
-save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_3/DDPG/"
+save_dir: "C:/Users/jason/Documents/AI/Repos/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_8/DDPG/"
 log_level: "info"
 
 agent:
@@ -21,7 +21,7 @@ env:
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: "LunarLanderContinuous-v3"
-    num_envs: 128
+    num_envs: 4
     wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *achieved_goal_key}}]
     render_mode: null
     seed: *seed
@@ -69,18 +69,27 @@ normalizers:
 replay_buffer:
   type: PrioritizedReplayBuffer
   config:
-    buffer_size: 1000000
+    buffer_size: 100000
     alpha: 0.6
     beta_start: 0.4
-    beta_iter: 10000
+    beta_iter: 40000
     beta_update_freq: 1
-    priority: rank
-    normalize: False
+    priority: proportional
+    normalize: True
     obs_key: *obs_key
     goal_key: *goal_key
     epsilon: 0.01
     N: *n
-    device: "cpu"
+    device: *device
+
+# replay_buffer:
+#   type: ReplayBuffer
+#   config:
+#     buffer_size: 1000000
+#     N: *n
+#     obs_key: *obs_key
+#     goal_key: *goal_key
+#     device: *device
 
 noise:
   type: NormalNoise
@@ -129,9 +138,9 @@ callbacks:
 
 train_config:
   load_weights: false
-  num_episodes: 10000
+  num_episodes: 500
   steps_per_learn: 1
-  render_freq: 1000
+  render_freq: 100
   seed: *seed
 
 test_config:
