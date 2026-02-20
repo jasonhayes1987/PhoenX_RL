@@ -33,13 +33,17 @@ class Model(nn.Module):
     Attributes:
         env (EnvWrapper): The environment wrapper for the model.
         layer_config (list): List of dictionaries specifying the layers and their parameters.
+        output_config (dict): Configuration for output layer initialization.
         optimizer_params (dict): Dictionary specifying optimizer type and parameters.
         scheduler_params (dict): Dictionary specifying scheduler type and parameters (optional).
-        device (str): The device ('cpu' or 'cuda') to run the model on.
+        obs_key (str|None): Observation key (default: None).
+        goal_key (str|None): Goal key (default: None).
+        device (str|None): The device ('cpu' or 'cuda') to run the model on (default: None = Cuda if available else CPU).
+        log_level (str): Log level (default: 'info').
     """
-    def __init__(self, env: EnvWrapper, layer_config, optimizer_params: dict = None,
-                 lr_scheduler: ScheduleWrapper = None, obs_key: str = 'observation', goal_key: str = 'desired_goal',
-                 device=None, log_level: str = 'info'):
+    def __init__(self, env: EnvWrapper, layer_config: List[Dict], output_config: dict, optimizer_params: dict|None = None,
+                 lr_scheduler: ScheduleWrapper|None = None, obs_key: str|None = None, goal_key: str|None = None,
+                 device: str|None = None, log_level: str = 'info'):
         """
         Sets up the module dictionary of layers (most of which
         will be lazy).
@@ -47,13 +51,18 @@ class Model(nn.Module):
         Args:
             env (EnvWrapper): Environment wrapper.
             layer_config (list): List of dictionaries specifying the layers and params.
+            output_config (dict): Configuration for output layer initialization.
             optimizer_params (dict): Optimizer configuration.
-            scheduler_params (dict): LR scheduler configuration.
-            device (str): Device to run on.
+            lr_scheduler (ScheduleWrapper|None): LR scheduler configuration.
+            obs_key (str|None): Observation key (default: None).
+            goal_key (str|None): Goal key (default: None).
+            device (str|None): Device to run on (default: None = Cuda if available else CPU).
+            log_level (str): Log level (default: 'info').
         """
         super().__init__()
         self.env = env
         self.layer_config = layer_config
+        self.output_config = output_config
         self.layers = nn.ModuleDict()
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
         self.lr_scheduler = lr_scheduler
@@ -98,7 +107,7 @@ class Model(nn.Module):
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
             goal_input = T.ones((32, *goal_shape), device=self.device, dtype=T.float)
             # Check if CriticModel instance to pass action dummy values
-            if isinstance(self, CriticModel):
+            if isinstance(self, ContinuousCritic):
                 action_shape = self.env.single_action_space.shape
                 action_input = T.ones((32, *action_shape), device=self.device, dtype=T.float)
                 with T.no_grad():
@@ -114,7 +123,7 @@ class Model(nn.Module):
             else:
                 obs_shape = obs_space.shape
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
-            if isinstance(self, CriticModel):
+            if isinstance(self, ContinuousCritic):
                 action_shape = self.env.single_action_space.shape
                 action_input = T.ones((32, *action_shape), device=self.device, dtype=T.float)
                 with T.no_grad():
@@ -288,51 +297,68 @@ class Model(nn.Module):
         return state
     
     @abstractmethod
-    def forward(self, x):
-        """
-        Forward pass through the model.
+    def forward(self, *args, **kwargs):
+        raise NotImplementedError
 
-        Args:
-            x (Tensor): Input tensor.
-
-        Returns:
-            Tensor: Output tensor after passing through all layers.
-        """
-        pass
-
-    @abstractmethod
     def get_config(self):
-        """
-        Retrieve the model configuration.
+        return {
+            "env": self.env.to_json(),
+            'layer_config': self.layer_config,
+            'output_config': self.output_config,
+            'optimizer_params': self.optimizer_params,
+            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
+            'obs_key': self.obs_key,
+            'goal_key': self.goal_key,
+            'device': self.device.type,
+        }
 
-        Returns:
-            dict: Configuration dictionary.
-        """
-        pass
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        # Reconstruct the model from its configuration
+        if device:
+            device = get_device(device)
+        else:
+            device = self.device
 
-    @abstractmethod
-    def save(self, folder):
+        if isinstance(self.env, IsaacSimWrapper):
+            env = self.env  # Reuse existing instance
+        else:
+            env = EnvWrapper.from_json(self.env.to_json())
+
+        return device, env
+
+    def save(self, config_dir: Path | str, model_name: str):
         """
-        Save the model and its configuration.
+        Save the model to the specified configuration directory.
 
         Args:
-            folder (str): Directory to save the model.
+            config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to save.
         """
-        pass
+        # Ensure the model directory exists
+        model_dir = Path(config_dir) / model_name
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save the model parameters
+        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
+        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
+
+        # Save the model configuration
+        config = self.get_config()
+        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
 
     @classmethod
-    @abstractmethod
-    def load(cls, folder):
-        """
-        Load a model from a saved configuration.
+    def load(cls, config_dir: Path | str, model_name: str, load_weights: bool = True, env: EnvWrapper | None = None):
+        model_dir = Path(config_dir) / model_name
+        if not model_dir.exists():
+            raise FileNotFoundError(f"Model directory {model_dir} not found")
+        config = json.load(open(model_dir / 'config.json'))
+        if env is None:
+            env = EnvWrapper.from_json(config.get("env"))
+        lr_scheduler_config = config.get("lr_scheduler", None)
+        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
 
-        Args:
-            folder (str): Directory containing the saved model.
-
-        Returns:
-            Model: Loaded model instance.
-        """
-        pass
+        return config, lr_scheduler, env
 
 
 class StochasticDiscretePolicy(Model):
@@ -346,13 +372,13 @@ class StochasticDiscretePolicy(Model):
     Attributes:
         env (EnvWrapper): The environment wrapper.
         layer_config (list[dict]): Configuration of hidden layers (default: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]).
-        output_layer_kernel (list[dict]): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        output_config (list[dict]): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
         distribution (str): Type of distribution for action selection (default: 'categorical').
-        obs_key (str): Observation key (default: 'observation').
-        goal_key (str): Goal key (default: 'desired_goal').
-        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+        obs_key (str|None): Observation key (default: None).
+        goal_key (str|None): Goal key (default: None).
+        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         log_level (str): logger level. Default=info.
     """
 
@@ -360,13 +386,13 @@ class StochasticDiscretePolicy(Model):
         self,
         env: EnvWrapper,
         layer_config: list[dict],
-        output_layer_kernel: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
-        lr_scheduler: Optional[ScheduleWrapper] = None,
+        lr_scheduler: ScheduleWrapper|None = None,
         distribution: str = 'categorical',
-        obs_key: str = 'observation',
-        goal_key: str | None = None,
-        device: Optional[str | T.device] = None,
+        obs_key: str|None = None,
+        goal_key: str|None = None,
+        device: str|T.device|None = None,
         log_level: str = 'info'
     ):
         """
@@ -375,18 +401,17 @@ class StochasticDiscretePolicy(Model):
         Args:
             env (EnvWrapper): The environment wrapper.
             layer_config (list[dict]): List of dictionaries specifying hidden layer configurations.
-            output_layer_kernel (dict): Configuration for output layer initialization (default: {}).
+            output_config (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
             distribution (str): Type of distribution for actions (default: 'categorical').
-            obs_key (str): Observation key (default: 'observation').
+            obs_key (str|None): Observation key (default: None).
             goal_key (str | None): Goal key (default: None).
-            device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+            device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
             log_level (str): logger level. Default=info.
         """
         
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
-        self.output_config = output_layer_kernel
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
         self.distribution = distribution
 
         # Get the action space of the environment
@@ -444,74 +469,46 @@ class StochasticDiscretePolicy(Model):
             raise ValueError(f'Distribution {self.distribution} not supported.')
 
     def get_config(self):
-        """
-        Retrieve the configuration of the policy model.
-
-        Returns:
-            dict: Configuration dictionary with details about the model.
-        """
-        config = {
-            "env": self.env.to_json(),
-            'num_layers': len(self.layers),
-            'layer_config': self.layer_config,
-            'output_layer_kernel': self.output_config,
-            'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
+        config = super().get_config()
+        config.update({
             'distribution': self.distribution,
-            'obs_key': self.obs_key,
-            'goal_key': self.goal_key,
-            'device': self.device.type,
-        }
+        })
         return config
 
-    def save(self, folder):
+    def save(self, config_dir: Path | str, model_name: str = "policy"):
         """
-        Save the model to the specified folder.
+        Save the model to the specified configuration directory.
 
         Args:
-            folder (str): Path to the directory where the model should be saved.
+            config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to save (default: "policy").
         """
-        # Ensure the model directory exists
-        model_dir = Path(folder) / "policy_model"
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save the model parameters
-        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
-
-        # Save the model configuration
-        config = self.get_config()
-        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
+        return super().save(config_dir, model_name)
 
     @classmethod
-    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
+    def load(cls, config_dir: Path | str, model_name: str = "policy", load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load a policy model from a saved configuration.
 
         Args:
             config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to load (default: "policy_model").
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             StochasticDiscretePolicy: Loaded policy model instance.
         """
-        config_dir = Path(config_dir)
-        config = json.load(open(config_dir / 'config.json'))
-        if env is None:
-            env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler_config = config.get("lr_scheduler", None)
-        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
+        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
-                    output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
+                    output_config = config.get("output_config", {"default":{}}),
                     optimizer_params = config.get("optimizer_params", {}),
                     lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "categorical"),
-                    obs_key = config.get("obs_key", "observation"),
-                    goal_key = config.get("goal_key", "desired_goal"),
-                    device = config.get("device", "cpu")
+                    obs_key = config.get("obs_key", None),
+                    goal_key = config.get("goal_key", None),
+                    device = config.get("device", None)
                     )
 
         if load_weights:
@@ -533,13 +530,13 @@ class StochasticContinuousPolicy(Model):
     Attributes:
         env (EnvWrapper): The environment wrapper.
         layer_config (list): Configuration of hidden layers.
-        output_layer_kernel (dict): Configuration of the output layer weights.
+        output_config (dict): Configuration of the output layer weights.
         optimizer_params (dict): Parameters for the optimizer.
         lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
-        distribution (str): Type of distribution for actions (default: 'categorical').
-        obs_key (str): Observation key (default: 'observation').
+        distribution (str): Type of distribution for actions (default: 'beta').
+        obs_key (str|None): Observation key (default: None).
         goal_key (str | None): Goal key (default: None).
-        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         log_level (str): logger level. Default=info.
     """
 
@@ -547,13 +544,13 @@ class StochasticContinuousPolicy(Model):
         self,
         env:EnvWrapper,
         layer_config: List[Dict],
-        output_layer_kernel: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
         distribution: str = 'beta',
-        obs_key: str = 'observation',
+        obs_key: str|None = None,
         goal_key: str | None = None,
-        device: Optional[str | T.device] = None,
+        device: str|T.device|None = None,
         log_level: str = 'info'
     ):
         """
@@ -562,17 +559,16 @@ class StochasticContinuousPolicy(Model):
         Args:
             env (EnvWrapper): The environment wrapper.
             layer_config (list): List of dictionaries specifying hidden layer configurations.
-            output_layer_kernel (dict): Configuration for output layer initialization (default: {}).
+            output_config (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
-            distribution (str): Type of distribution for actions (default: 'beta').
-            obs_key (str): Observation key (default: 'observation').
+            distribution (str): Type of distribution for actions (normal or beta) (default: 'beta').
+            obs_key (str|None): Observation key (default: None).
             goal_key (str | None): Goal key (default: None).
-            device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+            device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
             log_level (str): logger level. Default=info.
         """
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
-        self.output_config = output_layer_kernel
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
         self.distribution = distribution
         # Get the action space of the environment
         self.act_space = (self.env.single_action_space 
@@ -639,67 +635,46 @@ class StochasticContinuousPolicy(Model):
             raise ValueError(f"Distribution {self.distribution} not supported.")
 
     def get_config(self):
-        """
-        Retrieve the configuration of the policy model.
-
-        Returns:
-            dict: Configuration dictionary with details about the model.
-        """
-        config = {
-            "env": self.env.to_json(),
-            'num_layers': len(self.layers),
-            'layer_config': self.layer_config,
-            'output_layer_kernel': self.output_config,
-            'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
+        config = super().get_config()
+        config.update({
             'distribution': self.distribution,
-            'obs_key': self.obs_key,
-            'goal_key': self.goal_key,
-            'device': self.device.type,
-        }
+        })
         return config
 
-    def save(self, folder):
+    def save(self, config_dir: Path | str, model_name: str = "policy"):
         """
-        Save the model to the specified folder.
+        Save the model to the specified configuration directory.
 
         Args:
-            folder (str): Path to the directory where the model should be saved.
+            config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to save (default: "policy").
         """
-        model_dir = Path(folder) / "policy_model"
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save the model parameters
-        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
-
-        config = self.get_config()
-
-        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
+        return super().save(config_dir, model_name)
 
     @classmethod
-    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
+    def load(cls, config_dir: Path | str, model_name: str = "policy", load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load a policy model from a saved configuration.
 
         Args:
             config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to load (default: "policy").
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             StochasticContinuousPolicy: Loaded policy model instance.
         """
-        config_dir = Path(config_dir)
-        config = json.load(open(config_dir / 'config.json'))
-        if env is None:
-            env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler_config = config.get("lr_scheduler", None)
-        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
+        # config_dir = Path(config_dir)
+        # config = json.load(open(config_dir / 'config.json'))
+        # if env is None:
+        #     env = EnvWrapper.from_json(config.get("env"))
+        # lr_scheduler_config = config.get("lr_scheduler", None)
+        # lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
+        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
-                    output_layer_kernel = config.get("output_layer_kernel", {"default":{}}),
+                    output_config = config.get("output_config", {"default":{}}),
                     optimizer_params = config.get("optimizer_params", {}),
                     lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "beta"),
@@ -728,24 +703,24 @@ class ValueModel(Model):
     Attributes:
         env (EnvWrapper): The environment wrapper.
         layer_config (list): Configuration of hidden layers (default: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]).
-        output_layer_kernel (dict): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        output_config (dict): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        obs_key (str): Observation key (default: 'observation').
-        goal_key (str): Goal key (default: 'desired_goal').
-        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+        obs_key (str|None): Observation key (default: None).
+        goal_key (str|None): Goal key (default: None).
+        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
     """
 
     def __init__(
         self,
         env: EnvWrapper,
         layer_config: List[Dict],
-        output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
-        obs_key: str = 'observation',
+        obs_key: str|None = None,
         goal_key: str | None = None,
-        device = None,
+        device: str|T.device|None = None,
         log_level: str = 'info'
     ):
         """
@@ -754,15 +729,14 @@ class ValueModel(Model):
         Args:
             env (EnvWrapper): The environment wrapper.
             layer_config (list): List of dictionaries specifying hidden layer configurations.
-            output_layer_kernel (dict): Configuration for output layer initialization (default: {}).
+            output_config (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
-            obs_key (str): Observation key (default: 'observation').
-            goal_key (str): Goal key (default: 'desired_goal').
-            device (str): Device for computation (default: 'cuda').
+            obs_key (str|None): Observation key (default: None).
+            goal_key (str|None): Goal key (default: None).
+            device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         """
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
-        self.output_config = output_layer_kernel
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
@@ -805,43 +779,16 @@ class ValueModel(Model):
         return x
 
     def get_config(self):
-        """
-        Retrieve the configuration of the value model.
-
-        Returns:
-            dict: Configuration dictionary with details about the model.
-        """
-
-        config = {
-            "env": self.env.to_json(),
-            'num_layers': len(self.layers),
-            'layer_config': self.layer_config,
-            'output_layer_kernel': self.output_config,
-            'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
-            'obs_key': self.obs_key,
-            'goal_key': self.goal_key,
-            'device': self.device.type,
-        }
-
-        return config
+        return super().get_config()
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         # Reconstruct the model from its configuration
-        if device:
-            device = get_device(device)
-        else:
-            device = self.device
-
-        if isinstance(self.env, IsaacSimWrapper):
-            env = self.env  # Reuse existing instance
-        else:
-            env = EnvWrapper.from_json(self.env.to_json())
+        device, env = super().clone(copy_weights, device)
 
         cloned_model = ValueModel(
             env=env,
             layer_config=self.layer_config.copy(),
-            output_layer_kernel=self.output_config.copy(),
+            output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
             obs_key=self.obs_key,
@@ -860,48 +807,34 @@ class ValueModel(Model):
         return cloned_model
 
 
-    def save(self, folder):
+    def save(self, config_dir: Path | str, model_name: str = "value"):
         """
-        Save the model to the specified folder.
+        Save the model to the specified configuration directory.
 
         Args:
-            folder (str): Path to the directory where the model should be saved.
+            config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to save (default: "value").
         """
-        model_dir = Path(folder) / "value_model"
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save the model parameters
-        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
-
-        config = self.get_config()
-
-        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-
+        return super().save(config_dir, model_name)
 
     @classmethod
-    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
+    def load(cls, config_dir: Path | str, model_name: str = "value", load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load a value model from a saved configuration.
 
         Args:
             config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to load (default: "value").
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             ValueModel: Loaded value model instance.
         """
-        config_dir = Path(config_dir)
-        config = json.load(open(config_dir / 'config.json'))
-        if env is None:
-            env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler_config = config.get("lr_scheduler", None)
-        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
+        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
-                    output_layer_kernel = config.get("output_layer_kernel"),
+                    output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
                     obs_key=config.get("obs_key"),
@@ -925,32 +858,33 @@ class ActorModel(Model):
     Attributes:
         env (EnvWrapper): The environment wrapper.
         layer_config (list): List of dictionaries specifying hidden layer configurations.
-        output_layer_kernel (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        obs_key (str): Observation key (default: 'observation').
-        goal_key (str): Goal key (default: 'desired_goal').
-        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+        obs_key (str|None): Observation key (default: None).
+        goal_key (str|None): Goal key (default: None).
+        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         log_level (str): Log level (default: 'info').
     """
     
     def __init__(self,
                  env: EnvWrapper,
                  layer_config: List[Dict],
-                 output_layer_kernel: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
-                 lr_scheduler: ScheduleWrapper=None,
-                 obs_key: str = 'observation',
+                 lr_scheduler: ScheduleWrapper|None = None,
+                 obs_key: str|None = None,
                  goal_key: str | None = None,
-                 device: str=None,
+                 device: str|T.device|None = None,
                  log_level: str='info'
                  ):
-        super().__init__(env, layer_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
-        self.output_config = output_layer_kernel
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+
+        # Set lower/upper bounds of environment attributes
+        self.env_action_low = T.tensor(self.env.single_action_space.low, dtype=T.float32, device=self.device)
+        self.env_action_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
 
         # Create the output layer
-        #DEBUG
-        print(f'ActorModel single_action_space:{self.env.single_action_space.shape}')
         self.output_layer = nn.ModuleDict({
             'actor_mu': nn.LazyLinear(self.env.single_action_space.shape[-1]),
             'actor_pi': nn.Tanh()
@@ -975,43 +909,24 @@ class ActorModel(Model):
 
         mu = self.output_layer["actor_mu"](x)
         pi = self.output_layer["actor_pi"](mu)
-        if not T.isinf(T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)).any():
-             pi = pi * T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
+        if not T.isinf(self.env_action_high).any() and not T.isinf(self.env_action_low).any():
+            #  pi = pi * T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
+            # Map to actual [low,high] bounds of env
+            pi = self.env_action_low + (pi + 1.0) * 0.5 * (self.env_action_high - self.env_action_low)
            
         return mu, pi
 
     def get_config(self):
-        config = {
-            "env": self.env.to_json(),
-            'num_layers': len(self.layers),
-            'layer_config': self.layer_config,
-            'output_layer_kernel':self.output_config,
-            'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
-            'obs_key': self.obs_key,
-            'goal_key': self.goal_key,
-            'device': self.device.type,
-        }
-
-        return config
-
+        return super().get_config()
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         # Reconstruct the model from its configuration
-        if device:
-            device = get_device(device)
-        else:
-            device = self.device
-
-        if isinstance(self.env, IsaacSimWrapper):
-            env = self.env  # Reuse existing instance
-        else:
-            env = EnvWrapper.from_json(self.env.to_json())
+        device, env = super().clone(copy_weights, device)
 
         cloned_model = ActorModel(
             env=env,
             layer_config=self.layer_config.copy(),
-            output_layer_kernel=self.output_config.copy(),
+            output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
             obs_key=self.obs_key,
@@ -1026,53 +941,39 @@ class ActorModel(Model):
         return cloned_model
 
 
-    def save(self, folder):
+    def save(self, config_dir: Path | str, model_name: str = "policy"):
         """
-        Save the model to the specified folder.
+        Save the model to the specified configuration directory.
 
         Args:
-            folder (str): Path to the directory where the model should be saved.
+            config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to save (default: "policy").
         """
-        model_dir = Path(folder) / "actor_model"
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save the model parameters
-        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
-
-        config = self.get_config()
-
-        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
+        return super().save(config_dir, model_name)
 
 
     @classmethod
-    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
+    def load(cls, config_dir: Path | str, model_name: str = "policy", load_weights: bool = True, env: EnvWrapper | None = None):
         """
         Load an actor model from a saved configuration.
 
         Args:
             config_dir (Path | str): Path to the configuration directory.
+            model_name (str): Name of the model to load (default: "policy").
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
             ActorModel: Loaded actor model instance.
         """
-        config_dir = Path(config_dir)
-        config = json.load(open(config_dir / 'config.json'))
-        if env is None:
-            env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler_config = config.get("lr_scheduler", None)
-        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
+        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
 
         model = cls(env = env,
                     layer_config = config.get("layer_config"),
-                    output_layer_kernel = config.get("output_layer_kernel"),
-                    # goal_shape = config.get("goal_shape", None)
+                    output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    obs_key=config.get("obs_key"),
-                    goal_key=config.get("goal_key"),
+                    obs_key = config.get("obs_key"),
+                    goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 
@@ -1085,55 +986,82 @@ class ActorModel(Model):
 
         return model
 
+class BaseCritic(Model):
+    """
+    Base class for critic models.
+    """
 
-class CriticModel(Model):
+    def __init__(self,
+                 env: EnvWrapper,
+                 layer_config: List[Dict],
+                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+                 optimizer_params: dict = {'type':'Adam', 'params':{'lr':0.001}},
+                 lr_scheduler: ScheduleWrapper|None = None,
+                 obs_key: str|None = None,
+                 goal_key: str | None = None,
+                 device: str|T.device|None = None,
+                 log_level: str='info'
+                 ):
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+
+    @abstractmethod
+    def forward(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def get_config(self):
+        return super().get_config()
+
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        return super().clone(copy_weights, device)
+
+    def save(self, config_dir: Path | str, model_name: str = "critic"):
+        return super().save(config_dir, model_name)
+
+    @classmethod
+    def load(cls, config_dir: Path | str, model_name: str = "critic", load_weights: bool = True, env: EnvWrapper | None = None):
+        return super().load(config_dir, model_name, load_weights, env)
+
+class ContinuousCritic(BaseCritic):
     """
     Critic model for continuous action spaces.
 
     Attributes:
         env (EnvWrapper): The environment wrapper.
-        state_layers (list): List of dictionaries specifying hidden layer configurations for the state.
-        merged_layers (list): List of dictionaries specifying hidden layer configurations for the merged state and action.
-        output_layer_kernel (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        layer_config (list): List of dictionaries specifying hidden layer configurations for the state.
+        merged_config (list): List of dictionaries specifying hidden layer configurations for the merged state and action.
+        output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        obs_key (str): Observation key (default: 'observation').
-        goal_key (str): Goal key (default: 'desired_goal').
-        device (str): Device to run the model on (default: 'None' = Cuda if available else CPU).
+        obs_key (str|None): Observation key (default: None).
+        goal_key (str|None): Goal key (default: None).
+        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         log_level (str): Log level (default: 'info').
     """
     def __init__(self,
                  env: EnvWrapper,
-                 state_layers: List[Dict],
-                 merged_layers: List[Dict],
-                 output_layer_kernel: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+                 layer_config: List[Dict],
+                 merged_config: List[Dict],
+                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
-                 lr_scheduler: ScheduleWrapper=None,
-                 obs_key: str = 'observation',
+                 lr_scheduler: ScheduleWrapper|None = None,
+                 obs_key: str|None = None,
                  goal_key: str | None = None,
-                 device: str=None,
+                 device: str|T.device|None = None,
                  log_level: str='info'
                  ):
-        super().__init__(env, state_layers, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
-        self.env = env
-        # self.state_config = state_layers # Stored as layer config in parent
-        self.merged_config = merged_layers
-        self.output_config = output_layer_kernel
-        # self.goal_shape = goal_shape
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        self.merged_config = merged_config
+        # self.output_config = output_layer_kernel
 
         # instantiate ModuleDicts for merged and Modules
         self.merged_layers = nn.ModuleDict()
-        # self.output_layer = nn.ModuleDict()
 
         # set internal attributes
         for i, layer_info in enumerate(self.merged_config):
             layer_type = layer_info['type']
             layer_params = layer_info.get('params', {})
             self.merged_layers[f'{layer_type}_{i}'] = self._build_layer(layer_type, layer_params)
-            
-        # add module to model
-        # self.add_module('merged_layers', self.merged_layers)
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({'state_action_value': nn.LazyLinear(1)})
@@ -1170,39 +1098,22 @@ class CriticModel(Model):
         return output
 
     def get_config(self):
-        config = {
-            "env": self.env.to_json(),
-            'num_layers': len(self.layers) + len(self.merged_layers),
-            'state_layers': self.layer_config,
-            'merged_layers': self.merged_config,
-            'output_layer_kernel': self.output_config,
-            'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
-            'obs_key': self.obs_key,
-            'goal_key': self.goal_key,
-            'device': self.device.type,
-        }
+        config = super().get_config()
+        config.update({
+            'merged_config': self.merged_config,
+        })
 
         return config
     
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         # Reconstruct the model from its configuration
-        if device:
-            device = get_device(device)
-        else:
-            device = self.device
-
-        if isinstance(self.env, IsaacSimWrapper):
-            env = self.env  # Reuse existing instance
-        else:
-            env = EnvWrapper.from_json(self.env.to_json())
+        device, env = super().clone(copy_weights, device)
             
-        cloned_model = CriticModel(
+        cloned_model = ContinuousCritic(
             env=env,
-            state_layers=self.layer_config.copy(),
-            merged_layers=self.merged_config.copy(),
-            output_layer_kernel=self.output_config.copy(),
-            # goal_shape=self.goal_shape.copy(),
+            layer_config=self.layer_config.copy(),
+            merged_config=self.merged_config.copy(),
+            output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
             obs_key=self.obs_key,
@@ -1213,62 +1124,174 @@ class CriticModel(Model):
         if copy_weights:
             # Copy the model weights
             cloned_model.load_state_dict(self.state_dict())
-            
-            # # Optionally, clone the optimizer (requires more manual work, shown below)
-            # cloned_optimizer = type(self.optimizer)(cloned_model.parameters(), **self.optimizer.defaults)
-            # cloned_optimizer.load_state_dict(self.optimizer.state_dict())
 
         return cloned_model
 
 
-    def save(self, folder):
+    def save(self, config_dir: Path | str, model_name: str = "critic"):
         """
-        Save the model to the specified folder.
+        Save the model to the specified configuration directory.
 
         Args:
-            folder (str): Path to the directory where the model should be saved.
+            config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to save (default: "critic").
         """
-        model_dir = Path(folder) / "critic_model"
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save the model parameters
-        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
-
-        config = self.get_config()
-
-        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
+        return super().save(config_dir, model_name)
 
 
     @classmethod
-    def load(cls, config_dir: Path | str, load_weights: bool = True, env: EnvWrapper | None = None):
+    def load(cls, config_dir: Path | str, model_name: str = "critic", load_weights: bool = True, env: EnvWrapper | None = None):
         """
-        Load a critic model from a saved configuration.
+        Load a continuous critic model from a saved configuration.
 
         Args:
             config_dir (Path | str): Path to the configuration directory.
+            model_name (str): Name of the model to load (default: "critic").
             load_weights (bool): Whether to load the model weights (default: True).
 
         Returns:
-            CriticModel: Loaded critic model instance.
+            ContinuousCritic: Loaded continuous critic model instance.
         """
-        config_dir = Path(config_dir)
-        config = json.load(open(config_dir / 'config.json'))
-        if env is None:
-            env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler_config = config.get("lr_scheduler", None)
-        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
-        
+        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
+
         model = cls(env = env,
-                    state_layers = config.get("state_layers"),
-                    merged_layers = config.get("merged_layers"),
-                    output_layer_kernel = config.get("output_layer_kernel"),
-                    # goal_shape = config.get("goal_shape", None)
+                    layer_config = config.get("layer_config"),
+                    merged_config = config.get("merged_config"),
+                    output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    obs_key=config.get("obs_key"),
-                    goal_key=config.get("goal_key"),
+                    obs_key = config.get("obs_key"),
+                    goal_key = config.get("goal_key"),
+                    device = config.get("device")
+                    )
+
+        # Load weights if True
+        if load_weights:
+            try:
+                model_path = Path(config_dir) / "pytorch_model.pt"
+                model.load_state_dict(T.load(model_path, map_location=model.device))
+            except Exception as e:
+                print(f"Error loading model: {e}")
+
+        return model
+
+class DiscreteCritic(BaseCritic):
+    """
+    Critic model for discrete action spaces.
+
+    Attributes:
+        env (EnvWrapper): The environment wrapper.
+        layer_config (list): List of dictionaries specifying hidden layer configurations for the state.
+        output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
+        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
+        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
+        obs_key (str|None): Observation key (default: None).
+        goal_key (str|None): Goal key (default: None).
+        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
+        log_level (str): Log level (default: 'info').
+    """
+    def __init__(self,
+                 env: EnvWrapper,
+                 layer_config: List[Dict],
+                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+                #  goal_shape: tuple=None,
+                 optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
+                 lr_scheduler: ScheduleWrapper|None = None,
+                 obs_key: str|None = None,
+                 goal_key: str | None = None,
+                 device: str|T.device|None = None,
+                 log_level: str='info'
+                 ):
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        # self.output_config = output_layer_kernel
+
+        # Create the output layer
+        self.output_layer = nn.ModuleDict({'Q_values': nn.LazyLinear(self.env.single_action_space.n)})
+        # self.add_module('critic_output_layer', self.output_layer)
+
+         # Move the model to the specified device
+        self.to(self.device)
+
+        # initialize params
+        self._init_model(self.layers, self.layer_config)
+        self._init_model(self.output_layer, self.output_config)
+
+    def forward(self, state, goal=None):
+         # Preprocess state to ensure correct formatting
+        state = self._preprocess_state(state)
+        state = state.to(self.device)
+        
+        if goal is not None:
+            goal = goal.to(self.device)
+            state = T.cat([state, goal], dim=-1)
+
+        for layer in self.layers.values():
+            state = layer(state)
+
+        for layer in self.output_layer.values():
+            output = layer(state)
+        
+        return output
+
+    def get_config(self):
+        config = super().get_config()
+        return config
+    
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        # Reconstruct the model from its configuration
+        device, env = super().clone(copy_weights, device)
+            
+        cloned_model = DiscreteCritic(
+            env=env,
+            layer_config=self.layer_config.copy(),
+            output_config=self.output_config.copy(),
+            optimizer_params=self.optimizer_params.copy(),
+            lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
+            obs_key=self.obs_key,
+            goal_key=self.goal_key,
+            device=device
+        )
+        
+        if copy_weights:
+            # Copy the model weights
+            cloned_model.load_state_dict(self.state_dict())
+
+        return cloned_model
+
+
+    def save(self, config_dir: Path | str, model_name: str = "critic"):
+        """
+        Save the model to the specified configuration directory.
+
+        Args:
+            config_dir (Path | str): Configuration directory.
+            model_name (str): Name of the model to save (default: "critic").
+        """
+        return super().save(config_dir, model_name)
+
+
+    @classmethod
+    def load(cls, config_dir: Path | str, model_name: str = "critic", load_weights: bool = True, env: EnvWrapper | None = None):
+        """
+        Load a discrete critic model from a saved configuration.
+
+        Args:
+            config_dir (Path | str): Path to the configuration directory.
+            model_name (str): Name of the model to load (default: "critic").
+            load_weights (bool): Whether to load the model weights (default: True).
+
+        Returns:
+            DiscreteCritic: Loaded discrete critic model instance.
+        """
+        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
+
+        model = cls(env = env,
+                    layer_config = config.get("layer_config"),
+                    output_config = config.get("output_config"),
+                    optimizer_params = config.get("optimizer_params"),
+                    lr_scheduler = lr_scheduler,
+                    obs_key = config.get("obs_key"),
+                    goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 
@@ -1318,6 +1341,18 @@ def select_policy_model(env: EnvWrapper):
     # Check if the action space is continuous
     elif isinstance(env.action_space, gym.spaces.Box):
         model_class = StochasticContinuousPolicy
+    else:
+        raise ValueError("Unsupported action space type. Only Discrete and Box spaces are supported.")
+    return model_class
+
+def select_critic_model(env: EnvWrapper):
+    """
+    Select the appropriate critic model based on the environment's action space.
+    """
+    if isinstance(env.action_space, gym.spaces.Discrete) or isinstance(env.action_space, gym.spaces.MultiDiscrete):
+        model_class = DiscreteCritic
+    elif isinstance(env.action_space, gym.spaces.Box):
+        model_class = ContinuousCritic
     else:
         raise ValueError("Unsupported action space type. Only Discrete and Box spaces are supported.")
     return model_class

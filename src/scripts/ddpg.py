@@ -52,14 +52,14 @@ if __name__ == '__main__':
 
 
 # # build actor
-actor_config = config['models']['actor']
-actor_config['env'] = env
-actor = ActorModel(**actor_config)
+policy_config = config['models']['policy']
+policy_config['env'] = env
+policy = ActorModel(**policy_config)
 
 # # build critic
 critic_config = config['models']['critic']
 critic_config['env'] = env
-critic = CriticModel(**critic_config)
+critic = ContinuousCritic(**critic_config)
 
 # build replay buffer
 config['replay_buffer']['config']['env'] = env
@@ -80,7 +80,7 @@ noise_schedule = ScheduleWrapper(**config["noise_schedule"]) if config.get("nois
 if config.get('curiosity'):
     config['curiosity']['env'] = env
     if config['curiosity'].get('reward_scheduler'):
-        config['curiosity']['reward_scheduler'] = ScheduleWrapper(config['curiosity']['reward_scheduler'])
+        config['curiosity']['reward_scheduler'] = ScheduleWrapper(config['curiosity']['reward_scheduler']['type'], config['curiosity']['reward_scheduler']['params'])
     else:
         config['curiosity']['reward_scheduler'] = None
     curiosity = ICM.create_instance(**config['curiosity'])
@@ -108,8 +108,8 @@ callbacks = [callback_load(callback) for callback in config['callbacks']] if con
 agent_class = get_agent_class_from_type('DDPG')
 ddpg = agent_class(
                 env=env,
-                actor_model=actor,
-                critic_model=critic,
+                policy=policy,
+                critic=critic,
                 replay_buffer=replay_buffer,
                 discount=config['agent']['discount'],
                 tau=config['agent']['tau'],
@@ -117,6 +117,7 @@ ddpg = agent_class(
                 batch_size=config['agent']['batch_size'],
                 noise=noise,
                 noise_schedule=noise_schedule,
+                noise_clip=config['agent']['noise_clip'],
                 grad_clip=config['agent']['grad_clip'],
                 warmup=config['agent']['warmup'],
                 N=config['agent']['N'],

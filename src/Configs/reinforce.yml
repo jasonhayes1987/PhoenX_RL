@@ -33,7 +33,7 @@ models:
       - type: dense
         params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
       # - type: relu
-    output_layer_kernel:
+    output_config:
       - type: dense
         params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
     optimizer_params: {type: Adam, params: {lr: 0.0001}}
@@ -48,7 +48,7 @@ models:
       - type: dense
         params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
       # - type: relu
-    output_layer_kernel:
+    output_config:
       - type: dense
         params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
     optimizer_params: {type: Adam, params: {lr: 0.0001}}
@@ -72,9 +72,9 @@ callbacks:
 
 train_config:
   load_weights: false
-  num_episodes: 1000
+  num_episodes: 5000
   trajectories_per_update: 10
-  render_freq: 100
+  render_freq: 1000
   seed: 42
 
 test_config:
