@@ -206,8 +206,13 @@ class ReplayBuffer(Buffer):
             self._obs_space_shape = self.env.single_observation_space.shape
             self._goal_space_shape = None
 
+        # Create actions buffer dependent on action space
+        if isinstance(self.env.single_action_space, gym.spaces.Box):
+            self.actions = T.zeros((buffer_size, N, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
+        else: # Discrete
+            self.actions = T.zeros((buffer_size, N, 1), dtype=T.float32, device=self.device)
+
         self.states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
-        self.actions = T.zeros((buffer_size, N, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
         self.rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.next_states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
         self.dones = T.zeros((buffer_size, N), dtype=T.int8, device=self.device)

@@ -40,6 +40,7 @@ models:
       - type: dense
         params: {kernel: orthogonal, kernel_params: {gain: 1.0}}
     optimizer_params: {type: Adam, params: {lr: 0.001}}
+    distribution: beta
     obs_key: *obs_key
     device: *device
 

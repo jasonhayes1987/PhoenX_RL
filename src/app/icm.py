@@ -293,7 +293,7 @@ class ICM(Model):
         # Load EnvWrapper (or reuse injected env to avoid duplicate Isaac Sim SimulationContext)
         env_wrapper = env if env is not None else EnvWrapper.from_json(config["env"])
         if config['reward_scheduler'] is not None:
-            scheduler = ScheduleWrapper(config['reward_scheduler'])
+            scheduler = ScheduleWrapper(config['reward_scheduler']['type'], config['reward_scheduler']['config'])
         else:
             scheduler = None
 
