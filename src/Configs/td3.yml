@@ -4,7 +4,7 @@ goal_key: &goal_key null
 achieved_goal_key: &achieved_goal_key null
 device: &device "cuda"
 seed: &seed 42
-save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_2/DDPG/"
+save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_20/TD3/"
 log_level: "info"
 
 agent:
@@ -13,6 +13,7 @@ agent:
   action_epsilon: 0.2
   batch_size: 128
   noise_clip: 0.5
+  policy_update_delay: 2
   grad_clip: 40.0
   warmup: 1000
   N: *n
@@ -45,7 +46,23 @@ models:
     obs_key: *obs_key
     device: *device
 
-  critic:
+  critic_a:
+    layer_config:
+      - type: dense
+        params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+      - type: relu
+    merged_config:
+      - type: dense
+        params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+      - type: relu
+    output_config:
+      - type: dense
+        params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
+    optimizer_params: {type: Adam, params: {lr: 0.001}}
+    obs_key: *obs_key
+    device: *device
+
+  critic_b:
     layer_config:
       - type: dense
         params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
@@ -95,40 +112,51 @@ replay_buffer:
 noise:
   type: NormalNoise
   params: {stddev: 0.1}
+noise_schedule:
+  type: linear
+  params: {start_factor: 1.0, end_factor: 0.1, total_iters: 100000}
+
+target_noise:
+  type: NormalNoise
+  params: {stddev: 0.1}
+target_noise_schedule:
+  type: linear
+  params: {start_factor: 1.0, end_factor: 0.1, total_iters: 100000}
+
 
 # curiosity:
 #   model_configs: {
-#     # 'encoder': {
-#     #     'layer_config': [
-#     #         {'type': 'dense', 'params': {'units': 64, 'kernel': 'ones', 'kernel params':{}}},
-#     #         {'type': 'relu'},
-#     #     ],
-#     #     'output_layer': [
-#     #         {'type': 'dense', 'params': {'units': 256, 'kernel': 'ones', 'kernel params':{}}}
-#     #     ]
-#     # },
-#     'inverse_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
-#         ]
-#     },
-#     'forward_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
-#         ]
-#     }
-#   }
+    # 'encoder': {
+    #     'layer_config': [
+    #         {'type': 'dense', 'params': {'units': 64, 'kernel': 'ones', 'kernel params':{}}},
+    #         {'type': 'relu'},
+    #     ],
+    #     'output_layer': [
+    #         {'type': 'dense', 'params': {'units': 256, 'kernel': 'ones', 'kernel params':{}}}
+    #     ]
+    # },
+  #   'inverse_model': {
+  #       'layer_config': [
+  #           {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+  #           {'type': 'relu'},
+  #       ],
+  #       'output_layer': [
+  #           {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+  #       ]
+  #   },
+  #   'forward_model': {
+  #       'layer_config': [
+  #           {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+  #           {'type': 'relu'},
+  #       ],
+  #       'output_layer': [
+  #           {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+  #       ]
+  #   }
+  # }
   # optimizer_params: {type: Adam, params: {lr: 0.001}}
   # reward_weight: 0.01
-  # reward_scheduler: {type: linear, params: {start_factor: 1.0, end_factor: 0.1, total_iters: 25000}}
+  # reward_scheduler: {type: linear, params: {start_factor: 1.0, end_factor: 0.1, total_iters: 5000}}
   # beta: 0.2
   # extrinsic_threshold: 0
   # device: *device

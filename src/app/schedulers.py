@@ -3,29 +3,27 @@ from torch import optim
 from torch.optim import lr_scheduler
 
 class ScheduleWrapper:
-    def __init__(self, schedule_config: dict):
+    def __init__(self, type: str, config: dict):
         """
         #TODO: define schedule config dict
         """
-        self.schedule_config = schedule_config
+        self.type = type
+        self.config = config
         
         self.param = T.nn.Parameter(T.zeros(1), requires_grad=False)
         self.optimizer = optim.SGD([self.param], lr=1.0)
         
-        scheduler_type = schedule_config.get("type", "").lower()
-        scheduler_params = schedule_config.get("params", {})
-        
         # Map scheduler type to PyTorch's built-in schedulers
-        if scheduler_type == "linear":
-            self.scheduler = lr_scheduler.LinearLR(self.optimizer, **scheduler_params)
-        elif scheduler_type == "step":
-            self.scheduler = lr_scheduler.StepLR(self.optimizer, **scheduler_params)
-        elif scheduler_type == "cosineannealing":
-            self.scheduler = lr_scheduler.CosineAnnealingLR(self.optimizer, **scheduler_params)
-        elif scheduler_type == "exponential":
-            self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, **scheduler_params)
+        if self.type == "linear":
+            self.scheduler = lr_scheduler.LinearLR(self.optimizer, **self.config)
+        elif self.type == "step":
+            self.scheduler = lr_scheduler.StepLR(self.optimizer, **self.config)
+        elif self.type == "cosineannealing":
+            self.scheduler = lr_scheduler.CosineAnnealingLR(self.optimizer, **self.config)
+        elif self.type == "exponential":
+            self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, **self.config)
         else:
-            raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
+            raise ValueError(f"Unsupported scheduler type: {self.type}")
 
     def step(self):
         if self.scheduler:
@@ -37,10 +35,13 @@ class ScheduleWrapper:
         return 1.0
     
     def get_config(self):
-        return self.schedule_config
+        return {
+            "type": self.type,
+            "config": self.config
+        }
 
     def clone(self):
-        new_wrapper = ScheduleWrapper(self.schedule_config.copy())
+        new_wrapper = ScheduleWrapper(self.type, self.config.copy())
         if self.scheduler:
             new_wrapper.scheduler.load_state_dict(self.scheduler.state_dict())
         if self.optimizer:

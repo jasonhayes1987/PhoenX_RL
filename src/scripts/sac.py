@@ -1,166 +1,166 @@
 import sys
 import os
+import argparse
+import yaml
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import json
-from agent_utils import *
-from icm import ICM
-
-device = 'cuda'
-num_envs = 4
-N = 3
-env_string = 'LunarLanderContinuous-v3'
+import gymnasium as gym
+from app.agent_utils import *
+from app.icm import ICM
 
 
-env = gym.make(env_string)
+def load_config(config_file: str) -> dict:
+    with open(config_file, 'r') as f:
+        return yaml.safe_load(f)
 
-wrappers = [
-    {
-        "type": "NStepReward",
-        "params": {
-            "n": N
-        }
-    }
-]
+def infer_dim(env, key=None):
+    space = env.single_observation_space
+    if isinstance(space, gym.spaces.Dict):
+        if key is None:
+            raise ValueError(
+                f"Observation space is Dict, but no key provided. "
+                f"Available keys: {list(space.spaces.keys())}"
+            )
+        if key not in space.spaces:
+            raise KeyError(
+                f"Key '{key}' not in observation space. "
+                f"Available keys: {list(space.spaces.keys())}"
+            )
+        return int(np.prod(space.spaces[key].shape))
+    return int(np.prod(space.shape))
 
-env_spec = env.spec
-env_wrap = GymnasiumWrapper(env_spec, wrappers)
+def create_normalizer(config, key, env):
+    normalizers_config = config.get('normalizers', {})
+    if normalizers_config.get(key):
+        if key == 'state':
+            env_key = config['obs_key']
+        elif key == 'goal':
+            env_key = config['goal_key']
+        else:
+            raise ValueError(f"Invalid normalizer key: {key}")
+        size = infer_dim(env, env_key)
+        return Normalizer(size=size, **normalizers_config[key])
+    return None
 
-# scheduler_config = {
-#     "type": "linear",
-#     "params": {
-#         "start_factor": 1.0,
-#         "end_factor": 0.1,
-#         "total_iters": 1000000
-#     }
-# }
-# scheduler = ScheduleWrapper(scheduler_config)
-scheduler = None
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Create TD3 Agent from config file')
+    parser.add_argument('--config_file', type=str, required=True, help='Path to the agent configuration file (.yml)')
+    args = parser.parse_args()
+    config = load_config(args.config_file)
+    print(config)
 
-# build actor
-optimizer = {'type': 'Adam','params': { 'lr': 3e-4 }}
-
-layer_config = [
-    # {'type': 'batchnorm1d'},
-    {'type': 'dense', 'params': {'units': 256, 'kernel': 'default', 'kernel params':{}}},
-    # {'type': 'batchnorm1d'},
-    {'type': 'relu'},
-    {'type': 'dense', 'params': {'units': 256, 'kernel': 'default', 'kernel params':{}}},
-    # {'type': 'batchnorm1d'},
-    {'type': 'relu'},
-]
-output_layer_config = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]
-
-actor = StochasticContinuousPolicy(env_wrap, layer_config, output_layer_config, optimizer, scheduler, distribution='normal',device=device)
-
-# build critic
-
-state_layer_config = [
-
-]
-
-critic_a = CriticModel(env_wrap, state_layers=state_layer_config, merged_layers=layer_config,
-                    output_layer_kernel=output_layer_config, optimizer_params=optimizer, lr_scheduler=scheduler, device=device)
-
-# critic_b = critic_a.clone()
+    # Create env object using correct wrapper
+    if config['env']['type'] == 'isaacsim':
+        #DEBUG
+        print(f"Creating IsaacSimWrapper with config: {config['env']['config']}")
+        env = IsaacSimWrapper(**config['env']['config'])
+        print(f"Created IsaacSimWrapper with config: {config['env']['config']}")
+    elif config['env']['type'] == 'gymnasium':
+        env = GymnasiumWrapper(**config['env']['config'])
+        print(f"Created GymnasiumWrapper with config: {config['env']['config']}")
+    else:
+        raise ValueError(f"Invalid environment type: {config['env']['type']}")
 
 
-# Build Value model
-value_model = ValueModel(env_wrap, layer_config, output_layer_config, optimizer_params=optimizer, lr_scheduler=scheduler, device=device)
 
-replay_buffer = ReplayBuffer(env_wrap, 1000000, N=N, device='cpu')
-# replay_buffer = PrioritizedReplayBuffer(env_wrap, 1000000, beta_start=0.4, beta_iter=100000, beta_update_freq=1, priority='rank',
-#                                         normalize=False, goal_shape=env.observation_space['desired_goal'].shape, epsilon=0.01, N=N, device='cpu')
-state_normalizer = Normalizer(size=env_wrap.single_observation_space.shape, update_freq=200, clip_range=5.0, device=device)
+# # build actor
+policy_config = config['models']['policy']
+policy_config['env'] = env
+policy_config['lr_scheduler'] = ScheduleWrapper(config["schedulers"]["policy_lr_schedule"]['type'], config["schedulers"]["policy_lr_schedule"]['params']) if config.get("schedulers", {}).get("policy_lr_schedule") else None
+policy_model_class = select_policy_model(env)
+policy = policy_model_class(**policy_config)
 
-# ICM
-# optimizer_params = {'type': 'Adam', 'params': {'lr': 1e-3}}
+# # build critics
+critic_a_config = config['models']['critic_a']
+critic_a_config['env'] = env
+critic_a_config['lr_scheduler'] = ScheduleWrapper(config["schedulers"]["critic_a_lr_schedule"]['type'], config["schedulers"]["critic_a_lr_schedule"]['params']) if config.get("schedulers", {}).get("critic_a_lr_schedule") else None
+# critic_a = ContinuousCritic(**critic_a_config)
+if config.get('models').get('critic_b', None):
+    critic_b_config = config['models']['critic_b']
+    critic_b_config['env'] = env
+    critic_b_config['lr_scheduler'] = ScheduleWrapper(config["schedulers"]["critic_b_lr_schedule"]['type'], config["schedulers"]["critic_b_lr_schedule"]['params']) if config.get("schedulers", {}).get("critic_b_lr_schedule") else None
+    # critic_b = ContinuousCritic(**critic_b_config)
+else: critic_b_config = None
+critic_model_class = select_critic_model(env)
+critic_a = critic_model_class(**critic_a_config)
+if critic_b_config:
+    critic_b = critic_model_class(**critic_b_config)
+else:
+    critic_b = critic_a.clone(copy_weights=False)
 
-# # Define ICM configurations
-# model_configs = {
-#     # 'encoder': {
-#     #     'layer_config': [
-#     #         {'type': 'dense', 'params': {'units': 64, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}},
-#     #         {'type': 'relu'},
-#     #     ],
-#     #     'output_layer': [
-#     #         {'type': 'dense', 'params': {'units': 256, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}}
-#     #     ]
-#     # },
-#     'inverse_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, 'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}}
-#         ]
-#     },
-#     'forward_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, 'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}}
-#         ]
-#     }
-# }
+# build value model
+# value_config = config['models']['value']
+# value_config['env'] = env
+# value_config['lr_scheduler'] = ScheduleWrapper(config["schedulers"]["value_lr_schedule"]['type'], config["schedulers"]["value_lr_schedule"]['params']) if config.get("schedulers", {}).get("value_lr_schedule") else None
+# value = ValueModel(**value_config)
 
-# schedule_config = {'type':'linear', 'params':{'start_factor':1.0, 'end_factor':0.1, 'total_iters':100000}}
-# scheduler = ScheduleWrapper(schedule_config)
+# build replay buffer
+config['replay_buffer']['config']['env'] = env
+if config['replay_buffer']['type'] == 'ReplayBuffer':
+    replay_buffer = ReplayBuffer(**config['replay_buffer']['config'])
+elif config['replay_buffer']['type'] == 'PrioritizedReplayBuffer':
+    replay_buffer = PrioritizedReplayBuffer(**config['replay_buffer']['config'])
+else:
+    raise ValueError(f"Invalid replay buffer type: {config['replay_buffer']['type']}")
 
-# icm = ICM(env_wrap, model_configs, optimizer_params, reward_weight=0.2, reward_scheduler=scheduler, beta=0.2, extrinsic_threshold=1000, warmup=1000, device=device)
-icm = None
+# create curiosity object if present in config
+if config.get('curiosity'):
+    config['curiosity']['env'] = env
+    if config['curiosity'].get('reward_scheduler'):
+        config['curiosity']['reward_scheduler'] = ScheduleWrapper(config['curiosity']['reward_scheduler']['type'], config['curiosity']['reward_scheduler']['params'])
+    else:
+        config['curiosity']['reward_scheduler'] = None
+    curiosity = ICM.create_instance(**config['curiosity'])
+else:
+    curiosity = None
 
-# Create SAC object
+# create state normalizer object if present in config
+state_normalizer = create_normalizer(config, 'state', env)
+goal_normalizer = create_normalizer(config, 'goal', env)
+
+# create callbacks object if present in config
+callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
+
+# Create DDPG Agent
 agent_class = get_agent_class_from_type('SAC')
 sac = agent_class(
-    env=env_wrap,
-    actor_model=actor,
-    value_model=value_model,
-    critic_model_a=critic_a,
-    # critic_model_b=critic_b,
-    replay_buffer=replay_buffer,
-    discount=0.99,
-    tau=0.005,
-    alpha=0.4,
-    auto_entropy_tuning=False,
-    alpha_lr=1e-4,
-    batch_size=512,
-    grad_clip=0.5,
-    warmup=1000,
-    N=N,
-    curiosity=icm,
-    state_normalizer=state_normalizer,
-    callbacks=[WandbCallback(env_string)],
-    save_dir=f'/workspaces/PhoenX_RL/src/app/agents/{env_string}_N{N}',
-    device=device
-)
+                env=env,
+                policy_model=policy,
+                critic_model_a=critic_a,
+                critic_model_b=critic_b,
+                replay_buffer=replay_buffer,
+                discount=config['agent']['discount'],
+                tau=config['agent']['tau'],
+                alpha=config['agent']['alpha'],
+                auto_entropy_tuning=config['agent']['auto_entropy_tuning'],
+                alpha_lr=config['agent']['alpha_lr'],
+                batch_size=config['agent']['batch_size'],
+                grad_clip=config['agent']['grad_clip'],
+                warmup=config['agent']['warmup'],
+                N=config['agent']['N'],
+                curiosity=curiosity,
+                state_normalizer=state_normalizer,
+                goal_normalizer=goal_normalizer,
+                obs_key=config['obs_key'],
+                goal_key=config['goal_key'],
+                achieved_goal_key=config['achieved_goal_key'],
+                callbacks=callbacks,
+                save_dir=config['save_dir'],
+                device=config['device'],
+                log_level=config['log_level'])
 
+# # Save Agent
 sac.save()
 
-config = sac.get_config()
-
-# Set train config and path
-train_config = {
-    'num_episodes': 1000,
-    'num_envs': 4,
-    'steps_per_learn': 1,
-    'render_freq': 100,
-    'seed': 42,
-}
-train_config_path = config["save_dir"] + 'train_config.json'
+# Set train config
+train_config = config['train_config']
+train_config_path = config['save_dir'] + 'train_config.json'
 with open(train_config_path, 'w') as f:
     json.dump(train_config, f)
 
-# Set test config and path
-test_config = {
-    'num_episodes': 100,
-    'num_envs': 1,
-    'seed': 42,
-    'render_freq': 10
-}
-test_config_path = config["save_dir"] + 'test_config.json'
+# Set test config
+test_config = config['test_config']
+test_config_path = config['save_dir'] + 'test_config.json'
 with open(test_config_path, 'w') as f:
     json.dump(test_config, f)

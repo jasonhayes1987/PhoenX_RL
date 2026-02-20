@@ -1,27 +1,28 @@
-n: &n 3 # n-step reward
+n: &n 1 # n-step reward
 obs_key: &obs_key null
 goal_key: &goal_key null
 achieved_goal_key: &achieved_goal_key null
 device: &device "cuda"
 seed: &seed 42
-save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_2/DDPG/"
+save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLander-v3_2/SAC/"
 log_level: "info"
 
 agent:
   discount: 0.99
   tau: 0.005
-  action_epsilon: 0.2
-  batch_size: 128
-  noise_clip: 0.5
-  grad_clip: 40.0
-  warmup: 1000
+  alpha: 0.05
+  auto_entropy_tuning: false
+  alpha_lr: 0.0003
+  batch_size: 256
+  grad_clip: 1.0
+  warmup: 10000
   N: *n
 
 env:
   type: "gymnasium" # "isaacsim" or "gymnasium"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    cfg: "LunarLanderContinuous-v3"
+    cfg: "LunarLander-v3"
     num_envs: 4
     wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *achieved_goal_key}}]
     render_mode: null
@@ -33,39 +34,72 @@ models:
   policy:
     layer_config:
       - type: dense
-        params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
       - type: dense
-        params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
     output_config:
       - type: dense
-        params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-    optimizer_params: {type: Adam, params: {lr: 0.0001}}
+        params: {kernel: default, kernel_params: {}}
+    optimizer_params: {type: Adam, params: {lr: 0.0003}}
+    distribution: categorical
     obs_key: *obs_key
     device: *device
 
-  critic:
+  critic_a:
     layer_config:
       - type: dense
-        params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
-    merged_config:
       - type: dense
-        params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
     output_config:
       - type: dense
-        params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-    optimizer_params: {type: Adam, params: {lr: 0.001}}
+        params: {kernel: default, kernel_params: {}}
+    optimizer_params: {type: Adam, params: {lr: 0.0003}}
     obs_key: *obs_key
     device: *device
 
-normalizers:
-  state:
-    momentum: 0.99
-    update_freq: 200
-    clip_range: 5.0
+  critic_b:
+    layer_config:
+      - type: dense
+        params: {units: 256, kernel: default, kernel_params: {}}
+      - type: relu
+      - type: dense
+        params: {units: 256, kernel: default, kernel_params: {}}
+      - type: relu
+    output_config:
+      - type: dense
+        params: {kernel: default, kernel_params: {}}
+    optimizer_params: {type: Adam, params: {lr: 0.0003}}
+    obs_key: *obs_key
+    device: *device
+
+# schedulers:
+#   policy_lr_schedule:
+#     type: "linear"
+#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
+#   critic_a_lr_schedule:
+#     type: "linear"
+#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
+#   critic_b_lr_schedule:
+#     type: "linear"
+#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
+#   value_lr_schedule:
+#     type: "linear"
+#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
+
+# normalizers:
+#   state:
+#     momentum: 0.99
+#     update_freq: 200
+#     clip_range: 5.0
+#   goal:
+#     momentum: 0.99
+#     update_freq: 200
+#     clip_range: 5.0
 
 # replay_buffer:
 #   type: PrioritizedReplayBuffer
@@ -92,9 +126,6 @@ replay_buffer:
     goal_key: *goal_key
     device: *device
 
-noise:
-  type: NormalNoise
-  params: {stddev: 0.1}
 
 # curiosity:
 #   model_configs: {
@@ -126,20 +157,20 @@ noise:
 #         ]
 #     }
 #   }
-  # optimizer_params: {type: Adam, params: {lr: 0.001}}
-  # reward_weight: 0.01
-  # reward_scheduler: {type: linear, params: {start_factor: 1.0, end_factor: 0.1, total_iters: 25000}}
-  # beta: 0.2
-  # extrinsic_threshold: 0
-  # device: *device
+#   optimizer_params: {type: Adam, params: {lr: 0.001}}
+#   reward_weight: 0.01
+#   reward_scheduler: {type: linear, params: {start_factor: 1.0, end_factor: 0.1, total_iters: 5000}}
+#   beta: 0.2
+#   extrinsic_threshold: 0
+#   device: *device
 
 callbacks:
   - type: "WandbCallback"
-    config: {project_name: "LunarLanderContinuous-v3"}
+    config: {project_name: "LunarLander-v3"}
 
 train_config:
   load_weights: false
-  num_episodes: 1000
+  num_episodes: 2000
   steps_per_learn: 1
   render_freq: 100
   seed: *seed

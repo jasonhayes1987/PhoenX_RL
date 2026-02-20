@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import torch as T
 import torch.nn as nn
-from .models import ActorModel, CriticModel, ValueModel, StochasticContinuousPolicy, StochasticDiscretePolicy
+from .models import ActorModel, ContinuousCritic, ValueModel, StochasticContinuousPolicy, StochasticDiscretePolicy, select_policy_model, select_critic_model
 from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, NStepReward, VectorNStepReward
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
 from .noise import Noise, NormalNoise, UniformNoise, OUNoise

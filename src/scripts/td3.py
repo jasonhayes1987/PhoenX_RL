@@ -1,172 +1,159 @@
 import sys
 import os
+import argparse
+import yaml
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import json
-from agent_utils import *
-from icm import ICM
-
-device = 'cuda'
-num_envs = 4
-N = 3
-env_string = 'LunarLanderContinuous-v3'
+import gymnasium as gym
+from app.agent_utils import *
+from app.icm import ICM
 
 
-env = gym.make(env_string)
+def load_config(config_file: str) -> dict:
+    with open(config_file, 'r') as f:
+        return yaml.safe_load(f)
 
-wrappers = [
-    {
-        "type": "NStepReward",
-        "params": {
-            "n": N
-        }
-    }
-]
+def infer_dim(env, key=None):
+    space = env.single_observation_space
+    if isinstance(space, gym.spaces.Dict):
+        if key is None:
+            raise ValueError(
+                f"Observation space is Dict, but no key provided. "
+                f"Available keys: {list(space.spaces.keys())}"
+            )
+        if key not in space.spaces:
+            raise KeyError(
+                f"Key '{key}' not in observation space. "
+                f"Available keys: {list(space.spaces.keys())}"
+            )
+        return int(np.prod(space.spaces[key].shape))
+    return int(np.prod(space.shape))
 
-env_spec = env.spec
-env_wrap = GymnasiumWrapper(env_spec, wrappers)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Create TD3 Agent from config file')
+    parser.add_argument('--config_file', type=str, required=True, help='Path to the agent configuration file (.yml)')
+    args = parser.parse_args()
+    config = load_config(args.config_file)
+    print(config)
 
-# build actor
-actor_optimizer = {'type': 'Adam','params': { 'lr': 0.001 }}
+    # Create env object using correct wrapper
+    if config['env']['type'] == 'isaacsim':
+        #DEBUG
+        print(f"Creating IsaacSimWrapper with config: {config['env']['config']}")
+        env = IsaacSimWrapper(**config['env']['config'])
+        print(f"Created IsaacSimWrapper with config: {config['env']['config']}")
+    elif config['env']['type'] == 'gymnasium':
+        env = GymnasiumWrapper(**config['env']['config'])
+        print(f"Created GymnasiumWrapper with config: {config['env']['config']}")
+    else:
+        raise ValueError(f"Invalid environment type: {config['env']['type']}")
 
-layer_config = [
-    # {'type': 'batchnorm1d'},
-    {'type': 'dense', 'params': {'units': 400, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}},
-    # {'type': 'batchnorm1d'},
-    {'type': 'relu'},
-    {'type': 'dense', 'params': {'units': 300, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}},
-    # {'type': 'batchnorm1d'},
-    {'type': 'relu'},
-]
-# output_layer_config = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]
-output_layer_config = [{'type': 'dense', 'params': {'kernel': 'uniform', 'kernel params':{'a':-3e-3, 'b':3e-3}}}]
 
-actor = ActorModel(env_wrap, layer_config, output_layer_config, optimizer_params=actor_optimizer, device=device)
 
-# build critic
-# critic_optimizer = {'type': 'Adam','params': { 'lr': 0.001, 'weight_decay':0.01}}
-critic_optimizer = {'type': 'Adam','params': { 'lr': 0.001}}
+# # build actor
+policy_config = config['models']['policy']
+policy_config['env'] = env
+policy = ActorModel(**policy_config)
 
-state_layer_config = [
-    # {'type': 'batchnorm1d'},
-    {'type': 'dense', 'params': {'units': 400, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}},
-    # {'type': 'batchnorm1d'},
-    {'type': 'relu'}
-]
+# # build critic
+critic_a_config = config['models']['critic_a']
+critic_a_config['env'] = env
+critic_a = ContinuousCritic(**critic_a_config)
+if config.get('models').get('critic_b', None):
+    critic_b_config = config['models']['critic_b']
+    critic_b_config['env'] = env
+    critic_b = ContinuousCritic(**critic_b_config)
+else:
+    critic_b = critic_a.clone(copy_weights=False)
 
-merged_layer_config = [
-    {'type': 'dense', 'params': {'units': 300, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}},
-    {'type': 'relu'},
-]
-# output_layer_config = {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}},
 
-critic = CriticModel(env_wrap, state_layers=state_layer_config, merged_layers=merged_layer_config,
-                    output_layer_kernel=output_layer_config, optimizer_params=critic_optimizer, device=device)
+# build replay buffer
+config['replay_buffer']['config']['env'] = env
+if config['replay_buffer']['type'] == 'ReplayBuffer':
+    replay_buffer = ReplayBuffer(**config['replay_buffer']['config'])
+elif config['replay_buffer']['type'] == 'PrioritizedReplayBuffer':
+    replay_buffer = PrioritizedReplayBuffer(**config['replay_buffer']['config'])
+else:
+    raise ValueError(f"Invalid replay buffer type: {config['replay_buffer']['type']}")
 
-replay_buffer = ReplayBuffer(env_wrap, 1000000, N=N, device='cpu')
-# replay_buffer = PrioritizedReplayBuffer(env_wrap, 100000, alpha=0.6, beta_start=0.4, beta_iter=10000, beta_update_freq=1, priority='rank',normalize=False, epsilon=0.01, N=N, device='cpu')
-noise = NormalNoise(stddev=0.1, device=device)
-noise_schedule = None
-target_noise = NormalNoise(stddev=0.1, device=device)
-target_noise_schedule = None
-target_noise_clip = 0.5
-state_normalizer = Normalizer(size=env_wrap.single_observation_space.shape, update_freq=200, clip_range=5.0, device=device)
-# state_normalizer = None
+# create noise objects if present in config
+noise = Noise.create_instance(config['noise']['type'], **config['noise']['params']) if config.get('noise') else None
+# create noise scheduler object if present in config
+noise_schedule = ScheduleWrapper(config["noise_schedule"]['type'], config["noise_schedule"]['params']) if config.get("noise_schedule") else None
+target_noise = Noise.create_instance(config['target_noise']['type'], **config['target_noise']['params']) if config.get('target_noise') else None
+target_noise_schedule = ScheduleWrapper(config["target_noise_schedule"]['type'], config["target_noise_schedule"]['params']) if config.get("target_noise_schedule") else None
+# create curiosity object if present in config
+if config.get('curiosity'):
+    config['curiosity']['env'] = env
+    if config['curiosity'].get('reward_scheduler'):
+        config['curiosity']['reward_scheduler'] = ScheduleWrapper(config['curiosity']['reward_scheduler']['type'], config['curiosity']['reward_scheduler']['params'])
+    else:
+        config['curiosity']['reward_scheduler'] = None
+    curiosity = ICM.create_instance(**config['curiosity'])
+else:
+    curiosity = None
 
-# ICM
-# optimizer_params = {'type': 'Adam', 'params': {'lr': 1e-3}}
+# create state normalizer object if present in config
+if config['normalizers'].get('state', None):
+    size = infer_dim(env, config['obs_key'])
+    state_normalizer = Normalizer(size=size, **config['normalizers']['state'])
+else:
+    state_normalizer = None
 
-# # Define ICM configurations
-# model_configs = {
-#     # 'encoder': {
-#     #     'layer_config': [
-#     #         {'type': 'dense', 'params': {'units': 64, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}},
-#     #         {'type': 'relu'},
-#     #     ],
-#     #     'output_layer': [
-#     #         {'type': 'dense', 'params': {'units': 256, 'kernel': 'variance_scaling', 'kernel params':{"scale": 1.0, "mode": "fan_in", "distribution": "uniform"}}}
-#     #     ]
-#     # },
-#     'inverse_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, 'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}}
-#         ]
-#     },
-#     'forward_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, 'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {'kernel': 'xavier_uniform', 'kernel params':{"gain": 2.0}}}
-#         ]
-#     }
-# }
+# create goal normalizer object if present in config
+if config['normalizers'].get('goal', None):
+    size = infer_dim(env, config['goal_key'])
+    goal_normalizer = Normalizer(size=size, **config['normalizers']['goal'])
+else:
+    goal_normalizer = None
 
-# schedule_config = {'type':'linear', 'params':{'start_factor':1.0, 'end_factor':0.1, 'total_iters':10000}}
-# scheduler = ScheduleWrapper(schedule_config)
+# create callbacks object if present in config
+callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
-# icm = ICM(env_wrap, model_configs, optimizer_params, reward_weight=0.2, reward_scheduler=scheduler, beta=0.2, extrinsic_threshold=10000, warmup=1000, device=device)
-
-icm = None
-
-# Create TD3 Agent
+# Create DDPG Agent
 agent_class = get_agent_class_from_type('TD3')
-
 td3 = agent_class(
-    env=env_wrap,
-    actor_model=actor,
-    critic_model_a=critic,
-    discount=0.99,
-    tau=0.005,
-    action_epsilon=0.2,
-    replay_buffer=replay_buffer,
-    batch_size=128,
-    noise=noise,
-    noise_schedule=noise_schedule,
-    target_noise=target_noise,
-    target_noise_schedule=target_noise_schedule,
-    target_noise_clip=target_noise_clip,
-    actor_update_delay = 2,
-    grad_clip=40.0,
-    warmup=1000,
-    N=N,
-    curiosity=icm,
-    state_normalizer=state_normalizer,
-    callbacks=[WandbCallback(env_string)],
-    save_dir=f'/workspaces/PhoenX_RL/src/app/agents/{env_string}_N{N}',
-    device=device
-)
+                env=env,
+                policy=policy,
+                critic_a=critic_a,
+                critic_b=critic_b,
+                replay_buffer=replay_buffer,
+                discount=config['agent']['discount'],
+                tau=config['agent']['tau'],
+                action_epsilon=config['agent']['action_epsilon'],
+                batch_size=config['agent']['batch_size'],
+                noise=noise,
+                noise_schedule=noise_schedule,
+                target_noise=target_noise,
+                target_noise_schedule=target_noise_schedule,
+                noise_clip=config['agent']['noise_clip'],
+                policy_update_delay=config['agent']['policy_update_delay'],
+                grad_clip=config['agent']['grad_clip'],
+                warmup=config['agent']['warmup'],
+                N=config['agent']['N'],
+                curiosity=curiosity,
+                state_normalizer=state_normalizer,
+                goal_normalizer=goal_normalizer,
+                obs_key=config['obs_key'],
+                goal_key=config['goal_key'],
+                achieved_goal_key=config['achieved_goal_key'],
+                callbacks=callbacks,
+                save_dir=config['save_dir'],
+                device=config['device'],
+                log_level=config['log_level'])
 
-# Save Agent
+# # Save Agent
 td3.save()
 
-# Create train config
-config = td3.get_config()
-
-# Set train config and path
-train_config = {
-    'num_episodes': 1000,
-    'num_envs': 4,
-    'steps_per_learn': 1,
-    'render_freq': 100,
-    'seed': 42,
-}
-train_config_path = config["save_dir"] + 'train_config.json'
+# Set train config
+train_config = config['train_config']
+train_config_path = config['save_dir'] + 'train_config.json'
 with open(train_config_path, 'w') as f:
     json.dump(train_config, f)
 
-# Set test config and path
-test_config = {
-    'num_episodes': 100,
-    'num_envs': 1,
-    'seed': 42,
-    'render_freq': 10
-}
-test_config_path = config["save_dir"] + 'test_config.json'
+# Set test config
+test_config = config['test_config']
+test_config_path = config['save_dir'] + 'test_config.json'
 with open(test_config_path, 'w') as f:
     json.dump(test_config, f)
