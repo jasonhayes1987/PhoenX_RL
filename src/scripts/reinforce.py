@@ -69,6 +69,11 @@ if config.get('normalizers', {}).get('state', None):
     state_normalizer = Normalizer(size=size, **config['normalizers']['state'])
 else:
     state_normalizer = None
+# create advantage normalizer object if present in config
+if config.get('normalizers', {}).get('advantage', None):
+    advantage_normalizer = Normalizer(size=1, **config['normalizers']['advantage'])
+else:
+    advantage_normalizer = None
 
 # create callbacks object if present in config
 callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
@@ -81,6 +86,7 @@ reinforce = agent_class(
                 value=value,
                 discount=config['agent']['discount'],
                 state_normalizer=state_normalizer,
+                advantage_normalizer=advantage_normalizer,
                 entropy_coefficient=config['agent']['entropy_coefficient'],
                 entropy_schedule=ScheduleWrapper(config['entropy_schedule']) if config.get('entropy_schedule', None) else None,
                 max_trajectory_length=config['agent']['max_trajectory_length'],

@@ -8,8 +8,8 @@ log_level: "info"
 
 agent:
   discount: 0.99
-  policy_trace_decay: 0.95
-  value_trace_decay: 0.95
+  policy_trace_decay: 0.0
+  value_trace_decay: 0.0
   entropy_coefficient: 0.00
   gae_coefficient: 0.95
   trajectory_length: 100
@@ -36,11 +36,11 @@ models:
       - type: dense
         params: {units: 32, kernel: orthogonal, kernel_params: {gain: 1.0}}
       # - type: relu
-    output_layer_kernel:
+    output_config:
       - type: dense
         params: {kernel: orthogonal, kernel_params: {gain: 1.0}}
     optimizer_params: {type: Adam, params: {lr: 0.001}}
-    distribution: beta
+    distribution: categorical
     obs_key: *obs_key
     device: *device
 
@@ -52,7 +52,7 @@ models:
       - type: dense
         params: {units: 32, kernel: orthogonal, kernel_params: {gain: 1.0}}
       # - type: relu
-    output_layer_kernel:
+    output_config:
       - type: dense
         params: {kernel: orthogonal, kernel_params: {gain: 1.0}}
     optimizer_params: {type: Adam, params: {lr: 0.0001}}
@@ -81,7 +81,7 @@ callbacks:
 
 train_config:
   load_weights: false
-  num_episodes: 5000
+  num_episodes: 1000
   render_freq: 100
   seed: 42
 
