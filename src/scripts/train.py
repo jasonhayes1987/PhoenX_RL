@@ -154,7 +154,7 @@ def train_agent(agent_config_dir):
                 #         ray.get(futures)
                 # else:
                 # agent = load_agent(agent_config_dir, load_weights)
-                agent.train(num_epochs, num_cycles, num_episodes, num_updates, num_envs, render_freq, seed)
+                agent.train(num_epochs, num_cycles, num_episodes, num_updates, render_freq, seed)
 
                 # Export a Chrome trace for manual viewing (optional) -- MOVED OUTSIDE THE WITH BLOCK
                 # try:
