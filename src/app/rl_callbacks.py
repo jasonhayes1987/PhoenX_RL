@@ -88,7 +88,7 @@ class WandbCallback(Callback):
         self.project_name = project_name
         self.run_name = run_name
         # self.chkpt_freq = chkpt_freq
-        self._sweep = _sweep
+        # self._sweep = _sweep
         self.save_dir = None
         self.model_type = None
         self.initialized = False
@@ -130,9 +130,9 @@ class WandbCallback(Callback):
 
     def on_train_begin(self, logs: dict, run_number: Optional[int] = None, models: Optional[list[T.nn.Module]] = None):
         self._ensure_wandb_login()
-        if not self._sweep:
-            if not self.initialized:
-                self.initialize_run(logs, models, run_number, run_name_prefix="train", tags=["train"], job_type="train")
+        # if not self._sweep:
+        if not self.initialized:
+            self.initialize_run(logs, models, run_number, run_name_prefix="train", tags=["train"], job_type="train")
             
 
     def on_train_end(self, logs=None):
@@ -163,8 +163,8 @@ class WandbCallback(Callback):
             self.initialize_run(logs=logs, run_number=run_number, run_name_prefix="test", tags=["test"], job_type="test")
 
     def on_test_end(self, logs=None):
-        if not self._sweep:
-            wandb.finish()
+        # if not self._sweep:
+        wandb.finish()
 
     def on_test_epoch_begin(self, epoch: int, logs=None):
         pass
@@ -193,7 +193,7 @@ class WandbCallback(Callback):
             'config': {
                 'project_name': self.project_name,
                 'run_name': self.run_name,
-                '_sweep': self._sweep
+                # '_sweep': self._sweep
             }
         }
 

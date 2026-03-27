@@ -11,7 +11,7 @@ sys.path.append(ISAACLAB_PATH)
 sys.path.append(ISAACLAB_TASKS_PATH)
 
 import json
-import dataclasses
+from dataclasses import dataclass
 from typing import Optional, Dict, List
 from abc import ABC, abstractmethod
 from collections import deque
@@ -26,6 +26,20 @@ import gymnasium.wrappers.vector as gym_vector_wrappers
 from gymnasium.vector import VectorEnv, SyncVectorEnv, VectorWrapper, utils
 
 from app.torch_utils import get_device
+from app.utils import to_torch, to_numpy
+
+@dataclass
+class Observation:
+    current_states: T.Tensor
+    current_goals: T.Tensor | None = None
+    current_ach_goals: T.Tensor | None = None
+    transition_states: T.Tensor | None = None
+    transition_goals: T.Tensor | None = None
+    transition_ach_goals: T.Tensor | None = None
+    rewards: T.Tensor | None = None
+    terminations: T.Tensor | None = None
+    truncations: T.Tensor | None = None
+    infos: dict | None = None
 
 class NStepReward(gym.Wrapper):
     def __init__(self, env, n, discount=0.99):
@@ -431,6 +445,25 @@ class OneHotObservationWrapper(gym.ObservationWrapper):
         one_hot[obs] = 1.0
         return one_hot
 
+class NumpyToTorch(VectorWrapper):
+    def __init__(self, env, device=None):
+        super().__init__(env)
+        self.device = device
+    def reset(self, *, seed=None, options=None):
+        obs, info = self.env.reset(seed=seed, options=to_numpy(options))
+        return to_torch(obs, self.device), to_torch(info, self.device)
+    def step(self, actions):
+        obs, reward, terminated, truncated, info = self.env.step(to_numpy(actions))
+        return (
+            to_torch(obs, self.device),
+            to_torch(reward, self.device),
+            to_torch(terminated, self.device),
+            to_torch(truncated, self.device),
+            to_torch(info, self.device),
+        )
+    def render(self):
+        return self.env.render()
+
 
 WRAPPER_REGISTRY = {
     "AtariPreprocessing": {
@@ -564,7 +597,7 @@ class EnvWrapper(ABC):
         pass
     
     @abstractmethod
-    def step(self, action):
+    def step(self, action) -> Observation:
         """
         Take an action in the environment.
 
@@ -572,12 +605,12 @@ class EnvWrapper(ABC):
             action: The action to be taken.
 
         Returns:
-            Tuple: Observation, reward, done flag, and additional info.
+            Observation: A dataclass containing the current state, transition state, rewards, terminations, truncations, additional info, current goals, transition goals, current achieved goals, transition achieved goals.
         """
         pass
 
     @abstractmethod
-    def _initialize_env(self, num_envs: int = 1, seed: Optional[int] = None, render_mode: Optional[str] = None):
+    def _initialize_env(self):
         """
         Initialize the environment with optional rendering and seeding.
 
@@ -711,7 +744,7 @@ class GymnasiumWrapper(EnvWrapper):
     and JSON-based serialization of Gymnasium environments.
     """
     def __init__(self, cfg:str, num_envs:int=1, wrappers:list[dict]|None=None,
-                 render_mode:str|None=None, seed:int|None=None, obs_key:str|None=None, goal_key:str|None=None):
+                 render_mode:str|None=None, seed:int|None=None, obs_key:str|None=None, goal_key:str|None=None, ach_goal_key:str|None=None):
         self.env_id = cfg
         self.wrappers = wrappers
         self.num_envs = num_envs
@@ -721,6 +754,7 @@ class GymnasiumWrapper(EnvWrapper):
         self.render_mode = render_mode
         self.obs_key = obs_key
         self.goal_key = goal_key
+        self.ach_goal_key = ach_goal_key
         self.env = self._initialize_env()
         
 
@@ -783,7 +817,92 @@ class GymnasiumWrapper(EnvWrapper):
         for cls, params in vector_wrappers:
             vec_env = cls(vec_env, **params)
 
+        # Wrap vectorized environment to return tensors
+        vec_env = NumpyToTorch(vec_env, device=get_device())
+
         return vec_env
+
+    def extract_states_goals(
+        self,
+        states: np.ndarray | T.Tensor | dict | list[dict]
+    )->tuple[T.Tensor, T.Tensor | None, T.Tensor | None]:
+        """Extract the states and goals from the passed states argument and returns them as Tensors.
+        
+        Args:
+            states (np.ndarray | T.Tensor | dict | list[dict]): States to extract from.
+        
+        Returns:
+            tuple: Tuple of states, goals, and achieved goals as Tensors.
+        """
+        device = get_device()
+        if isinstance(states, list):
+            obs_list = []
+            goals_list = []
+            ach_goals_list = []
+            for step_data in states:
+                if isinstance(step_data, dict):
+                    if not self.obs_key:
+                        raise ValueError("Goal-aware observation spaces require obs_key to be set")
+                    step_obs = step_data.get(self.obs_key)
+                    if self.goal_key:
+                        step_goal = step_data.get(self.goal_key)
+                    else:
+                        step_goal = None
+                    if self.ach_goal_key:
+                        step_ach_goal = step_data.get(self.ach_goal_key)
+                    else:
+                        step_ach_goal = None
+                else:
+                    break
+
+                # Convert to tensor if needed
+                if not isinstance(step_obs, T.Tensor):
+                    step_obs = T.tensor(step_obs, dtype=T.float32, device=device)
+                if self.goal_key and step_goal is not None:
+                    if not isinstance(step_goal, T.Tensor):
+                        step_goal = T.tensor(step_goal, dtype=T.float32, device=device)
+                    goals_list.append(step_goal)
+                if self.ach_goal_key and step_ach_goal is not None:
+                    if not isinstance(step_ach_goal, T.Tensor):
+                        step_ach_goal = T.tensor(step_ach_goal, dtype=T.float32, device=device)
+                    ach_goals_list.append(step_ach_goal)
+                obs_list.append(step_obs)
+            obs = T.stack(obs_list, dim=0)
+            
+            if self.goal_key:
+                goals = T.stack(goals_list, dim=0)
+            else:
+                goals = None
+            if self.ach_goal_key:
+                ach_goals = T.stack(ach_goals_list, dim=0)
+            else:
+                ach_goals = None
+
+        elif isinstance(states, dict):
+            if not self.obs_key:
+                raise ValueError("Goal-aware observation spaces require obs_key to be set")
+            obs = states.get(self.obs_key)
+            if self.goal_key:
+                goals = states.get(self.goal_key)
+            else:
+                goals = None
+            if self.ach_goal_key:
+                ach_goals = states.get(self.ach_goal_key)
+            else:
+                ach_goals = None
+        else:
+            obs = states
+            goals = None
+            ach_goals = None
+
+        if not isinstance(obs, T.Tensor):
+            obs = T.tensor(obs, dtype=T.float32, device=device)
+        if goals is not None and not isinstance(goals, T.Tensor):
+            goals = T.tensor(goals, dtype=T.float32, device=device)
+        if ach_goals is not None and not isinstance(ach_goals, T.Tensor):
+            ach_goals = T.tensor(ach_goals, dtype=T.float32, device=device)
+        
+        return obs, goals, ach_goals
 
     def render_frame(self)->np.ndarray:
         """Renders a frame from the environment.
@@ -796,21 +915,64 @@ class GymnasiumWrapper(EnvWrapper):
         
 
     def reset(self):
-        #DEBUG
-        # print(f'GymnasiumWrapper reset called')
         if self.seed is not None:
-            state, info = self.env.reset(seed=self.seed)
+            states, infos = self.env.reset(seed=self.seed)
         else:
-            state, info = self.env.reset()
-        #DEBUG
-        # print(f'GymnasiumWrapper reset state:{state}, info:{info}')
-        return state, info
-
-    def step(self, action):
-        states, rewards, terminations, truncations, infos = self.env.step(action)
-        dones = terminations | truncations
+            states, infos = self.env.reset()
         
-        return states, rewards, dones, infos
+        obs, goals, ach_goals = self.extract_states_goals(states)
+        
+        return Observation(
+            current_states=obs,
+            current_goals=goals,
+            current_ach_goals=ach_goals,
+            transition_states=obs,
+            transition_goals=goals,
+            transition_ach_goals=ach_goals,
+            infos=infos
+        )
+
+    def step(self, action)->Observation:
+        states, rewards, terminations, truncations, infos = self.env.step(action)
+
+        # Set initial value of transition states to states
+        transition_states = states.clone()
+        # If env terminated/truncated, get terminal state and set as transition
+        if "final_obs" in infos:
+            if self.num_envs > 1:
+                mask = infos.get("_final_obs").cpu()
+                term_states = np.stack(infos["final_obs"][mask])
+                transition_states[mask] = T.as_tensor(term_states, dtype=states.dtype, device=states.device)
+            else:
+                term_states = infos["final_obs"][0]
+                transition_states = T.as_tensor(term_states, dtype=states.dtype, device=states.device)
+
+        # Separate observations, goals, and achieved goals 
+        obs, goals, ach_goals = self.extract_states_goals(states)
+        transition_obs, transition_goals, transition_ach_goals = self.extract_states_goals(transition_states)
+
+        return Observation(
+            current_states=obs,
+            current_goals=goals,
+            current_ach_goals=ach_goals,
+            transition_states=transition_obs,
+            transition_goals=transition_goals,
+            transition_ach_goals=transition_ach_goals,
+            rewards=rewards,
+            terminations=terminations,
+            truncations=truncations,
+            infos=infos
+        )
+
+    def sample_observation(self):
+        actions = self.action_space.sample()
+        observation = self.step(actions)
+        obs, goals, ach_goals = self.extract_states_goals(observation.current_states)
+        return Observation(
+            current_states=obs,
+            current_goals=goals,
+            current_ach_goals=ach_goals
+        )
     
     def format_actions(self, actions: np.ndarray | T.Tensor):
         if isinstance(actions, T.Tensor):
@@ -825,9 +987,9 @@ class GymnasiumWrapper(EnvWrapper):
         if isinstance(self.action_space, gym.spaces.Discrete) or isinstance(self.action_space, gym.spaces.MultiDiscrete):
             return actions.ravel()
         
-    def get_base_env(self, env_idx:int=0):
+    def get_base_env(self):
         """Recursively unwrap an environment to get the base environment."""
-        env = self.env.envs[env_idx]
+        env = self.env.env
         while hasattr(env, 'env'):
             env = env.env
         return env
@@ -877,6 +1039,26 @@ class GymnasiumWrapper(EnvWrapper):
             gym.Space: The single observation space.
         """
         return self.env.single_observation_space
+
+    @property
+    def finite_horizon(self)->bool:
+        """
+        Returns True if the environment has a finite horizon.
+        Finite horizon is determined by checking if the base environment spec contains has
+        a max_episode_steps attribute that is not None, or if the environment is wrapped in a 
+        TimeLimit wrapper.
+        """
+        base_env = self.get_base_env()
+        if hasattr(base_env, 'spec') and base_env.spec is not None:
+            return base_env.spec.max_episode_steps is not None
+
+        env = self.env
+        while hasattr(env, 'env'):
+            if isinstance(env, gym.wrappers.TimeLimit):
+                return True
+            env = env.env
+        
+        return False
     
     @property
     def config(self):
@@ -896,6 +1078,7 @@ class GymnasiumWrapper(EnvWrapper):
                 "seed": self.seed,
                 "obs_key": self.obs_key,
                 "goal_key": self.goal_key,
+                "ach_goal_key": self.ach_goal_key,
             }
         }
     
@@ -920,8 +1103,6 @@ class GymnasiumWrapper(EnvWrapper):
             GymnasiumWrapper: A new Gymnasium wrapper instance.
         """
         config = json.loads(json_env_spec)
-        #DEBUG
-        print(f'GymnasiumWrapper from_json config: {config}')
         config = config['config']
         try:
             return cls(**config)
@@ -930,7 +1111,7 @@ class GymnasiumWrapper(EnvWrapper):
     
 class IsaacSimWrapper(EnvWrapper):
     def __init__(self, cfg:str, num_envs:int=1, wrappers:list[dict]|None=None,
-                 render_mode:str='headless', seed:int|None=None, obs_key:str='policy', goal_key:str|None=None):
+                 render_mode:str='headless', seed:int|None=None, obs_key:str='policy', goal_key:str|None=None, ach_goal_key:str|None=None):
         """
         Placeholder wrapper for Isaac Sim environments.
 
@@ -942,6 +1123,7 @@ class IsaacSimWrapper(EnvWrapper):
         self.render_mode = render_mode
         self.obs_key = obs_key
         self.goal_key = goal_key
+        self.ach_goal_key = ach_goal_key
         if seed is None:
             seed = np.random.randint(1000)
         self.seed = seed
@@ -1003,7 +1185,7 @@ class IsaacSimWrapper(EnvWrapper):
                     default_params = WRAPPER_REGISTRY[wrapper['type']]["default_params"].copy()
                     override_params = wrapper.get("params", {})
                     final_params = {**default_params, **override_params}
-                    final_params.update({"obs_key": self.obs_key, "goal_key": self.goal_key})
+                    # final_params.update({"obs_key": self.obs_key, "goal_key": self.goal_key})
                     env = WRAPPER_REGISTRY[wrapper['type']]["cls"](env, **final_params)
         return env
 
@@ -1049,9 +1231,14 @@ class IsaacSimWrapper(EnvWrapper):
 
     def step(self, action: T.Tensor):
         states, rewards, terminations, truncations, info = self.env.step(action)
-        dones = terminations | truncations
 
-        return states, rewards, dones, info
+        return Observation(
+            current_states=states,
+            transition_states=next_states,
+            rewards=rewards,
+            dones=dones,
+            infos=info
+        )
 
     @property
     def config(self):
@@ -1074,8 +1261,6 @@ class IsaacSimWrapper(EnvWrapper):
     @classmethod
     def from_json(cls, json_string):
         config = json.loads(json_string)
-        #DEBUG
-        print(f'IsaacSimWrapper from_json config: {config}')
         config = config['config']
         try:
             return cls(**config)
