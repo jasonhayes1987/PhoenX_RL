@@ -7,16 +7,16 @@ import os
 from typing import Optional, List, Tuple, Dict
 from pathlib import Path
 
+import gymnasium as gym
+from gymnasium.envs.registration import EnvSpec
 import torch as T
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
-from torch.distributions import Categorical, Beta, Normal
-# from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR, ExponentialLR
+from torch.distributions import Distribution, TransformedDistribution, Categorical, Beta, Normal, Kumaraswamy
 
-import gymnasium as gym
-from gymnasium.envs.registration import EnvSpec
-import numpy as np
+
+from app.distributions import SquashedNormal, ScaledBeta, ScaledKumaraswamy
 from app.torch_utils import get_device, VarianceScaling_
 from app.logging_config import get_logger
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
@@ -36,14 +36,21 @@ class Model(nn.Module):
         output_config (dict): Configuration for output layer initialization.
         optimizer_params (dict): Dictionary specifying optimizer type and parameters.
         scheduler_params (dict): Dictionary specifying scheduler type and parameters (optional).
-        obs_key (str|None): Observation key (default: None).
-        goal_key (str|None): Goal key (default: None).
+        # obs_key (str|None): Observation key (default: None).
+        # goal_key (str|None): Goal key (default: None).
         device (str|None): The device ('cpu' or 'cuda') to run the model on (default: None = Cuda if available else CPU).
         log_level (str): Log level (default: 'info').
     """
-    def __init__(self, env: EnvWrapper, layer_config: List[Dict], output_config: dict, optimizer_params: dict|None = None,
-                 lr_scheduler: ScheduleWrapper|None = None, obs_key: str|None = None, goal_key: str|None = None,
-                 device: str|None = None, log_level: str = 'info'):
+    def __init__(
+        self,
+        env: EnvWrapper,
+        layer_config: List[Dict],
+        output_config: dict,
+        optimizer_params: dict|None = None,
+        lr_scheduler: ScheduleWrapper|None = None,
+        device: str|None = None,
+        # log_level: str = 'info'
+    ):
         """
         Sets up the module dictionary of layers (most of which
         will be lazy).
@@ -54,8 +61,8 @@ class Model(nn.Module):
             output_config (dict): Configuration for output layer initialization.
             optimizer_params (dict): Optimizer configuration.
             lr_scheduler (ScheduleWrapper|None): LR scheduler configuration.
-            obs_key (str|None): Observation key (default: None).
-            goal_key (str|None): Goal key (default: None).
+            # obs_key (str|None): Observation key (default: None).
+            # goal_key (str|None): Goal key (default: None).
             device (str|None): Device to run on (default: None = Cuda if available else CPU).
             log_level (str): Log level (default: 'info').
         """
@@ -66,10 +73,10 @@ class Model(nn.Module):
         self.layers = nn.ModuleDict()
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
         self.lr_scheduler = lr_scheduler
-        self.obs_key = obs_key
-        self.goal_key = goal_key
+        # self.obs_key = obs_key
+        # self.goal_key = goal_key
         self.device = get_device(device)
-        self.logger = get_logger(__name__, log_level)
+        self.logger = get_logger(self.__class__.__name__, level='INFO')
 
         # Build the layers dynamically based on config
         for i, layer_info in enumerate(self.layer_config):
@@ -98,12 +105,12 @@ class Model(nn.Module):
         # Dry run forward pass to initialize lazy modules
         # Check if the observation space is a dictionary AND contains goal-conditioned keys
         is_goal_conditioned = (isinstance(obs_space, gym.spaces.Dict) and 
-                              self.obs_key in obs_space and 
-                              self.goal_key in obs_space)
+                              self.env.obs_key in obs_space and 
+                              self.env.goal_key in obs_space)
         
         if is_goal_conditioned:
-            obs_shape = obs_space[self.obs_key].shape
-            goal_shape = obs_space[self.goal_key].shape
+            obs_shape = obs_space[self.env.obs_key].shape
+            goal_shape = obs_space[self.env.goal_key].shape
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
             goal_input = T.ones((32, *goal_shape), device=self.device, dtype=T.float)
             # Check if CriticModel instance to pass action dummy values
@@ -118,8 +125,8 @@ class Model(nn.Module):
         else:
             # Handle both regular Box spaces and non-goal-conditioned Dict spaces
             if isinstance(obs_space, gym.spaces.Dict):
-                if self.obs_key in obs_space.spaces:
-                    obs_shape = obs_space.spaces[self.obs_key].shape
+                if self.env.obs_key in obs_space.spaces:
+                    obs_shape = obs_space.spaces[self.env.obs_key].shape
             else:
                 obs_shape = obs_space.shape
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
@@ -295,7 +302,39 @@ class Model(nn.Module):
                 state = state.permute(0, 3, 1, 2)
 
         return state
-    
+
+    def get_mean_actions(self, dist: Distribution)->T.Tensor:
+        """
+        Get the mean action of the tranformed distribution.
+
+        Args:
+            dist (Distribution): The transformed distribution to get the mean of.
+
+        Returns:
+            Tensor: The mean action of the tranformed distribution.
+        """
+        if isinstance(dist, TransformedDistribution):
+            base_dist = dist.base_dist
+        else:
+            base_dist = dist
+
+        if isinstance(base_dist, (Normal, Beta, Kumaraswamy)):
+            # Get the low and high bounds of the action space
+            low = T.tensor(self.env.single_action_space.low, dtype=T.float32, device=self.device)
+            high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
+
+            if isinstance(base_dist, (Beta, Kumaraswamy)):
+                return low + (high - low) * base_dist.mean
+            elif isinstance(base_dist, Normal):
+                mu = base_dist.loc
+                scale = (high - low) / 2.0
+                loc = (high + low) / 2.0
+                return loc + scale * T.tanh(mu)
+        elif isinstance(base_dist, Categorical):
+            return base_dist.mode
+        else:
+            raise ValueError(f"Unsupported distribution: {type(base_dist)}")
+        
     @abstractmethod
     def forward(self, *args, **kwargs):
         raise NotImplementedError
@@ -307,8 +346,6 @@ class Model(nn.Module):
             'output_config': self.output_config,
             'optimizer_params': self.optimizer_params,
             'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
-            'obs_key': self.obs_key,
-            'goal_key': self.goal_key,
             'device': self.device.type,
         }
 
@@ -375,9 +412,9 @@ class StochasticDiscretePolicy(Model):
         output_config (list[dict]): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        distribution (str): Type of distribution for action selection (default: 'categorical').
-        obs_key (str|None): Observation key (default: None).
-        goal_key (str|None): Goal key (default: None).
+        distribution (str): Type of distribution for action selection ['categorical'] (default: 'categorical').
+        temperature (float): Temperature for the relaxed categorical distribution (default: 1.0).
+        temperature_schedule (ScheduleWrapper, optional): Temperature scheduler configuration. Default=None
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         log_level (str): logger level. Default=info.
     """
@@ -390,10 +427,9 @@ class StochasticDiscretePolicy(Model):
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: ScheduleWrapper|None = None,
         distribution: str = 'categorical',
-        obs_key: str|None = None,
-        goal_key: str|None = None,
+        temperature: float = 1.0,
+        temperature_schedule: ScheduleWrapper|None = None,
         device: str|T.device|None = None,
-        log_level: str = 'info'
     ):
         """
         Initialize the policy model.
@@ -404,15 +440,16 @@ class StochasticDiscretePolicy(Model):
             output_config (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
-            distribution (str): Type of distribution for actions (default: 'categorical').
-            obs_key (str|None): Observation key (default: None).
-            goal_key (str | None): Goal key (default: None).
+            distribution (str): Type of distribution for actions ['categorical'] (default: 'categorical').
+            temperature (float): Temperature for the relaxed categorical distribution (default: 1.0).
+            temperature_schedule (ScheduleWrapper, optional): Temperature scheduler configuration. Default=None
             device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-            log_level (str): logger level. Default=info.
         """
         
-        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.distribution = distribution
+        self.temperature = temperature
+        self.temperature_schedule = temperature_schedule
 
         # Get the action space of the environment
         # self.act_space = self.env.single_action_space if isinstance(self.env, GymnasiumWrapper) else self.env.action_space
@@ -462,9 +499,21 @@ class StochasticDiscretePolicy(Model):
         for layer in self.layers.values():
             x = layer(x)
         x = self.output_layer['policy_dense_output'](x)
+        
         if self.distribution == 'categorical':
-            dist = Categorical(logits=x)
-            return dist, x
+            temperature = self.temperature
+            if self.temperature_schedule is not None:
+                temperature *= self.temperature_schedule.get_factor()
+            dist = Categorical(logits=x / temperature)
+            return dist
+
+        # elif self.distribution == 'relaxed_categorical':
+        #     if self.temperature is None:
+        #         raise ValueError('Temperature is required for relaxed categorical distribution.')
+        #     temperature = self.temperature_schedule.get_factor() * self.temperature if self.temperature_schedule else self.temperature
+        #     relaxed_dist = RelaxedOneHotCategorical(logits=x, temperature=temperature)
+        #     dist = Categorical(probs=relaxed_dist.probs)
+        #     return dist
         else:
             raise ValueError(f'Distribution {self.distribution} not supported.')
 
@@ -472,8 +521,27 @@ class StochasticDiscretePolicy(Model):
         config = super().get_config()
         config.update({
             'distribution': self.distribution,
+            'temperature': self.temperature,
+            "temperature_schedule": self.temperature_schedule.get_config() if self.temperature_schedule is not None else None,
         })
         return config
+
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        device, env = super().clone(copy_weights, device)
+        cloned_model = StochasticDiscretePolicy(
+            env=env,
+            layer_config=self.layer_config.copy(),
+            output_config=self.output_config.copy(),
+            optimizer_params=self.optimizer_params.copy(),
+            lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
+            distribution=self.distribution,
+            temperature=self.temperature,
+            temperature_schedule=self.temperature_schedule.clone() if self.temperature_schedule else None,
+            device=device
+        )
+        if copy_weights:
+            cloned_model.load_state_dict(self.state_dict())
+        return cloned_model
 
     def save(self, config_dir: Path | str, model_name: str = "policy"):
         """
@@ -506,8 +574,8 @@ class StochasticDiscretePolicy(Model):
                     optimizer_params = config.get("optimizer_params", {}),
                     lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "categorical"),
-                    obs_key = config.get("obs_key", None),
-                    goal_key = config.get("goal_key", None),
+                    temperature = config.get("temperature", None),
+                    temperature_schedule = config.get("temperature_schedule", None),
                     device = config.get("device", None)
                     )
 
@@ -534,10 +602,10 @@ class StochasticContinuousPolicy(Model):
         optimizer_params (dict): Parameters for the optimizer.
         lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
         distribution (str): Type of distribution for actions (default: 'beta').
-        obs_key (str|None): Observation key (default: None).
-        goal_key (str | None): Goal key (default: None).
+        # obs_key (str|None): Observation key (default: None).
+        # goal_key (str | None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        log_level (str): logger level. Default=info.
+        # log_level (str): logger level. Default=info.
     """
 
     def __init__(
@@ -548,10 +616,7 @@ class StochasticContinuousPolicy(Model):
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
         distribution: str = 'beta',
-        obs_key: str|None = None,
-        goal_key: str | None = None,
         device: str|T.device|None = None,
-        log_level: str = 'info'
     ):
         """
         Initialize the policy model.
@@ -563,12 +628,12 @@ class StochasticContinuousPolicy(Model):
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
             distribution (str): Type of distribution for actions (normal or beta) (default: 'beta').
-            obs_key (str|None): Observation key (default: None).
-            goal_key (str | None): Goal key (default: None).
+            # obs_key (str|None): Observation key (default: None).
+            # goal_key (str | None): Goal key (default: None).
             device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-            log_level (str): logger level. Default=info.
+            # log_level (str): logger level. Default=info.
         """
-        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.distribution = distribution
         # Get the action space of the environment
         self.act_space = (self.env.single_action_space 
@@ -618,21 +683,41 @@ class StochasticContinuousPolicy(Model):
         param_1 = self.output_layer['policy_output_param_1'](x)
         param_2 = self.output_layer['policy_output_param_2'](x)
 
-        if self.distribution == 'beta':
+        if self.distribution in ['beta', 'kumaraswamy']:
+            # Check if parameters are finite
+            if not T.isfinite(param_1).all() or not T.isfinite(param_2).all():
+                self.logger.warning(f'Non-finite parameters: {param_1}, {param_2}')
+            # Prevent nans
+            # param_1 = T.nan_to_num(param_1, nan=0.0, posinf=5.0, neginf=-5.0)
+            # param_2 = T.nan_to_num(param_2, nan=0.0, posinf=5.0, neginf=-5.0)
+            # Clamp params between -12 and 6 to allow max expressiveness within safe bounds of dist
+            # param_1 = T.clamp(param_1, min=-12, max=6)
+            # param_2 = T.clamp(param_2, min=-12, max=6)
+            # softplus params to ensure >0 and add 1.0 for numerical stability
             alpha = F.softplus(param_1) + 1.0
             beta = F.softplus(param_2) + 1.0
-            dist = Beta(alpha, beta)
-            return dist, alpha, beta
+            # Clamp alpha/beta to prevent exploding gradients
+            alpha = T.clamp(alpha, min=1e-3, max=15.0)
+            beta = T.clamp(beta, min=1e-3, max=15.0)
+
+            if self.distribution == 'beta':
+                dist = ScaledBeta(Beta(alpha, beta), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
+        
+            elif self.distribution == 'kumaraswamy':
+                dist = ScaledKumaraswamy(Kumaraswamy(alpha, beta), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
+
         elif self.distribution == 'normal':
             mu = param_1
             # sigma = F.softplus(param_2) + 1e-6
             sigma = T.exp(T.clamp(param_2, min=-20, max=2))
             # print(f'mu: {mu}')
             # print(f'sigma: {sigma}')
-            dist = Normal(mu, sigma)
-            return dist, mu, sigma
+            dist = SquashedNormal(Normal(mu, sigma), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
+            # return dist, T.cat([mu, sigma], dim=-1)
         else:
             raise ValueError(f"Distribution {self.distribution} not supported.")
+
+        return dist
 
     def get_config(self):
         config = super().get_config()
@@ -640,6 +725,23 @@ class StochasticContinuousPolicy(Model):
             'distribution': self.distribution,
         })
         return config
+
+    def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        device, env = super().clone(copy_weights, device)
+        cloned_model = StochasticDiscretePolicy(
+            env=env,
+            layer_config=self.layer_config.copy(),
+            output_config=self.output_config.copy(),
+            optimizer_params=self.optimizer_params.copy(),
+            lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
+            distribution=self.distribution,
+            # obs_key=self.obs_key,
+            # goal_key=self.goal_key,
+            device=device
+        )
+        if copy_weights:
+            cloned_model.load_state_dict(self.state_dict())
+        return cloned_model
 
     def save(self, config_dir: Path | str, model_name: str = "policy"):
         """
@@ -678,8 +780,8 @@ class StochasticContinuousPolicy(Model):
                     optimizer_params = config.get("optimizer_params", {}),
                     lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "beta"),
-                    obs_key = config.get("obs_key", "observation"),
-                    goal_key = config.get("goal_key", "desired_goal"),
+                    # obs_key = config.get("obs_key", "observation"),
+                    # goal_key = config.get("goal_key", "desired_goal"),
                     device = config.get("device", "cpu")
                     )
 
@@ -706,8 +808,8 @@ class ValueModel(Model):
         output_config (dict): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        obs_key (str|None): Observation key (default: None).
-        goal_key (str|None): Goal key (default: None).
+        # obs_key (str|None): Observation key (default: None).
+        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
     """
 
@@ -718,10 +820,10 @@ class ValueModel(Model):
         output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
-        obs_key: str|None = None,
-        goal_key: str | None = None,
+        # obs_key: str|None = None,
+        # goal_key: str | None = None,
         device: str|T.device|None = None,
-        log_level: str = 'info'
+        # log_level: str = 'info'
     ):
         """
         Initialize the value model.
@@ -732,11 +834,11 @@ class ValueModel(Model):
             output_config (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
-            obs_key (str|None): Observation key (default: None).
-            goal_key (str|None): Goal key (default: None).
+            # obs_key (str|None): Observation key (default: None).
+            # goal_key (str|None): Goal key (default: None).
             device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         """
-        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
@@ -791,8 +893,8 @@ class ValueModel(Model):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            obs_key=self.obs_key,
-            goal_key=self.goal_key,
+            # obs_key=self.obs_key,
+            # goal_key=self.goal_key,
             device=device
         )
         
@@ -837,8 +939,8 @@ class ValueModel(Model):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    obs_key=config.get("obs_key"),
-                    goal_key=config.get("goal_key"),
+                    # obs_key=config.get("obs_key"),
+                    # goal_key=config.get("goal_key"),
                     device = config.get("device")
                     )
         # Load weights if True
@@ -861,10 +963,10 @@ class ActorModel(Model):
         output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        obs_key (str|None): Observation key (default: None).
-        goal_key (str|None): Goal key (default: None).
+        # obs_key (str|None): Observation key (default: None).
+        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        log_level (str): Log level (default: 'info').
+        # log_level (str): Log level (default: 'info').
     """
     
     def __init__(self,
@@ -873,12 +975,12 @@ class ActorModel(Model):
                  output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper|None = None,
-                 obs_key: str|None = None,
-                 goal_key: str | None = None,
+                #  obs_key: str|None = None,
+                #  goal_key: str | None = None,
                  device: str|T.device|None = None,
-                 log_level: str='info'
+                 # log_level: str='info'
                  ):
-        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
         # Set lower/upper bounds of environment attributes
         self.env_action_low = T.tensor(self.env.single_action_space.low, dtype=T.float32, device=self.device)
@@ -929,8 +1031,8 @@ class ActorModel(Model):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            obs_key=self.obs_key,
-            goal_key=self.goal_key,
+            # obs_key=self.obs_key,
+            # goal_key=self.goal_key,
             device=device
         )
         
@@ -972,8 +1074,8 @@ class ActorModel(Model):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    obs_key = config.get("obs_key"),
-                    goal_key = config.get("goal_key"),
+                    # obs_key = config.get("obs_key"),
+                    # goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 
@@ -997,12 +1099,12 @@ class BaseCritic(Model):
                  output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
                  optimizer_params: dict = {'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper|None = None,
-                 obs_key: str|None = None,
-                 goal_key: str | None = None,
+                #  obs_key: str|None = None,
+                #  goal_key: str | None = None,
                  device: str|T.device|None = None,
-                 log_level: str='info'
+                 # log_level: str='info'
                  ):
-        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
     @abstractmethod
     def forward(self, *args, **kwargs):
@@ -1032,10 +1134,10 @@ class ContinuousCritic(BaseCritic):
         output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        obs_key (str|None): Observation key (default: None).
-        goal_key (str|None): Goal key (default: None).
+        # obs_key (str|None): Observation key (default: None).
+        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        log_level (str): Log level (default: 'info').
+        # log_level (str): Log level (default: 'info').
     """
     def __init__(self,
                  env: EnvWrapper,
@@ -1045,12 +1147,12 @@ class ContinuousCritic(BaseCritic):
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper|None = None,
-                 obs_key: str|None = None,
-                 goal_key: str | None = None,
+                #  obs_key: str|None = None,
+                #  goal_key: str | None = None,
                  device: str|T.device|None = None,
-                 log_level: str='info'
+                 # log_level: str='info'  
                  ):
-        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.merged_config = merged_config
         # self.output_config = output_layer_kernel
 
@@ -1116,8 +1218,8 @@ class ContinuousCritic(BaseCritic):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            obs_key=self.obs_key,
-            goal_key=self.goal_key,
+            # obs_key=self.obs_key,
+            # goal_key=self.goal_key,
             device=device
         )
         
@@ -1160,8 +1262,8 @@ class ContinuousCritic(BaseCritic):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    obs_key = config.get("obs_key"),
-                    goal_key = config.get("goal_key"),
+                    # obs_key = config.get("obs_key"),
+                    # goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 
@@ -1185,8 +1287,8 @@ class DiscreteCritic(BaseCritic):
         output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        obs_key (str|None): Observation key (default: None).
-        goal_key (str|None): Goal key (default: None).
+        # obs_key (str|None): Observation key (default: None).
+        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         log_level (str): Log level (default: 'info').
     """
@@ -1197,12 +1299,12 @@ class DiscreteCritic(BaseCritic):
                 #  goal_shape: tuple=None,
                  optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
                  lr_scheduler: ScheduleWrapper|None = None,
-                 obs_key: str|None = None,
-                 goal_key: str | None = None,
+                #  obs_key: str|None = None,
+                #  goal_key: str | None = None,
                  device: str|T.device|None = None,
-                 log_level: str='info'
+                 # log_level: str='info'
                  ):
-        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, obs_key, goal_key, device, log_level)
+        super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         # self.output_config = output_layer_kernel
 
         # Create the output layer
@@ -1247,8 +1349,8 @@ class DiscreteCritic(BaseCritic):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            obs_key=self.obs_key,
-            goal_key=self.goal_key,
+            # obs_key=self.obs_key,
+            # goal_key=self.goal_key,
             device=device
         )
         
@@ -1290,8 +1392,8 @@ class DiscreteCritic(BaseCritic):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    obs_key = config.get("obs_key"),
-                    goal_key = config.get("goal_key"),
+                    # obs_key = config.get("obs_key"),
+                    # goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 

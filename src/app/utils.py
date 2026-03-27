@@ -1,9 +1,10 @@
 "General utility functions"
+import logging
 import os
 import torch as T
 import numpy as np
 from moviepy.editor import ImageSequenceClip
-from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+# from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from gymnasium.envs.registration import EnvSpec
 
 
@@ -63,29 +64,91 @@ def render_video(frames: list, episode: int, save_dir: str, context: str = None)
     clip.write_videofile(video_path, codec='libx264')
     print('episode rendered')
 
-def build_env_wrapper_obj(config: dict) -> EnvWrapper:
-    """
-    Build an environment wrapper object based on the configuration.
+# def build_env_wrapper_obj(config: dict) -> EnvWrapper:
+#     """
+#     Build an environment wrapper object based on the configuration.
 
-    Args:
-        config (dict): Configuration dictionary containing environment details.
+#     Args:
+#         config (dict): Configuration dictionary containing environment details.
 
-    Returns:
-        EnvWrapper: An instance of the appropriate environment wrapper.
+#     Returns:
+#         EnvWrapper: An instance of the appropriate environment wrapper.
 
-    Raises:
-        ValueError: If the wrapper type specified in the config is not recognized.
-    """
-    if config['type'] == "GymnasiumWrapper":
-        env = EnvSpec.from_json(config['env'])
-        return GymnasiumWrapper(env)
-    elif config['type'] == "IsaacSimWrapper":
-        pass
-    else:
-        raise ValueError(f"Environment wrapper {config['type']} not found")
+#     Raises:
+#         ValueError: If the wrapper type specified in the config is not recognized.
+#     """
+#     if config['type'] == "GymnasiumWrapper":
+#         env = EnvSpec.from_json(config['env'])
+#         return GymnasiumWrapper(env)
+#     elif config['type'] == "IsaacSimWrapper":
+#         pass
+#     else:
+#         raise ValueError(f"Environment wrapper {config['type']} not found")
     
 def check_for_inf_or_NaN(value:T.Tensor, label:str):
     if T.any(T.isnan(value)):
         print(f'NAN found in {label}; {value}')
     elif T.any(T.isinf(value)):
         print(f'inf found in {label}; {value}')
+
+def to_torch(value, device=None):
+    if isinstance(value, np.ndarray) and value.dtype !=np.object_:
+        if np.issubdtype(value.dtype, np.floating):
+            return T.as_tensor(value, device=device, dtype=T.float32)
+        if np.issubdtype(value.dtype, np.integer):
+            return T.as_tensor(value, device=device, dtype=T.int32)
+        if np.issubdtype(value.dtype, np.bool_):
+            return T.as_tensor(value, device=device, dtype=T.bool)
+    if isinstance(value, dict):
+        return {k: to_torch(v, device=device) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return tuple(to_torch(v, device=device) for v in value)
+    if isinstance(value, list):
+        return [to_torch(v, device=device) for v in value]
+    if isinstance(value, (np.generic, float, int, bool)):
+        return T.as_tensor(value, device=device)
+    return value
+
+def to_numpy(value):
+    if isinstance(value, T.Tensor):
+        return value.detach().cpu().numpy()
+    if isinstance(value, dict):
+        return {k: to_numpy(v) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return tuple(to_numpy(v) for v in value)
+    if isinstance(value, list):
+        return [to_numpy(v) for v in value]
+    return value
+
+def summarize_tensor(x: T.Tensor | None, name: str) -> str:
+    if x is None:
+        return f"{name}=None"
+    with T.no_grad():
+        x = x.detach()
+        flat = x.reshape(-1).float()
+        numel = flat.numel()
+        if numel == 0:
+            return f"{name}[empty]"
+        finite_mask = T.isfinite(flat)
+        finite_frac = finite_mask.float().mean().item()
+        if finite_mask.any():
+            safe = flat[finite_mask]
+            mean = safe.mean().item()
+            std = safe.std(unbiased=False).item() if safe.numel() > 1 else 0.0
+            min_v = safe.min().item()
+            max_v = safe.max().item()
+            p05, p50, p95 = T.quantile(
+                safe, T.tensor([0.05, 0.50, 0.95], device=safe.device)
+            ).tolist()
+            return (
+                f"{name}[shape={tuple(x.shape)}, finite={finite_frac:.3f}, "
+                f"mean={mean:.4f}, std={std:.4f}, min={min_v:.4f}, "
+                f"p05={p05:.4f}, p50={p50:.4f}, p95={p95:.4f}, max={max_v:.4f}]"
+            )
+        return f"{name}[shape={tuple(x.shape)}, finite=0.000, all_nonfinite=True]"
+
+def count_nonfinite(x: T.Tensor | None) -> int:
+    if x is None:
+        return 0
+    with T.no_grad():
+        return (~T.isfinite(x.detach())).sum().item()
