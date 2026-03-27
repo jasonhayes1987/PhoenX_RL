@@ -1,8 +1,9 @@
+from abc import abstractmethod
 import torch as T
 import numpy as np
 import gymnasium as gym
 from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
-from .utils import build_env_wrapper_obj
+# from .utils import build_env_wrapper_obj
 from .torch_utils import get_device
 from typing import Optional, Tuple, List, Any, Dict
 from collections import defaultdict
@@ -142,13 +143,35 @@ class Buffer:
     """
     Base class for replay buffers with N-step functionality.
     """
-    def __init__(self, env: EnvWrapper, buffer_size: int, N: int = 1, device: Optional[str] = None):
-        self.device = get_device(device)
+    def __init__(
+        self,
+        env: EnvWrapper,
+        buffer_size: int,
+        device: Optional[str] = None
+    ):
         self.env = env
         self.buffer_size = buffer_size
-        self.N = N  # N-step hyperparameter
-        self.counter = 0
+        self.device = get_device(device)
 
+        # Set observation, goal, and action space shapes
+        if isinstance(self.env.single_observation_space, gym.spaces.Dict):
+            self.obs_space_shape = self.env.single_observation_space[self.env.obs_key].shape
+            if self.env.goal_key is not None:
+                self.goal_space_shape = self.env.single_observation_space[self.env.goal_key].shape
+            else:
+                self.goal_space_shape = None
+        else:
+            self.obs_space_shape = self.env.single_observation_space.shape
+            self.goal_space_shape = None
+
+        if isinstance(self.env.single_action_space, gym.spaces.Box):
+            self.action_type = T.float32
+            self.action_space_shape = self.env.single_action_space.shape
+        else: # Discrete
+            self.action_type = T.long
+            self.action_space_shape = (1,)
+
+    @abstractmethod
     def add(self, states, actions, rewards, next_states, dones):
         """
         Add a transition to the buffer, including trajectory metadata.
@@ -156,21 +179,31 @@ class Buffer:
         """
         raise NotImplementedError
 
-    def sample(self, batch_size: int):
-        """
-        Sample a batch of transitions from the buffer.
-        Abstract method to be implemented by subclasses.
-        """
-        raise NotImplementedError
+    # @abstractmethod
+    # def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
+    #     """
+    #     Sample a batch of transitions from the buffer.
+    #     Abstract method to be implemented by subclasses.
+    #     """
+    #     raise NotImplementedError
 
     def get_config(self) -> Dict[str, Any]:
-        raise NotImplementedError
+        return {
+            'type': self.__class__.__name__,
+            'config': {
+                "env": self.env.to_json(),
+                "buffer_size": self.buffer_size,
+                "device": self.device.type
+            }
+        }
 
     @classmethod
     def create_instance(cls, buffer_type: str, **kwargs) -> 'Buffer':
         buffer_types = {
             "ReplayBuffer": ReplayBuffer,
             "PrioritizedReplayBuffer": PrioritizedReplayBuffer,
+            "RolloutBuffer": RolloutBuffer,
+            "TrajectoryBuffer": TrajectoryBuffer,
         }
         if buffer_type in buffer_types:
             return buffer_types[buffer_type](**kwargs)
@@ -179,7 +212,7 @@ class Buffer:
 
 class ReplayBuffer(Buffer):
     """
-    Replay buffer with N-step sequence sampling.
+    Off-Policy replay buffer with N-step sequence sampling.
     """
     def __init__(
         self,
@@ -187,41 +220,23 @@ class ReplayBuffer(Buffer):
         buffer_size: int = 100000,
         # goal_shape: Optional[Tuple[int]] = None,
         N: int = 1,
-        obs_key: str = 'observation',
-        goal_key: str | None = None,
         device: str | T.device | None = None,
     ):
-        super().__init__(env, buffer_size, N, device)
-        # self.goal_shape = goal_shape
-        self.obs_key = obs_key
-        self.goal_key = goal_key
+        super().__init__(env, buffer_size, device)
+        self.N = N  # N-step hyperparameter
+        self.counter = 0
         
-        if isinstance(self.env.single_observation_space, gym.spaces.Dict):
-            self._obs_space_shape = self.env.single_observation_space[self.obs_key].shape
-            if self.goal_key is not None:
-                self._goal_space_shape = self.env.single_observation_space[self.goal_key].shape
-            else:
-                self._goal_space_shape = None
-        else:
-            self._obs_space_shape = self.env.single_observation_space.shape
-            self._goal_space_shape = None
-
-        # Create actions buffer dependent on action space
-        if isinstance(self.env.single_action_space, gym.spaces.Box):
-            self.actions = T.zeros((buffer_size, N, *self.env.single_action_space.shape), dtype=T.float32, device=self.device)
-        else: # Discrete
-            self.actions = T.zeros((buffer_size, N, 1), dtype=T.float32, device=self.device)
-
-        self.states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
+        self.states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        self.actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
-        self.next_states = T.zeros((buffer_size, N, *self._obs_space_shape), dtype=T.float32, device=self.device)
-        self.dones = T.zeros((buffer_size, N), dtype=T.int8, device=self.device)
+        self.next_states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        self.dones = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
         self.trajectory_lengths = T.zeros((buffer_size,), dtype=T.int64, device=self.device)
         
-        if self.goal_key is not None and self._goal_space_shape is not None:
-            self.desired_goals = T.zeros((buffer_size, N, *self._goal_space_shape), dtype=T.float32, device=self.device)
-            self.state_achieved_goals = T.zeros((buffer_size, N, *self._goal_space_shape), dtype=T.float32, device=self.device)
-            self.next_state_achieved_goals = T.zeros((buffer_size, N, *self._goal_space_shape), dtype=T.float32, device=self.device)
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
+            self.desired_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
+            self.state_achieved_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
         
         # self.counter = 0
         self.gen = np.random.default_rng()
@@ -263,7 +278,7 @@ class ReplayBuffer(Buffer):
         if dones.ndim == 1:
             dones = dones[:, T.newaxis]
 
-        if self.goal_key is not None and self._goal_space_shape is not None:
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             if state_achieved_goals.ndim == 2:
@@ -277,13 +292,13 @@ class ReplayBuffer(Buffer):
 
         # Store transitions (detach to avoid holding computation graphs)
         self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
-        self.actions[indices] = actions.detach().to(device=self.device, dtype=T.float32)
+        self.actions[indices] = actions.detach().to(device=self.device, dtype=self.action_type)
         self.rewards[indices] = rewards.detach().to(device=self.device, dtype=T.float32)
         self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
-        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.int8)
+        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.bool)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
         
-        if self.goal_key is not None and self._goal_space_shape is not None:
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.state_achieved_goals[indices] = state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
             self.next_state_achieved_goals[indices] = next_state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
             self.desired_goals[indices] = desired_goals.detach().to(device=self.device, dtype=T.float32)
@@ -302,7 +317,7 @@ class ReplayBuffer(Buffer):
         # sorted_sequences = zip(*sequences) # zips metrics together
         # sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
         # return sequence_stack
-        if self.goal_key is not None and self._goal_space_shape is not None:
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
             return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
             self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices],
             self.desired_goals[indices], self.trajectory_lengths[indices])
@@ -321,45 +336,38 @@ class ReplayBuffer(Buffer):
         self.dones.zero_()
         self.counter = 0
         
-        if self.goal_key is not None and self._goal_space_shape is not None:
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.desired_goals.zero_()
             self.state_achieved_goals.zero_()
             self.next_state_achieved_goals.zero_()
 
-    def clone(self, device: Optional[str] = None) -> 'ReplayBuffer':
-        """
-        Clone the replay buffer.
+    # def clone(self, device: Optional[str] = None) -> 'ReplayBuffer':
+    #     """
+    #     Clone the replay buffer.
 
-        Returns:
-            ReplayBuffer: A new instance of the replay buffer with the same configuration.
-        """
-        if device:
-            device = get_device(device)
-        else:
-            device = self.device
+    #     Returns:
+    #         ReplayBuffer: A new instance of the replay buffer with the same configuration.
+    #     """
+    #     if device:
+    #         device = get_device(device)
+    #     else:
+    #         device = self.device
 
-        env = build_env_wrapper_obj(self.env.config)
-        return ReplayBuffer(env, self.buffer_size, self.obs_key, self.goal_key, device)
+    #     env = build_env_wrapper_obj(self.env.config)
+    #     return ReplayBuffer(env, self.buffer_size, device)
     
     def get_config(self) -> Dict[str, Any]:
-        return {
-            'type': self.__class__.__name__,
-            'config': {
-                "env": self.env.to_json(),
-                "buffer_size": self.buffer_size,
-                "N": self.N,
-                "obs_key": self.obs_key,
-                "goal_key": self.goal_key,
-                "device": self.device.type
-            }
-        }
+        config = super().get_config()
+        config['type'] = self.__class__.__name__
+        config['config'].update({
+            "N": self.N
+        })
+        return config
 
 class PrioritizedReplayBuffer(ReplayBuffer):
     """
-    Prioritized Experience Replay buffer that samples transitions based on TD error.
+    Prioritized off-policy replay buffer that samples transitions based on TD error.
     Supports both proportional and rank-based prioritization strategies.
-    Includes support for N-step returns using trajectory indices.
-    All tensor operations happen on the specified device to minimize data transfers.
     """
     def __init__(
         self,
@@ -371,8 +379,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         beta_update_freq: int = 10,
         priority: str = 'rank',
         normalize: bool = False,  # Only applies to proportional priority strategy
-        obs_key: str = 'observation',
-        goal_key: str = 'desired_goal',
         epsilon: float = 1e-6,
         N: int = 1,
         device: Optional[str] = None,
@@ -380,14 +386,12 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         if priority not in ['proportional', 'rank']:
             raise ValueError(f"Invalid priority type: {priority} (must be 'proportional' or 'rank')")
 
-        super().__init__(env, buffer_size, N, obs_key, goal_key, device)
+        super().__init__(env, buffer_size, N, device)
         self.alpha = alpha
         self.beta_start = beta_start
         self.beta_iter = beta_iter
         self.priority = priority
         self.normalize = normalize
-        self.obs_key = obs_key
-        self.goal_key = goal_key
         self.epsilon = epsilon
         self.beta_update_freq = beta_update_freq
         self.beta = self.beta_start
@@ -445,7 +449,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             dones = dones[:, T.newaxis]
 
 
-        if self.goal_key is not None and self._goal_space_shape is not None:
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             if state_achieved_goals.ndim == 2:
@@ -459,13 +463,13 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
         # Store transitions (detach to avoid holding computation graphs)
         self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
-        self.actions[indices] = actions.detach().to(device=self.device, dtype=T.float32)
+        self.actions[indices] = actions.detach().to(device=self.device, dtype=self.action_type)
         self.rewards[indices] = rewards.detach().to(device=self.device, dtype=T.float32)
         self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
-        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.int8)
+        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.bool)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
 
-        if self.goal_key is not None and self._goal_space_shape is not None:
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.state_achieved_goals[indices] = state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
             self.next_state_achieved_goals[indices] = next_state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
             self.desired_goals[indices] = desired_goals.detach().to(device=self.device, dtype=T.float32)
@@ -520,7 +524,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             weights = (size * probs) ** (-self.beta)
             weights = weights / weights.max()
 
-        if self.goal_key is not None and self._goal_space_shape is not None: 
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
             return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
             self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices],
             self.desired_goals[indices], self.trajectory_lengths[indices], weights, probs, indices)
@@ -575,24 +579,18 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
     def get_config(self) -> Dict[str, Any]:
         """Get buffer config."""
-        return {
-            'type': self.__class__.__name__,
-            'config': {
-                "env": self.env.to_json(),
-                "buffer_size": self.buffer_size,
-                "alpha": self.alpha,
-                "beta_start": self.beta_start,
-                "beta_iter": self.beta_iter,
-                "beta_update_freq": self.beta_update_freq,
-                "priority": self.priority,
-                "normalize": self.normalize,
-                "obs_key": self.obs_key,
-                "goal_key": self.goal_key,
-                "epsilon": self.epsilon,
-                "N": self.N,
-                "device": self.device.type
-            }
-        }
+        config = super().get_config()
+        config['type'] = self.__class__.__name__
+        config['config'].update({
+            "alpha": self.alpha,
+            "beta_start": self.beta_start,
+            "beta_iter": self.beta_iter,
+            "beta_update_freq": self.beta_update_freq,
+            "priority": self.priority,
+            "normalize": self.normalize,
+            "epsilon": self.epsilon,
+        })
+        return config
     
     def clone(self, device: Optional[str] = None) -> 'PrioritizedReplayBuffer':
         """Create a new instance with the same configuration."""
@@ -611,9 +609,172 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.beta_update_freq,
             self.priority, 
             self.normalize,
-            self.obs_key,
-            self.goal_key,
             self.epsilon,
             device,
             self.N
         )
+
+class RolloutBuffer(Buffer):
+    """
+    On-Policy buffer for storing rollouts.
+    """
+    def __init__(
+        self,
+        env: EnvWrapper,
+        buffer_size: int,
+        device: Optional[str] = None
+    ):
+        super().__init__(env, buffer_size, device)
+        self.cur_idx = T.zeros((env.num_envs,), dtype=T.long, device=self.device)
+
+        #Instantiate buffers
+        self.states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        self.actions = T.zeros((buffer_size, env.num_envs, *self.action_space_shape), dtype=self.action_type, device=self.device)
+        self.rewards = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
+        self.next_states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        self.terminations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
+        self.truncations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
+            self.desired_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
+            self.state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
+            self.next_state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
+
+    def add(
+        self,
+        states: T.Tensor,
+        actions: T.Tensor,
+        rewards: T.Tensor,
+        next_states: T.Tensor,
+        terminations: T.Tensor,
+        truncations: T.Tensor,
+        state_achieved_goals: Optional[T.Tensor] = None,
+        next_state_achieved_goals: Optional[T.Tensor] = None,
+        desired_goals: Optional[T.Tensor] = None,
+    ) -> None:
+
+        # Ensure actions are 2d tensors
+        if actions.ndim == 1:
+            actions = actions.unsqueeze(-1)
+        # Get per environment indices to add values to
+        idx = self.cur_idx.clone()
+        
+        # Add values to buffers at indices
+        self.states[idx, T.arange(self.env.num_envs)] = states.to(device=self.device, dtype=T.float32)
+        self.actions[idx, T.arange(self.env.num_envs)] = actions.to(device=self.device, dtype=self.action_type)
+        self.rewards[idx, T.arange(self.env.num_envs)] = rewards.to(device=self.device, dtype=T.float32)
+        self.next_states[idx, T.arange(self.env.num_envs)] = next_states.to(device=self.device, dtype=T.float32)
+        self.terminations[idx, T.arange(self.env.num_envs)] = terminations.to(device=self.device, dtype=T.bool)
+        self.truncations[idx, T.arange(self.env.num_envs)] = truncations.to(device=self.device, dtype=T.bool)
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
+            self.state_achieved_goals[idx, T.arange(self.env.num_envs)] = state_achieved_goals.to(device=self.device, dtype=T.float32)
+            self.next_state_achieved_goals[idx, T.arange(self.env.num_envs)] = next_state_achieved_goals.to(device=self.device, dtype=T.float32)
+            self.desired_goals[idx, T.arange(self.env.num_envs)] = desired_goals.to(device=self.device, dtype=T.float32)
+        
+        # Increment step indices
+        self.cur_idx += 1
+
+    def sample(self) -> Dict[str, T.Tensor]:
+        """
+        Returns a dictionary of all buffer tensors up to the current index of each environment.
+        Current index values will match across all tensors because all rollouts are of same length.
+        """
+        idx = self.cur_idx.max().item()
+        sample = {
+            "states": self.states[:idx].clone(),
+            "actions": self.actions[:idx].clone(),
+            "rewards": self.rewards[:idx].clone(),
+            "next_states": self.next_states[:idx].clone(),
+            "terminations": self.terminations[:idx].clone(),
+            "truncations": self.truncations[:idx].clone(),
+        }
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
+            sample.update({
+                "state_achieved_goals": self.state_achieved_goals[:idx].clone(),
+                "next_state_achieved_goals": self.next_state_achieved_goals[:idx].clone(),
+                "desired_goals": self.desired_goals[:idx].clone(),
+            })
+        else:
+            sample.update({
+                "state_achieved_goals": None,
+                "next_state_achieved_goals": None,
+                "desired_goals": None,
+            })
+
+        self.reset()
+        return sample
+
+    def reset(self) -> None:
+        """Reset the current index of each environment to zero."""
+        self.cur_idx.zero_()
+    
+    def get_config(self) -> Dict[str, Any]:
+        """Get buffer config."""
+        config = super().get_config()
+        config['type'] = self.__class__.__name__
+        return config
+
+class TrajectoryBuffer(RolloutBuffer):
+    """
+    On-Policy buffer for storing completedtrajectories
+    """
+    def __init__(
+        self,
+        env: EnvWrapper,
+        buffer_size: int,
+        device: Optional[str] = None
+    ):
+        super().__init__(env, buffer_size, device)
+        self.completed_trajectories: List[Dict[str, T.Tensor]] = []
+
+    def add(
+        self,
+        states: T.Tensor,
+        actions: T.Tensor,
+        rewards: T.Tensor,
+        next_states: T.Tensor,
+        terminations: T.Tensor,
+        truncations: T.Tensor,
+        state_achieved_goals: Optional[T.Tensor] = None,
+        next_state_achieved_goals: Optional[T.Tensor] = None,
+        desired_goals: Optional[T.Tensor] = None,
+    ) -> None:
+        super().add(states, actions, rewards, next_states, terminations, truncations, state_achieved_goals, next_state_achieved_goals, desired_goals)
+
+        # Store completed trajectories if any last stored dones are True
+        for i in range(self.env.num_envs):
+            idx = self.cur_idx[i].item()
+            if idx > 0 and (self.terminations[idx - 1, i].item() or self.truncations[idx - 1, i].item()):
+                trajectory = {
+                    "states": self.states[:idx, i].clone(),
+                    "actions": self.actions[:idx, i].clone(),
+                    "rewards": self.rewards[:idx, i].clone(),
+                    "next_states": self.next_states[:idx, i].clone(),
+                    "terminations": self.terminations[:idx, i].clone(),
+                    "truncations": self.truncations[:idx, i].clone(),
+                }
+                if self.env.goal_key is not None and self.goal_space_shape is not None:
+                    trajectory.update({
+                        "state_achieved_goals": self.state_achieved_goals[:idx, i].clone(),
+                        "next_state_achieved_goals": self.next_state_achieved_goals[:idx, i].clone(),
+                        "desired_goals": self.desired_goals[:idx, i].clone(),
+                    })
+                else:
+                    trajectory.update({
+                        "state_achieved_goals": None,
+                        "next_state_achieved_goals": None,
+                        "desired_goals": None,
+                    })
+                self.completed_trajectories.append(trajectory)
+                # Reset step counter for done env
+                self.cur_idx[i] = 0
+
+    def sample(self) -> List[Dict[str, T.Tensor]]:
+        """Returns a list of completed trajectories."""
+        trajectories = self.completed_trajectories[:]
+        # Clear trajectories
+        self.completed_trajectories = []
+        return trajectories
+
+    def reset(self) -> None:
+        super().reset()
+        self.completed_trajectories = []
