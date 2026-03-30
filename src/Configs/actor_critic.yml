@@ -6,15 +6,17 @@ log_level: INFO
 agent:
   type: ActorCritic
   config:
-    discount: 0.99
-    entropy_coefficient: &entropy_coefficient 0.00001
-    gae_coefficient: 1.0
+    discount: 0.999
+    entropy_coefficient: &entropy_coefficient 0.01
+    auto_entropy_tuning: false
+    entropy_lr: 1.0e-2
+    gae_coefficient: 0.98
     policy_grad_clip: 0.5
     value_grad_clip: 0.5
     value_coef: 0.5
     bootstrap_truncations: true
     log_level: DEBUG
-    _diag_freq: 100
+    _diag_freq: 10
 
 env:
   type: gymnasium # "isaacsim" or "gymnasium"
@@ -42,7 +44,7 @@ models:
     output_config:
       - type: dense
         params: {kernel: default, kernel_params: {}}
-    optimizer_params: {type: Adam, params: {lr: 0.0001}}
+    optimizer_params: {type: RMSprop, params: {lr: 7.0e-4, eps: 1.0e-5, alpha: 0.99}}
     distribution: normal
     # temperature: 2.0
     device: *device
@@ -58,50 +60,51 @@ models:
     output_config:
       - type: dense
         params: {kernel: default, kernel_params: {}}
-    optimizer_params: {type: Adam, params: {lr: 0.0001}}
+    optimizer_params: {type: RMSprop, params: {lr: 7.0e-4, eps: 1.0e-5, alpha: 0.99}}
     device: *device
 
 normalizers:
   advantage:
     type: BatchNorm
     config:
-      momentum: 0.99
       clip_value: 10.0
       device: *device
+      log_level: INFO
+      # kwargs
+      # _diag_freq: 4096
   state:
     type: RunningNorm
     config:
-      momentum: 0.99
       clip_value: 10.0
       warmup_steps: 1000
       device: *device
       log_level: INFO
       # kwargs
-      # _diag_freq: 100
+      # _diag_freq: 4096
 
 # entropy_schedule:
 #   schedule_type: "linear"
-#   steps: 1000000
+#   steps: 100000
 #   start_value: *entropy_coefficient
-#   end_value: 0.0001
+#   end_value: 0.001
 
 buffer:
   type: RolloutBuffer
   config:
-    buffer_size: 64
+    buffer_size: 1024
     device: *device
 
 schedule:
   type: OnPolicySchedule
   config:
-    unit: episode
-    num_units: 5000
+    unit: timestep
+    num_units: 5000000
     learn_unit: timestep
-    num_learn_units: 1024
+    num_learn_units: 16384
     seed: *seed
 
 renderer:
-  render_freq: 1000
+  render_freq: 2000
   save_dir: *save_dir
 
 callbacks:

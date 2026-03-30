@@ -456,11 +456,11 @@ class StochasticDiscretePolicy(Model):
         self.act_space = (self.env.single_action_space 
                           if hasattr(self.env, "single_action_space") 
                           else self.env.action_space)
-        num_actions = self.act_space.n
+        self.num_actions = self.act_space.n
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
-            'policy_dense_output': nn.LazyLinear(num_actions)
+            'policy_dense_output': nn.LazyLinear(self.num_actions)
         })
         # self.add_module('output_layer', self.output_layer)
 
@@ -640,11 +640,11 @@ class StochasticContinuousPolicy(Model):
                           if hasattr(self.env, "single_action_space") 
                           else self.env.action_space)
         
-        num_actions = self.act_space.shape[-1]
+        self.num_actions = self.act_space.shape[-1]
         # Create the output layer
         self.output_layer = nn.ModuleDict({
-            'policy_output_param_1': nn.LazyLinear(num_actions),
-            'policy_output_param_2': nn.LazyLinear(num_actions),
+            'policy_output_param_1': nn.LazyLinear(self.num_actions),
+            'policy_output_param_2': nn.LazyLinear(self.num_actions),
         })
 
         # Move model to device
