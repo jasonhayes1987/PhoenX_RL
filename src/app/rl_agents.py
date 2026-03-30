@@ -437,8 +437,10 @@ class Agent:
 
     def get_config(self):
         return {
-            "agent_type": self.__class__.__name__,
-            "save_dir": self.save_dir,
+            "type": self.__class__.__name__,
+            "config":{
+                "save_dir": self.save_dir,
+            }
         }
 
     @abstractmethod
@@ -461,8 +463,11 @@ class OnPolicyAgent(Agent):
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
         advantage_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: BaseNormalizer|None = None,
         entropy_coefficient: float=0.01,
         entropy_schedule: ScheduleWrapper|None = None,
+        auto_entropy_tuning: bool=True,
+        entropy_lr: float=3e-4, # Only used if auto entropy = True
         save_dir: str = "models/",
         device: Optional[str | T.device] = None,
         # log_level: str = 'info',
@@ -475,8 +480,18 @@ class OnPolicyAgent(Agent):
         self.state_normalizer = state_normalizer
         self.goal_normalizer = goal_normalizer
         self.advantage_normalizer = advantage_normalizer
+        self.reward_normalizer = reward_normalizer
         self.entropy_coefficient = entropy_coefficient
         self.entropy_schedule = entropy_schedule
+        self.auto_entropy_tuning = auto_entropy_tuning
+        self.entropy_lr = entropy_lr
+        if self.auto_entropy_tuning:
+            if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+                self.target_entropy = -float(self.policy.num_actions)
+            else: # Discrete actor
+                self.target_entropy = 0.98 * T.log(T.tensor(self.policy.num_actions, dtype=T.float32, device=self.device)).item()
+            self.log_alpha = T.zeros(1, requires_grad=True, device=self.device)
+            self.entropy_optimizer = T.optim.Adam([self.log_alpha], lr=self.entropy_lr)
 
     @abstractmethod
     def learn(self, sample: dict|list[dict])->dict:
@@ -485,17 +500,19 @@ class OnPolicyAgent(Agent):
 
     def get_config(self):
         config = super().get_config()
-        config.update({
-            "agent_type": self.__class__.__name__,
-            # "env": self.env.to_json(),
+        config["type"] = self.__class__.__name__
+        config["config"].update({
             "policy": self.policy.get_config(),
             "value": self.value.get_config(),
             "discount": self.discount,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
             "entropy_coefficient": self.entropy_coefficient,
             "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
+            "auto_entropy_tuning": self.auto_entropy_tuning,
+            "entropy_lr": self.entropy_lr,
         })
         return config
 
@@ -507,12 +524,15 @@ class ActorCritic(OnPolicyAgent):
         policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
         value: ValueModel,
         discount: float=0.99,
-        entropy_coefficient: float=0.01,
-        entropy_schedule: ScheduleWrapper|None = None,
-        gae_coefficient: float=0.95,
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
         advantage_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: BaseNormalizer|None = None,
+        entropy_coefficient: float=0.01, # Only used if auto entropy = False
+        entropy_schedule: ScheduleWrapper|None = None, # Only used if auto entropy = False
+        auto_entropy_tuning: bool=True,
+        entropy_lr: float=3e-4, # Only used if auto entropy = True
+        gae_coefficient: float=0.95,
         policy_grad_clip: float=1.0,
         value_grad_clip: float=1.0,
         value_coef: float=0.5,
@@ -530,8 +550,11 @@ class ActorCritic(OnPolicyAgent):
                 state_normalizer,
                 goal_normalizer,
                 advantage_normalizer = advantage_normalizer,
+                reward_normalizer = reward_normalizer,
                 entropy_coefficient = entropy_coefficient,
                 entropy_schedule = entropy_schedule,
+                auto_entropy_tuning = auto_entropy_tuning,
+                entropy_lr = entropy_lr,
                 save_dir = save_dir,
                 device=device,
                 log_level=log_level,
@@ -577,9 +600,12 @@ class ActorCritic(OnPolicyAgent):
         
 
         # Get entropy coefficient
-        entropy_coefficient = self.entropy_coefficient
-        if self.entropy_schedule:
-            entropy_coefficient *= self.entropy_schedule.get_factor()
+        if self.auto_entropy_tuning:
+            entropy_coefficient = self.log_alpha.exp()
+        else:
+            entropy_coefficient = self.entropy_coefficient
+            if self.entropy_schedule:
+                entropy_coefficient *= self.entropy_schedule.get_factor()
 
         # Get trajectory length, num_envs, and feature dims
         trajectory_length, num_envs, obs_dim = states.shape
@@ -633,7 +659,9 @@ class ActorCritic(OnPolicyAgent):
         # reshape flat actions to be vector if categorical distribution
         if self.policy.distribution == 'categorical':
             flat_actions = flat_actions.squeeze(-1)
-        log_probs = dist.log_prob(flat_actions).reshape(trajectory_length, num_envs, action_dim).sum(-1)
+            log_probs = dist.log_prob(flat_actions).reshape(trajectory_length, num_envs)
+        else:
+            log_probs = dist.log_prob(flat_actions).sum(dim=-1).reshape(trajectory_length, num_envs)
         
         # Only calculate entropy if entropy coefficient > 0
         # if entropy_coefficient > 0.0:
@@ -701,6 +729,17 @@ class ActorCritic(OnPolicyAgent):
         self.value.optimizer.step()
         self.policy.optimizer.step()
 
+        if self.auto_entropy_tuning:
+            self.entropy_optimizer.zero_grad()
+            alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+            # alpha_loss = -(self.log_alpha * (self.target_entropy - entropies).detach()).mean()
+            # if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+            #     alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+            # else: # Discrete actor
+            #     alpha_loss = -(self.log_alpha * (self.target_entropy - entropies).detach()).mean()
+            alpha_loss.backward()
+            self.entropy_optimizer.step()
+
         learn_metrics.update({
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
@@ -715,8 +754,8 @@ class ActorCritic(OnPolicyAgent):
 
     def get_config(self):
         config = super().get_config()
-        config.update({
-            "agent_type": self.__class__.__name__,
+        config["type"] = self.__class__.__name__
+        config["config"].update({
             "gae_coefficient": self.gae_coefficient,
             "policy_grad_clip": self.policy_grad_clip,
             "value_grad_clip": self.value_grad_clip,
@@ -735,6 +774,8 @@ class ActorCritic(OnPolicyAgent):
         self.value.save(self.save_dir)
         if self.state_normalizer:
             self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
+        if self.goal_normalizer:
+            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
         if self.advantage_normalizer:
             self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
 
@@ -746,17 +787,21 @@ class ActorCritic(OnPolicyAgent):
         policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
         value = ValueModel.load(config_dir, 'value', load_weights, env=env_wrapper)
         state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
+        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
         advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
 
         agent = cls(
             policy=policy,
             value=value,
             discount=config["discount"],
+            state_normalizer=state_normalizer,
+            goal_normalizer=goal_normalizer,
+            advantage_normalizer=advantage_normalizer,
             entropy_coefficient=config["entropy_coefficient"],
             entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
+            auto_entropy_tuning=config["auto_entropy_tuning"],
+            entropy_lr=config["entropy_lr"],
             gae_coefficient=config["gae_coefficient"],
-            state_normalizer=state_normalizer,
-            advantage_normalizer=advantage_normalizer,
             policy_grad_clip=config["policy_grad_clip"],
             value_grad_clip=config["value_grad_clip"],
             value_coef=config["value_coef"],
@@ -777,6 +822,8 @@ class Reinforce(OnPolicyAgent):
         advantage_normalizer: BaseNormalizer|None = None,
         entropy_coefficient: float = 0.01,
         entropy_schedule: ScheduleWrapper|None = None,
+        auto_entropy_tuning: bool=True,
+        entropy_lr: float=3e-4, # Only used if auto entropy = True
         save_dir: str = "models",
         device: str = None,
         **kwargs,
@@ -806,6 +853,8 @@ class Reinforce(OnPolicyAgent):
                 advantage_normalizer = advantage_normalizer,
                 entropy_coefficient = entropy_coefficient,
                 entropy_schedule = entropy_schedule,
+                auto_entropy_tuning = auto_entropy_tuning,
+                entropy_lr = entropy_lr,
                 save_dir = save_dir,
                 device=device,
                 **kwargs
@@ -871,9 +920,12 @@ class Reinforce(OnPolicyAgent):
         entropies = dist.entropy().unsqueeze(-1)
 
         # Get entropy coefficient
-        entropy_coefficient = self.entropy_coefficient
-        if self.entropy_schedule:
-            entropy_coefficient *= self.entropy_schedule.get_factor()
+        if self.auto_entropy_tuning:
+            entropy_coefficient = self.log_alpha.exp()
+        else:
+            entropy_coefficient = self.entropy_coefficient
+            if self.entropy_schedule:
+                entropy_coefficient *= self.entropy_schedule.get_factor()
 
         # Get policy loss
         policy_loss = -(log_probs * policy_weight + entropy_coefficient * entropies).mean()
@@ -886,6 +938,15 @@ class Reinforce(OnPolicyAgent):
         self.policy.optimizer.step()
         if self.value:
             self.value.optimizer.step()
+
+        if self.auto_entropy_tuning:
+            self.entropy_optimizer.zero_grad()
+            if self.policy.distribution in ['normal', 'beta']:
+                alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+            else: # Discrete actor
+                alpha_loss = -(self.log_alpha * ((dist.probs * log_probs).sum(dim=-1) + self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.entropy_optimizer.step()
 
         learn_metrics.update({
             'policy_loss': policy_loss.item(),
@@ -900,9 +961,7 @@ class Reinforce(OnPolicyAgent):
 
     def get_config(self):
         config = super().get_config()
-        config.update({
-            "agent_type": self.__class__.__name__,
-        })
+        config["type"] = self.__class__.__name__
         return config
 
     def save(self):

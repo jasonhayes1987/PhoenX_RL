@@ -17,9 +17,8 @@ class BaseNormalizer:
 
     Attributes:
         num_features (int): Number of features to normalize.
-        momentum (float): Momentum for running statistics.
-        epsilon (float): Small constant to prevent division by zero.
         clip_value (float): Value to clip normalized values.
+        epsilon (float): Small constant to prevent division by zero.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
         log_level (str): Log level for the normalizer.
         **kwargs: Additional keyword arguments.
@@ -27,7 +26,6 @@ class BaseNormalizer:
     def __init__(
         self,
         num_features: int,
-        momentum: float = 0.99,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
         device: Optional[str | T.device] = None,
@@ -38,14 +36,16 @@ class BaseNormalizer:
         self.kwargs = kwargs
         self.device = get_device(device)
         self.num_features = num_features
-        self.momentum = T.tensor(momentum, device=self.device)
         self.clip_value = T.tensor(clip_value, device=self.device)
         self.epsilon = T.tensor(epsilon, device=self.device)
         # Local statistics
+        self.local_cnt = T.zeros(1, dtype=T.int32, device=self.device)
         self.local_sum = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         self.local_sum_sq = T.zeros(self.num_features, dtype=T.float32, device=self.device)
-        self.local_cnt = T.zeros(1, dtype=T.int32, device=self.device)
         # Running statistics
+        self.running_cnt = T.zeros(1, dtype=T.int32, device=self.device)
+        self.running_sum = T.zeros(self.num_features, dtype=T.float32, device=self.device)
+        self.running_sum_sq = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         self.running_mean = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         self.running_var = T.ones(self.num_features, dtype=T.float32, device=self.device)
         self.running_std = T.ones(self.num_features, dtype=T.float32, device=self.device)
@@ -56,6 +56,7 @@ class BaseNormalizer:
         # Set internal attributes
         self.step = 0
         self._diag_freq = None
+        self._log_diag = False
         if self.kwargs is not None:
             for key, value in self.kwargs.items():
                 setattr(self, key, value)
@@ -71,35 +72,59 @@ class BaseNormalizer:
         self.local_sum_sq += (new_data**2).sum(dim=0).to(self.device)
         self.local_cnt += new_data.size(0)
 
-        # Log diagnostic information if needed
+        # Log diag values if diag
         if self._diag_freq is not None:
             should_log_diag = (self.step % self._diag_freq == 0)
         else:
             should_log_diag = False
         if should_log_diag:
-            self.logger.debug(f"Normalizer add: step={self.step}, data={new_data}, data_shape={new_data.shape}, local_sum={self.local_sum}, local_sum_sq={self.local_sum_sq}, local_cnt={self.local_cnt}")
-    
+            self.logger.debug(f"Normalizer add: step={self.step}, data={new_data}, data_shape={new_data.shape}, local_sum={self.local_sum}, local_sum_sq={self.local_sum_sq}, local_cnt={self.local_cnt}, running_cnt={self.running_cnt}, running_sum={self.running_sum}, running_sum_sq={self.running_sum_sq}")
+
     def update(self) -> None:
         """
         Update running statistics based on local statistics.
         """
+        self.step += 1
+        # self.running_cnt += self.local_cnt
+        # self.running_sum += self.local_sum
+        # self.running_sum_sq += self.local_sum_sq
+        # self.running_mean = self.running_sum / self.running_cnt
+        # self.running_var = self.running_sum_sq / self.running_cnt - self.running_mean.pow(2)
+        if self.local_cnt.item() == 0:
+            return
+
+        batch_cnt = self.local_cnt.item()
         batch_mean = self.local_sum / self.local_cnt
         batch_var = self.local_sum_sq / self.local_cnt - batch_mean**2
-        self.running_mean = self.running_mean * self.momentum + batch_mean * (1 - self.momentum)
-        self.running_var = self.running_var * self.momentum + batch_var * (1 - self.momentum)
-        self.running_std = T.sqrt(self.running_var + self.epsilon**2).clamp(min=1e-4)
-        if self._diag_freq is not None:
-            should_log_diag = (self.step % self._diag_freq == 0)
+
+        if self.running_cnt.item() == 0:
+            self.running_mean.copy_(batch_mean)
+            self.running_var.copy_(batch_var)
+            self.running_cnt.copy_(self.local_cnt)
         else:
-            should_log_diag = False
-        if should_log_diag:
-            self.logger.debug(f"Normalizer update: step={self.step}, batch_mean={batch_mean}, batch_var={batch_var}, running_mean={self.running_mean}, running_var={self.running_var}, running_std={self.running_std}")
-        
+            total_cnt = self.running_cnt + batch_cnt
+            delta = batch_mean - self.running_mean
+
+            self.running_mean.add_(delta * (batch_cnt / total_cnt))
+
+            m_a = self.running_var * self.running_cnt
+            m_b = batch_var * batch_cnt
+            m2 = m_a + m_b + delta**2 * (self.running_cnt * batch_cnt / total_cnt)
+            self.running_var.copy_(m2 / total_cnt)
+
+            self.running_cnt.add_(batch_cnt)
+            self.running_std = T.sqrt(self.running_var + self.epsilon**2).clamp(min=1e-4)
+        # Log diag values if diag
+        if self._diag_freq is not None:
+            self._log_diag = (self.step % self._diag_freq == 0)
+        if self._log_diag:
+            self.logger.debug(f"Normalizer update: step={self.step}, running_cnt={self.running_cnt}, running_sum={self.running_sum}, running_sum_sq={self.running_sum_sq}, running_mean={self.running_mean}, running_var={self.running_var}, running_std={self.running_std}")
+
         # Reset local statistics
         self.local_cnt.zero_()
         self.local_sum.zero_()
         self.local_sum_sq.zero_()
-    
+
     def denormalize(self, v: T.Tensor) -> T.Tensor:
         """
         Denormalize a tensor using running statistics.
@@ -133,7 +158,6 @@ class BaseNormalizer:
             'type': self.__class__.__name__,
             'config': {
                 'num_features':self.num_features,
-                'momentum':self.momentum.item(),
                 'epsilon':self.epsilon.item(),
                 'clip_value':self.clip_value.item(),
                 'device':self.device.type,
@@ -152,10 +176,31 @@ class BaseNormalizer:
             'local_sum': self.local_sum.cpu().detach().numpy(),
             'local_sum_sq': self.local_sum_sq.cpu().detach().numpy(),
             'local_cnt': self.local_cnt.cpu().detach().numpy(),
+            'running_cnt': self.running_cnt.cpu().detach().numpy(),
+            'running_sum': self.running_sum.cpu().detach().numpy(),
+            'running_sum_sq': self.running_sum_sq.cpu().detach().numpy(),
             'running_mean': self.running_mean.cpu().detach().numpy(),
             'running_var': self.running_var.cpu().detach().numpy(),
             'running_std': self.running_std.cpu().detach().numpy(),
         }, file_path)
+
+    @classmethod
+    def load(cls, config: dict, state_path: str) -> 'BaseNormalizer':
+        """
+        Load a BaseNormalizer state from a file.
+
+        Args:
+            config (dict): Configuration of the normalizer.
+            state_path (str): Path to load the state from.
+
+        Returns:
+            BaseNormalizer: A BaseNormalizer instance with the loaded state.
+        """
+
+        norm_type = config['type']
+        if norm_type not in NORMALIZER_CLASSES:
+            raise ValueError(f"Invalid normalizer type: {norm_type}")
+        return NORMALIZER_CLASSES[norm_type].load(config, state_path)
 
 class RunningNorm(BaseNormalizer):
     """
@@ -163,15 +208,14 @@ class RunningNorm(BaseNormalizer):
 
     Attributes:
         num_features (int): Number of features to normalize.
-        momentum (float): Momentum for running statistics.
         clip_value (float): Value to clip normalized values.
         epsilon (float): Small constant to prevent division by zero.
+        warmup_steps (int): Number of warmup steps.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
     """
     def __init__(
         self,
         num_features: int,
-        momentum: float = 0.99,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
         warmup_steps: int = 1000,
@@ -179,9 +223,9 @@ class RunningNorm(BaseNormalizer):
         log_level: str = 'INFO',
         **kwargs
     ):
-        super().__init__(num_features, momentum, clip_value, epsilon, device, log_level, **kwargs)
+        super().__init__(num_features, clip_value, epsilon, device, log_level, **kwargs)
         self.warmup_steps = warmup_steps
-        
+
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
         Normalize a tensor using running statistics.
@@ -192,17 +236,16 @@ class RunningNorm(BaseNormalizer):
         Returns:
             T.Tensor: Normalized tensor.
         """
-        self.step += 1
         if v.device != self.device:
             v = v.to(self.device)
-        
+
+        if self.training and self.step <= self.warmup_steps:
+            return v
+
         norms = T.clamp((v - self.running_mean) / self.running_std,
                        -self.clip_value, self.clip_value).float()
-        if self._diag_freq is not None:
-            should_log_diag = (self.step % self._diag_freq == 0)
-        else:
-            should_log_diag = False
-        if should_log_diag:
+        # Log diag values if diag
+        if self._log_diag:
             self.logger.debug(f"RunningNorm normalize: step={self.step}, data={v}, data_shape={v.shape}, running_mean={self.running_mean}, running_std={self.running_std}, norms={norms}")
         return norms
 
@@ -222,7 +265,6 @@ class RunningNorm(BaseNormalizer):
         Args:
             config (dict): Configuration of the normalizer.
             state_path (str): Path to load the state from.
-            device (str): Device to load the state to ('cpu' or 'cuda').
 
         Returns:
             RunningNorm: A RunningNorm instance with the loaded state.
@@ -232,20 +274,22 @@ class RunningNorm(BaseNormalizer):
         state = T.load(state_path, map_location='cpu', weights_only=False)
         normalizer = RunningNorm(
             num_features=config['num_features'],
-            momentum=config['momentum'],
             clip_value=config['clip_value'],
             epsilon=config['epsilon'],
             warmup_steps=config['warmup_steps'],
-            device=device
+            device=config['device']
         )
         normalizer.step = state['step']
         normalizer.local_sum = T.tensor(state['local_sum'], device=device)
         normalizer.local_sum_sq = T.tensor(state['local_sum_sq'], device=device)
         normalizer.local_cnt = T.tensor(state['local_cnt'], device=device)
+        normalizer.running_cnt = T.tensor(state['running_cnt'], device=device)
+        normalizer.running_sum = T.tensor(state['running_sum'], device=device)
+        normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
         normalizer.running_mean = T.tensor(state['running_mean'], device=device)
         normalizer.running_var = T.tensor(state['running_var'], device=device)
         normalizer.running_std = T.tensor(state['running_std'], device=device)
-        
+
         return normalizer
 
 class BatchNorm(BaseNormalizer):
@@ -254,7 +298,6 @@ class BatchNorm(BaseNormalizer):
 
     Attributes:
         num_features (int): Number of features to normalize.
-        momentum (float): Momentum for running statistics.
         clip_value (float): Value to clip normalized values.
         epsilon (float): Small constant to prevent division by zero.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
@@ -262,23 +305,21 @@ class BatchNorm(BaseNormalizer):
     def __init__(
         self,
         num_features: int,
-        momentum: float = 0.99,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
         device: Optional[str | T.device] = None,
         log_level: str = 'INFO',
         **kwargs
     ):
-        super().__init__(num_features, momentum, clip_value, epsilon, device, log_level, **kwargs)
+        super().__init__(num_features, clip_value, epsilon, device, log_level, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
         Normalize a tensor using batch statistics during training, running statistics during evaluation.
         """
-        self.step += 1
         if v.device != self.device:
             v = v.to(self.device)
-        
+
         if self.training:
             mean = v.mean(dim=0, keepdim=True)
             var = v.var(dim=0, unbiased=False, keepdim=True)
@@ -287,32 +328,15 @@ class BatchNorm(BaseNormalizer):
         else:
             norms = (v - self.running_mean) / self.running_std
 
-        if self._diag_freq is not None:
-            should_log_diag = (self.step % self._diag_freq == 0)
-        else:
-            should_log_diag = False
-        if should_log_diag:
+        if self._log_diag:
             self.logger.debug(f"BatchNorm normalize: step={self.step}, data={v}, data_shape={v.shape}, running_mean={self.running_mean}, running_std={self.running_std}, norms={norms}")
-        
+
         return T.clamp(norms, -self.clip_value, self.clip_value).float()
 
     def get_config(self) -> dict:
         config = super().get_config()
         config['type'] = self.__class__.__name__
         return config
-
-    def save(self, file_path: str) -> None:
-        """
-        Save the current state of the normalizer to a file.
-
-        Args:
-            file_path (str): Path to save the state.
-        """
-        T.save({
-            'running_mean': self.running_mean.cpu().detach().numpy(),
-            'running_var': self.running_var.cpu().detach().numpy(),
-            'running_std': self.running_std.cpu().detach().numpy(),
-        }, file_path)
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'BatchNorm':
@@ -322,7 +346,6 @@ class BatchNorm(BaseNormalizer):
         Args:
             config (dict): Configuration of the normalizer.
             state_path (str): Path to load the state from.
-            device (str): Device to load the state to ('cpu' or 'cuda').
 
         Returns:
             BatchNorm: A BatchNorm instance with the loaded state.
@@ -332,20 +355,37 @@ class BatchNorm(BaseNormalizer):
         state = T.load(state_path, map_location='cpu', weights_only=False)
         normalizer = BatchNorm(
             num_features=config['num_features'],
-            momentum=config['momentum'],
             clip_value=config['clip_value'],
             epsilon=config['epsilon'],
-            device=device
+            device=config['device']
         )
         normalizer.step = state['step']
         normalizer.local_sum = T.tensor(state['local_sum'], device=device)
         normalizer.local_sum_sq = T.tensor(state['local_sum_sq'], device=device)
         normalizer.local_cnt = T.tensor(state['local_cnt'], device=device)
+        normalizer.running_cnt = T.tensor(state['running_cnt'], device=device)
+        normalizer.running_sum = T.tensor(state['running_sum'], device=device)
+        normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
         normalizer.running_mean = T.tensor(state['running_mean'], device=device)
         normalizer.running_var = T.tensor(state['running_var'], device=device)
         normalizer.running_std = T.tensor(state['running_std'], device=device)
-        
+
         return normalizer
+
+class RewardNormalizer(BaseNormalizer):
+    """
+    Normalizes rewards using running return standard deviation.
+    """
+    def __init__(
+        self,
+        gamma: float = 0.99,
+        clip_value: float = 5.0,
+        epsilon: float = 1e-6,
+        device: Optional[str | T.device] = None,
+        log_level: str = 'INFO',
+        **kwargs
+    ):
+        super().__init__(1, clip_value, epsilon, device, log_level, **kwargs)
         
 class SharedNormalizer:
     def __init__(self, size, eps=1e-2, clip_range=5.0):
