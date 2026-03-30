@@ -121,7 +121,24 @@ class Trainer:
             if model:
                 model.eval()
                 model.logger.info(f"Set {name} to eval mode")
+
+        # Set normalizers to train or eval mode
+        if context == "train":
+            if self.agent.state_normalizer:
+                self.agent.state_normalizer.train()
+            if self.agent.goal_normalizer:
+                self.agent.goal_normalizer.train()
+            if self.agent.advantage_normalizer:
+                self.agent.advantage_normalizer.train()
         
+        elif context == "test":
+            if self.agent.state_normalizer:
+                self.agent.state_normalizer.eval()
+            if self.agent.goal_normalizer:
+                self.agent.goal_normalizer.eval()
+            if self.agent.advantage_normalizer:
+                self.agent.advantage_normalizer.eval()
+
         # Set internal attributes
         seed = self.schedule.seed if self.schedule.seed else T.randint(0, 1000000)
         set_seed(seed)
@@ -135,20 +152,17 @@ class Trainer:
                     if self.agent.state_normalizer:
                         self.agent.state_normalizer.train()
                         self.agent.state_normalizer.add(observation.current_states.to(device=self.agent.state_normalizer.device))
+                        self.agent.state_normalizer.update()
                     if self.agent.goal_normalizer:
                         self.agent.goal_normalizer.train()
                         # Concatenate current goals and achieved goals into 1 tensor
                         goals = T.cat([observation.current_goals, observation.current_ach_goals], dim=0).to(device=self.agent.goal_normalizer.device)
                         self.agent.goal_normalizer.add(goals)
+                        self.agent.goal_normalizer.update()
                     if self.agent.advantage_normalizer:
                         if context == "train":
                             self.agent.advantage_normalizer.train()
-                # Update normalizers
-                if self.agent.state_normalizer:
-                    self.agent.state_normalizer.update()
-                if self.agent.goal_normalizer:
-                    self.agent.goal_normalizer.update()
-                # Reset environments
+                    # Reset environments
                 observation = self.env.reset()
             else:
                 if self.agent.state_normalizer:
