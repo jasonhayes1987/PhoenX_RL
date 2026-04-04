@@ -44,8 +44,8 @@ class BaseNormalizer:
         self.local_sum_sq = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         # Running statistics
         self.running_cnt = T.zeros(1, dtype=T.int32, device=self.device)
-        self.running_sum = T.zeros(self.num_features, dtype=T.float32, device=self.device)
-        self.running_sum_sq = T.zeros(self.num_features, dtype=T.float32, device=self.device)
+        # self.running_sum = T.zeros(self.num_features, dtype=T.float32, device=self.device)
+        # self.running_sum_sq = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         self.running_mean = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         self.running_var = T.ones(self.num_features, dtype=T.float32, device=self.device)
         self.running_std = T.ones(self.num_features, dtype=T.float32, device=self.device)
@@ -68,28 +68,23 @@ class BaseNormalizer:
         Args:
             new_data (T.Tensor): New data to update local statistics.
         """
+        self.step += 1
         self.local_sum += new_data.sum(dim=0).to(self.device)
         self.local_sum_sq += (new_data**2).sum(dim=0).to(self.device)
         self.local_cnt += new_data.size(0)
 
         # Log diag values if diag
         if self._diag_freq is not None:
-            should_log_diag = (self.step % self._diag_freq == 0)
+            self._log_diag = (self.step % self._diag_freq == 0)
         else:
-            should_log_diag = False
-        if should_log_diag:
-            self.logger.debug(f"Normalizer add: step={self.step}, data={new_data}, data_shape={new_data.shape}, local_sum={self.local_sum}, local_sum_sq={self.local_sum_sq}, local_cnt={self.local_cnt}, running_cnt={self.running_cnt}, running_sum={self.running_sum}, running_sum_sq={self.running_sum_sq}")
+            self._log_diag = False
+        if self._log_diag:
+            self.logger.debug(f"Normalizer add: step={self.step}, data={new_data}, data_shape={new_data.shape}, local_cnt={self.local_cnt}, local_sum={self.local_sum}, local_sum_sq={self.local_sum_sq}, running_cnt={self.running_cnt}")
 
     def update(self) -> None:
         """
         Update running statistics based on local statistics.
         """
-        self.step += 1
-        # self.running_cnt += self.local_cnt
-        # self.running_sum += self.local_sum
-        # self.running_sum_sq += self.local_sum_sq
-        # self.running_mean = self.running_sum / self.running_cnt
-        # self.running_var = self.running_sum_sq / self.running_cnt - self.running_mean.pow(2)
         if self.local_cnt.item() == 0:
             return
 
@@ -114,11 +109,9 @@ class BaseNormalizer:
 
             self.running_cnt.add_(batch_cnt)
             self.running_std = T.sqrt(self.running_var + self.epsilon**2).clamp(min=1e-4)
-        # Log diag values if diag
-        if self._diag_freq is not None:
-            self._log_diag = (self.step % self._diag_freq == 0)
+        
         if self._log_diag:
-            self.logger.debug(f"Normalizer update: step={self.step}, running_cnt={self.running_cnt}, running_sum={self.running_sum}, running_sum_sq={self.running_sum_sq}, running_mean={self.running_mean}, running_var={self.running_var}, running_std={self.running_std}")
+            self.logger.debug(f"Normalizer update: step={self.step}, running_cnt={self.running_cnt}, running_mean={self.running_mean}, running_var={self.running_var}, running_std={self.running_std}")
 
         # Reset local statistics
         self.local_cnt.zero_()
@@ -177,8 +170,8 @@ class BaseNormalizer:
             'local_sum_sq': self.local_sum_sq.cpu().detach().numpy(),
             'local_cnt': self.local_cnt.cpu().detach().numpy(),
             'running_cnt': self.running_cnt.cpu().detach().numpy(),
-            'running_sum': self.running_sum.cpu().detach().numpy(),
-            'running_sum_sq': self.running_sum_sq.cpu().detach().numpy(),
+            # 'running_sum': self.running_sum.cpu().detach().numpy(),
+            # 'running_sum_sq': self.running_sum_sq.cpu().detach().numpy(),
             'running_mean': self.running_mean.cpu().detach().numpy(),
             'running_var': self.running_var.cpu().detach().numpy(),
             'running_std': self.running_std.cpu().detach().numpy(),
@@ -284,8 +277,8 @@ class RunningNorm(BaseNormalizer):
         normalizer.local_sum_sq = T.tensor(state['local_sum_sq'], device=device)
         normalizer.local_cnt = T.tensor(state['local_cnt'], device=device)
         normalizer.running_cnt = T.tensor(state['running_cnt'], device=device)
-        normalizer.running_sum = T.tensor(state['running_sum'], device=device)
-        normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
+        # normalizer.running_sum = T.tensor(state['running_sum'], device=device)
+        # normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
         normalizer.running_mean = T.tensor(state['running_mean'], device=device)
         normalizer.running_var = T.tensor(state['running_var'], device=device)
         normalizer.running_std = T.tensor(state['running_std'], device=device)
@@ -324,14 +317,14 @@ class BatchNorm(BaseNormalizer):
             mean = v.mean(dim=0, keepdim=True)
             var = v.var(dim=0, unbiased=False, keepdim=True)
             std = T.sqrt(var + self.epsilon**2).clamp(min=1e-4)
-            norms = (v - mean) / std
+            norms = T.clamp((v - mean) / std, -self.clip_value, self.clip_value).float()
         else:
             norms = (v - self.running_mean) / self.running_std
 
         if self._log_diag:
             self.logger.debug(f"BatchNorm normalize: step={self.step}, data={v}, data_shape={v.shape}, running_mean={self.running_mean}, running_std={self.running_std}, norms={norms}")
 
-        return T.clamp(norms, -self.clip_value, self.clip_value).float()
+        return norms
 
     def get_config(self) -> dict:
         config = super().get_config()
@@ -364,15 +357,15 @@ class BatchNorm(BaseNormalizer):
         normalizer.local_sum_sq = T.tensor(state['local_sum_sq'], device=device)
         normalizer.local_cnt = T.tensor(state['local_cnt'], device=device)
         normalizer.running_cnt = T.tensor(state['running_cnt'], device=device)
-        normalizer.running_sum = T.tensor(state['running_sum'], device=device)
-        normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
+        # normalizer.running_sum = T.tensor(state['running_sum'], device=device)
+        # normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
         normalizer.running_mean = T.tensor(state['running_mean'], device=device)
         normalizer.running_var = T.tensor(state['running_var'], device=device)
         normalizer.running_std = T.tensor(state['running_std'], device=device)
 
         return normalizer
 
-class RewardNormalizer(BaseNormalizer):
+class RewardNorm(BaseNormalizer):
     """
     Normalizes rewards using running return standard deviation.
     """
@@ -386,6 +379,91 @@ class RewardNormalizer(BaseNormalizer):
         **kwargs
     ):
         super().__init__(1, clip_value, epsilon, device, log_level, **kwargs)
+        self.gamma = gamma
+        # Set internal attrs
+        self.num_envs = None
+        self.returns = None
+
+    def add(self, rewards: T.Tensor, dones: T.Tensor) -> T.Tensor:
+        """
+        Add rewards to returns and update running statistics.
+        """
+        if rewards.device != self.device:
+            rewards = rewards.to(self.device)
+        if dones.device != self.device:
+            dones = dones.to(self.device)
+        
+        # Set internal attr if not set
+        if self.num_envs is None:
+            self.num_envs = rewards.shape[0]
+        if self.returns is None and self.num_envs is not None:
+            self.returns = T.zeros(self.num_envs, device=self.device)
+        
+        # Update returns
+        self.returns = self.returns * self.gamma + rewards.squeeze(-1)
+        super().add(self.returns.unsqueeze(-1))
+
+        if self._log_diag:
+            self.logger.debug(f"RewardNorm add: step={self.step}, rewards={rewards}, dones={dones}, returns={self.returns}")
+
+        # Reset env return if done
+        self.returns[dones] = 0.0
+
+    def normalize(self, rewards: T.Tensor) -> T.Tensor:
+        """
+        Normalize rewards using running return standard deviation.
+        """
+        if rewards.device != self.device:
+            rewards = rewards.to(self.device)
+
+        norms = T.clamp(rewards / self.running_std, -self.clip_value, self.clip_value).float()
+
+        if self._log_diag:
+            self.logger.debug(f"RewardNorm normalize: step={self.step}, data={rewards}, data_shape={rewards.shape}, running_mean={self.running_mean}, running_std={self.running_std}, norms={norms}")
+        
+        return norms
+
+    def get_config(self) -> dict:
+        config = super().get_config()
+        config['type'] = self.__class__.__name__
+        config['config'].update({
+            'gamma': self.gamma,
+        })
+        return config
+
+    @classmethod
+    def load(cls, config: dict, state_path: str) -> 'RewardNorm':
+        """
+        Load a RewardNorm state from a file.
+
+        Args:
+            config (dict): Configuration of the normalizer.
+            state_path (str): Path to load the state from.
+
+        Returns:
+            RewardNorm: A RewardNorm instance with the loaded state.
+        """
+
+        device = get_device(config['device'])
+        state = T.load(state_path, map_location='cpu', weights_only=False)
+        normalizer = RewardNorm(
+            gamma=config['gamma'],
+            clip_value=config['clip_value'],
+            epsilon=config['epsilon'],
+            device=config['device']
+        )
+        normalizer.step = state['step']
+        normalizer.local_sum = T.tensor(state['local_sum'], device=device)
+        normalizer.local_sum_sq = T.tensor(state['local_sum_sq'], device=device)
+        normalizer.local_cnt = T.tensor(state['local_cnt'], device=device)
+        normalizer.running_cnt = T.tensor(state['running_cnt'], device=device)
+        # normalizer.running_sum = T.tensor(state['running_sum'], device=device)
+        # normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
+        normalizer.running_mean = T.tensor(state['running_mean'], device=device)
+        normalizer.running_var = T.tensor(state['running_var'], device=device)
+        normalizer.running_std = T.tensor(state['running_std'], device=device)
+
+        return normalizer
         
 class SharedNormalizer:
     def __init__(self, size, eps=1e-2, clip_range=5.0):
@@ -549,4 +627,5 @@ class SharedNormalizer:
 NORMALIZER_CLASSES = {
     "RunningNorm": RunningNorm,
     "BatchNorm": BatchNorm,
+    "RewardNorm": RewardNorm,
 }

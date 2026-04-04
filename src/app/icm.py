@@ -12,11 +12,20 @@ import logging
 
 class ICM(Model):
     """Intrinsic Curiousity Module."""
-    def __init__(self, env:EnvWrapper, model_configs:dict, optimizer_params:dict, reward_weight:float=0.1,
-                 reward_scheduler: Optional[ScheduleWrapper]=None, beta:float=0.2,
-                 extrinsic_threshold: int=0, log_level: str = 'info',
-                 device:Optional[str | T.device]=None):
+    def __init__(
+        self,
+        env:EnvWrapper,
+        model_configs:dict,
+        optimizer_params:dict,
+        reward_weight:float=0.1,
+        reward_scheduler: Optional[ScheduleWrapper]=None,
+        beta:float=0.2,
+        extrinsic_threshold: int=0,
+        log_level: str = 'info',
+        device:Optional[str | T.device]=None
+    ):
         try:
+            self.logger = get_logger(self.__class__.__name__, level=log_level.upper())
             super().__init__(env, [], optimizer_params, device=device)
             self.model_configs = model_configs
             self.reward_weight = reward_weight

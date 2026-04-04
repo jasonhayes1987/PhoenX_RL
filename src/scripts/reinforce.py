@@ -9,6 +9,7 @@ def build(config: dict, env: EnvWrapper):
     # build policy
     policy_config = config['models']['policy']
     policy_config['env'] = env
+    policy_config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
     policy = StochasticDiscretePolicy(**policy_config)
 
     # # build value model if not None
@@ -34,15 +35,32 @@ def build(config: dict, env: EnvWrapper):
     else:
         advantage_normalizer = None
 
-    # Create ActorCritic Agent
-    return Reinforce(
-                    policy=policy,
-                    value=value,
-                    discount=config['agent']['discount'],
-                    state_normalizer=state_normalizer,
-                    advantage_normalizer=advantage_normalizer,
-                    entropy_coefficient=config['agent']['entropy_coefficient'],
-                    entropy_schedule=ScheduleWrapper(type=config['entropy_schedule']['type'], **config['entropy_schedule']['config']) if config.get('entropy_schedule', None) else None,
-                    save_dir=config['save_dir'],
-                    device=config['device'],
-    )
+    # create reward normalizer object if present in config
+    if config.get('normalizers', {}).get('reward', None):
+        reward_normalizer = create_normalizer(config['normalizers']['reward'])
+    else:
+        reward_normalizer = None
+
+    reinforce_config = config['agent']['config']
+    reinforce_config.update({
+        'policy': policy,
+        'value': value,
+        'entropy_schedule': ScheduleWrapper(**config['entropy_schedule']) if config.get('entropy_schedule', None) else None,
+        'state_normalizer': state_normalizer,
+        'advantage_normalizer': advantage_normalizer,
+        'reward_normalizer': reward_normalizer,
+    })
+
+    # Create Reinforce Agent
+    return Reinforce(**reinforce_config)
+    # return Reinforce(
+    #                 policy=policy,
+    #                 value=value,
+    #                 discount=config['agent']['discount'],
+    #                 state_normalizer=state_normalizer,
+    #                 advantage_normalizer=advantage_normalizer,
+    #                 entropy_coefficient=config['agent']['entropy_coefficient'],
+    #                 entropy_schedule=ScheduleWrapper(type=config['entropy_schedule']['type'], **config['entropy_schedule']['config']) if config.get('entropy_schedule', None) else None,
+    #                 save_dir=config['save_dir'],
+    #                 device=config['device'],
+    # )

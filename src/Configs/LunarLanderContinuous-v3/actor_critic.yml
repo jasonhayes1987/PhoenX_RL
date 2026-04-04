@@ -1,6 +1,6 @@
 device: &device cuda
 seed: &seed null
-save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLander-v3_test/ActorCritic/
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_test/ActorCritic/
 log_level: INFO
 
 agent:
@@ -22,7 +22,7 @@ env:
   type: gymnasium # "isaacsim" or "gymnasium"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    cfg: LunarLander-v3
+    cfg: LunarLanderContinuous-v3
     num_envs: 16
     # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
     wrappers: []
@@ -45,8 +45,8 @@ models:
       - type: dense
         params: {kernel: default, kernel_params: {}}
     optimizer_params: {type: RMSprop, params: {lr: 7.0e-4, eps: 1.0e-5, alpha: 0.99}}
-    distribution: categorical
-    temperature: &temperature 1.0
+    distribution: normal
+    # temperature: &temperature 1.0
     device: *device
 
   value:
@@ -124,4 +124,4 @@ renderer:
 
 callbacks:
   - type: WandbCallback
-    config: {project_name: LunarLander-v3}
+    config: {project_name: LunarLanderContinuous-v3}
