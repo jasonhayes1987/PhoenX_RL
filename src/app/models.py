@@ -462,14 +462,6 @@ class StochasticDiscretePolicy(Model):
         self.output_layer = nn.ModuleDict({
             'policy_dense_output': nn.LazyLinear(self.num_actions)
         })
-        # self.add_module('output_layer', self.output_layer)
-
-        # Initialize weights
-        # self._init_weights(self.layer_config, self.layers)
-        # self._init_weights(self.output_config, self.output_layer)
-
-        # Initialize optimizer
-        # self.optimizer = self._init_optimizer()
 
         # Move to device
         self.to(self.device)
@@ -506,14 +498,6 @@ class StochasticDiscretePolicy(Model):
                 temperature *= self.temperature_schedule.get_factor()
             dist = Categorical(logits=x / temperature)
             return dist
-
-        # elif self.distribution == 'relaxed_categorical':
-        #     if self.temperature is None:
-        #         raise ValueError('Temperature is required for relaxed categorical distribution.')
-        #     temperature = self.temperature_schedule.get_factor() * self.temperature if self.temperature_schedule else self.temperature
-        #     relaxed_dist = RelaxedOneHotCategorical(logits=x, temperature=temperature)
-        #     dist = Categorical(probs=relaxed_dist.probs)
-        #     return dist
         else:
             raise ValueError(f'Distribution {self.distribution} not supported.')
 

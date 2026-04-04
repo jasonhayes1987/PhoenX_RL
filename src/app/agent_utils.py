@@ -4,11 +4,12 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 import torch as T
 import torch.nn as nn
+from torch.optim import Optimizer
 from .models import ActorModel, ContinuousCritic, ValueModel, StochasticContinuousPolicy, StochasticDiscretePolicy, select_policy_model, select_critic_model
 from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, NStepReward, VectorNStepReward
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
 from .noise import Noise, NormalNoise, UniformNoise, OUNoise
-from .normalizer import BaseNormalizer, RunningNorm, BatchNorm
+from .normalizer import BaseNormalizer, RunningNorm, BatchNorm, RewardNorm
 from .rl_callbacks import load as callback_load, WandbCallback, RayWandbCallback
 from .schedulers import ScheduleWrapper
 from .torch_utils import get_device
@@ -163,6 +164,16 @@ def compute_advantages_and_returns(
     advantages = compute_gae(td_errors, terminations, truncations, gamma, gae_lambda, bootstrap_truncations, device)
     returns = advantages + values
     return advantages, returns, td_errors
+
+def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
+    total_sq = None
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            if p.grad is None:
+                continue
+            grad_sq = p.grad.detach().pow(2).sum()
+            total_sq = grad_sq if total_sq is None else total_sq + grad_sq
+    return float(T.sqrt(total_sq)) if total_sq is not None else 0.0
 
 def load_agent(config_dir:str | Path, load_weights: bool = True):
     """

@@ -26,9 +26,9 @@ def configure_logging(level: str = "INFO") -> logging.Logger:
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.NOTSET)
-    console_handler.setFormatter(formatter)
+    # console_handler = logging.StreamHandler()
+    # console_handler.setLevel(logging.NOTSET)
+    # console_handler.setFormatter(formatter)
 
     log_path = Path(__file__).resolve().parents[1] / "app.log"
     file_handler = RotatingFileHandler(
@@ -42,7 +42,7 @@ def configure_logging(level: str = "INFO") -> logging.Logger:
     file_handler.setFormatter(formatter)
 
     app_logger.handlers.clear()
-    app_logger.addHandler(console_handler)
+    # app_logger.addHandler(console_handler)
     app_logger.addHandler(file_handler)
 
     _LOGGING_CONFIGURED = True
