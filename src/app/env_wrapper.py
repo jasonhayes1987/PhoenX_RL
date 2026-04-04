@@ -749,7 +749,7 @@ class GymnasiumWrapper(EnvWrapper):
         self.wrappers = wrappers
         self.num_envs = num_envs
         if seed is None:
-            seed = np.random.randint(1000)
+            seed = T.randint(2**31-1, (1,)).item()
         self.seed = seed
         self.render_mode = render_mode
         self.obs_key = obs_key
@@ -760,7 +760,7 @@ class GymnasiumWrapper(EnvWrapper):
 
     def _initialize_env(self):
         """
-        Initialize the Gymnasium environment with unique seeds for each environment.
+        Initialize the Gymnasium environments.
 
         
         Returns:
@@ -914,11 +914,14 @@ class GymnasiumWrapper(EnvWrapper):
         return frame[0]
         
 
-    def reset(self):
-        if self.seed is not None:
-            states, infos = self.env.reset(seed=self.seed)
+    def reset(self, seed:int|None=None):
+        if seed is not None:
+            effective_seed = seed
         else:
-            states, infos = self.env.reset()
+            effective_seed = self.seed
+
+        states, infos = self.env.reset(seed=effective_seed)
+        self.env.action_space.seed(seed=effective_seed)
         
         obs, goals, ach_goals = self.extract_states_goals(states)
         

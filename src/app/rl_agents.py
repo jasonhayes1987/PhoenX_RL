@@ -26,7 +26,7 @@ from .models import select_policy_model, StochasticContinuousPolicy, StochasticD
 from .schedulers import ScheduleWrapper
 from .adaptive_kl import AdaptiveKL
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, Buffer
-from .normalizer import BaseNormalizer, SharedNormalizer
+from .normalizer import BaseNormalizer, RewardNorm
 from .noise import Noise, NormalNoise, UniformNoise, OUNoise
 import wandb
 from . import wandb_support
@@ -48,7 +48,7 @@ import numpy as np
 from isaaclab.app import AppLauncher
 
 
-from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns
+from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, grad_norm_from_optimizer
 
 
 # Agent class
@@ -463,7 +463,7 @@ class OnPolicyAgent(Agent):
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
         advantage_normalizer: BaseNormalizer|None = None,
-        reward_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: RewardNorm|None = None,
         entropy_coefficient: float=0.01,
         entropy_schedule: ScheduleWrapper|None = None,
         auto_entropy_tuning: bool=True,
@@ -527,7 +527,7 @@ class ActorCritic(OnPolicyAgent):
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
         advantage_normalizer: BaseNormalizer|None = None,
-        reward_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: RewardNorm|None = None,
         entropy_coefficient: float=0.01, # Only used if auto entropy = False
         entropy_schedule: ScheduleWrapper|None = None, # Only used if auto entropy = False
         auto_entropy_tuning: bool=True,
@@ -586,6 +586,7 @@ class ActorCritic(OnPolicyAgent):
         rewards = rollouts['rewards']
         next_states = rollouts['next_states']
         goals = rollouts['desired_goals']
+        ach_goals = rollouts['state_achieved_goals']
         next_ach_goals = rollouts['next_state_achieved_goals']
         terminations = rollouts['terminations']
         truncations = rollouts['truncations']
@@ -596,8 +597,9 @@ class ActorCritic(OnPolicyAgent):
             next_states = self.state_normalizer.normalize(next_states)
         if self.goal_normalizer:
             goals = self.goal_normalizer.normalize(goals)
-            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
-        
+            ach_goals = self.goal_normalizer.normalize(ach_goals)
+        if self.reward_normalizer:
+            rewards = self.reward_normalizer.normalize(rewards)
 
         # Get entropy coefficient
         if self.auto_entropy_tuning:
@@ -672,6 +674,15 @@ class ActorCritic(OnPolicyAgent):
         # Calculate policy loss
         policy_loss = -(log_probs * policy_advantages + entropy_coefficient * entropies).mean()
 
+        # Backpropogate
+        value_loss.backward()
+        policy_loss.backward()
+        # Clip gradients if grad clips
+        if self.value_grad_clip:
+            value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), self.value_grad_clip)
+        if self.policy_grad_clip:
+            policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
+
         nonfinite_values = (
             count_nonfinite(state_values)
             + count_nonfinite(next_state_values)
@@ -704,17 +715,7 @@ class ActorCritic(OnPolicyAgent):
                 summarize_tensor(entropies, "entropies"),
                 f"entropy_coef={float(entropy_coefficient)}",
             )
-
-        # Backpropogate
-        value_loss.backward()
-        policy_loss.backward()
-        # Clip gradients if grad clips
-        if self.value_grad_clip:
-            value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), self.value_grad_clip)
-        if self.policy_grad_clip:
-            policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
-
-        if should_log_diag or nonfinite_values > 0:
+        
             self.logger.debug(
                 "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
                 "value_loss=%.6f policy_loss=%.6f",
@@ -732,13 +733,15 @@ class ActorCritic(OnPolicyAgent):
         if self.auto_entropy_tuning:
             self.entropy_optimizer.zero_grad()
             alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-            # alpha_loss = -(self.log_alpha * (self.target_entropy - entropies).detach()).mean()
-            # if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-            #     alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-            # else: # Discrete actor
-            #     alpha_loss = -(self.log_alpha * (self.target_entropy - entropies).detach()).mean()
             alpha_loss.backward()
             self.entropy_optimizer.step()
+
+        # Get temperature value from policy if categorical
+        if self.policy.distribution == 'categorical':
+            temperature = self.policy.temperature
+            if self.policy.temperature_schedule:
+                temperature *= self.policy.temperature_schedule.get_factor()
+            learn_metrics.update({'temperature': temperature})
 
         learn_metrics.update({
             'policy_loss': policy_loss.item(),
@@ -789,6 +792,7 @@ class ActorCritic(OnPolicyAgent):
         state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
         advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
+        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
 
         agent = cls(
             policy=policy,
@@ -797,6 +801,7 @@ class ActorCritic(OnPolicyAgent):
             state_normalizer=state_normalizer,
             goal_normalizer=goal_normalizer,
             advantage_normalizer=advantage_normalizer,
+            reward_normalizer=reward_normalizer,
             entropy_coefficient=config["entropy_coefficient"],
             entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
             auto_entropy_tuning=config["auto_entropy_tuning"],
@@ -820,6 +825,7 @@ class Reinforce(OnPolicyAgent):
         discount: float = 0.99,
         state_normalizer: BaseNormalizer|None = None,
         advantage_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: RewardNorm|None = None,
         entropy_coefficient: float = 0.01,
         entropy_schedule: ScheduleWrapper|None = None,
         auto_entropy_tuning: bool=True,
@@ -837,8 +843,11 @@ class Reinforce(OnPolicyAgent):
             discount: The discount factor for future rewards.
             state_normalizer: The normalizer for state inputs.
             advantage_normalizer: The normalizer for advantage/return inputs.
+            reward_normalizer: The normalizer for reward inputs.
             entropy_coefficient: The coefficient for entropy regularization.
             entropy_schedule: The schedule for entropy regularization.
+            auto_entropy_tuning: Whether to automatically tune the entropy coefficient.
+            entropy_lr: The learning rate for the entropy coefficient.
             save_dir: The directory to save the model.
             device: The device to use for computations.
             kwargs: Additional keyword arguments.
@@ -851,6 +860,7 @@ class Reinforce(OnPolicyAgent):
                 state_normalizer,
                 None,
                 advantage_normalizer = advantage_normalizer,
+                reward_normalizer = reward_normalizer,
                 entropy_coefficient = entropy_coefficient,
                 entropy_schedule = entropy_schedule,
                 auto_entropy_tuning = auto_entropy_tuning,
@@ -864,25 +874,35 @@ class Reinforce(OnPolicyAgent):
             self.logger.error(f"Error in Reinforce.__init__: {e}", exc_info=True)
 
     def learn(self, step: int, completed_trajectories: list[dict]):
+        self._learn_count += 1
+        if self._diag_freq is not None:
+            should_log_diag = (self._learn_count % self._diag_freq == 0)
+        else:
+            should_log_diag = False
+        
         learn_metrics = {}
 
-        all_states = []
-        all_actions = []
-        all_returns = []
-        # all_next_states = []
-        # all_dones = []
+        all_states = [trajectory['states'] for trajectory in completed_trajectories]
+        all_actions = [trajectory['actions'] for trajectory in completed_trajectories]
+        all_rewards = [trajectory['rewards'] for trajectory in completed_trajectories]
+        all_terminations = [trajectory['terminations'] for trajectory in completed_trajectories]
+        all_truncations = [trajectory['truncations'] for trajectory in completed_trajectories]
 
-        # Clear gradients
-        self.policy.optimizer.zero_grad()
-        if self.value:
-            self.value.optimizer.zero_grad()
+        for i, (rewards, terminations, truncations) in enumerate(zip(all_rewards, all_terminations, all_truncations)):
+            dones = T.logical_or(terminations, truncations)
+            if self.reward_normalizer:
+                rewards = self.reward_normalizer.normalize(rewards)
+            all_rewards[i] = rewards
+        
+        all_returns = [compute_monte_carlo_returns(rewards, self.discount, device=self.device) for rewards in all_rewards]
 
-        # Iterate over completed trajectories
-        for trajectory in completed_trajectories:
-            all_states.append(trajectory['states'])
-            all_actions.append(trajectory['actions'])
-            _return = compute_monte_carlo_returns(trajectory['rewards'], self.discount, device=self.device)
-            all_returns.append(_return)
+        # # Iterate over completed trajectories
+        # for trajectory in completed_trajectories:
+        #     all_states.append(trajectory['states'])
+        #     all_actions.append(trajectory['actions'])
+        #     # _return = compute_monte_carlo_returns(trajectory['rewards'], self.discount, device=self.device)
+        #     # all_returns.append(_return)
+        #     all_rewards.append(trajectory['rewards'])
             
 
         # Use T.cat to concatenate all tensors in list into single tensor of shape [total_steps, obs_dim]
@@ -893,6 +913,11 @@ class Reinforce(OnPolicyAgent):
         # Normalize states if using normalizer
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
+
+        # Clear gradients
+        self.policy.optimizer.zero_grad()
+        if self.value:
+            self.value.optimizer.zero_grad()
         
         # Calculate advantages and value loss if using value function
         if self.value:
@@ -900,6 +925,8 @@ class Reinforce(OnPolicyAgent):
             advantages = returns.detach() - values
             value_loss = advantages.pow(2).mean()
         else:
+            values = T.zeros_like(returns)
+            advantages = T.zeros_like(returns)
             value_loss = 0
 
         # Calculate policy loss
@@ -934,6 +961,46 @@ class Reinforce(OnPolicyAgent):
         total_loss = policy_loss + value_loss
         total_loss.backward()
 
+        nonfinite_values = (
+            count_nonfinite(values)
+            + count_nonfinite(advantages)
+            + count_nonfinite(returns)
+            + count_nonfinite(log_probs)
+            + count_nonfinite(entropies)
+        )
+
+        if should_log_diag or nonfinite_values > 0:
+            self.logger.debug(
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s",
+                step,
+                self._learn_count,
+                summarize_tensor(states, "states"),
+                summarize_tensor(actions, "actions"),
+                summarize_tensor(rewards, "rewards"),
+                summarize_tensor(terminations, "terminations"),
+                summarize_tensor(truncations, "truncations"),
+                summarize_tensor(values, "values"),
+                summarize_tensor(advantages, "advantages"),
+                summarize_tensor(returns, "returns"),
+                summarize_tensor(log_probs, "log_probs"),
+                summarize_tensor(entropies, "entropies"),
+                f"entropy_coef={float(entropy_coefficient)}",
+            )
+
+        if should_log_diag or nonfinite_values > 0:
+            value_grad_norm = grad_norm_from_optimizer(self.value.optimizer)
+            policy_grad_norm = grad_norm_from_optimizer(self.policy.optimizer)
+            self.logger.debug(
+                "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
+                "value_loss=%.6f policy_loss=%.6f",
+                step,
+                self._learn_count,
+                value_grad_norm,
+                policy_grad_norm,
+                float(value_loss.item()),
+                float(policy_loss.item()),
+            )
+
         # Update weights
         self.policy.optimizer.step()
         if self.value:
@@ -947,6 +1014,13 @@ class Reinforce(OnPolicyAgent):
                 alpha_loss = -(self.log_alpha * ((dist.probs * log_probs).sum(dim=-1) + self.target_entropy).detach()).mean()
             alpha_loss.backward()
             self.entropy_optimizer.step()
+
+        # Get temperature value from policy if categorical
+        if self.policy.distribution == 'categorical':
+            temperature = self.policy.temperature
+            if self.policy.temperature_schedule:
+                temperature *= self.policy.temperature_schedule.get_factor()
+            learn_metrics.update({'temperature': temperature})
 
         learn_metrics.update({
             'policy_loss': policy_loss.item(),
@@ -3916,59 +3990,60 @@ class PPO(OnPolicyAgent):
     """
     Proximal Policy Optimization (PPO) agent implementation.
 
-    This agent uses policy and value networks to learn an optimal policy for a given environment
-    using the PPO algorithm. It supports features such as Generalized Advantage Estimation (GAE),
-    reward clipping, and gradient clipping for stable learning.
-
     Attributes:
-        env (EnvWrapper): The environment wrapper for the agent.
-        policy_model: The policy model used for action selection.
-        value_model: The value model used for state-value prediction.
-        discount (float): Discount factor for future rewards.
-        gae_coefficient (float): GAE smoothing coefficient.
-        policy_clip (float): Clipping value for policy ratio updates.
-        policy_clip_schedule (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
-        value_clip (float): Clipping value for value model updates.
-        value_clip_schedule (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
-        value_loss_coefficient (float): value to weight the value loss by.
-        entropy_coefficient (float): Coefficient for entropy regularization.
-        entropy_schedule (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
-        kl_coefficient (float): Coefficient for KL divergence penalty.
-        kl_adapter (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
-        normalize_advantages (bool): Whether to normalize advantages.
-        state_normalizer (BaseNormalizer): Normalizer for state inputs.
-        goal_normalizer (BaseNormalizer): Normalizer for goal inputs.
-        obs_key (str): Key for observation in the state space dict.
-        goal_key (str): Key for desired goal in the state space dict.
-        # achieved_goal_key (str): Key for achieved goal in the state space dict.
-        grad_clip (float): Maximum norm for gradients.
-        reward_clip (float): Maximum absolute value for reward clipping.
-        callbacks (List): List of callback objects for logging and monitoring.
-        save_dir (str): Directory to save models and configurations.
-        device (str): Device for computations ('cpu' or 'cuda').
+        policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
+        value: (ValueModel): The value model used for state-value prediction.
+        discount: (float): Discount factor for future rewards.
+        gae_coefficient: (float): GAE smoothing coefficient.
+        state_normalizer: (BaseNormalizer): Normalizer for state inputs.
+        goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
+        advantage_normalizer: (BaseNormalizer): Normalizer for advantages
+        reward_normalizer:(RewardNorm): Normalizer for rewards.
+        entropy_coefficient: (float): Coefficient for entropy regularization.
+        entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
+        auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
+        entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
+        kl_coefficient: (float): Coefficient for KL divergence penalty.
+        kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
+        policy_clip: (float): Clipping value for policy ratio updates.
+        policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
+        policy_grad_clip: (float): Maximum norm for policy model gradients.
+        value_clip: (float): Clipping value for value model updates.
+        value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
+        value_grad_clip: (float): Maximum norm for value model gradients.
+        value_coef: (float): value to weight the value loss by.
+        reward_clip: (float): Maximum absolute value for reward clipping.
+        curiosity: (ICM): Intrinsic Curiosity Module for curiosity-driven learning.
+        bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
+        save_dir: (str): Directory to save models and configurations.
+        device: (str): Device for computations ('cpu' or 'cuda').
     """
 
     def __init__(self,
-                #  env: EnvWrapper,
                  policy: StochasticContinuousPolicy | StochasticDiscretePolicy,
                  value: ValueModel,
                  discount: float = 0.99,
                  gae_coefficient: float = 0.95,
-                 policy_clip: float = 0.2,
-                 policy_clip_schedule: ScheduleWrapper|None = None,
-                 value_clip: float = 0.2,
-                 value_clip_schedule: ScheduleWrapper|None = None,
-                 value_loss_coefficient: float = 1.0,
-                 entropy_coefficient: float = 0.01,
-                 entropy_schedule: ScheduleWrapper|None = None,
-                 kl_coefficient: float = 0.0,
-                 kl_adapter: AdaptiveKL|None = None,
-                 curiosity: ICM|None = None,
                  state_normalizer: BaseNormalizer|None = None,
                  goal_normalizer: BaseNormalizer|None = None,
                  advantage_normalizer: BaseNormalizer|None = None,
-                 grad_clip: float = float('inf'),
+                 reward_normalizer: RewardNorm|None = None,
+                 entropy_coefficient: float = 0.01,
+                 entropy_schedule: ScheduleWrapper|None = None,
+                 auto_entropy_tuning: bool = True,
+                 entropy_lr: float = 3e-4,
+                 kl_coefficient: float = 0.0,
+                 kl_adapter: AdaptiveKL|None = None,
+                 policy_clip: float = 0.2,
+                 policy_clip_schedule: ScheduleWrapper|None = None,
+                 policy_grad_clip: float = float('inf'),
+                 value_clip: float = 0.2,
+                 value_clip_schedule: ScheduleWrapper|None = None,
+                 value_grad_clip: float = float('inf'),
+                 value_coef: float = 1.0,
                  reward_clip: float = float('inf'),
+                 curiosity: ICM|None = None,
+                 bootstrap_truncations: bool=True,
                  save_dir: str = 'models',
                  device: str = None,
                  **kwargs,
@@ -3977,32 +4052,33 @@ class PPO(OnPolicyAgent):
         Initialize the PPO agent.
 
         Args:
-            env (EnvWrapper): The environment wrapper for the agent.
-            policy_model: The policy model used for action selection.
-            value_model: The value model used for state-value prediction.
-            discount (float): Discount factor for future rewards (default: 0.99).
-            gae_coefficient (float): GAE smoothing coefficient (default: 0.95).
-            policy_clip (float): Clipping value for policy ratio updates (default: 0.2).
-            policy_clip_schedule (ScheduleWrapper): Rate at which to decay policy clip per learn epoch (default: None).
-            value_clip (float): Clipping value for value model updates (default: 0.2).
-            value_clip_schedule (ScheduleWrapper): Rate at which to decay value clip per learn epoch (default: None).
-            value_loss_coefficient (float): value to weight the value loss by (default: 1.0).
-            entropy_coefficient (float): Coefficient for entropy regularization (default: 0.01).
-            entropy_schedule (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch (default: None).
-            kl_coefficient (float): Coefficient for KL divergence penalty (default: 0.01).
-            kl_adapter (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target (default: None).
-            normalize_advantages (bool): Whether to normalize advantages (default: True).
-            curiosity (ICM): ICM model for curiosity-driven learning (default: None).
-            state_normalizer (BaseNormalizer): Normalizer for state inputs (default: None).
-            goal_normalizer (BaseNormalizer): Normalizer for goal inputs (default: None).
-            obs_key (str): Key for observation in the state space dict (default: 'observation').
-            goal_key (str): Key for desired goal in the state space dict (default: 'desired_goal').
-            # achieved_goal_key (str): Key for achieved goal in the state space dict (default: 'achieved_goal').
-            grad_clip (float): Maximum norm for policy gradients (default: inf).
-            reward_clip (float): Maximum absolute value for reward clipping (default: inf).
-            callbacks (list): List of callback objects for logging and monitoring (default: []).
-            save_dir (str): Directory to save models and configurations (default: 'models').
-            device (str): Device for computations ('cpu' or 'cuda', default: 'cuda').
+            policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
+            value: (ValueModel): The value model used for state-value prediction.
+            discount: (float): Discount factor for future rewards.
+            gae_coefficient: (float): GAE smoothing coefficient.
+            state_normalizer: (BaseNormalizer): Normalizer for state inputs.
+            goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
+            advantage_normalizer: (BaseNormalizer): Normalizer for advantages.
+            reward_normalizer: (RewardNorm): Normalizer for rewards.
+            entropy_coefficient: (float): Coefficient for entropy regularization.
+            entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
+            auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
+            entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
+            kl_coefficient: (float): Coefficient for KL divergence penalty.
+            kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
+            policy_clip: (float): Clipping value for policy ratio updates.
+            policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
+            policy_grad_clip: (float): Maximum norm for policy model gradients.
+            value_clip: (float): Clipping value for value model updates.
+            value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
+            value_grad_clip: (float): Maximum norm for value model gradients.
+            value_coef: (float): value to weight the value loss by.
+            reward_clip: (float): Maximum absolute value for reward clipping.
+            curiosity: (ICM): Intrinsic Curiosity Module for curiosity-driven learning.
+            bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
+            save_dir: (str): Directory to save models and configurations.
+            device: (str): Device for computations ('cpu' or 'cuda').
+            kwargs: Additional keyword arguments.
         """
         try:
             super().__init__(
@@ -4010,293 +4086,65 @@ class PPO(OnPolicyAgent):
                 value,
                 discount,
                 state_normalizer,
-                goal_normalizer,
-                advantage_normalizer,
-                entropy_coefficient,
-                entropy_schedule,
+                None,
+                advantage_normalizer = advantage_normalizer,
+                reward_normalizer = reward_normalizer,
+                entropy_coefficient = entropy_coefficient,
+                entropy_schedule = entropy_schedule,
+                auto_entropy_tuning = auto_entropy_tuning,
+                entropy_lr = entropy_lr,
                 save_dir = save_dir,
                 device=device,
-                # log_level=log_level,
                 **kwargs
             )
-            # self.policy_model = policy_model
-            # self.value_model = value_model
-            # self.discount = discount
             self.gae_coefficient = gae_coefficient
-            self.policy_clip = policy_clip
-            self.policy_clip_schedule = policy_clip_schedule
-            self.value_clip = value_clip
-            self.value_clip_schedule = value_clip_schedule
-            self.value_loss_coefficient = value_loss_coefficient
-            # self.entropy_coefficient = entropy_coefficient
-            # self.entropy_schedule = entropy_schedule
             self.kl_coefficient = kl_coefficient
             self.kl_adapter = kl_adapter
-            # self.normalize_advantages = normalize_advantages
-            self.curiosity = curiosity
-            # self.state_normalizer = state_normalizer
-            # self.goal_normalizer = goal_normalizer
-            # self.advantage_normalizer = advantage_normalizer
-            # self.obs_key = obs_key
-            # self.goal_key = goal_key
-            # self.achieved_goal_key = achieved_goal_key
-            self.grad_clip = grad_clip
+            self.policy_clip = policy_clip
+            self.policy_clip_schedule = policy_clip_schedule
+            self.policy_grad_clip = policy_grad_clip
+            self.value_clip = value_clip
+            self.value_clip_schedule = value_clip_schedule
+            self.value_grad_clip = value_grad_clip
+            self.value_coef = value_coef
             self.reward_clip = reward_clip
+            self.curiosity = curiosity
+            self.bootstrap_truncations = bootstrap_truncations
         except Exception as e:
             self.logger.error(f"Error in PPO.__init__: {e}", exc_info=True)
-    
 
-    # def calculate_advantages_and_returns(self, rewards, states, next_states, dones, goals=None):
-    #     """
-    #     Compute advantages and returns using GAE, correctly handling episode terminations.
-    #     """
-    #     num_steps, num_envs = rewards.shape
-    #     all_advantages = []
-    #     all_returns = []
-    #     all_values = []
-
-    #     for env_idx in range(num_envs):
-    #         with T.no_grad():
-    #             rewards_env = rewards[:, env_idx]
-    #             states_env = states[:, env_idx, ...]
-    #             next_states_env = next_states[:, env_idx, ...]
-    #             goals_env = goals[:, env_idx, ...] if goals is not None else None
-    #             dones_env = dones[:, env_idx]
-    #             values = self.value_model(states_env, goals_env).squeeze(-1)
-    #             next_values = self.value_model(next_states_env, goals_env).squeeze(-1)
-    #             advantages = T.zeros_like(rewards_env)
-    #             returns = T.zeros_like(rewards_env)
-    #             gae = 0.0
-
-    #             # Calculate deltas across the trajectory
-    #             deltas = rewards_env + self.discount * next_values * (1.0 - dones_env) - values
-
-    #             for t in reversed(range(num_steps)):
-    #                 gae = deltas[t] + self.discount * self.gae_coefficient * gae * (1.0 - dones_env[t])
-    #                 advantages[t] = gae
-    #                 returns[t] = gae + values[t]
-
-    #             all_advantages.append(advantages)
-    #             all_returns.append(returns)
-    #             all_values.append(values)
-
-    #     # Stack results across environments
-    #     advantages = T.stack(all_advantages, dim=1)
-    #     returns = T.stack(all_returns, dim=1)
-    #     values = T.stack(all_values, dim=1)
-
-    #     # Normalize advantages
-    #     if self.normalize_advantages:
-    #         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-    #     return advantages, returns, values
-
-    # def get_action(self,
-    #                states:np.ndarray|T.Tensor,
-    #                goals:np.ndarray|T.Tensor|None,
-    #                step=None,
-    #                context: str = 'train'
-    #                )->ActionOutput:
-    #     """
-    #     Select an action based on the current policy.
-
-    #     Args:
-    #         states: np.ndarray|T.Tensor: The current states.
-    #         goals: np.ndarray|T.Tensor|None: The current goals.
-    #         step: int|None: The current step.
-    #         context: str: The context of the action (train, test).
-        
-    #     Returns:
-    #         tuple[np.ndarray | T.Tensor, T.Tensor | None, Distribution | None]: actions, raw actions, and distribution.
-    #     """
-    #     actions = None
-    #     raw_outputs = None
-    #     log_probs = None
-    #     entropies = None
-    #     dist = None
-
-    #     if context == 'train':
-    #         # with T.no_grad():
-    #         # if self.policy_model.distribution == 'categorical':
-    #         dist, raw_outputs = self.policy_model(states, goals)
-    #         # else:
-    #             # dist, _, _ = self.policy_model(states, goals)
-    #         actions = dist.sample()
-    #         log_probs = dist.log_prob(actions)
-    #         entropies = dist.entropy()
-    #     elif context == 'test':
-    #         with T.no_grad():
-    #             # if self.policy_model.distribution == 'categorical':
-    #             dist, raw_outputs = self.policy_model(states, goals)
-    #             if self.policy_model.distribution == 'categorical':
-    #                 actions = dist.mode
-    #             else:
-    #                 actions = dist.mean
-    #             log_probs = dist.log_prob(actions)
-    #             entropies = dist.entropy()
-                
-    #     return actions, raw_outputs.detach(), log_probs, entropies, dist
-
-    # def action_adapter(self, env: EnvWrapper, actions):
-    #     """
-    #     Adapt actions to match the environment's action space.
-
-    #     Args:
-    #         actions (array): Actions to adapt.
-
-    #     Returns:
-    #         array: Adapted actions.
-    #     """
-    #     if isinstance(env, GymnasiumWrapper):
-    #         if isinstance(env.single_action_space, gym.spaces.Box):
-    #             action_space_low = env.single_action_space.low
-    #             action_space_high = env.single_action_space.high
-    #             # Map action values to be between 0-1 if using beta distribution
-    #             if self.policy_model.distribution == 'beta':
-    #                 actions = 1/(1 + np.exp(-actions))
-    #             # Map from [0, 1] to [action_space_low, action_space_high]
-    #             adapted_actions = action_space_low + (action_space_high - action_space_low) * actions
-    #             return adapted_actions
-    #         elif isinstance(env.single_action_space, gym.spaces.Discrete):
-    #             n = env.single_action_space.n
-    #             # Map actions from [0, 1] to [0, n-1]
-    #             adapted_actions = (actions * n).astype(int)
-    #             adapted_actions = np.clip(adapted_actions, 0, n - 1)
-    #             return adapted_actions
-    #     elif isinstance(env, IsaacSimWrapper):
-    #         pass
-    #     else:
-    #         raise NotImplementedError(f"Action adaptation not implemented for environment type: {type(self.env)}")
-
-    #     raise NotImplementedError("Unsupported action space type for the current environment")
-    
-
-    # def clip_reward(self, reward):
-    #     """
-    #     Clip rewards to the specified range.
-
-    #     Args:
-    #         reward (float): Reward to clip.
-
-    #     Returns:
-    #         float: Clipped reward.
-    #     """
-    #     if reward > self.reward_clip:
-    #         return self.reward_clip
-    #     elif reward < -self.reward_clip:
-    #         return -self.reward_clip
-    #     else:
-    #         return reward
-
-    def learn(self, step:int, trajectories:dict, batch_size:int, learning_epochs:int):
+    def learn(self, step:int, rollouts:dict, batch_size:int, learning_epochs:int):
         """
         Perform learning updates using the collected trajectory.
 
         Args:
-            trajectories (dict): Collected trajectories containing states, actions, etc.
+            rollouts (dict): Collected rollouts containing states, actions, etc.
             batch_size (int): Batch size for training.
             learning_epochs (int): Number of epochs per update.
 
         Returns:
-            Tuple: policy loss, value loss, entropy, and KL divergence.
+            dict: Learning metrics.
         """
+        self._learn_count += 1
+        if self._diag_freq is not None:
+            should_log_diag = (self._learn_count % self._diag_freq == 0)
+        else:
+            should_log_diag = False
+
         # Unpack trajectory
-        states_traj, next_states_traj, actions_traj, log_probs_traj, rewards_traj, dones_traj = trajectories.values()
+        (
+            states,
+            actions,
+            rewards,
+            next_states,
+            terminations,
+            truncations,
+            ach_goals,
+            next_ach_goals,
+            goals,
+        ) = rollouts.values()
 
-        # Convert states and next states trajectories to numpy arrays
-        # states_traj = np.ndarray(states_traj)
-        # next_states_traj = np.ndarray(next_states_traj)
-
-        states, goals = self._preprocess_inputs(states_traj)
-        next_states, next_goals = self._preprocess_inputs(next_states_traj)
-        # Convert actions to T.long values if categorical, else floats
-        if self.policy_model.distribution == 'categorical':
-            actions = T.stack([T.tensor(a, dtype=T.long, device=self.device) for a in actions_traj])
-        else:
-            actions = T.stack([T.tensor(a, dtype=T.float32, device=self.device) for a in actions_traj])
-        log_probs = T.stack([T.tensor(lp, dtype=T.float32, device=self.device) for lp in log_probs_traj])
-        rewards = T.stack([T.tensor(r, dtype=T.float32, device=self.device) for r in rewards_traj])
-        dones = T.stack([T.tensor(d, dtype=T.int, device=self.device) for d in dones_traj])
-
-        # Clip rewards
-        if np.isfinite(self.reward_clip):
-            rewards = T.clamp(rewards, min=-self.reward_clip, max=self.reward_clip)
-
-        if self.curiosity:
-            # Flatten trajectory data
-            num_steps, num_envs = rewards.shape
-            total_samples = num_steps * num_envs
-            states_flat = states.reshape(total_samples, -1)
-            next_states_flat = next_states.reshape(total_samples, -1)
-            if self.policy.distribution == 'categorical':
-                actions_flat = actions.flatten()
-            else:
-                actions_flat = actions.reshape(total_samples, -1)
-
-            curiosity_loss = self.curiosity.train(states_flat, next_states_flat, actions_flat)
-            intrinsic_reward = self.curiosity.compute_intrinsic_reward(states_flat, next_states_flat, actions_flat)
-            intrinsic_reward = intrinsic_reward.reshape(num_steps, num_envs)
-            if step > self.curiosity.extrinsic_threshold:
-                rewards += intrinsic_reward
-            else:
-                rewards = intrinsic_reward
-
-        # Calculate advantages and returns (also normalizes via _preprocess_inputs func if using normalizers)
-        advantages, returns, all_values = self.calculate_advantages_and_returns(rewards, states, next_states, dones, goals)
-
-        # Flatten the tensors along the time and environment dimensions for batching
-        num_steps, num_envs = rewards.shape
-        total_samples = num_steps * num_envs
-
-        # Reshape observations
-        states = states.reshape(total_samples, -1)
-        next_states = next_states.reshape(total_samples, -1)
-        goals = goals.reshape(total_samples, -1) if goals is not None else None
-
-        # Reshape tensors for batching
-        all_values = all_values.reshape(total_samples, -1) # Shape: (total_samples, 1)
-        actions = actions.reshape(total_samples, -1)     # Shape: (total_samples, action_space)
-        log_probs = log_probs.reshape(total_samples, -1) # Shape: (total_samples, action_dim)
-        advantages = advantages.reshape(total_samples, 1) # Shape: (total_samples, 1)
-        returns = returns.reshape(total_samples, 1)      # Shape: (total_samples, 1)
-
-        # Create random indices for shuffling
-        indices = T.randperm(total_samples)
-        num_batches = total_samples // batch_size
-
-        # Create instance of policy to serve as old policy
-        if isinstance(self.policy_model, StochasticDiscretePolicy):
-            policy = StochasticDiscretePolicy
-        else:
-            policy = StochasticContinuousPolicy
-        
-        # old_policy = policy(
-        #     env = self.env, 
-        #     layer_config = self.policy_model.layer_config,
-        #     output_config = self.policy_model.output_config,
-        #     optimizer_params = self.policy_model.optimizer_params,
-        #     lr_scheduler = self.policy_model.lr_scheduler,
-        #     distribution = self.policy_model.distribution,
-        #     device = self.policy_model.device
-        # )
-        # old_policy.load_state_dict(self.policy_model.state_dict())
-        old_policy = self.policy.clone(copy_weights=True)
-        old_policy.eval()
-
-        # Create instance of value model to serve as old value func
-        # old_value_model = ValueModel(
-        #     env = self.env,
-        #     layer_config = self.value_model.layer_config,
-        #     output_config = self.value_model.output_config,
-        #     optimizer_params = self.value_model.optimizer_params,
-        #     lr_scheduler = self.value_model.lr_scheduler,
-        #     device = self.value_model.device
-        # )
-        # old_value_model.load_state_dict(self.value_model.state_dict())
-        old_value_model = self.value.clone(copy_weights=True)
-        old_value_model.eval()
-
-        # Get current values of policy clip and entropy/kl coefficients
+        # Get current values of policy/value clip and entropy/kl coefficients
         policy_clip = self.policy_clip
         if self.policy_clip_schedule:
             policy_clip *= self.policy_clip_schedule.get_factor()
@@ -4313,42 +4161,106 @@ class PPO(OnPolicyAgent):
         if self.kl_adapter:
             kl_coefficient *= self.kl_adapter.get_beta()
 
+        # Normalize states and goals
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
+        if self.goal_normalizer:
+            ach_goals = self.goal_normalizer.normalize(ach_goals)
+            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
+            goals = self.goal_normalizer.normalize(goals)
+        if self.reward_normalizer:
+            rewards = self.reward_normalizer.normalize(rewards)
+
+        # Clip rewards if finite and not using reward normalizer
+        if T.isfinite(self.reward_clip) and self.reward_normalizer is None:
+            rewards = T.clamp(rewards, min=-self.reward_clip, max=self.reward_clip)
+
+        # Get trajectory length, num envs, and total samples for reshaping
+        traj_len, num_envs = rewards.shape
+        total_samples = traj_len * num_envs
+
+        # Flatten trajectory data
+        states_flat = states.reshape(total_samples, -1)
+        next_states_flat = next_states.reshape(total_samples, -1)
+        goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
+        ach_goals_flat = ach_goals.reshape(total_samples, -1) if ach_goals is not None else None
+        next_ach_goals_flat = next_ach_goals.reshape(total_samples, -1) if next_ach_goals is not None else None
+        actions_flat = actions.reshape(total_samples, -1)
+        terminations_flat = terminations.reshape(total_samples, 1)
+        truncations_flat = truncations.reshape(total_samples, 1)
+
+        # Use intrinsic rewards if ICM
+        if self.curiosity:
+            curiosity_loss = self.curiosity.train(states_flat, next_states_flat, actions_flat)
+            intrinsic_reward = self.curiosity.compute_intrinsic_reward(states_flat, next_states_flat, actions_flat)
+            intrinsic_reward = intrinsic_reward.reshape(num_steps, num_envs)
+            if step > self.curiosity.extrinsic_threshold:
+                rewards += curiosity.reward_weight * intrinsic_reward
+            else:
+                rewards = curiosity.reward_weight * intrinsic_reward
+
+        # Clone current policy to get current log probs
+        cur_policy = self.policy.clone(copy_weights=True)
+        cur_policy.eval()
+        cur_dist = cur_policy(states_flat, goals_flat)
+        if self.policy.distribution == 'categorical':
+            cur_log_probs = cur_dist.log_prob(actions_flat.squeeze(-1)).unsqeeuze(-1)
+        else:
+            cur_log_probs = cur_dist.log_prob(actions_flat).sum(dim=-1)
+
+        # Clone current value func to get current values
+        cur_value_model = self.value.clone(copy_weights=True)
+        cur_value_model.eval()
+        cur_values = cur_value_model(states_flat, goals_flat).reshape(traj_len, num_envs)
+        cur_next_values = cur_value_model(next_states_flat, goals_flat).reshape(traj_len, num_envs)
+
+        # Calculate advantages and returns (also normalizes via _preprocess_inputs func if using normalizers)
+        advantages, returns, td_errors = compute_advantages_and_returns(
+            rewards,
+            cur_values,
+            cur_next_values,
+            terminations,
+            truncations,
+            self.discount,
+            self.gae_coefficient,
+            self.bootstrap_truncations,
+            self.device
+        )
+
+        # Reshape tensors for batching
+        advantages = advantages.reshape(total_samples, 1)
+        returns = returns.reshape(total_samples, 1)
+
+        # Create random indices for shuffling
+        indices = T.randperm(total_samples)
+        num_batches = total_samples // batch_size
+
         # Training loop
         for epoch in range(learning_epochs):
-
             for batch_num in range(num_batches):
                 batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
-                states_batch = states[batch_indices]
-                goals_batch = goals[batch_indices] if goals is not None else None
-                actions_batch = actions[batch_indices]
-                log_probs_batch = log_probs[batch_indices]
+                states_batch = states_flat[batch_indices]
+                goals_batch = goals_flat[batch_indices] if goals is not None else None
+                actions_batch = actions_flat[batch_indices]
+                cur_log_probs_batch = cur_log_probs[batch_indices]
+                cur_values_batch = cur_values[batch_indices]
                 advantages_batch = advantages[batch_indices]
                 returns_batch = returns[batch_indices]
-                
 
                 # Create new distribution
-                if self.policy_model.distribution == 'categorical':
-                    # New distribution
-                    new_dist, logits = self.policy_model(states_batch, goals_batch)
-                    new_log_probs = new_dist.log_prob(actions_batch.view(-1))
-                    # Old distribution
-                    old_dist, old_logits = old_policy(states_batch, goals_batch)
-                    old_log_probs = old_dist.log_prob(actions_batch.view(-1))
+                new_dist = self.policy(states_batch, goals_batch)
+                if self.policy.distribution == 'categorical':
+                    new_log_probs = new_dist.log_prob(actions_batch.squeeze(-1)).unsqeeze(-1)
                 else: # Continuous Distributions
-                    # New distribution
-                    new_dist, param1, param2 = self.policy_model(states_batch, goals_batch)
                     new_log_probs = new_dist.log_prob(actions_batch).sum(dim=-1)
-                    # Old distribution
-                    old_dist, old_param1, old_param2 = old_policy(states_batch, goals_batch)
-                    old_log_probs = old_dist.log_prob(actions_batch).sum(dim=-1)
-
 
                 # Calculate the ratios of new to old probabilities of actions
-                if new_log_probs.dim() == 1:
-                    new_log_probs = new_log_probs.unsqueeze(-1)
-                    old_log_probs = old_log_probs.unsqueeze(-1)
-                    advantages_batch = advantages_batch.view(-1,1)
-                prob_ratio = T.exp(new_log_probs - old_log_probs)
+                # if new_log_probs.dim() == 1:
+                #     new_log_probs = new_log_probs.unsqueeze(-1)
+                #     old_log_probs = old_log_probs.unsqueeze(-1)
+                #     # advantages_batch = advantages_batch.view(-1,1)
+                prob_ratio = T.exp(new_log_probs - cur_log_probs_batch)
 
                 # Calculate Surrogate Loss
                 surr1 = prob_ratio * advantages_batch
@@ -4356,48 +4268,54 @@ class PPO(OnPolicyAgent):
                 surrogate_loss = -T.min(surr1, surr2).mean()
 
                 # Calculate Entropy penalty
-                entropy = new_dist.entropy().sum(dim=-1).mean()
-                entropy_penalty = entropy * -entropy_coefficient 
+                entropy = new_dist.entropy()
+                if self.policy.distribution == 'categorical':
+                    entropy = entropy.mean()
+                else:
+                    entropy = entropy.sum(dim=-1).mean()
+                entropy_penalty = entropy * -entropy_coefficient
 
                 # Calculate the KL penalty
-                kl = kl_divergence(old_dist, new_dist).sum(dim=-1).mean()
+                kl = kl_divergence(cur_dist, new_dist)
+                if self.policy.distribution == 'categorical':
+                    kl = kl.mean()
+                else:
+                    kl = kl.sum(dim=-1).mean()
                 kl_penalty = kl * kl_coefficient
-                
-                policy_loss = surrogate_loss + entropy_penalty + kl_penalty
-                
-                # Update the policy
-                self.policy_model.optimizer.zero_grad()
-                policy_loss.backward()
-                if self.grad_clip:
-                    T.nn.utils.clip_grad_norm_(self.policy_model.parameters(), max_norm=self.grad_clip)
-                self.policy_model.optimizer.step()
-                
-                    
-                # Update the value function
-                values = self.value_model(states_batch, goals_batch)
-                loss = (values - returns_batch).pow(2)
-                old_values = old_value_model(states_batch, goals_batch)
-                clipped_values = old_values + (values - old_values).clamp(-value_clip, value_clip)
-                clipped_value_loss = (clipped_values - returns_batch).pow(2)
-                value_loss = self.value_loss_coefficient * (0.5 * T.max(loss, clipped_value_loss).mean())
-                self.value_model.optimizer.zero_grad()
-                value_loss.backward()
-                if self.grad_clip:
-                    T.nn.utils.clip_grad_norm_(self.value_model.parameters(), max_norm=self.grad_clip)
-                self.value_model.optimizer.step()
 
-        policy_learning_rate = self.policy_model.optimizer.param_groups[0]['lr']
-        if self.policy_model.lr_scheduler:
-            policy_learning_rate = self.policy_model.lr_scheduler.get_last_lr()[0] * policy_learning_rate
-        value_learning_rate = self.value_model.optimizer.param_groups[0]['lr']
-        if self.value_model.lr_scheduler:
-            value_learning_rate = self.value_model.lr_scheduler.get_last_lr()[0] * value_learning_rate
+                policy_loss = surrogate_loss + entropy_penalty + kl_penalty
+
+                # Update the policy
+                self.policy.optimizer.zero_grad()
+                policy_loss.backward()
+                if self.policy_grad_clip:
+                    T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
+                self.policy.optimizer.step()
+
+                # Update the value function
+                values = self.value(states_batch, goals_batch)
+                loss = (values - returns_batch).pow(2)
+                clipped_values = cur_values_batch + (values - cur_values_batch).clamp(-value_clip, value_clip)
+                clipped_value_loss = (clipped_values - returns_batch).pow(2)
+                value_loss = self.value_coef * (0.5 * T.max(loss, clipped_value_loss).mean())
+                self.value.optimizer.zero_grad()
+                value_loss.backward()
+                if self.value_grad_clip:
+                    T.nn.utils.clip_grad_norm_(self.value.parameters(), max_norm=self.value_grad_clip)
+                self.value.optimizer.step()
+
+        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
+        if self.policy.lr_scheduler:
+            policy_learning_rate = self.policy.lr_scheduler.get_last_lr()[0] * policy_learning_rate
+        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
+        if self.value.lr_scheduler:
+            value_learning_rate = self.value.lr_scheduler.get_last_lr()[0] * value_learning_rate
 
         # Step kl adapter
         if self.kl_adapter:
             self.kl_adapter.step(kl)
 
-        learn_metrics = {
+        return {
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
             'entropy': entropy.item(),
@@ -4412,14 +4330,6 @@ class PPO(OnPolicyAgent):
             'policy_learning_rate': policy_learning_rate,
             'value_learning_rate': value_learning_rate
         }
-
-        if self.policy_model.distribution == 'categorical':
-            learn_metrics['logits'] = logits.detach().cpu().flatten().mean()
-        else:
-            learn_metrics['param1'] = param1.detach().cpu().flatten().mean()
-            learn_metrics['param2'] = param2.detach().cpu().flatten().mean()
-        
-        return learn_metrics
 
     # def _step(self,
     #           states: np.ndarray,
@@ -4669,7 +4579,7 @@ class PPO(OnPolicyAgent):
             "policy_clip_schedule": self.policy_clip_schedule.get_config() if self.policy_clip_schedule else None,
             "value_clip": self.value_clip,
             "value_clip_schedule": self.value_clip_schedule.get_config() if self.value_clip_schedule else None,
-            "value_loss_coefficient": self.value_loss_coefficient,
+            "value_loss_coefficient": self.value_coef,
             # "entropy_coefficient": self.entropy_coefficient,
             # "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule else None,
             "kl_coefficient": self.kl_coefficient,

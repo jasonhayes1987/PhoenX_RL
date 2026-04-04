@@ -10,12 +10,12 @@ def build(config: dict, env: EnvWrapper):
     policy_config = config['models']['policy']
     policy_config['env'] = env
     if config['models']['policy']['distribution'] in ['categorical']:
+        policy_config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
         policy = StochasticDiscretePolicy(**policy_config)
     elif config['models']['policy']['distribution'] in ['beta', 'kumaraswamy', 'normal']:
         policy = StochasticContinuousPolicy(**policy_config)
     else:
         raise ValueError(f"Invalid distribution: {config['models']['policy']['distribution']}")
-
     # # build value model
     value_config = config['models']['value']
     value_config['env'] = env
@@ -44,6 +44,12 @@ def build(config: dict, env: EnvWrapper):
     else:
         advantage_normalizer = None
 
+    # create reward normalizer object if present in config
+    if config.get('normalizers', {}).get('reward', None):
+        reward_normalizer = create_normalizer(config['normalizers']['reward'])
+    else:
+        reward_normalizer = None
+
     ac_config = config['agent']['config']
     ac_config.update({
         'policy': policy,
@@ -52,7 +58,7 @@ def build(config: dict, env: EnvWrapper):
         'state_normalizer': state_normalizer,
         'goal_normalizer': goal_normalizer,
         'advantage_normalizer': advantage_normalizer,
-
+        'reward_normalizer': reward_normalizer,
     })
 
     # Create ActorCritic Agent

@@ -3,21 +3,38 @@ from torch import optim
 from torch.optim import lr_scheduler
 
 class ScheduleWrapper:
+    """
+    Wrapper for schedule types.
+
+    Args:
+        schedule_type: The type of scheduler to use. Supported types: "linear", "cosine", "exponential".
+        steps: The number of steps to run the scheduler for.
+        start_value: The starting value of the scheduler.
+        end_value: The ending value of the scheduler.
+        kwargs: Additional keyword arguments to pass to the scheduler.
+    """
     def __init__(
         self,
         schedule_type: str,
         steps: int,
+        start_value: float,
         end_value: float,
-        start_value: float|None = None,
         **kwargs
     ):
         """
         Wrapper for schedule types.
+
+        Args:
+            schedule_type: The type of scheduler to use. Supported types: "linear", "cosine", "exponential".
+            steps: The number of steps to run the scheduler for.
+            start_value: The starting value of the scheduler.
+            end_value: The ending value of the scheduler.
+            kwargs: Additional keyword arguments to pass to the scheduler.
         """
         self.schedule_type = schedule_type
         self.steps = steps
-        self.end_value = end_value
         self.start_value = start_value
+        self.end_value = end_value
         self.kwargs = kwargs
         
         self.param = T.nn.Parameter(T.zeros(1), requires_grad=False)
@@ -37,12 +54,13 @@ class ScheduleWrapper:
             )
 
         elif self.schedule_type == "cosine":
-            if self.end_value is None or self.steps is None:
-                raise ValueError("End value and steps are required for cosine scheduler.")
+            if self.end_value is None or self.start_value is None or self.steps is None:
+                raise ValueError("End value, start value, and steps are required for cosine scheduler.")
+            end_factor = self.end_value / self.start_value
             self.scheduler = lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
                 T_max=self.steps,
-                eta_min=self.end_value,
+                eta_min=end_factor,
                 **self.kwargs
             )
 
@@ -59,9 +77,16 @@ class ScheduleWrapper:
         else:
             raise ValueError(f"Unsupported scheduler type: {self.schedule_type}")
 
-    def step(self):
+    def step(self, num_steps: int = 1):
+        """
+        Steps the scheduler for the given number of steps.
+
+        Args:
+            num_steps: The number of steps to step the scheduler for.
+        """
         if self.scheduler:
-            self.scheduler.step()
+            for _ in range(num_steps):
+                self.scheduler.step()
 
     def get_factor(self):
         if self.scheduler:
@@ -72,8 +97,8 @@ class ScheduleWrapper:
         return {
             "type": self.schedule_type,
             "steps": self.steps,
-            "end_value": self.end_value,
             "start_value": self.start_value,
+            "end_value": self.end_value,
             "kwargs": self.kwargs
         }
 
@@ -81,8 +106,8 @@ class ScheduleWrapper:
         new_wrapper = ScheduleWrapper(
             self.schedule_type,
             self.steps,
-            self.end_value,
             self.start_value,
+            self.end_value,
             **self.kwargs
         )
         if self.scheduler:
