@@ -44,13 +44,13 @@ class SquashedNormal(TransformedDistribution):
         tanh_z = T.tanh(z)                                      # u = tanh(z)
 
         # Jacobian correction: log|det J_tanh| = sum log(1 - tanh²(z_i))
-        log_det_jacobian = T.log(1 - tanh_z.pow(2) + self.epsilon).sum(-1)   # negative value
+        log_det_jacobian = T.log(1 - tanh_z.pow(2) + self.epsilon)#.sum(-1)   # negative value
 
         # Base entropy (already summed over action dims by Normal)
-        base_entropy = self.base_dist.entropy().sum(-1)         # (batch,)
+        base_entropy = self.base_dist.entropy()        # (batch,)
 
         # Affine scale term (constant)
-        log_scale = T.log(self.scale).sum()                     # scalar (broadcasts)
+        log_scale = T.log(self.scale)#.sum()                     # scalar (broadcasts)
 
         # Monte-Carlo average
         entropy = base_entropy + log_det_jacobian.mean(0) + log_scale
@@ -83,10 +83,10 @@ class ScaledBeta(TransformedDistribution):
         scale = T.as_tensor((high - low), dtype=T.float32, device=base_dist.concentration0.device)
         transforms = [AffineTransform(loc=self.low, scale=scale, cache_size=1)]
         super().__init__(base_dist, transforms)
-        self.log_scale = T.log(scale).sum()
+        self.log_scale = T.log(scale)
 
     def entropy(self) -> T.Tensor:
-        return self.base_dist.entropy().sum(-1) + self.log_scale
+        return self.base_dist.entropy() + self.log_scale
 
 class ScaledKumaraswamy(TransformedDistribution):
     """
@@ -101,7 +101,7 @@ class ScaledKumaraswamy(TransformedDistribution):
         scale = T.tensor(high - low, device=base_dist.concentration0.device)
         transforms = [AffineTransform(loc=low, scale=scale, cache_size=1)]
         super().__init__(base_dist, transforms)
-        self.log_scale = T.log(scale).sum()
+        self.log_scale = T.log(scale)
 
     def entropy(self) -> T.Tensor:
-        return self.base_dist.entropy().sum(-1) + self.log_scale
+        return self.base_dist.entropy() + self.log_scale

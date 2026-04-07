@@ -13,7 +13,7 @@ import torch as T
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
-from torch.distributions import Distribution, TransformedDistribution, Categorical, Beta, Normal, Kumaraswamy
+from torch.distributions import Distribution, TransformedDistribution, Independent, Categorical, Beta, Normal, Kumaraswamy
 
 
 from app.distributions import SquashedNormal, ScaledBeta, ScaledKumaraswamy
@@ -303,20 +303,38 @@ class Model(nn.Module):
 
         return state
 
-    def get_mean_actions(self, dist: Distribution)->T.Tensor:
+    def _unwrap_distribution(self, dist: Distribution) -> Distribution:
         """
-        Get the mean action of the tranformed distribution.
+        Recursively unwrap a distribution to get the base distribution (Normal, Beta, etc.).
 
         Args:
-            dist (Distribution): The transformed distribution to get the mean of.
+            dist (Distribution): The distribution to unwrap.
 
         Returns:
-            Tensor: The mean action of the tranformed distribution.
+            Distribution: The base distribution.
         """
-        if isinstance(dist, TransformedDistribution):
-            base_dist = dist.base_dist
-        else:
-            base_dist = dist
+        while True:
+            if isinstance(dist, Independent):
+                dist = dist.base_dist
+            elif isinstance(dist, (SquashedNormal, ScaledBeta, ScaledKumaraswamy)):
+                dist = dist.base_dist
+            elif isinstance(dist, TransformedDistribution):
+                dist = dist.base_dist
+            else:
+                break
+        return dist
+
+    def get_mean_actions(self, dist: Distribution)->T.Tensor:
+        """
+        Get the mean action of the Transformed distribution.
+
+        Args:
+            dist (Distribution): The Transformed distribution to get the mean of.
+
+        Returns:
+            Tensor: The mean action of the Transformed distribution.
+        """
+        base_dist = self._unwrap_distribution(dist)
 
         if isinstance(base_dist, (Normal, Beta, Kumaraswamy)):
             # Get the low and high bounds of the action space
@@ -701,7 +719,7 @@ class StochasticContinuousPolicy(Model):
         else:
             raise ValueError(f"Distribution {self.distribution} not supported.")
 
-        return dist
+        return Independent(dist, reinterpreted_batch_ndims=1)
 
     def get_config(self):
         config = super().get_config()
@@ -712,7 +730,7 @@ class StochasticContinuousPolicy(Model):
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         device, env = super().clone(copy_weights, device)
-        cloned_model = StochasticDiscretePolicy(
+        cloned_model = StochasticContinuousPolicy(
             env=env,
             layer_config=self.layer_config.copy(),
             output_config=self.output_config.copy(),
@@ -1150,7 +1168,7 @@ class ContinuousCritic(BaseCritic):
             self.merged_layers[f'{layer_type}_{i}'] = self._build_layer(layer_type, layer_params)
 
         # Create the output layer
-        self.output_layer = nn.ModuleDict({'state_action_value': nn.LazyLinear(1)})
+        self.output_layer = nn.ModuleDict({'State_Action_value': nn.LazyLinear(1)})
         # self.add_module('critic_output_layer', self.output_layer)
 
          # Move the model to the specified device
