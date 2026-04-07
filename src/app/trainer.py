@@ -274,6 +274,10 @@ class Trainer:
             self.agent.entropy_schedule.step(self.env.num_envs)
         if getattr(self.agent.policy, 'temperature_schedule', None):
             self.agent.policy.temperature_schedule.step(self.env.num_envs)
+        if getattr(self.agent.value, 'lr_scheduler', None):
+            self.agent.value.lr_scheduler.step(self.env.num_envs)
+        if getattr(self.agent.policy, 'lr_scheduler', None):
+            self.agent.policy.lr_scheduler.step(self.env.num_envs)
 
     @abstractmethod
     def get_action(self, states:np.ndarray|T.Tensor, goals:np.ndarray|T.Tensor|None, context: str = 'train')->T.Tensor:

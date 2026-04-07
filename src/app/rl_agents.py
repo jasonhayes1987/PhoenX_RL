@@ -4040,7 +4040,7 @@ class PPO(OnPolicyAgent):
                  value_clip: float = 0.2,
                  value_clip_schedule: ScheduleWrapper|None = None,
                  value_grad_clip: float = float('inf'),
-                 value_coef: float = 1.0,
+                 value_coef: float = 0.5,
                  reward_clip: float = float('inf'),
                  curiosity: ICM|None = None,
                  bootstrap_truncations: bool=True,
@@ -4130,6 +4130,8 @@ class PPO(OnPolicyAgent):
             should_log_diag = (self._learn_count % self._diag_freq == 0)
         else:
             should_log_diag = False
+        
+        learn_metrics = {}
 
         # Unpack trajectory
         (
@@ -4153,9 +4155,12 @@ class PPO(OnPolicyAgent):
         if self.value_clip_schedule:
             value_clip *= self.value_clip_schedule.get_factor()
 
-        entropy_coefficient = self.entropy_coefficient
-        if self.entropy_schedule:
-            entropy_coefficient *= self.entropy_schedule.get_factor()
+        if self.auto_entropy_tuning:
+            entropy_coefficient = self.log_alpha.exp()
+        else:
+            entropy_coefficient = self.entropy_coefficient
+            if self.entropy_schedule:
+                entropy_coefficient *= self.entropy_schedule.get_factor()
 
         kl_coefficient = self.kl_coefficient
         if self.kl_adapter:
@@ -4173,7 +4178,7 @@ class PPO(OnPolicyAgent):
             rewards = self.reward_normalizer.normalize(rewards)
 
         # Clip rewards if finite and not using reward normalizer
-        if T.isfinite(self.reward_clip) and self.reward_normalizer is None:
+        if T.isfinite(T.tensor(self.reward_clip)) and self.reward_normalizer is None:
             rewards = T.clamp(rewards, min=-self.reward_clip, max=self.reward_clip)
 
         # Get trajectory length, num envs, and total samples for reshaping
@@ -4196,24 +4201,20 @@ class PPO(OnPolicyAgent):
             intrinsic_reward = self.curiosity.compute_intrinsic_reward(states_flat, next_states_flat, actions_flat)
             intrinsic_reward = intrinsic_reward.reshape(num_steps, num_envs)
             if step > self.curiosity.extrinsic_threshold:
-                rewards += curiosity.reward_weight * intrinsic_reward
+                rewards += self.curiosity.reward_weight * intrinsic_reward
             else:
-                rewards = curiosity.reward_weight * intrinsic_reward
+                rewards = self.curiosity.reward_weight * intrinsic_reward
 
-        # Clone current policy to get current log probs
-        cur_policy = self.policy.clone(copy_weights=True)
-        cur_policy.eval()
-        cur_dist = cur_policy(states_flat, goals_flat)
-        if self.policy.distribution == 'categorical':
-            cur_log_probs = cur_dist.log_prob(actions_flat.squeeze(-1)).unsqeeuze(-1)
-        else:
-            cur_log_probs = cur_dist.log_prob(actions_flat).sum(dim=-1)
-
-        # Clone current value func to get current values
-        cur_value_model = self.value.clone(copy_weights=True)
-        cur_value_model.eval()
-        cur_values = cur_value_model(states_flat, goals_flat).reshape(traj_len, num_envs)
-        cur_next_values = cur_value_model(next_states_flat, goals_flat).reshape(traj_len, num_envs)
+        # Get current log probs and values
+        with T.no_grad():
+            cur_dist = self.policy(states_flat, goals_flat)
+            if self.policy.distribution == 'categorical':
+                cur_log_probs = cur_dist.log_prob(actions_flat.view(-1)).unsqueeze(-1)
+            else:
+                cur_log_probs = cur_dist.log_prob(actions_flat)
+            
+            cur_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
+            cur_next_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs)
 
         # Calculate advantages and returns (also normalizes via _preprocess_inputs func if using normalizers)
         advantages, returns, td_errors = compute_advantages_and_returns(
@@ -4229,8 +4230,9 @@ class PPO(OnPolicyAgent):
         )
 
         # Reshape tensors for batching
-        advantages = advantages.reshape(total_samples, 1)
-        returns = returns.reshape(total_samples, 1)
+        cur_values_flat = cur_values.reshape(total_samples, 1)
+        advantages_flat = advantages.reshape(total_samples, 1)
+        returns_flat = returns.reshape(total_samples, 1)
 
         # Create random indices for shuffling
         indices = T.randperm(total_samples)
@@ -4240,26 +4242,23 @@ class PPO(OnPolicyAgent):
         for epoch in range(learning_epochs):
             for batch_num in range(num_batches):
                 batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
+                # print("batch_indices:", batch_indices)
                 states_batch = states_flat[batch_indices]
                 goals_batch = goals_flat[batch_indices] if goals is not None else None
                 actions_batch = actions_flat[batch_indices]
-                cur_log_probs_batch = cur_log_probs[batch_indices]
-                cur_values_batch = cur_values[batch_indices]
-                advantages_batch = advantages[batch_indices]
-                returns_batch = returns[batch_indices]
+                cur_log_probs_batch = cur_log_probs[batch_indices].detach()
+                cur_values_batch = cur_values_flat[batch_indices].detach()
+                advantages_batch = advantages_flat[batch_indices].detach()
+                returns_batch = returns_flat[batch_indices].detach()
 
+                ## POLICY ##
                 # Create new distribution
                 new_dist = self.policy(states_batch, goals_batch)
                 if self.policy.distribution == 'categorical':
-                    new_log_probs = new_dist.log_prob(actions_batch.squeeze(-1)).unsqeeze(-1)
+                    new_log_probs = new_dist.log_prob(actions_batch.view(-1)).unsqueeze(-1)
                 else: # Continuous Distributions
-                    new_log_probs = new_dist.log_prob(actions_batch).sum(dim=-1)
+                    new_log_probs = new_dist.log_prob(actions_batch)
 
-                # Calculate the ratios of new to old probabilities of actions
-                # if new_log_probs.dim() == 1:
-                #     new_log_probs = new_log_probs.unsqueeze(-1)
-                #     old_log_probs = old_log_probs.unsqueeze(-1)
-                #     # advantages_batch = advantages_batch.view(-1,1)
                 prob_ratio = T.exp(new_log_probs - cur_log_probs_batch)
 
                 # Calculate Surrogate Loss
@@ -4268,40 +4267,94 @@ class PPO(OnPolicyAgent):
                 surrogate_loss = -T.min(surr1, surr2).mean()
 
                 # Calculate Entropy penalty
-                entropy = new_dist.entropy()
-                if self.policy.distribution == 'categorical':
-                    entropy = entropy.mean()
-                else:
-                    entropy = entropy.sum(dim=-1).mean()
-                entropy_penalty = entropy * -entropy_coefficient
+                entropies = new_dist.entropy()
+                mean_entropy = entropies.mean()
+                entropy_penalty = mean_entropy * -entropy_coefficient
 
                 # Calculate the KL penalty
-                kl = kl_divergence(cur_dist, new_dist)
-                if self.policy.distribution == 'categorical':
-                    kl = kl.mean()
-                else:
-                    kl = kl.sum(dim=-1).mean()
-                kl_penalty = kl * kl_coefficient
+                with T.no_grad():
+                    log_ratio = new_log_probs - cur_log_probs_batch
+                    kl = ((prob_ratio - 1) - log_ratio)
+                    mean_kl = kl.mean()
+                kl_penalty = mean_kl * kl_coefficient
 
+                # Calculate policy loss
                 policy_loss = surrogate_loss + entropy_penalty + kl_penalty
 
-                # Update the policy
-                self.policy.optimizer.zero_grad()
-                policy_loss.backward()
-                if self.policy_grad_clip:
-                    T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
-                self.policy.optimizer.step()
-
-                # Update the value function
+                ## VALUE ##
                 values = self.value(states_batch, goals_batch)
                 loss = (values - returns_batch).pow(2)
                 clipped_values = cur_values_batch + (values - cur_values_batch).clamp(-value_clip, value_clip)
                 clipped_value_loss = (clipped_values - returns_batch).pow(2)
                 value_loss = self.value_coef * (0.5 * T.max(loss, clipped_value_loss).mean())
+
+                # Calculate gradients
+                self.policy.optimizer.zero_grad()
+                policy_loss.backward()
+                if self.policy_grad_clip:
+                    policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
+
                 self.value.optimizer.zero_grad()
                 value_loss.backward()
                 if self.value_grad_clip:
-                    T.nn.utils.clip_grad_norm_(self.value.parameters(), max_norm=self.value_grad_clip)
+                    value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), max_norm=self.value_grad_clip)
+
+                # Log diag data
+                if should_log_diag:
+                    nonfinite_values = (
+                    count_nonfinite(cur_values)
+                    + count_nonfinite(cur_next_values)
+                    + count_nonfinite(td_errors)
+                    + count_nonfinite(advantages)
+                    + count_nonfinite(returns)
+                    + count_nonfinite(cur_log_probs)
+                    + count_nonfinite(new_log_probs)
+                    + count_nonfinite(prob_ratio)
+                    + count_nonfinite(entropies)
+                    + count_nonfinite(kl)
+                    + count_nonfinite(surr1)
+                    + count_nonfinite(surr2)
+                    )
+                    self.logger.debug(
+                        "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                        step,
+                        self._learn_count,
+                        summarize_tensor(states, "states"),
+                        summarize_tensor(actions, "actions"),
+                        summarize_tensor(rewards, "rewards"),
+                        summarize_tensor(next_states, "next_states"),
+                        summarize_tensor(goals, "goals"),
+                        summarize_tensor(next_ach_goals, "next_ach_goals"),
+                        summarize_tensor(terminations, "terminations"),
+                        summarize_tensor(truncations, "truncations"),
+                        summarize_tensor(cur_values, "values"),
+                        summarize_tensor(cur_next_values, "next_values"),
+                        summarize_tensor(td_errors, "td_errors"),
+                        summarize_tensor(advantages, "advantages"),
+                        summarize_tensor(returns, "returns"),
+                        summarize_tensor(cur_log_probs, "log_probs"),
+                        summarize_tensor(new_log_probs, "new_log_probs"),
+                        summarize_tensor(prob_ratio, "prob_ratio"),
+                        summarize_tensor(entropies, "entropies"),
+                        summarize_tensor(kl, "kl"),
+                        summarize_tensor(surr1, "surr1"),
+                        summarize_tensor(surr2, "surr2"),
+                        f"entropy_coef={float(entropy_coefficient)}",
+                    )
+
+                    self.logger.debug(
+                        "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
+                        "value_loss=%.6f policy_loss=%.6f",
+                        step,
+                        self._learn_count,
+                        float(value_grad_norm) if value_grad_norm is not None else -1.0,
+                        float(policy_grad_norm) if policy_grad_norm is not None else -1.0,
+                        float(value_loss.item()),
+                        float(policy_loss.item()),
+                    )
+
+                # Update models
+                self.policy.optimizer.step()
                 self.value.optimizer.step()
 
         policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
@@ -4311,255 +4364,39 @@ class PPO(OnPolicyAgent):
         if self.value.lr_scheduler:
             value_learning_rate = self.value.lr_scheduler.get_last_lr()[0] * value_learning_rate
 
-        # Step kl adapter
+        # Step schedulers/adapters
         if self.kl_adapter:
-            self.kl_adapter.step(kl)
+            self.kl_adapter.step(mean_kl)
 
-        return {
+        if self.auto_entropy_tuning:
+            self.entropy_optimizer.zero_grad()
+            alpha_loss = -(self.log_alpha * (new_log_probs + self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.entropy_optimizer.step()
+
+        # Get temperature value from policy if categorical
+        if self.policy.distribution == 'categorical':
+            temperature = self.policy.temperature
+            if self.policy.temperature_schedule:
+                temperature *= self.policy.temperature_schedule.get_factor()
+            learn_metrics.update({'temperature': temperature})
+
+        learn_metrics.update({
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
-            'entropy': entropy.item(),
-            'kl': kl.item(),
-            'log_probs': log_probs.detach().cpu().flatten().mean(),
-            'advantages': advantages.detach().cpu().flatten().mean(),
-            'returns': returns.detach().cpu().flatten().mean(),
+            'entropy': mean_entropy.item(),
+            'kl': mean_kl.item(),
+            'prob_ratio': prob_ratio.detach().cpu().flatten().mean().item(),
+            'advantages': advantages.detach().cpu().flatten().mean().item(),
+            'returns': returns.detach().cpu().flatten().mean().item(),
             'policy_clip': policy_clip,
             'value_clip': value_clip,
             'entropy_coefficient': entropy_coefficient,
             'kl_coefficient': kl_coefficient,
             'policy_learning_rate': policy_learning_rate,
             'value_learning_rate': value_learning_rate
-        }
-
-    # def _step(self,
-    #           states: np.ndarray,
-    #           trajectories: dict,
-    #           max_episodes: int,
-    #           episode_scores: np.ndarray,
-    #           completed_episodes: np.ndarray,
-    #           score_history: deque[float],
-    #           best_reward: float,
-    #           training: bool = True
-    #           ):
-
-    #     step_log = {}
-    #     episode_logs = []
-
-    #     obs, goals = self._preprocess_inputs(states)
-    #     actions, log_probs = self.get_action(obs, goals, step, context='train' if training else 'test')
-    #     # if self.policy_model.distribution == 'beta':
-    #     acts = self.action_adapter(env, actions)
-    #     # else:
-    #     #     acts = actions
-    #     acts = env.format_actions(acts)
-    #     next_states, rewards, dones, infos = env.step(acts)
-    #     # Add step data to trajectories
-    #     trajectories['states'].append(obs)
-    #     trajectories['next_states'].append(next_states)
-    #     trajectories['actions'].append(actions)
-    #     trajectories['log_probs'].append(log_probs)
-    #     trajectories['rewards'].append(rewards)
-    #     trajectories['dones'].append(dones)
-
-    #     episode_scores += rewards
-    #     step_log.update({'step_reward': rewards.mean()})
-
-    #     done_episodes = np.flatnonzero(dones) # Get indices of completed episodes
-    #     for i in done_episodes:
-    #         completed_episodes[i] += 1
-    #         score_history.append(float(episode_scores[i].item()))
-    #         avg_reward = sum(score_history) / len(score_history)
-
-    #         # check if best reward
-    #         if training and avg_reward > best_reward:
-    #             best_reward = avg_reward
-    #             self.save()
-    #         episode_log = {
-    #             'env': i,
-    #             'episode': int(completed_episodes.sum()),
-    #             'episode_reward': episode_scores[i].round(2),
-    #             'avg_reward': avg_reward.round(2)
-    #         }
-
-    #         if training:
-    #             episode_log.update({
-    #                 'best_reward': best_reward.round(2),
-    #                 'best': 1 if avg_reward > best_reward else 0
-    #             })
-    #         episode_logs.append(episode_log)
-
-    #     # Step schedulers
-    #     if self.policy_model.lr_scheduler:
-    #         self.policy_model.lr_scheduler.step()
-    #     if self.value_model.lr_scheduler:
-    #         self.value_model.lr_scheduler.step()
-    #     if self.policy_clip_schedule:
-    #         self.policy_clip_schedule.step()
-    #     if self.value_clip_schedule:
-    #         self.value_clip_schedule.step()
-    #     if self.entropy_schedule:
-    #         self.entropy_schedule.step()
-
-    #     return {
-    #         'trajectories': trajectories,
-    #         'episode_scores': episode_scores,
-    #         'completed_episodes': completed_episodes,
-    #         'score_history': score_history,
-    #         'step_log': step_log,
-    #         'episode_logs': episode_logs,
-    #         'done': completed_episodes.sum() >= max_episodes
-    #     }
-
-
-    # def train(self, timesteps:int, trajectory_length:int, batch_size:int, learning_epochs:int, render_freq:int=0, seed:int=None):
-    #     """
-    #     Train the PPO agent.
-        
-    #     Args:
-    #         timesteps (int): Total number of timesteps to train.
-    #         trajectory_length (int): Number of timesteps per update.
-    #         batch_size (int): Batch size for training.
-    #         learning_epochs (int): Number of epochs per update.
-    #         seed (int, optional): Random seed for reproducibility.
-    #         render_freq (int): Frequency of rendering episodes.
-    #         save_dir (str, optional): directory to save the model. Defaults to self.save_dir
-    #     """
-
-    #     metrics = self._initialize_run(seed, timesteps=timesteps, trajectory_length=trajectory_length, batch_size=batch_size, learning_epochs=learning_epochs)
-    #     step = metrics['step']
-    #     states = metrics['states']
-    #     episode_scores = metrics['episode_scores']
-    #     completed_episodes = metrics['completed_episodes']
-    #     score_history = metrics['score_history']
-    #     best_reward = metrics['best_reward']
-    #     trajectories = {
-    #         'states': [],
-    #         'next_states': [],
-    #         'actions': [],
-    #         'log_probs': [],
-    #         'rewards': [],
-    #         'dones': []
-    #     }
-
-    #     while step < timesteps:
-    #         step += 1
-    #         step_result = self._step(states, trajectories, timesteps, episode_scores, completed_episodes, score_history, best_reward)
-    #         # Update states, episode scores, completed episodes, and score history
-    #         trajectories = step_result['trajectories']
-    #         states = trajectories['next_states'][-1]
-    #         episode_scores = step_result['episode_scores']
-    #         completed_episodes = step_result['completed_episodes']
-    #         score_history = step_result['score_history']
-
-    #         if step % trajectory_length == 0:
-    #             # Learn
-    #             learn_metrics = self.learn(step, trajectories, batch_size, learning_epochs)
-    #             step_result['step_log'].update({**learn_metrics})
-    #             # Clear trajectory data
-    #             trajectories['states'] = []
-    #             trajectories['next_states'] = []
-    #             trajectories['actions'] = []
-    #             trajectories['log_probs'] = []
-    #             trajectories['rewards'] = []
-    #             trajectories['dones'] = []
-            
-    #         # log to callbacks
-    #         if self.callbacks:
-    #             for callback in self.callbacks:
-    #                 callback.on_train_step_end(step=step, logs=step_result['step_log'])
-
-
-    #         render = True # Flag to keep track of render status to avoid rendering multiple times per step
-    #         for episode_log in step_result['episode_logs']:
-    #             # Print complete episode metrics to console
-    #             print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-    #             # Reset episode score
-    #             episode_scores[episode_log['env']] = 0
-    #             best_reward = episode_log['best_reward']
-
-    #             if self.callbacks:
-    #                 for callback in self.callbacks:
-    #                     callback.on_train_epoch_end(epoch=step, logs=episode_log)
-
-    #             # Check if number of completed episodes should trigger render
-    #             if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
-    #                 print(f"Rendering episode {episode_log['episode']} during training...")
-    #                 self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
-    #                 render = False
-
-    #     if self.callbacks:
-    #         for callback in self.callbacks:
-    #             callback.on_train_end(logs=episode_log)
-
-    #     env.close()
-
-    # def test(self, num_episodes:int, num_envs:int=1, render_freq:int=0, seed:int|None=None):
-    #     """
-    #     Test the PPO agent in the environment.
-
-    #     Args:
-    #         num_episodes (int): Number of episodes to test.
-    #         num_envs (int): Number of parallel environments.
-    #         render_freq (int): Frequency of rendering episodes.
-    #         seed (int, optional): Random seed for reproducibility.
-    #     Returns:
-    #         dict: Test metrics including scores and log probabilities.
-    #     """
-    #     metrics = self._initialize_run(num_envs, seed, training=False)
-    #     env = metrics['env']
-    #     step = metrics['step']
-    #     states = metrics['states']
-    #     episode_scores = metrics['episode_scores']
-    #     completed_episodes = metrics['completed_episodes']
-    #     score_history = metrics['score_history']
-    #     best_reward = metrics['best_reward']
-    #     trajectories = {
-    #         'states': [],
-    #         'next_states': [],
-    #         'actions': [],
-    #         'log_probs': [],
-    #         'rewards': [],
-    #         'dones': []
-    #     }
-
-    #     while completed_episodes.sum() < num_episodes:
-    #         step += 1
-    #         step_result = self._step(env, states, trajectories, num_episodes, episode_scores, completed_episodes, score_history, best_reward, training=False)
-    #         # Update states, episode scores, completed episodes, and score history
-    #         trajectories = step_result['trajectories']
-    #         states = trajectories['next_states'][-1]
-    #         episode_scores = step_result['episode_scores']
-    #         completed_episodes = step_result['completed_episodes']
-    #         score_history = step_result['score_history']
-            
-    #         # log to callbacks
-    #         if self.callbacks:
-    #             for callback in self.callbacks:
-    #                 callback.on_test_step_end(step=step, logs=step_result['step_log'])
-
-
-    #         render = True # Flag to keep track of render status to avoid rendering multiple times per step
-    #         for episode_log in step_result['episode_logs']:
-    #             # Print complete episode metrics to console
-    #             print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-    #             # Reset episode score
-    #             episode_scores[episode_log['env']] = 0
-
-    #             if self.callbacks:
-    #                 for callback in self.callbacks:
-    #                     callback.on_test_epoch_end(epoch=step, logs=episode_log)
-
-    #             # Check if number of completed episodes should trigger render
-    #             if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
-    #                 print(f"Rendering episode {episode_log['episode']} during testing...")
-    #                 self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
-    #                 render = False
-
-    #     if self.callbacks:
-    #         for callback in self.callbacks:
-    #             callback.on_test_end(logs=episode_log)
-
-    #     env.close()
+        })
+        return learn_metrics
 
     def get_config(self):
         """
@@ -4569,28 +4406,21 @@ class PPO(OnPolicyAgent):
             dict: Configuration dictionary.
         """
         config = super().get_config()
+        config["type"] = self.__class__.__name__
         config.update({
-            "agent_type": self.__class__.__name__,
-            # "policy_model": self.policy_model.get_config(),
-            # "value_model": self.value_model.get_config(),
-            # "discount": self.discount,
             "gae_coefficient": self.gae_coefficient,
             "policy_clip": self.policy_clip,
             "policy_clip_schedule": self.policy_clip_schedule.get_config() if self.policy_clip_schedule else None,
+            "policy_grad_clip": self.policy_grad_clip,
             "value_clip": self.value_clip,
             "value_clip_schedule": self.value_clip_schedule.get_config() if self.value_clip_schedule else None,
-            "value_loss_coefficient": self.value_coef,
-            # "entropy_coefficient": self.entropy_coefficient,
-            # "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule else None,
+            "value_grad_clip": self.value_grad_clip,
+            "value_coef": self.value_coef,
+            "reward_clip": self.reward_clip,
             "kl_coefficient": self.kl_coefficient,
             "kl_adapter": self.kl_adapter.get_config() if self.kl_adapter else None,
-            # "normalize_advantages": self.normalize_advantages,
             "curiosity": self.curiosity.get_config() if self.curiosity else None,
-            # "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer else None,
-            # "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer else None,
-            # "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer else None,
-            "grad_clip": self.grad_clip,
-            "reward_clip": self.reward_clip,
+            "bootstrap_truncations": self.bootstrap_truncations
         })
         return config
 

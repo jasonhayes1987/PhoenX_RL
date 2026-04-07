@@ -1,32 +1,35 @@
+#TODO: Add ICM
+#TODO: Add learning rate schedulers
+
 device: &device cuda
 seed: &seed null
-save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLander-v3_test/PPO/
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_test/PPO/
 log_level: INFO
 
 agent:
   type: PPO
   config:
-    discount: 0.99
-    gae_coefficient: 0.95
-    entropy_coefficient: &entropy_coefficient 0.0
+    discount: 0.999
+    gae_coefficient: 0.98
+    entropy_coefficient: &entropy_coefficient 0.01
     auto_entropy_tuning: false
     entropy_lr: 1.0e-2
     kl_coefficient: 0.0
-    policy_clip: 0.2
+    policy_clip: &policy_clip 0.2
     policy_grad_clip: 0.5
-    value_clip: 0.2
+    value_clip: &value_clip 0.2
     value_grad_clip: 0.5
     value_coef: 0.5
     reward_clip: .inf
     bootstrap_truncations: true
     log_level: INFO
-    _diag_freq: 10
+    _diag_freq: null
 
 env:
   type: gymnasium # "isaacsim" or "gymnasium"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    cfg: LunarLander-v3
+    cfg: LunarLanderContinuous-v3
     num_envs: 16
     # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
     wrappers: []
@@ -40,27 +43,27 @@ models:
   policy:
     layer_config:
       - type: dense
-        params: {units: 64, kernel: default, kernel_params: {}}
-      - type: tanh
+        params: {units: 128, kernel: default, kernel_params: {}}
+      - type: relu
       - type: dense
         params: {units: 64, kernel: default, kernel_params: {}}
-      - type: tanh
+      - type: relu
     output_config:
       - type: dense
         params: {kernel: default, kernel_params: {}}
     optimizer_params: {type: Adam, params: {lr: 3.0e-4}}
-    distribution: categorical
-    temperature: &temperature 1.0
+    distribution: normal
+    # temperature: &temperature 1.0
     device: *device
 
   value:
     layer_config:
       - type: dense
-        params: {units: 64, kernel: default, kernel_params: {}}
-      - type: tanh
+        params: {units: 128, kernel: default, kernel_params: {}}
+      - type: relu
       - type: dense
         params: {units: 64, kernel: default, kernel_params: {}}
-      - type: tanh
+      - type: relu
     output_config:
       - type: dense
         params: {kernel: default, kernel_params: {}}
@@ -96,16 +99,36 @@ normalizers:
       _diag_freq: 1024
 
 # entropy_schedule:
-#   schedule_type: "linear"
-#   steps: 100000
+#   schedule_type: "cosine"
+#   steps: 2000000
 #   start_value: *entropy_coefficient
-#   end_value: 0.001
+#   end_value: 0.01
 
 # temperature_schedule:
 #   schedule_type: "cosine"
 #   steps: 500000
 #   start_value: *temperature
 #   end_value: 1.0
+
+# policy_clip_schedule:
+#   schedule_type: "linear"
+#   steps: 100000
+#   start_value: *policy_clip
+#   end_value: 0.01
+
+# value_clip_schedule:
+#   schedule_type: "linear"
+#   steps: 100000
+#   start_value: *value_clip
+#   end_value: 0.01
+
+# kl_adapter:
+#   initial_beta: 1.0
+#   target_kl: 0.01
+#   scale_up: 2.0
+#   scale_down: 0.5
+#   kl_tolerance_high: 1.5
+#   kl_tolerance_low: 0.5
 
 buffer:
   type: RolloutBuffer
@@ -117,9 +140,11 @@ schedule:
   type: OnPolicySchedule
   config:
     unit: timestep
-    num_units: 500000
+    num_units: 2000000
     learn_unit: timestep
-    num_learn_units: 16384
+    num_learn_units: 16384 # 1024 * 16
+    batch_size: 64
+    learning_epochs: 4
     seed: *seed
 
 renderer:
@@ -128,4 +153,4 @@ renderer:
 
 callbacks:
   - type: WandbCallback
-    config: {project_name: LunarLander-v3}
+    config: {project_name: LunarLanderContinuous-v3}

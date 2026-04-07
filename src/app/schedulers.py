@@ -1,6 +1,6 @@
 import torch as T
 from torch import optim
-from torch.optim import lr_scheduler
+from torch.optim import lr_scheduler, Optimizer
 
 class ScheduleWrapper:
     """
@@ -19,6 +19,7 @@ class ScheduleWrapper:
         steps: int,
         start_value: float,
         end_value: float,
+        optimizer: Optimizer|None = None,
         **kwargs
     ):
         """
@@ -37,8 +38,11 @@ class ScheduleWrapper:
         self.end_value = end_value
         self.kwargs = kwargs
         
-        self.param = T.nn.Parameter(T.zeros(1), requires_grad=False)
-        self.optimizer = optim.SGD([self.param], lr=1.0)
+        if optimizer:
+            self.optimizer = optimizer
+        else:
+            self.param = T.nn.Parameter(T.zeros(1), requires_grad=False)
+            self.optimizer = optim.SGD([self.param], lr=1.0)
         
         # Map scheduler type to PyTorch's built-in schedulers
         if self.schedule_type == "linear":
@@ -114,5 +118,5 @@ class ScheduleWrapper:
             new_wrapper.scheduler.load_state_dict(self.scheduler.state_dict())
         if self.optimizer:
             new_wrapper.optimizer.load_state_dict(self.optimizer.state_dict())
-        new_wrapper.param = self.param.clone().detach().requires_grad_(False)
+        # new_wrapper.param = self.param.clone().detach().requires_grad_(False)
         return new_wrapper
