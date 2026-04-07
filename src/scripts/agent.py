@@ -98,6 +98,8 @@ def build_agent(config: dict, env: EnvWrapper):
         from scripts.actor_critic import build
     elif agent_type == "Reinforce":
         from scripts.reinforce import build
+    elif agent_type == "PPO":
+        from scripts.ppo import build
     else:
         raise NotImplementedError(f"Agent builder for '{agent_type}' is not implemented yet.")
     return build(config, env)
