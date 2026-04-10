@@ -144,6 +144,10 @@ class Model(nn.Module):
 
         # Now that parameters exist, create the optimizer
         self.optimizer = self._init_optimizer()
+        
+        # If lr scheduler, bind the optimizer to it
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def _build_layer(self, layer_type, params):
         """
@@ -710,10 +714,8 @@ class StochasticContinuousPolicy(Model):
 
         elif self.distribution == 'normal':
             mu = param_1
-            # sigma = F.softplus(param_2) + 1e-6
-            sigma = T.exp(T.clamp(param_2, min=-20, max=2))
-            # print(f'mu: {mu}')
-            # print(f'sigma: {sigma}')
+            log_std = T.clamp(param_2, min=-10, max=2)
+            sigma = T.exp(log_std) + 1e-8
             dist = SquashedNormal(Normal(mu, sigma), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
             # return dist, T.cat([mu, sigma], dim=-1)
         else:
@@ -737,8 +739,6 @@ class StochasticContinuousPolicy(Model):
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
             distribution=self.distribution,
-            # obs_key=self.obs_key,
-            # goal_key=self.goal_key,
             device=device
         )
         if copy_weights:
@@ -768,12 +768,6 @@ class StochasticContinuousPolicy(Model):
         Returns:
             StochasticContinuousPolicy: Loaded policy model instance.
         """
-        # config_dir = Path(config_dir)
-        # config = json.load(open(config_dir / 'config.json'))
-        # if env is None:
-        #     env = EnvWrapper.from_json(config.get("env"))
-        # lr_scheduler_config = config.get("lr_scheduler", None)
-        # lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
         config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
 
         model = cls(env = env,
@@ -782,8 +776,6 @@ class StochasticContinuousPolicy(Model):
                     optimizer_params = config.get("optimizer_params", {}),
                     lr_scheduler = lr_scheduler,
                     distribution = config.get("distribution", "beta"),
-                    # obs_key = config.get("obs_key", "observation"),
-                    # goal_key = config.get("goal_key", "desired_goal"),
                     device = config.get("device", "cpu")
                     )
 
@@ -895,8 +887,6 @@ class ValueModel(Model):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            # obs_key=self.obs_key,
-            # goal_key=self.goal_key,
             device=device
         )
         
@@ -941,8 +931,6 @@ class ValueModel(Model):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    # obs_key=config.get("obs_key"),
-                    # goal_key=config.get("goal_key"),
                     device = config.get("device")
                     )
         # Load weights if True
@@ -1014,7 +1002,6 @@ class ActorModel(Model):
         mu = self.output_layer["actor_mu"](x)
         pi = self.output_layer["actor_pi"](mu)
         if not T.isinf(self.env_action_high).any() and not T.isinf(self.env_action_low).any():
-            #  pi = pi * T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
             # Map to actual [low,high] bounds of env
             pi = self.env_action_low + (pi + 1.0) * 0.5 * (self.env_action_high - self.env_action_low)
            
@@ -1033,8 +1020,6 @@ class ActorModel(Model):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            # obs_key=self.obs_key,
-            # goal_key=self.goal_key,
             device=device
         )
         
@@ -1076,8 +1061,6 @@ class ActorModel(Model):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    # obs_key = config.get("obs_key"),
-                    # goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 
@@ -1220,8 +1203,6 @@ class ContinuousCritic(BaseCritic):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            # obs_key=self.obs_key,
-            # goal_key=self.goal_key,
             device=device
         )
         
@@ -1264,8 +1245,6 @@ class ContinuousCritic(BaseCritic):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    # obs_key = config.get("obs_key"),
-                    # goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 
@@ -1351,8 +1330,6 @@ class DiscreteCritic(BaseCritic):
             output_config=self.output_config.copy(),
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
-            # obs_key=self.obs_key,
-            # goal_key=self.goal_key,
             device=device
         )
         
@@ -1394,8 +1371,6 @@ class DiscreteCritic(BaseCritic):
                     output_config = config.get("output_config"),
                     optimizer_params = config.get("optimizer_params"),
                     lr_scheduler = lr_scheduler,
-                    # obs_key = config.get("obs_key"),
-                    # goal_key = config.get("goal_key"),
                     device = config.get("device")
                     )
 
