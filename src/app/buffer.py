@@ -230,9 +230,9 @@ class ReplayBuffer(Buffer):
         self.actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.next_states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
-        self.dones = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
+        self.terminations = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
+        self.truncations = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
         self.trajectory_lengths = T.zeros((buffer_size,), dtype=T.int64, device=self.device)
-        
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.desired_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.state_achieved_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
@@ -247,7 +247,8 @@ class ReplayBuffer(Buffer):
         actions: T.Tensor,
         rewards: T.Tensor,
         next_states: T.Tensor,
-        dones: T.Tensor,
+        terminations: T.Tensor,
+        truncations: T.Tensor,
         state_achieved_goals: Optional[T.Tensor] = None,
         next_state_achieved_goals: Optional[T.Tensor] = None,
         desired_goals: Optional[T.Tensor] = None,
@@ -275,8 +276,10 @@ class ReplayBuffer(Buffer):
         if next_states.ndim == 2:
             next_states = next_states[:, T.newaxis, :]
             # next_states = next_states.unsqueeze(1)
-        if dones.ndim == 1:
-            dones = dones[:, T.newaxis]
+        if terminations.ndim == 1:
+            terminations = terminations[:, T.newaxis]
+        if truncations.ndim == 1:
+            truncations = truncations[:, T.newaxis]
 
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
@@ -295,7 +298,8 @@ class ReplayBuffer(Buffer):
         self.actions[indices] = actions.detach().to(device=self.device, dtype=self.action_type)
         self.rewards[indices] = rewards.detach().to(device=self.device, dtype=T.float32)
         self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
-        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.bool)
+        self.terminations[indices] = terminations.detach().to(device=self.device, dtype=T.bool)
+        self.truncations[indices] = truncations.detach().to(device=self.device, dtype=T.bool)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
         
         if self.env.goal_key is not None and self.goal_space_shape is not None:
@@ -305,25 +309,44 @@ class ReplayBuffer(Buffer):
 
         self.counter += batch_size
 
-    def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
+    def sample(self, batch_size: int) -> Dict[str, T.Tensor]:
+        """Returns a dictionary of n-step sequences sampled from the buffer.
+        
+        Args:
+            batch_size: int: The number of samples to draw from the buffer.
+        
+        Returns:
+            Dict[str, T.Tensor]: A dictionary containing the sampled n-step sequences.
+        """
         size = min(self.counter, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
 
-        # indices = T.randint(0, size, (batch_size,), device=self.device)
         indices = self.gen.integers(0, size, (batch_size,))
-        # Retrieve N-step sequences for each sampled starting index
-        # sequences = [self._get_sequence(idx.item()) for idx in indices]
-        # sorted_sequences = zip(*sequences) # zips metrics together
-        # sequence_stack = [T.stack(seq, dim=0) for seq in sorted_sequences]
-        # return sequence_stack
+
+        sample = {
+            "states": self.states[indices].clone(),
+            "actions": self.actions[indices].clone(),
+            "rewards": self.rewards[indices].clone(),
+            "next_states": self.next_states[indices].clone(),
+            "terminations": self.terminations[indices].clone(),
+            "truncations": self.truncations[indices].clone(),
+            "trajectory_lengths": self.trajectory_lengths[indices].clone(),
+        }
         if self.env.goal_key is not None and self.goal_space_shape is not None:
-            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
-            self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices],
-            self.desired_goals[indices], self.trajectory_lengths[indices])
+            sample.update({
+                "state_achieved_goals": self.state_achieved_goals[indices].clone(),
+                "next_state_achieved_goals": self.next_state_achieved_goals[indices].clone(),
+                "desired_goals": self.desired_goals[indices].clone(),
+            })
         else:
-            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
-            self.dones[indices], self.trajectory_lengths[indices])
+            sample.update({
+                "state_achieved_goals": None,
+                "next_state_achieved_goals": None,
+                "desired_goals": None,
+            })
+
+        return sample
     
     def reset(self) -> None:
         """
@@ -333,7 +356,9 @@ class ReplayBuffer(Buffer):
         self.actions.zero_()
         self.rewards.zero_()
         self.next_states.zero_()
-        self.dones.zero_()
+        self.terminations.zero_()
+        self.truncations.zero_()
+        self.trajectory_lengths.zero_()
         self.counter = 0
         
         if self.env.goal_key is not None and self.goal_space_shape is not None:

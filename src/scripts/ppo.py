@@ -11,6 +11,7 @@ def build(config: dict, env: EnvWrapper):
     # build policy
     policy_config = config['models']['policy']
     policy_config['env'] = env
+    policy_config['lr_scheduler'] = ScheduleWrapper(**config['policy_lr_schedule']) if config.get('policy_lr_schedule', None) else None
     if config['models']['policy']['distribution'] in ['categorical']:
         policy_config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
         policy = StochasticDiscretePolicy(**policy_config)
@@ -22,6 +23,7 @@ def build(config: dict, env: EnvWrapper):
     # build value model
     value_config = config['models']['value']
     value_config['env'] = env
+    value_config['lr_scheduler'] = ScheduleWrapper(**config['value_lr_schedule']) if config.get('value_lr_schedule', None) else None
     value = ValueModel(**value_config)
 
     # create state normalizer object if present in config
