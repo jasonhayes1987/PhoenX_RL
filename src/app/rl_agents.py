@@ -51,7 +51,7 @@ from isaaclab.app import AppLauncher
 from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, grad_norm_from_optimizer
 
 
-# Agent class
+## Base Agent Class ##
 class Agent:
     """Base class for all RL agents."""
 
@@ -65,8 +65,6 @@ class Agent:
         self.kwargs = kwargs
         try:
             self.save_dir = self._setup_save_dir(save_dir)
-            # self.obs_key = obs_key
-            # self.goal_key = goal_key
             self.device = get_device(device)
 
             # Set internal attributes
@@ -96,246 +94,9 @@ class Agent:
         # else:
         return save_dir
 
-    # def _initialize_callbacks(self, callbacks): #TODO remove once Trainer implemented
-    #     """
-    #     Initialize and configure callbacks for logging and monitoring.
-
-    #     Args:
-    #         callbacks (list): List of callback objects.
-    #     """
-    #     try:
-    #         if callbacks:
-    #             for callback in callbacks:
-    #                 callback._config(self)
-    #                 if isinstance(callback, WandbCallback):
-    #                     self._wandb = True
-    #         else:
-    #             self._wandb = False
-
-    #         return callbacks
-    #     except Exception as e:
-    #         self.logger.error(f"Error initializing callbacks: {e}", exc_info=True)
-
-    # def _initialize_run(self, seed: int | None = None, training: bool = True, **kwargs): #TODO remove once Trainer implemented
-    #     """
-    #     Initializes the environment, seeds, and tracking variables for training.
-    #     Args:
-    #         seed (int | None): Seed for the environment. If None, a random seed is used.
-    #         training (bool): Whether the agent is training or testing.
-    #         **kwargs: Additional keyword arguments.
-    #     """
-    #     if getattr(self, '_initialized', False):
-    #         return
-        
-    #     # Set models to train mode if training, else evaluation mode
-    #     for name in ['actor_model', 'critic_model', 'critic_model_a', 'critic_model_b',
-    #                 'value_model', 'policy_model']:
-    #         model = getattr(self.base_agent, name, None)
-    #         if model and training: model.train()
-    #         elif model: model.eval()
-
-    #     # Set target models to eval mode
-    #     for name in ['target_actor_model', 'target_critic_model', 'target_critic_model_a', 'target_critic_model_b',
-    #                  'target_value_model', 'target_policy_model']:
-    #         model = getattr(self.base_agent, name, None)
-    #         if model: model.eval()
-        
-    #     # Set internal attributes
-    #     seed = seed if seed else np.random.randint(1000)
-    #     set_seed(seed)
-    #     states, _ = self.base_agent.env.reset()
-
-    #     # Add initial states to normalizer if it exists and training
-    #     if training:
-    #         if getattr(self.base_agent, 'state_normalizer', None):
-    #             if isinstance(states, dict):
-    #                 self.base_agent.state_normalizer.add(T.tensor(states[self.base_agent.obs_key], dtype=T.float32, device=self.base_agent.state_normalizer.device.type))
-    #             else:
-    #                 self.base_agent.state_normalizer.add(T.tensor(states, dtype=T.float32, device=self.base_agent.state_normalizer.device.type))
-
-    #         if getattr(self.base_agent, 'goal_normalizer', None):
-    #             self.base_agent.goal_normalizer.add(T.tensor(states[self.base_agent.goal_key], dtype=T.float32, device=self.base_agent.goal_normalizer.device.type))
-
-    #     # Set callbacks
-    #     if self.base_agent.callbacks:
-    #         config = self.get_config()
-    #         config.update({'num_envs': self.env.num_envs, 'seed': seed})
-    #         config.update(kwargs)
-
-    #         models = [model for model in [getattr(self.base_agent, "actor_model", None),
-    #                                       getattr(self.base_agent, "critic_model", None),
-    #                                       getattr(self.base_agent, "critic_model_a", None),
-    #                                       getattr(self.base_agent, "critic_model_b", None),
-    #                                       getattr(self.base_agent, "value_model", None),
-    #                                       getattr(self.base_agent, "policy_model", None),
-    #                                       self.base_agent.curiosity if hasattr(self.base_agent, 'curiosity') else None] if model is not None]
-            
-    #         func_name = 'on_train_begin' if training else 'on_test_begin'
-
-    #         for callback in self.base_agent.callbacks:
-    #             callback_func = getattr(callback, func_name)
-    #             if isinstance(callback, WandbCallback):
-    #                 run_number = callback.run_name.split("-")[-1] if callback.run_name else None
-    #                 if func_name == 'on_train_begin':
-    #                     callback_func(config, run_number, tuple(models))
-    #                 else:
-    #                     callback_func(config, run_number)
-    #             else:
-    #                 callback_func(config)
-    #     self._initialized = True
-
-    #     # Return dict with initialized params
-    #     return {
-    #         # 'env': env,
-    #         'step': 0,
-    #         'states': states,
-    #         'best_reward': -T.inf,
-    #         'completed_episodes': T.zeros(self.env.num_envs, dtype=T.int32, device=self.device),
-    #         'episode_scores': T.zeros(self.env.num_envs, dtype=T.float32, device=self.device),
-    #         'score_history': deque(maxlen=100)
-    #     }
-
-    # def extract_states_goals(self, states: np.ndarray | T.Tensor | dict | list[dict]):
-    #     """Extract the states and goals from the passed states argument and returns them as Tensors.
-        
-    #     Args:
-    #         states (np.ndarray | T.Tensor | dict | list[dict]): States to extract from.
-        
-    #     Returns:
-    #         tuple: Tuple of states and goals as Tensors.
-    #     """
-    #     if isinstance(states, list):
-    #         obs_list = []
-    #         goals_list = []
-    #         for step_data in states:
-    #             if isinstance(step_data, dict):
-    #                 if not self.obs_key:
-    #                     raise ValueError("Goal-aware observation spaces require obs_key to be set")
-    #                 step_obs = step_data.get(self.obs_key)
-    #                 if self.goal_key:
-    #                     step_goal = step_data.get(self.goal_key)
-    #                 else:
-    #                     step_goal = None
-    #             else:
-    #                 break
-
-    #             # Convert to tensor if needed
-    #             if not isinstance(step_obs, T.Tensor):
-    #                 step_obs = T.tensor(step_obs, dtype=T.float32, device=self.device)
-    #             if self.goal_key:
-    #                 if not isinstance(step_goal, T.Tensor):
-    #                     step_goal = T.tensor(step_goal, dtype=T.float32, device=self.device)
-    #                 goals_list.append(step_goal)
-    #             obs_list.append(step_obs)
-    #         obs = T.stack(obs_list, dim=0)
-            
-    #         if self.goal_key:
-    #             goals = T.stack(goals_list, dim=0)
-    #         else:
-    #             goals = None
-
-    #     elif isinstance(states, dict):
-    #         if not self.obs_key:
-    #             raise ValueError("Goal-aware observation spaces require obs_key to be set")
-    #         obs = states.get(self.obs_key)
-    #         if self.goal_key:
-    #             goals = states.get(self.goal_key)
-    #         else:
-    #             goals = None
-    #     else:
-    #         obs = states
-    #         goals = None
-
-    #     if not isinstance(obs, T.Tensor):
-    #         obs = T.tensor(obs, dtype=T.float32, device=self.device)
-    #     if goals is not None and not isinstance(goals, T.Tensor):
-    #         goals = T.tensor(goals, dtype=T.float32, device=self.device)
-        
-    #     return obs, goals
-
-    # def _preprocess_inputs(self, states: np.ndarray | T.Tensor | dict | list[dict]):
-    #     """Preprocess the inputs for the agent by separating states into observation and desired goal
-    #     if the observation space is goal-aware.
-
-    #     Args:
-    #         states (np.ndarray | dict | list[dict]): States to preprocess.
-
-    #     Returns:
-    #         tuple: Tuple of observation and desired goal as Tensors.
-    #     """
-    #     obs, goals = self.extract_states_goals(states)
-    #     if self.state_normalizer:
-    #         obs = self.state_normalizer.normalize(obs)
-    #     if hasattr(self, 'goal_normalizer') and self.goal_normalizer:
-    #         goals = self.goal_normalizer.normalize(goals)
-        
-    #     return obs, goals
-
     def _step(self, env: EnvWrapper, step: int, states: np.ndarray, num_episodes: int, episode_scores: np.ndarray, completed_episodes: np.ndarray, score_history: deque, learn: bool = True, training: bool = True):
         """Step function for the agent."""
         raise NotImplementedError("Subclasses must implement _step.")
-
-    # def render_episode(self, episode: int, step: int, context: str = 'train', num_envs:int=1, **kwargs): #TODO remove once added to Trainer
-    #     """Render a single episode in a temporary environment, collect metrics, create video, and log to wandb.
-    #         **Only works with Gymnasium Environments**
-    #     Args:
-    #         episode (int): Episode number to render.
-    #         step (int): Current training/testing step (for wandb logging).
-    #         context (str): Context of the episode (train or test). Defaults to 'train'.
-    #         **kwargs: Additional keyword arguments to pass to the environment wrapper to override original values.
-    #     """
-    #     if isinstance(self.base_agent.env, IsaacSimWrapper):
-    #         raise ValueError("Rendering episodes is not supported for IsaacSim environments. Test using one environment with render_mode='gui' instead.")
-    #     self.base_agent.logger.info(f"Rendering episode {episode} in {context} with kwargs: {kwargs}")
-    #     env = self.base_agent.env.clone(num_envs, **kwargs)
-    #     states, _ = env.reset()
-    #     frames = []
-    #     done = False
-    #     local_step = 0
-    #     episode_reward = 0
-
-    #     agent_type = self.base_agent.__class__.__name__
-
-    #     while not done:
-    #         local_step += 1
-    #         obs, goals = self._preprocess_inputs(states)
-    #         # Condition get_action call on agent type
-    #         # if agent_type in ['ActorCritic', 'Reinforce', 'SAC']:
-    #         #     actions, _, _ = self.base_agent.get_action(obs, goals, context='test')
-    #         # elif agent_type == 'PPO':
-    #         #     actions, _ = self.base_agent.get_action(obs, goals, context='test')
-    #         # else:
-    #         actions, _, _ = self.base_agent.get_action(obs, goals, context='test')
-
-    #         if hasattr(self, 'action_adapter'):
-    #             actions = self.action_adapter(env, actions)
-            
-
-    #         actions = env.format_actions(actions)
-    #         states, rewards, dones, _ = env.step(actions)
-    #         episode_reward += rewards[0]
-    #         frame = env.render_frame()
-    #         frames.append(frame)
-    #         done = dones[0]
-    #         # states = next_states
-
-    #     metrics = {
-    #         'render_episode_reward': episode_reward,
-    #         'render_episode_length': local_step
-    #     }
-
-    #     render_video(frames, episode, self.save_dir, context)
-    #     video_path = os.path.join(self.save_dir, f"renders/{context}/episode_{episode}.mp4")
-    #     if self.base_agent.callbacks:
-    #         for callback in self.base_agent.callbacks:
-    #             if isinstance(callback, WandbCallback):
-    #                 caption = (f"{context.capitalize()} render episode {episode}")
-    #                 wandb.log({
-    #                     f"{context}_video": wandb.Video(video_path, caption=caption, format="mp4"),
-    #                     **metrics
-    #                 }, step=step)
-    #     env.close()
-
 
     @abstractmethod
     def _distributed_learn(self, *args, **kwargs):
@@ -453,6 +214,7 @@ class Agent:
         """Loads the model."""
         raise NotImplementedError("Subclasses must implement load.")
 
+## On-Policy Agent Classes ##
 class OnPolicyAgent(Agent):
     """Base class for all on-policy agents."""
     def __init__(
@@ -515,307 +277,6 @@ class OnPolicyAgent(Agent):
             "entropy_lr": self.entropy_lr,
         })
         return config
-
-class ActorCritic(OnPolicyAgent):
-    """Actor Critic Agent."""
-
-    def __init__(
-        self,
-        policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
-        value: ValueModel,
-        discount: float=0.99,
-        state_normalizer: BaseNormalizer|None = None,
-        goal_normalizer: BaseNormalizer|None = None,
-        advantage_normalizer: BaseNormalizer|None = None,
-        reward_normalizer: RewardNorm|None = None,
-        entropy_coefficient: float=0.01, # Only used if auto entropy = False
-        entropy_schedule: ScheduleWrapper|None = None, # Only used if auto entropy = False
-        auto_entropy_tuning: bool=True,
-        entropy_lr: float=3e-4, # Only used if auto entropy = True
-        gae_coefficient: float=0.95,
-        policy_grad_clip: float=1.0,
-        value_grad_clip: float=1.0,
-        value_coef: float=0.5,
-        bootstrap_truncations: bool=True,
-        save_dir: str = "models/",
-        device: Optional[str | T.device] = None,
-        log_level: str = 'INFO',
-        **kwargs,
-    ):
-        try:
-            super().__init__(
-                policy,
-                value,
-                discount,
-                state_normalizer,
-                goal_normalizer,
-                advantage_normalizer = advantage_normalizer,
-                reward_normalizer = reward_normalizer,
-                entropy_coefficient = entropy_coefficient,
-                entropy_schedule = entropy_schedule,
-                auto_entropy_tuning = auto_entropy_tuning,
-                entropy_lr = entropy_lr,
-                save_dir = save_dir,
-                device=device,
-                log_level=log_level,
-                **kwargs
-            )
-            self.gae_coefficient = gae_coefficient
-            self.policy_grad_clip = policy_grad_clip
-            self.value_grad_clip = value_grad_clip
-            self.value_coef = value_coef
-            self.bootstrap_truncations = bootstrap_truncations
-        except Exception as e:
-            self.logger.error(f"Error in ActorCritic init: {e}", exc_info=True)
-
-    def learn(self, step:int, rollouts:dict):
-        self._learn_count += 1
-        if self._diag_freq is not None:
-            should_log_diag = (self._learn_count % self._diag_freq == 0)
-        else:
-            should_log_diag = False
-
-        learn_metrics = {}
-
-        self.policy.optimizer.zero_grad()
-        self.value.optimizer.zero_grad()
-
-        # Extract trajectories from buffer
-        states = rollouts['states']
-        actions = rollouts['actions']
-        rewards = rollouts['rewards']
-        next_states = rollouts['next_states']
-        goals = rollouts['desired_goals']
-        ach_goals = rollouts['state_achieved_goals']
-        next_ach_goals = rollouts['next_state_achieved_goals']
-        terminations = rollouts['terminations']
-        truncations = rollouts['truncations']
-
-        # Normalize states and goals
-        if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
-            next_states = self.state_normalizer.normalize(next_states)
-        if self.goal_normalizer:
-            goals = self.goal_normalizer.normalize(goals)
-            ach_goals = self.goal_normalizer.normalize(ach_goals)
-        if self.reward_normalizer:
-            rewards = self.reward_normalizer.normalize(rewards)
-
-        # Get entropy coefficient
-        if self.auto_entropy_tuning:
-            entropy_coefficient = self.log_alpha.exp()
-        else:
-            entropy_coefficient = self.entropy_coefficient
-            if self.entropy_schedule:
-                entropy_coefficient *= self.entropy_schedule.get_factor()
-
-        # Get trajectory length, num_envs, and feature dims
-        trajectory_length, num_envs, obs_dim = states.shape
-        action_dim = actions.shape[-1]
-
-        # Flatten actions
-        flat_actions = actions.reshape(trajectory_length * num_envs, action_dim)
-
-        # Flatten states and next_states before passing through value function
-        flat_states = states.reshape(trajectory_length * num_envs, obs_dim)
-        flat_next_states = next_states.reshape(trajectory_length * num_envs, obs_dim)
-
-        # Flatten goals if not None
-        if goals is not None:
-            goal_dim = goals.shape[-1]
-            flat_goals = goals.reshape(trajectory_length * num_envs, goal_dim)
-            flat_next_ach_goals = next_ach_goals.reshape(trajectory_length * num_envs, goal_dim)
-        else:
-            flat_goals = None
-            flat_next_ach_goals = None
-
-        state_values = self.value(flat_states, flat_goals).reshape(trajectory_length, num_envs).squeeze(-1)
-        next_state_values = self.value(flat_next_states, flat_next_ach_goals).reshape(trajectory_length, num_envs).squeeze(-1).detach()
-
-        advantages, returns, td_errors = compute_advantages_and_returns(
-            rewards,
-            state_values,
-            next_state_values,
-            terminations,
-            truncations,
-            self.discount,
-            self.gae_coefficient,
-            self.bootstrap_truncations,
-            device=self.device
-        )
-
-        # Calculate value loss
-        value_loss = self.value_coef * (state_values - returns.detach()).pow(2).mean()
-
-        # Create separate policy advantage in case using advantage normalizer
-        policy_advantages = advantages.detach()
-        if self.advantage_normalizer:
-            flat_advantages = policy_advantages.reshape(-1,1)
-            if getattr(self.advantage_normalizer, 'add', None):
-                self.advantage_normalizer.add(flat_advantages)
-            policy_advantages = self.advantage_normalizer.normalize(flat_advantages).reshape(trajectory_length, num_envs)
-
-        # Get log probs and entropy values from current policy dist
-        dist = self.policy(flat_states, flat_goals)
-        # dist = self.policy.transform_distribution(base_dist)
-        # reshape flat actions to be vector if categorical distribution
-        if self.policy.distribution == 'categorical':
-            flat_actions = flat_actions.squeeze(-1)
-            log_probs = dist.log_prob(flat_actions).reshape(trajectory_length, num_envs)
-        else:
-            log_probs = dist.log_prob(flat_actions).sum(dim=-1).reshape(trajectory_length, num_envs)
-        
-        # Only calculate entropy if entropy coefficient > 0
-        # if entropy_coefficient > 0.0:
-        entropies = dist.entropy().reshape(trajectory_length, num_envs)
-        # else:
-        #     entropies = T.zeros_like(log_probs)
-
-        # Calculate policy loss
-        policy_loss = -(log_probs * policy_advantages + entropy_coefficient * entropies).mean()
-
-        # Backpropogate
-        value_loss.backward()
-        policy_loss.backward()
-        # Clip gradients if grad clips
-        if self.value_grad_clip:
-            value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), self.value_grad_clip)
-        if self.policy_grad_clip:
-            policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
-
-        nonfinite_values = (
-            count_nonfinite(state_values)
-            + count_nonfinite(next_state_values)
-            + count_nonfinite(td_errors)
-            + count_nonfinite(advantages)
-            + count_nonfinite(returns)
-            + count_nonfinite(log_probs)
-            + count_nonfinite(entropies)
-        )
-
-        if should_log_diag or nonfinite_values > 0:
-            self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
-                step,
-                self._learn_count,
-                summarize_tensor(states, "states"),
-                summarize_tensor(actions, "actions"),
-                summarize_tensor(rewards, "rewards"),
-                summarize_tensor(next_states, "next_states"),
-                summarize_tensor(goals, "goals"),
-                summarize_tensor(next_ach_goals, "next_ach_goals"),
-                summarize_tensor(terminations, "terminations"),
-                summarize_tensor(truncations, "truncations"),
-                summarize_tensor(state_values, "values"),
-                summarize_tensor(next_state_values, "next_values"),
-                summarize_tensor(td_errors, "td_errors"),
-                summarize_tensor(advantages, "advantages"),
-                summarize_tensor(returns, "returns"),
-                summarize_tensor(log_probs, "log_probs"),
-                summarize_tensor(entropies, "entropies"),
-                f"entropy_coef={float(entropy_coefficient)}",
-            )
-        
-            self.logger.debug(
-                "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
-                "value_loss=%.6f policy_loss=%.6f",
-                step,
-                self._learn_count,
-                float(value_grad_norm) if value_grad_norm is not None else -1.0,
-                float(policy_grad_norm) if policy_grad_norm is not None else -1.0,
-                float(value_loss.item()),
-                float(policy_loss.item()),
-            )
-
-        self.value.optimizer.step()
-        self.policy.optimizer.step()
-
-        if self.auto_entropy_tuning:
-            self.entropy_optimizer.zero_grad()
-            alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-            alpha_loss.backward()
-            self.entropy_optimizer.step()
-
-        # Get temperature value from policy if categorical
-        if self.policy.distribution == 'categorical':
-            temperature = self.policy.temperature
-            if self.policy.temperature_schedule:
-                temperature *= self.policy.temperature_schedule.get_factor()
-            learn_metrics.update({'temperature': temperature})
-
-        learn_metrics.update({
-            'policy_loss': policy_loss.item(),
-            'value_loss': value_loss.item(),
-            'temporal_difference': td_errors.mean().item(),
-            'advantages': advantages.mean().item(),
-            'returns': returns.mean().item(),
-            'entropy': entropies.mean().item(),
-            'entropy_coefficient': entropy_coefficient,
-        })
-
-        return learn_metrics
-
-    def get_config(self):
-        config = super().get_config()
-        config["type"] = self.__class__.__name__
-        config["config"].update({
-            "gae_coefficient": self.gae_coefficient,
-            "policy_grad_clip": self.policy_grad_clip,
-            "value_grad_clip": self.value_grad_clip,
-            "value_coef": self.value_coef,
-            "bootstrap_truncations": self.bootstrap_truncations,
-        })
-        return config
-
-    def save(self):
-        """Saves the model."""
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        self.value.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.goal_normalizer:
-            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
-        if self.advantage_normalizer:
-            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool = True):
-        """Loads the model."""
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        # env_wrapper = EnvWrapper.from_json(config["env"])
-        policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
-        value = ValueModel.load(config_dir, 'value', load_weights, env=env_wrapper)
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
-        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
-        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
-
-        agent = cls(
-            policy=policy,
-            value=value,
-            discount=config["discount"],
-            state_normalizer=state_normalizer,
-            goal_normalizer=goal_normalizer,
-            advantage_normalizer=advantage_normalizer,
-            reward_normalizer=reward_normalizer,
-            entropy_coefficient=config["entropy_coefficient"],
-            entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
-            auto_entropy_tuning=config["auto_entropy_tuning"],
-            entropy_lr=config["entropy_lr"],
-            gae_coefficient=config["gae_coefficient"],
-            policy_grad_clip=config["policy_grad_clip"],
-            value_grad_clip=config["value_grad_clip"],
-            value_coef=config["value_coef"],
-            bootstrap_truncations=config["bootstrap_truncations"],
-            save_dir=config["save_dir"],
-        )
-
-        return agent
-
 
 class Reinforce(OnPolicyAgent):
     def __init__(
@@ -1015,6 +476,9 @@ class Reinforce(OnPolicyAgent):
             alpha_loss.backward()
             self.entropy_optimizer.step()
 
+        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
+        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
+
         # Get temperature value from policy if categorical
         if self.policy.distribution == 'categorical':
             temperature = self.policy.temperature
@@ -1029,6 +493,8 @@ class Reinforce(OnPolicyAgent):
             'returns': returns.mean().item(),
             'entropy': entropies.mean().item(),
             'entropy_coefficient': entropy_coefficient,
+            'policy_learning_rate': policy_learning_rate,
+            'value_learning_rate': value_learning_rate,
         })
 
         return learn_metrics
@@ -1051,117 +517,1006 @@ class Reinforce(OnPolicyAgent):
             self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
         if self.advantage_normalizer:
             self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
+        if self.reward_normalizer:
+            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
+
     @classmethod
     def load(cls, config_dir:str | Path, load_weights:bool = True):
         """Loads the model."""
         config = json.load(open(Path(config_dir) / 'config.json'))
-        policy_model = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
+        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
+        policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
         value_model = ValueModel.load(config_dir, 'value', load_weights, env=env_wrapper) if config.get('value', None) else None
         state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config.get('state_normalizer', None) else None
         advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "/advantage_normalizer.pt") if config.get('advantage_normalizer', None) else None
+        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
 
         # return reinforce agent
         agent = cls(
-            # env=env_wrapper,
-            policy=policy_model,
+            policy=policy,
             value=value_model,
             discount=config["discount"],
             state_normalizer=state_normalizer,
             advantage_normalizer=advantage_normalizer,
+            reward_normalizer=reward_normalizer,
             entropy_coefficient=config["entropy_coefficient"],
             entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
+            auto_entropy_tuning=config["auto_entropy_tuning"],
+            entropy_lr=config["entropy_lr"],
             save_dir=config["save_dir"],
         )
 
         return agent
-    
 
-class DDPG(Agent):
+class ActorCritic(OnPolicyAgent):
+    """Actor Critic Agent."""
+
+    def __init__(
+        self,
+        policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
+        value: ValueModel,
+        discount: float=0.99,
+        state_normalizer: BaseNormalizer|None = None,
+        goal_normalizer: BaseNormalizer|None = None,
+        advantage_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: RewardNorm|None = None,
+        entropy_coefficient: float=0.01, # Only used if auto entropy = False
+        entropy_schedule: ScheduleWrapper|None = None, # Only used if auto entropy = False
+        auto_entropy_tuning: bool=True,
+        entropy_lr: float=3e-4, # Only used if auto entropy = True
+        gae_coefficient: float=0.95,
+        policy_grad_clip: float=1.0,
+        value_grad_clip: float=1.0,
+        value_coef: float=0.5,
+        bootstrap_truncations: bool=True,
+        save_dir: str = "models/",
+        device: Optional[str | T.device] = None,
+        **kwargs,
+    ):
+        try:
+            super().__init__(
+                policy,
+                value,
+                discount,
+                state_normalizer,
+                goal_normalizer,
+                advantage_normalizer = advantage_normalizer,
+                reward_normalizer = reward_normalizer,
+                entropy_coefficient = entropy_coefficient,
+                entropy_schedule = entropy_schedule,
+                auto_entropy_tuning = auto_entropy_tuning,
+                entropy_lr = entropy_lr,
+                save_dir = save_dir,
+                device=device,
+                **kwargs
+            )
+            self.gae_coefficient = gae_coefficient
+            self.policy_grad_clip = policy_grad_clip
+            self.value_grad_clip = value_grad_clip
+            self.value_coef = value_coef
+            self.bootstrap_truncations = bootstrap_truncations
+        except Exception as e:
+            self.logger.error(f"Error in ActorCritic init: {e}", exc_info=True)
+
+    def learn(self, step:int, rollouts:dict):
+        self._learn_count += 1
+        if self._diag_freq is not None:
+            should_log_diag = (self._learn_count % self._diag_freq == 0)
+        else:
+            should_log_diag = False
+
+        learn_metrics = {}
+
+        self.policy.optimizer.zero_grad()
+        self.value.optimizer.zero_grad()
+
+        # Extract trajectories from buffer
+        states = rollouts['states']
+        actions = rollouts['actions']
+        rewards = rollouts['rewards']
+        next_states = rollouts['next_states']
+        goals = rollouts['desired_goals']
+        ach_goals = rollouts['state_achieved_goals']
+        next_ach_goals = rollouts['next_state_achieved_goals']
+        terminations = rollouts['terminations']
+        truncations = rollouts['truncations']
+
+        # Normalize states and goals
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
+        if self.goal_normalizer:
+            goals = self.goal_normalizer.normalize(goals)
+            ach_goals = self.goal_normalizer.normalize(ach_goals)
+        if self.reward_normalizer:
+            rewards = self.reward_normalizer.normalize(rewards)
+
+        # Get entropy coefficient
+        if self.auto_entropy_tuning:
+            entropy_coefficient = self.log_alpha.exp()
+        else:
+            entropy_coefficient = self.entropy_coefficient
+            if self.entropy_schedule:
+                entropy_coefficient *= self.entropy_schedule.get_factor()
+
+        # Get trajectory length, num_envs, and feature dims
+        trajectory_length, num_envs, obs_dim = states.shape
+        action_dim = actions.shape[-1]
+
+        # Flatten actions
+        flat_actions = actions.reshape(trajectory_length * num_envs, action_dim)
+
+        # Flatten states and next_states before passing through value function
+        flat_states = states.reshape(trajectory_length * num_envs, obs_dim)
+        flat_next_states = next_states.reshape(trajectory_length * num_envs, obs_dim)
+
+        # Flatten goals if not None
+        if goals is not None:
+            goal_dim = goals.shape[-1]
+            flat_goals = goals.reshape(trajectory_length * num_envs, goal_dim)
+            flat_next_ach_goals = next_ach_goals.reshape(trajectory_length * num_envs, goal_dim)
+        else:
+            flat_goals = None
+            flat_next_ach_goals = None
+
+        state_values = self.value(flat_states, flat_goals).reshape(trajectory_length, num_envs).squeeze(-1)
+        next_state_values = self.value(flat_next_states, flat_next_ach_goals).reshape(trajectory_length, num_envs).squeeze(-1).detach()
+
+        advantages, returns, td_errors = compute_advantages_and_returns(
+            rewards,
+            state_values,
+            next_state_values,
+            terminations,
+            truncations,
+            self.discount,
+            self.gae_coefficient,
+            self.bootstrap_truncations,
+            device=self.device
+        )
+
+        # Calculate value loss
+        value_loss = self.value_coef * (state_values - returns.detach()).pow(2).mean()
+
+        # Create separate policy advantage in case using advantage normalizer
+        policy_advantages = advantages.detach()
+        if self.advantage_normalizer:
+            flat_advantages = policy_advantages.reshape(-1,1)
+            if getattr(self.advantage_normalizer, 'add', None):
+                self.advantage_normalizer.add(flat_advantages)
+            policy_advantages = self.advantage_normalizer.normalize(flat_advantages).reshape(trajectory_length, num_envs)
+
+        # Get log probs and entropy values from current policy dist
+        dist = self.policy(flat_states, flat_goals)
+        # dist = self.policy.transform_distribution(base_dist)
+        # reshape flat actions to be vector if categorical distribution
+        if self.policy.distribution == 'categorical':
+            flat_actions = flat_actions.squeeze(-1)
+            log_probs = dist.log_prob(flat_actions).reshape(trajectory_length, num_envs)
+        else:
+            log_probs = dist.log_prob(flat_actions).sum(dim=-1).reshape(trajectory_length, num_envs)
+        
+        # Only calculate entropy if entropy coefficient > 0
+        # if entropy_coefficient > 0.0:
+        entropies = dist.entropy().reshape(trajectory_length, num_envs)
+        # else:
+        #     entropies = T.zeros_like(log_probs)
+
+        # Calculate policy loss
+        policy_loss = -(log_probs * policy_advantages + entropy_coefficient * entropies).mean()
+
+        # Backpropogate
+        value_loss.backward()
+        policy_loss.backward()
+        # Clip gradients if grad clips
+        if self.value_grad_clip:
+            value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), self.value_grad_clip)
+        if self.policy_grad_clip:
+            policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
+
+        nonfinite_values = (
+            count_nonfinite(state_values)
+            + count_nonfinite(next_state_values)
+            + count_nonfinite(td_errors)
+            + count_nonfinite(advantages)
+            + count_nonfinite(returns)
+            + count_nonfinite(log_probs)
+            + count_nonfinite(entropies)
+        )
+
+        if should_log_diag or nonfinite_values > 0:
+            self.logger.debug(
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                step,
+                self._learn_count,
+                summarize_tensor(states, "states"),
+                summarize_tensor(actions, "actions"),
+                summarize_tensor(rewards, "rewards"),
+                summarize_tensor(next_states, "next_states"),
+                summarize_tensor(goals, "goals"),
+                summarize_tensor(next_ach_goals, "next_ach_goals"),
+                summarize_tensor(terminations, "terminations"),
+                summarize_tensor(truncations, "truncations"),
+                summarize_tensor(state_values, "values"),
+                summarize_tensor(next_state_values, "next_values"),
+                summarize_tensor(td_errors, "td_errors"),
+                summarize_tensor(advantages, "advantages"),
+                summarize_tensor(returns, "returns"),
+                summarize_tensor(log_probs, "log_probs"),
+                summarize_tensor(entropies, "entropies"),
+                f"entropy_coef={float(entropy_coefficient)}",
+            )
+        
+            self.logger.debug(
+                "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
+                "value_loss=%.6f policy_loss=%.6f",
+                step,
+                self._learn_count,
+                float(value_grad_norm) if value_grad_norm is not None else -1.0,
+                float(policy_grad_norm) if policy_grad_norm is not None else -1.0,
+                float(value_loss.item()),
+                float(policy_loss.item()),
+            )
+
+        self.value.optimizer.step()
+        self.policy.optimizer.step()
+
+        if self.auto_entropy_tuning:
+            self.entropy_optimizer.zero_grad()
+            alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.entropy_optimizer.step()
+
+        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
+        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
+
+        # Get temperature value from policy if categorical
+        if self.policy.distribution == 'categorical':
+            temperature = self.policy.temperature
+            if self.policy.temperature_schedule:
+                temperature *= self.policy.temperature_schedule.get_factor()
+            learn_metrics.update({'temperature': temperature})
+
+        learn_metrics.update({
+            'policy_loss': policy_loss.item(),
+            'value_loss': value_loss.item(),
+            'temporal_difference': td_errors.mean().item(),
+            'advantages': advantages.mean().item(),
+            'returns': returns.mean().item(),
+            'entropy': entropies.mean().item(),
+            'entropy_coefficient': entropy_coefficient,
+            'policy_learning_rate': policy_learning_rate,
+            'value_learning_rate': value_learning_rate,
+        })
+
+        return learn_metrics
+
+    def get_config(self):
+        config = super().get_config()
+        config["type"] = self.__class__.__name__
+        config["config"].update({
+            "gae_coefficient": self.gae_coefficient,
+            "policy_grad_clip": self.policy_grad_clip,
+            "value_grad_clip": self.value_grad_clip,
+            "value_coef": self.value_coef,
+            "bootstrap_truncations": self.bootstrap_truncations,
+        })
+        return config
+
+    def save(self):
+        """Saves the model."""
+        config = self.get_config()
+        os.makedirs(self.save_dir, exist_ok=True)
+        with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
+        self.policy.save(self.save_dir)
+        self.value.save(self.save_dir)
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
+        if self.goal_normalizer:
+            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
+        if self.advantage_normalizer:
+            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
+        if self.reward_normalizer:
+            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
+
+    @classmethod
+    def load(cls, config_dir:str | Path, load_weights:bool = True):
+        """Loads the model."""
+        config = json.load(open(Path(config_dir) / 'config.json'))
+        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
+        policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
+        value = ValueModel.load(config_dir, 'value', load_weights, env=env_wrapper)
+        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
+        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
+        advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
+        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
+
+        agent = cls(
+            policy=policy,
+            value=value,
+            discount=config["discount"],
+            state_normalizer=state_normalizer,
+            goal_normalizer=goal_normalizer,
+            advantage_normalizer=advantage_normalizer,
+            reward_normalizer=reward_normalizer,
+            entropy_coefficient=config["entropy_coefficient"],
+            entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
+            auto_entropy_tuning=config["auto_entropy_tuning"],
+            entropy_lr=config["entropy_lr"],
+            gae_coefficient=config["gae_coefficient"],
+            policy_grad_clip=config["policy_grad_clip"],
+            value_grad_clip=config["value_grad_clip"],
+            value_coef=config["value_coef"],
+            bootstrap_truncations=config["bootstrap_truncations"],
+            save_dir=config["save_dir"],
+        )
+
+        return agent
+
+class PPO(OnPolicyAgent):
+    """
+    Proximal Policy Optimization (PPO) agent implementation.
+
+    Attributes:
+        policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
+        value: (ValueModel): The value model used for state-value prediction.
+        discount: (float): Discount factor for future rewards.
+        gae_coefficient: (float): GAE smoothing coefficient.
+        state_normalizer: (BaseNormalizer): Normalizer for state inputs.
+        goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
+        advantage_normalizer: (BaseNormalizer): Normalizer for advantages
+        reward_normalizer:(RewardNorm): Normalizer for rewards.
+        entropy_coefficient: (float): Coefficient for entropy regularization.
+        entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
+        auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
+        entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
+        kl_coefficient: (float): Coefficient for KL divergence penalty.
+        kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
+        policy_clip: (float): Clipping value for policy ratio updates.
+        policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
+        policy_grad_clip: (float): Maximum norm for policy model gradients.
+        value_clip: (float): Clipping value for value model updates.
+        value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
+        value_grad_clip: (float): Maximum norm for value model gradients.
+        value_coef: (float): value to weight the value loss by.
+        reward_clip: (float): Maximum absolute value for reward clipping.
+        curiosity: (ICM|None): Intrinsic Curiosity Module for curiosity-driven learning.
+        bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
+        save_dir: (str): Directory to save models and configurations.
+        device: (str): Device for computations ('cpu' or 'cuda').
+    """
+
+    def __init__(
+        self,
+        policy: StochasticContinuousPolicy | StochasticDiscretePolicy,
+        value: ValueModel,
+        discount: float = 0.99,
+        gae_coefficient: float = 0.95,
+        state_normalizer: BaseNormalizer|None = None,
+        goal_normalizer: BaseNormalizer|None = None,
+        advantage_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: RewardNorm|None = None,
+        entropy_coefficient: float = 0.01,
+        entropy_schedule: ScheduleWrapper|None = None,
+        auto_entropy_tuning: bool = True,
+        entropy_lr: float = 3e-4,
+        kl_coefficient: float = 0.0,
+        kl_adapter: AdaptiveKL|None = None,
+        policy_clip: float = 0.2,
+        policy_clip_schedule: ScheduleWrapper|None = None,
+        policy_grad_clip: float = float('inf'),
+        value_clip: float = 0.2,
+        value_clip_schedule: ScheduleWrapper|None = None,
+        value_grad_clip: float = float('inf'),
+        value_coef: float = 0.5,
+        reward_clip: float = float('inf'),
+        curiosity: ICM|None = None,
+        bootstrap_truncations: bool=True,
+        save_dir: str = 'models',
+        device: str|T.device|None = None,
+        **kwargs
+    ):
+        """
+        Initialize the PPO agent.
+
+        Args:
+            policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
+            value: (ValueModel): The value model used for state-value prediction.
+            discount: (float): Discount factor for future rewards.
+            gae_coefficient: (float): GAE smoothing coefficient.
+            state_normalizer: (BaseNormalizer): Normalizer for state inputs.
+            goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
+            advantage_normalizer: (BaseNormalizer): Normalizer for advantages.
+            reward_normalizer: (RewardNorm): Normalizer for rewards.
+            entropy_coefficient: (float): Coefficient for entropy regularization.
+            entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
+            auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
+            entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
+            kl_coefficient: (float): Coefficient for KL divergence penalty.
+            kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
+            policy_clip: (float): Clipping value for policy ratio updates.
+            policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
+            policy_grad_clip: (float): Maximum norm for policy model gradients.
+            value_clip: (float): Clipping value for value model updates.
+            value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
+            value_grad_clip: (float): Maximum norm for value model gradients.
+            value_coef: (float): value to weight the value loss by.
+            reward_clip: (float): Maximum absolute value for reward clipping.
+            curiosity: (ICM): Intrinsic Curiosity Module for curiosity-driven learning.
+            bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
+            save_dir: (str): Directory to save models and configurations.
+            device: (str): Device for computations ('cpu' or 'cuda').
+            kwargs: Additional keyword arguments.
+        """
+        try:
+            super().__init__(
+                policy,
+                value,
+                discount,
+                state_normalizer,
+                None,
+                advantage_normalizer = advantage_normalizer,
+                reward_normalizer = reward_normalizer,
+                entropy_coefficient = entropy_coefficient,
+                entropy_schedule = entropy_schedule,
+                auto_entropy_tuning = auto_entropy_tuning,
+                entropy_lr = entropy_lr,
+                save_dir = save_dir,
+                device=device,
+                **kwargs
+            )
+            self.gae_coefficient = gae_coefficient
+            self.kl_coefficient = kl_coefficient
+            self.kl_adapter = kl_adapter
+            self.policy_clip = policy_clip
+            self.policy_clip_schedule = policy_clip_schedule
+            self.policy_grad_clip = policy_grad_clip
+            self.value_clip = value_clip
+            self.value_clip_schedule = value_clip_schedule
+            self.value_grad_clip = value_grad_clip
+            self.value_coef = value_coef
+            self.reward_clip = reward_clip
+            self.curiosity = curiosity
+            self.bootstrap_truncations = bootstrap_truncations
+        except Exception as e:
+            self.logger.error(f"Error in PPO.__init__: {e}", exc_info=True)
+
+    def learn(self, step:int, rollouts:dict, batch_size:int, learning_epochs:int):
+        """
+        Perform learning updates using the collected trajectory.
+
+        Args:
+            rollouts (dict): Collected rollouts containing states, actions, etc.
+            batch_size (int): Batch size for training.
+            learning_epochs (int): Number of epochs per update.
+
+        Returns:
+            dict: Learning metrics.
+        """
+        self._learn_count += 1
+        if self._diag_freq is not None:
+            should_log_diag = (self._learn_count % self._diag_freq == 0)
+        else:
+            should_log_diag = False
+        
+        learn_metrics = {}
+
+        # Unpack trajectory
+        (
+            states,
+            actions,
+            rewards,
+            next_states,
+            terminations,
+            truncations,
+            ach_goals,
+            next_ach_goals,
+            goals,
+        ) = rollouts.values()
+
+        # Get current values of policy/value clip and entropy/kl coefficients
+        policy_clip = self.policy_clip
+        if self.policy_clip_schedule:
+            policy_clip *= self.policy_clip_schedule.get_factor()
+
+        value_clip = self.value_clip
+        if self.value_clip_schedule:
+            value_clip *= self.value_clip_schedule.get_factor()
+
+        if self.auto_entropy_tuning:
+            entropy_coefficient = self.log_alpha.exp()
+        else:
+            entropy_coefficient = self.entropy_coefficient
+            if self.entropy_schedule:
+                entropy_coefficient *= self.entropy_schedule.get_factor()
+
+        kl_coefficient = self.kl_coefficient
+        if self.kl_adapter:
+            kl_coefficient *= self.kl_adapter.get_beta()
+
+        # Normalize states and goals
+        if self.state_normalizer:
+            states = self.state_normalizer.normalize(states)
+            next_states = self.state_normalizer.normalize(next_states)
+        if self.goal_normalizer:
+            ach_goals = self.goal_normalizer.normalize(ach_goals)
+            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
+            goals = self.goal_normalizer.normalize(goals)
+        if self.reward_normalizer:
+            rewards = self.reward_normalizer.normalize(rewards)
+
+        # Clip rewards if finite and not using reward normalizer
+        if T.isfinite(T.tensor(self.reward_clip)) and self.reward_normalizer is None:
+            rewards = T.clamp(rewards, min=-self.reward_clip, max=self.reward_clip)
+
+        # Get trajectory length, num envs, and total samples for reshaping
+        traj_len, num_envs = rewards.shape
+        total_samples = traj_len * num_envs
+
+        # Flatten trajectory data
+        states_flat = states.reshape(total_samples, -1)
+        next_states_flat = next_states.reshape(total_samples, -1)
+        goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
+        ach_goals_flat = ach_goals.reshape(total_samples, -1) if ach_goals is not None else None
+        next_ach_goals_flat = next_ach_goals.reshape(total_samples, -1) if next_ach_goals is not None else None
+        actions_flat = actions.reshape(total_samples, -1)
+        terminations_flat = terminations.reshape(total_samples, 1)
+        truncations_flat = truncations.reshape(total_samples, 1)
+
+        # Use intrinsic rewards if ICM
+        if self.curiosity:
+            curiosity_loss = self.curiosity.train(states_flat, next_states_flat, actions_flat)
+            intrinsic_reward = self.curiosity.compute_intrinsic_reward(states_flat, next_states_flat, actions_flat)
+            intrinsic_reward = intrinsic_reward.reshape(num_steps, num_envs)
+            if step > self.curiosity.extrinsic_threshold:
+                rewards += self.curiosity.reward_weight * intrinsic_reward
+            else:
+                rewards = self.curiosity.reward_weight * intrinsic_reward
+
+        # Get current log probs and values
+        with T.no_grad():
+            cur_dist = self.policy(states_flat, goals_flat)
+            if self.policy.distribution == 'categorical':
+                cur_log_probs = cur_dist.log_prob(actions_flat.view(-1)).unsqueeze(-1)
+            else:
+                cur_log_probs = cur_dist.log_prob(actions_flat).unsqueeze(-1)
+            
+            cur_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
+            cur_next_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs)
+
+        # Calculate advantages and returns (also normalizes via _preprocess_inputs func if using normalizers)
+        advantages, returns, td_errors = compute_advantages_and_returns(
+            rewards,
+            cur_values,
+            cur_next_values,
+            terminations,
+            truncations,
+            self.discount,
+            self.gae_coefficient,
+            self.bootstrap_truncations,
+            self.device
+        )
+
+        # Reshape tensors for batching
+        cur_values_flat = cur_values.reshape(total_samples, 1)
+        advantages_flat = advantages.reshape(total_samples, 1)
+        returns_flat = returns.reshape(total_samples, 1)
+
+        # Create random indices for shuffling
+        indices = T.randperm(total_samples)
+        num_batches = total_samples // batch_size
+
+        # Training loop
+        for epoch in range(learning_epochs):
+            for batch_num in range(num_batches):
+                batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
+                # print("batch_indices:", batch_indices)
+                states_batch = states_flat[batch_indices]
+                goals_batch = goals_flat[batch_indices] if goals is not None else None
+                actions_batch = actions_flat[batch_indices]
+                cur_log_probs_batch = cur_log_probs[batch_indices].detach()
+                cur_values_batch = cur_values_flat[batch_indices].detach()
+                advantages_batch = advantages_flat[batch_indices].detach()
+                returns_batch = returns_flat[batch_indices].detach()
+
+                ## POLICY ##
+                # Create new distribution
+                new_dist = self.policy(states_batch, goals_batch)
+                if self.policy.distribution == 'categorical':
+                    new_log_probs = new_dist.log_prob(actions_batch.view(-1)).unsqueeze(-1)
+                else: # Continuous Distributions
+                    new_log_probs = new_dist.log_prob(actions_batch).unsqueeze(-1)
+
+                prob_ratio = T.exp(new_log_probs - cur_log_probs_batch)
+
+                # Calculate Surrogate Loss
+                surr1 = prob_ratio * advantages_batch
+                surr2 = T.clamp(prob_ratio, 1 - policy_clip, 1 + policy_clip) * advantages_batch
+                surrogate_loss = -T.min(surr1, surr2).mean()
+
+                # Calculate Entropy penalty
+                entropies = new_dist.entropy()
+                mean_entropy = entropies.mean()
+                entropy_penalty = mean_entropy * -entropy_coefficient
+
+                # Calculate the KL penalty
+                with T.no_grad():
+                    log_ratio = new_log_probs - cur_log_probs_batch
+                    kl = 0.5 * (prob_ratio - 1 - log_ratio).pow(2)
+                    mean_kl = kl.mean()
+                kl_penalty = mean_kl * kl_coefficient
+
+                # Calculate policy loss
+                policy_loss = surrogate_loss + entropy_penalty + kl_penalty
+
+                ## VALUE ##
+                values = self.value(states_batch, goals_batch)
+                loss = (values - returns_batch).pow(2)
+                clipped_values = cur_values_batch + (values - cur_values_batch).clamp(-value_clip, value_clip)
+                clipped_value_loss = (clipped_values - returns_batch).pow(2)
+                value_loss = self.value_coef * (0.5 * T.max(loss, clipped_value_loss).mean())
+
+                # Calculate gradients
+                self.policy.optimizer.zero_grad()
+                policy_loss.backward()
+                if self.policy_grad_clip:
+                    policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
+
+                self.value.optimizer.zero_grad()
+                value_loss.backward()
+                if self.value_grad_clip:
+                    value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), max_norm=self.value_grad_clip)
+
+                # Log diag data
+                if should_log_diag and (epoch == learning_epochs - 1) and (batch_num == num_batches - 1):
+                    nonfinite_values = (
+                    count_nonfinite(cur_values_batch)
+                    # + count_nonfinite(cur_next_values)
+                    + count_nonfinite(td_errors)
+                    + count_nonfinite(advantages_batch)
+                    + count_nonfinite(returns_batch)
+                    + count_nonfinite(cur_log_probs_batch)
+                    + count_nonfinite(new_log_probs)
+                    + count_nonfinite(prob_ratio)
+                    + count_nonfinite(entropies)
+                    + count_nonfinite(kl)
+                    + count_nonfinite(surr1)
+                    + count_nonfinite(surr2)
+                    )
+                    self.logger.debug(
+                        "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                        step,
+                        self._learn_count,
+                        summarize_tensor(states_batch, "states batch"),
+                        summarize_tensor(actions_batch, "actions batch"),
+                        summarize_tensor(rewards, "rewards"),
+                        summarize_tensor(next_states, "next_states"),
+                        summarize_tensor(goals_batch, "goals batch"),
+                        summarize_tensor(next_ach_goals, "next_ach_goals"),
+                        summarize_tensor(terminations, "terminations"),
+                        summarize_tensor(truncations, "truncations"),
+                        summarize_tensor(cur_values_batch, "values batch"),
+                        summarize_tensor(cur_next_values, "next_values"),
+                        summarize_tensor(td_errors, "td_errors"),
+                        summarize_tensor(advantages_batch, "advantages batch"),
+                        summarize_tensor(returns_batch, "returns batch"),
+                        summarize_tensor(cur_log_probs_batch, "log_probs batch"),
+                        summarize_tensor(new_log_probs, "new_log_probs batch"),
+                        summarize_tensor(prob_ratio, "prob_ratio batch"),
+                        summarize_tensor(entropies, "entropies batch"),
+                        summarize_tensor(kl, "kl batch"),
+                        summarize_tensor(surr1, "surr1"),
+                        summarize_tensor(surr2, "surr2"),
+                        summarize_tensor(surrogate_loss, "surrogate_loss"),
+                        summarize_tensor(policy_loss, "policy_loss"),
+                        summarize_tensor(value_loss, "value_loss"),
+                        f"entropy_coef={float(entropy_coefficient)}",
+                    )
+
+                    self.logger.debug(
+                        "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
+                        "value_loss=%.6f policy_loss=%.6f",
+                        step,
+                        self._learn_count,
+                        float(value_grad_norm) if value_grad_norm is not None else -1.0,
+                        float(policy_grad_norm) if policy_grad_norm is not None else -1.0,
+                        float(value_loss.item()),
+                        float(policy_loss.item()),
+                    )
+
+                # Update models
+                self.policy.optimizer.step()
+                self.value.optimizer.step()
+
+        # Step schedulers/adapters
+        if self.kl_adapter:
+            self.kl_adapter.step(mean_kl)
+
+        if self.auto_entropy_tuning:
+            self.entropy_optimizer.zero_grad()
+            alpha_loss = -(self.log_alpha * (new_log_probs + self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.entropy_optimizer.step()
+
+        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
+        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
+
+        # Get temperature value from policy if categorical
+        if self.policy.distribution == 'categorical':
+            temperature = self.policy.temperature
+            if self.policy.temperature_schedule:
+                temperature *= self.policy.temperature_schedule.get_factor()
+            learn_metrics.update({'temperature': temperature})
+
+        learn_metrics.update({
+            'policy_loss': policy_loss.item(),
+            'value_loss': value_loss.item(),
+            'entropy': mean_entropy.item(),
+            'kl': mean_kl.item(),
+            'prob_ratio': prob_ratio.detach().cpu().flatten().mean().item(),
+            'temporal_difference': td_errors.detach().cpu().flatten().mean().item(),
+            'advantages': advantages.detach().cpu().flatten().mean().item(),
+            'returns': returns.detach().cpu().flatten().mean().item(),
+            'policy_clip': policy_clip,
+            'value_clip': value_clip,
+            'entropy_coefficient': entropy_coefficient,
+            'kl_coefficient': kl_coefficient,
+            'policy_learning_rate': policy_learning_rate,
+            'value_learning_rate': value_learning_rate
+        })
+        return learn_metrics
+
+    def get_config(self):
+        """
+        Get the current configuration of the PPO agent.
+
+        Returns:
+            dict: Configuration dictionary.
+        """
+        config = super().get_config()
+        config["type"] = self.__class__.__name__
+        config.update({
+            "gae_coefficient": self.gae_coefficient,
+            "policy_clip": self.policy_clip,
+            "policy_clip_schedule": self.policy_clip_schedule.get_config() if self.policy_clip_schedule else None,
+            "policy_grad_clip": self.policy_grad_clip,
+            "value_clip": self.value_clip,
+            "value_clip_schedule": self.value_clip_schedule.get_config() if self.value_clip_schedule else None,
+            "value_grad_clip": self.value_grad_clip,
+            "value_coef": self.value_coef,
+            "reward_clip": self.reward_clip,
+            "kl_coefficient": self.kl_coefficient,
+            "kl_adapter": self.kl_adapter.get_config() if self.kl_adapter else None,
+            "curiosity": self.curiosity.get_config() if self.curiosity else None,
+            "bootstrap_truncations": self.bootstrap_truncations
+        })
+        return config
+
+    def save(self, save_dir=None):
+        """
+        Save the model and its configuration.
+
+        Args:
+            save_dir (str, optional): Directory to save the model. Defaults to self.save_dir.
+        """
+        config = self.get_config()
+        os.makedirs(self.save_dir, exist_ok=True)
+        with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
+        self.policy.save(self.save_dir)
+        self.value.save(self.save_dir)
+        if self.curiosity:
+            self.curiosity.save(self.save_dir)
+        if self.state_normalizer:
+            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
+        if self.goal_normalizer:
+            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
+        if self.advantage_normalizer:
+            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
+        if self.reward_normalizer:
+            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
+
+    @classmethod
+    def load(cls, config_dir:str | Path, load_weights:bool=True):
+        """
+        Load a PPO agent from a saved configuration.
+
+        Args:
+            config (dict): Configuration dictionary.
+            load_weights (bool): Whether to load model weights.
+
+        Returns:
+            PPO: Loaded PPO agent.
+        """
+        config = json.load(open(Path(config_dir) / 'config.json'))
+        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
+        distribution = config['policy']['distribution']
+        if distribution == 'categorical':
+            policy = StochasticDiscretePolicy.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
+        elif distribution in ['beta', 'normal']:
+            policy = StochasticContinuousPolicy.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
+        else:
+            raise ValueError(f"Invalid distribution: {distribution}")
+        value = ValueModel.load(Path(config_dir) / 'value', load_weights, env=env_wrapper)
+        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
+        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
+        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
+        advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
+        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
+        agent = cls(
+            policy = policy,
+            value = value,
+            discount=config["discount"],
+            gae_coefficient = config["gae_coefficient"],
+            state_normalizer = state_normalizer,
+            goal_normalizer = goal_normalizer,
+            advantage_normalizer = advantage_normalizer,
+            reward_normalizer = reward_normalizer,
+            entropy_coefficient = config["entropy_coefficient"],
+            entropy_schedule = ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
+            auto_entropy_tuning = config["auto_entropy_tuning"],
+            entropy_lr = config["entropy_lr"],
+            kl_coefficient = config["kl_coefficient"],
+            kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config["kl_adapter"] else None,
+            policy_clip = config["policy_clip"],
+            policy_clip_schedule = ScheduleWrapper(config["policy_clip_schedule"]) if config["policy_clip_schedule"] else None,
+            policy_grad_clip = config["policy_grad_clip"],
+            value_clip = config["value_clip"],
+            value_clip_schedule = ScheduleWrapper(config["value_clip_schedule"]) if config["value_clip_schedule"] else None,
+            value_grad_clip = config["value_grad_clip"],
+            value_coef = config["value_coef"],
+            reward_clip = config['reward_clip'],
+            curiosity = curiosity,
+            bootstrap_truncations = config["bootstrap_truncations"],
+            save_dir=config["save_dir"],
+            device=config["device"],
+        )
+
+        return agent
+
+## Off-Policy Agent Classes ##
+class OffPolicyAgent(Agent):
+    """Base class for all off-policy agents."""
+    def __init__(
+        self,
+        policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
+        critic: ContinuousCritic|DiscreteCritic,
+        discount: float=0.99,
+        tau: float=0.001, # Target network update rate
+        state_normalizer: BaseNormalizer|None = None,
+        goal_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: RewardNorm|None = None,
+        noise: Noise|None = None,
+        noise_schedule: ScheduleWrapper|None = None,
+        noise_clip: float = 0.5,
+        policy_grad_clip: float = float('inf'),
+        value_grad_clip: float = float('inf'),
+        warmup: int=1000,
+        N: int=1, # N-steps
+        curiosity: ICM|None = None,
+        save_dir: str = "models/",
+        device: str|T.device|None = None,
+        **kwargs,
+    ):
+        super().__init__(save_dir, device, **kwargs)
+        self.policy = policy
+        self.critic = critic
+        self.discount = discount
+        self.tau = tau
+        self.state_normalizer = state_normalizer
+        self.goal_normalizer = goal_normalizer
+        self.reward_normalizer = reward_normalizer
+        self.noise = noise
+        self.noise_schedule = noise_schedule
+        self.noise_clip = noise_clip
+        self.policy_grad_clip = policy_grad_clip
+        self.value_grad_clip = value_grad_clip
+        self.warmup = warmup
+        self.N = N
+        self.curiosity = curiosity
+        self._use_her = False
+
+    def soft_update(self, current, target):
+        with T.no_grad():
+            for current_params, target_params in zip(current.parameters(), target.parameters()):
+                target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
+
+        # Copy buffers (running_mean, running_var)
+        main_buffers = dict(current.named_buffers())
+        target_buffers = dict(target.named_buffers())
+        for name in main_buffers:
+            if name in target_buffers:
+                target_buffers[name].copy_(main_buffers[name])
+
+    @abstractmethod
+    def learn(self, sample: dict|list[dict])->dict:
+        """Learn from a sample of transitions."""
+        raise NotImplementedError("Subclasses must implement learn.")
+
+    def get_config(self):
+        config = super().get_config()
+        config["type"] = self.__class__.__name__
+        config["config"].update({
+            "policy": self.policy.get_config(),
+            "critic": self.critic.get_config(),
+            "discount": self.discount,
+            "tau": self.tau,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "noise": self.noise.get_config() if self.noise is not None else None,
+            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
+            "noise_clip": self.noise_clip,
+            "policy_grad_clip": self.policy_grad_clip,
+            "value_grad_clip": self.value_grad_clip,
+            "warmup": self.warmup,
+            "N": self.N,
+            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+        })
+        return config
+
+class DDPG(OffPolicyAgent):
     """Deep Deterministic Policy Gradient Agent."""
 
     def __init__(
         self,
-        env: EnvWrapper,
         policy: ActorModel,
         critic: ContinuousCritic,
         *,
-        replay_buffer: Buffer,
         discount: float=0.99,
         tau: float=0.001,
         action_epsilon: float = 0.2,
-        batch_size: int = 64,
-        noise: Optional[Noise]=None,
-        noise_schedule: Optional[ScheduleWrapper]=None,
-        noise_clip: float = 0.5,
-        grad_clip: Optional[float]=None,
-        warmup: int=1000,
-        N: int=1, # N-steps
-        curiosity: Optional[ICM] = None,
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
-        obs_key: str = 'observation',
-        goal_key: str | None = None,
-        achieved_goal_key: str = 'achieved_goal', # For HER
-        callbacks: Optional[list[Callback]] = None, #TODO Remove once Trainer implemented
+        reward_normalizer: RewardNorm|None = None,
+        noise: Noise|None = None,
+        noise_schedule: ScheduleWrapper|None = None,
+        noise_clip: float = 0.5,
+        policy_grad_clip: float = float('inf'),
+        value_grad_clip: float = float('inf'),
+        warmup: int=1000,
+        N: int=1, # N-steps
+        curiosity: ICM|None = None,
         save_dir: str = "models",
-        device: Optional[str | T.device] = None,
-        # log_level: str = 'info'
+        device: str|T.device|None = None,
+        **kwargs
     ):
         try:
-            super().__init__(env, callbacks, obs_key, goal_key, save_dir, device)
-            self.policy = policy
-            self.critic = critic
-            # set target actor and critic models
+            super().__init__(
+                policy=policy,
+                critic=critic,
+                discount=discount,
+                tau=tau,
+                state_normalizer=state_normalizer,
+                goal_normalizer=goal_normalizer,
+                reward_normalizer=reward_normalizer,
+                noise=noise,
+                noise_schedule=noise_schedule,
+                noise_clip=noise_clip,
+                policy_grad_clip=policy_grad_clip,
+                value_grad_clip=value_grad_clip,
+                warmup=warmup,
+                N=N,
+                curiosity=curiosity,
+                save_dir=save_dir,
+                device=device,
+                **kwargs
+            )
             self.target_policy = self.policy.clone(device=self.policy.device)
             self.target_critic = self.critic.clone(device=self.critic.device)
-            self.discount = discount
-            self.tau = tau
             self.action_epsilon = action_epsilon
-            self.replay_buffer = replay_buffer
-            self.batch_size = batch_size
-            self.noise = noise
-            self.noise_schedule = noise_schedule
-            self.noise_clip = noise_clip
-            self.grad_clip = grad_clip
-            self.warmup = warmup
-            self.N = N
-            self.curiosity = curiosity
-            self.state_normalizer = state_normalizer
-            self.goal_normalizer = goal_normalizer
-            self.obs_key = obs_key
-            self.goal_key = goal_key
-            self.achieved_goal_key = achieved_goal_key
+
         except Exception as e:
             self.logger.error(f"Error in DDPG init: {e}", exc_info=True)
         
         # set internal attributes
-        try:
-            self._use_her = False
+        # try:
+        #     # Set learn_iter and sync_iter to 0. For distributed training
+        #     # self._learn_iter = 0
+        #     # self._sync_iter = 0
 
-            # Set learn_iter and sync_iter to 0. For distributed training
-            # self._learn_iter = 0
-            # self._sync_iter = 0
-
-        except Exception as e:
-            self.logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
-    
-    def _initialize_wandb(self, run_number:Optional[str]=None, run_name_prefix:Optional[str]=None, learn_iter:Optional[int]=None):
-        """Initialize WandbCallback if using WandbCallback"""
-        try:
-            if self._wandb:
-                for callback in self.callbacks:
-                    if isinstance(callback, WandbCallback):
-                        if not callback.initialized:
-                            models = [self.policy, self.critic]
-                            if self.curiosity is not None:
-                                models.append(self.curiosity)
-                            config = self.get_config()
-                            # if learn_iter:
-                            #     self._learn_iter = learn_iter
-                            #     config['learn_interval'] = learn_iter
-                            callback.initialize_run(models, config, run_number=run_number, run_name_prefix=run_name_prefix)
-        except Exception as e:
-            self.logger.error(f"Error in _initialize_wandb: {e}", exc_info=True)
+        # except Exception as e:
+        #     self.logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
 
     def _init_her(self):
         self._use_her = True
@@ -1206,130 +1561,95 @@ class DDPG(Agent):
     #     self.target_actor_model.load_state_dict(params['target_actor_model'])
     #     self.target_critic_model.load_state_dict(params['target_critic_model'])
 
-    def get_action(self,
-                   states: np.ndarray|T.Tensor,
-                   goals: np.ndarray|T.Tensor|None=None,
-                   step: int|None=None,
-                   context: str = 'train'
-                   )->tuple[T.Tensor, T.Tensor, Distribution | None]:
-        """
-        Select an action based on the current policy.
-
-        Args:
-            states: np.ndarray | T.Tensor: The current states.
-            goals: np.ndarray | T.Tensor | None: The current goals.
-            step: Optional[int]: The current step.
-            context: str: The context of the action (train, test, or learn).
+    def learn(self, step: int, samples: dict):
         
-        Returns:
-            tuple[np.ndarray | T.Tensor, T.Tensor | None, Distribution | None]: actions, raw actions, and distribution.
-        """
-
-        raw_actions = None
-        dist = None
-
-        # If training
-        if context == 'train':
-            # If warmup, sample random action from action space
-            if (step is not None) and (step <= self.warmup):
-                return self.env.action_space.sample(), raw_actions, dist
-            # if random number is less than epsilon, sample random action
-            elif np.random.random() < self.action_epsilon:
-                return self.env.action_space.sample(), raw_actions, dist
-            # otherwise, sample action from policy
-            else:
-                noise = self.noise(self.env.action_space.shape)
-                # Apply noise clipping if needed
-                if self.noise_clip > 0:
-                    noise = noise.clamp(-self.noise_clip, self.noise_clip)
-                # Apply noise schedule if needed
-                if self.noise_schedule:
-                    noise *= self.noise_schedule.get_factor()
-                
-                with T.no_grad():
-                    raw_actions, squashed_actions = self.policy(states, goals)
-                
-                # Convert the action space bounds to a tensor on the same device
-                action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.policy.device)
-                action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.policy.device)
-                actions = (squashed_actions + noise).clip(action_space_low, action_space_high)
-
-                return actions.detach(), raw_actions, dist
-
-        # check if get action is for testing
-        if context == 'test':
-            with T.no_grad():
-                raw_actions, squashed_actions = self.target_policy(states, goals)
-            return squashed_actions.detach(), raw_actions, dist
-
-        else: # learn
-            raw_actions, squashed_actions = self.policy(states, goals)
-            return squashed_actions, raw_actions, dist
-
-    def learn(self, step: int):
-        
-        # self._learn_iter += 1
-        # self.logger.debug(f"DDPG learn iteration: {self._learn_iter}")
+        self._learn_count += 1
+        if self._diag_freq is not None:
+            should_log_diag = (self._learn_count % self._diag_freq == 0)
+        else:
+            should_log_diag = False
 
         learn_metrics = {}
+
+        # Unpack trajectory
+        (
+            states,
+            actions,
+            rewards,
+            next_states,
+            terminations,
+            truncations,
+            trajectory_lengths,
+            ach_goals,
+            next_ach_goals,
+            goals,
+        ) = samples.values()
+        
+        if 'weights' in samples:
+            weights = samples['weights']
+            probs = samples['probs']
+            indices = samples['indices']
+        else:
+            weights = None
+            probs = None
+            indices = None
             
-        if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
-            if self._use_her:  # HER with prioritized replay
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-            else:  # Just prioritized replay
-                states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+        # if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
+        #     if self._use_her:  # HER with prioritized replay
+        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+        #     else:  # Just prioritized replay
+        #         states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
                 
             # Log PER-specific metrics
-            if self._wandb:
-                # Get the actual size of used buffer (not the full capacity)
-                actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
-                # Get indices for all actual entries in the buffer
-                valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
-                # Get priority info for logging
-                if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
-                    indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
-                    # Get tree indices for sampled transitions
-                    tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
-                    # Get priorities for sampled transitions
-                    sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
-                    valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
-                    buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
+        #     if self._wandb:
+        #         # Get the actual size of used buffer (not the full capacity)
+        #         actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
+        #         # Get indices for all actual entries in the buffer
+        #         valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
+        #         # Get priority info for logging
+        #         if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
+        #             indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
+        #             # Get tree indices for sampled transitions
+        #             tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
+        #             # Get priorities for sampled transitions
+        #             sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
+        #             valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
+        #             buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
 
-                else:
-                    buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
-                    sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
+        #         else:
+        #             buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
+        #             sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
                     
-                # Add priority buffer metrics to learn_metrics dict
-                learn_metrics.update({
-                    'PER/beta': self.replay_buffer.beta,
-                    'PER/sampled_priorities': sampled_priorities,
-                    'PER/buffer_priorities': buffer_priorities,
-                    'PER/weights': weights,
-                    'PER/probs': probs,
-                    'PER/mean_sampled_priority': np.mean(sampled_priorities),
-                    'PER/mean_buffer_priority': np.mean(buffer_priorities),
-                    'PER/max_sampled_priority': np.max(sampled_priorities),
-                    'PER/max_buffer_priority': np.max(buffer_priorities),
-                    'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
-                    'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
-                })
-        else:  # Standard replay buffer
-            if self._use_her:
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-            else:
-                states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-            
-            weights = None
-            indices = None
+        #         # Add priority buffer metrics to learn_metrics dict
+        #         learn_metrics.update({
+        #             'PER/beta': self.replay_buffer.beta,
+        #             'PER/sampled_priorities': sampled_priorities,
+        #             'PER/buffer_priorities': buffer_priorities,
+        #             'PER/weights': weights,
+        #             'PER/probs': probs,
+        #             'PER/mean_sampled_priority': np.mean(sampled_priorities),
+        #             'PER/mean_buffer_priority': np.mean(buffer_priorities),
+        #             'PER/max_sampled_priority': np.max(sampled_priorities),
+        #             'PER/max_buffer_priority': np.max(buffer_priorities),
+        #             'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
+        #             'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
+        #         })
+        # else:  # Standard replay buffer
+        #     if self._use_her:
+        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
+        #     else:
+        #         states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
 
-        # Normalize states if self.normalize_inputs
+        # Normalize states and goals
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
         if self.goal_normalizer:
-            desired_goals = self.goal_normalizer.normalize(desired_goals)
-        else:
-            desired_goals = None
+            ach_goals = self.goal_normalizer.normalize(ach_goals)
+            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
+            goals = self.goal_normalizer.normalize(goals)
+        if self.reward_normalizer:
+            rewards = self.reward_normalizer.normalize(rewards)
 
         # Ensure training data is on correct device
         actions = actions.to(self.target_policy.device)
@@ -1478,263 +1798,227 @@ class DDPG(Agent):
             learn_metrics.update({'noise_anneal': self.noise_schedule.get_factor()})
 
         return learn_metrics
+
+    # def _step(self,
+    #           step: int,
+    #           states: np.ndarray | T.Tensor | dict,
+    #           max_episodes: int,
+    #           episode_scores: np.ndarray,
+    #           completed_episodes: np.ndarray,
+    #           score_history: deque[float],
+    #           best_reward: float,
+    #           learn: bool = True,
+    #           training: bool = True
+    #           ):
+
+    #     # reset noise if training
+    #     if training:
+    #         if type(self.noise) == OUNoise:
+    #             self.noise.reset()
+    #     obs, goals = self._preprocess_inputs(states)
+    #     actions, _, _ = self.get_action(obs, goals, step, context='train' if training else 'test')
+    #     actions = self.env.format_actions(actions)
+    #     next_states, rewards, dones, infos = self.env.step(actions)
+
+    #     # Ensure states, actions, rewards, next_states, and dones are tensors
+    #     obs, actions, rewards, next_states, dones = (
+    #         T.tensor(obs, dtype=T.float32, device=self.device) if isinstance(obs, np.ndarray) else obs,
+    #         T.tensor(actions, dtype=T.float32, device=self.device) if isinstance(actions, np.ndarray) else actions,
+    #         T.tensor(rewards, dtype=T.float32, device=self.device) if isinstance(rewards, np.ndarray) else rewards,
+    #         T.tensor(next_states, dtype=T.float32, device=self.device) if isinstance(next_states, np.ndarray) else next_states,
+    #         T.tensor(dones, dtype=T.int8, device=self.device) if isinstance(dones, np.ndarray) else dones,
+    #     )
+
+    #     episode_scores += rewards.flatten()
+
+    #     buffer_trajectories = {
+    #         'states': infos['n-step trajectory']['states'],
+    #         'actions': infos['n-step trajectory']['actions'],
+    #         'rewards': infos['n-step trajectory']['rewards'],
+    #         'next_states': infos['n-step trajectory']['next_states'],
+    #         'dones': infos['n-step trajectory']['dones'],
+    #         'trajectory_lengths': infos['n-step trajectory']['trajectory_lengths']
+    #     }
+    #     if self.goal_key:
+    #         buffer_trajectories['desired_goals'] = infos['n-step trajectory']['desired_goals']
+    #         buffer_trajectories['state_achieved_goals'] = infos['n-step trajectory']['state_achieved_goals']
+    #         buffer_trajectories['next_state_achieved_goals'] = infos['n-step trajectory']['next_state_achieved_goals']
+
+    #     if training:
+    #         self.replay_buffer.add(**buffer_trajectories)
+    #         # Update normalizer if state_normalizer
+    #         next_obs, next_goals = self.extract_states_goals(next_states)
+    #         if self.state_normalizer:
+    #             self.state_normalizer.add(next_obs)
+    #         if self.goal_normalizer:
+    #             self.goal_normalizer.add(next_goals)
+
+    #     done_episodes = T.nonzero(dones, as_tuple=False).flatten()
+    #     episode_logs = []
+
+    #     for i in done_episodes:
+    #         # Increment completed episodes for env by 1
+    #         completed_episodes[i] += 1
+    #         score_history.append(float(episode_scores[i].item()))
+    #         avg_reward = sum(score_history) / len(score_history)
+
+    #         # check if best reward
+    #         if training and avg_reward > best_reward:
+    #             best_reward = avg_reward
+    #             self.save()
+    #         episode_log = {
+    #             'env': i,
+    #             'episode': int(completed_episodes.sum()),
+    #             'episode_reward': round(float(episode_scores[i]), 2),
+    #             'avg_reward': round(float(avg_reward), 2)
+    #         }
+
+    #         if training:
+    #             episode_log.update({
+    #                 'best_reward': round(float(best_reward), 2),
+    #                 'best': 1 if avg_reward > best_reward else 0
+    #             })
+    #         episode_logs.append(episode_log)
+
+    #     step_log = {} # Collect step metrics
+
+    #     # Check if past warmup
+    #     if learn and step > self.warmup and self.replay_buffer.counter > self.batch_size:
+    #         # Check if distributed
+    #         # if self._distributed:
+    #         #     self._distributed_learn(step, self._run_number)
+    #         # else:
+    #         learn_metrics = self.learn(step)
+    #         step_log.update({**learn_metrics})
+
+    #     # self._train_step_config["step_reward"] = rewards.mean()
+    #     step_log.update({
+    #         'step_reward': rewards.mean(),
+    #     })
+
+    #     # Step schedulers
+    #     if self.noise_schedule is not None:
+    #         self.noise_schedule.step()
+
+    #     return{
+    #         'episode_scores': episode_scores,
+    #         'completed_episodes': completed_episodes,
+    #         'score_history': score_history,
+    #         'next_states': next_states,
+    #         'step_log': step_log,
+    #         'episode_logs': episode_logs,
+    #         'done': completed_episodes.sum() >= max_episodes
+    #     }
+
+    # def train(self, num_episodes: int, steps_per_learn: int = 1, render_freq: int = 0, seed: int | None = None):
+    #     """Trains the model for 'episodes' number of episodes."""
+
+    #     init_dict = self._initialize_run(seed=seed, num_episodes=num_episodes)
+    #     step = init_dict['step']
+    #     states = init_dict['states']
+    #     episode_scores = init_dict['episode_scores']
+    #     completed_episodes = init_dict['completed_episodes']
+    #     score_history = init_dict['score_history']
+    #     best_reward = init_dict['best_reward']
+
+    #     while completed_episodes.sum() < num_episodes:
+    #         # Increment step count
+    #         step += 1
+    #         # If distributed, sync to shared agent
+    #         # if self._distributed and _step % self._sync_iter == 0:
+    #         #     params = self.get_parameters()
+    #         #     self.apply_parameters(params)
+
+    #         # Determine if step should perform update
+    #         learn = step % steps_per_learn == 0
+    #         # Perform train step
+    #         step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn)
+    #         # Update states, episode scores, completed episodes, and score history
+    #         states = step_result['next_states']
+    #         episode_scores = step_result['episode_scores']
+    #         completed_episodes = step_result['completed_episodes']
+    #         score_history = step_result['score_history']
+
+    #         # log to callbacks
+    #         if self.callbacks:
+    #             for callback in self.callbacks:
+    #                 callback.on_train_step_end(step=step, logs=step_result['step_log'])
+
+    #         render = True # Flag to keep track of render status to avoid rendering multiple times per step
+    #         for episode_log in step_result['episode_logs']:
+    #             # Print complete episode metrics to console
+    #             print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
+    #             # Reset episode score
+    #             episode_scores[episode_log['env']] = 0
+    #             best_reward = episode_log['best_reward']
+
+    #             if self.callbacks:
+    #                 for callback in self.callbacks:
+    #                     callback.on_train_epoch_end(epoch=step, logs=episode_log)
+
+    #             # Check if number of completed episodes should trigger render
+    #             if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
+    #                 print(f"Rendering episode {episode_log['episode']} during training...")
+    #                 # Call the test function to render an episode
+    #                 self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
+    #                 render = False
+
+    #     if self.callbacks:
+    #         for callback in self.callbacks:
+    #             callback.on_train_end(logs=episode_log)
         
-    
-    def soft_update(self, current, target):
-        with T.no_grad():
-            for current_params, target_params in zip(current.parameters(), target.parameters()):
-                target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
-
-            # Copy buffers (running_mean, running_var)
-            main_buffers = dict(current.named_buffers())
-            target_buffers = dict(target.named_buffers())
-            for name in main_buffers:
-                if name in target_buffers:
-                    target_buffers[name].copy_(main_buffers[name])
-
-    def _step(self,
-              step: int,
-              states: np.ndarray | T.Tensor | dict,
-              max_episodes: int,
-              episode_scores: np.ndarray,
-              completed_episodes: np.ndarray,
-              score_history: deque[float],
-              best_reward: float,
-              learn: bool = True,
-              training: bool = True
-              ):
-
-        # reset noise if training
-        if training:
-            if type(self.noise) == OUNoise:
-                self.noise.reset()
-        obs, goals = self._preprocess_inputs(states)
-        actions, _, _ = self.get_action(obs, goals, step, context='train' if training else 'test')
-        actions = self.env.format_actions(actions)
-        next_states, rewards, dones, infos = self.env.step(actions)
-
-        # Ensure states, actions, rewards, next_states, and dones are tensors
-        obs, actions, rewards, next_states, dones = (
-            T.tensor(obs, dtype=T.float32, device=self.device) if isinstance(obs, np.ndarray) else obs,
-            T.tensor(actions, dtype=T.float32, device=self.device) if isinstance(actions, np.ndarray) else actions,
-            T.tensor(rewards, dtype=T.float32, device=self.device) if isinstance(rewards, np.ndarray) else rewards,
-            T.tensor(next_states, dtype=T.float32, device=self.device) if isinstance(next_states, np.ndarray) else next_states,
-            T.tensor(dones, dtype=T.int8, device=self.device) if isinstance(dones, np.ndarray) else dones,
-        )
-
-        episode_scores += rewards.flatten()
-
-        buffer_trajectories = {
-            'states': infos['n-step trajectory']['states'],
-            'actions': infos['n-step trajectory']['actions'],
-            'rewards': infos['n-step trajectory']['rewards'],
-            'next_states': infos['n-step trajectory']['next_states'],
-            'dones': infos['n-step trajectory']['dones'],
-            'trajectory_lengths': infos['n-step trajectory']['trajectory_lengths']
-        }
-        if self.goal_key:
-            buffer_trajectories['desired_goals'] = infos['n-step trajectory']['desired_goals']
-            buffer_trajectories['state_achieved_goals'] = infos['n-step trajectory']['state_achieved_goals']
-            buffer_trajectories['next_state_achieved_goals'] = infos['n-step trajectory']['next_state_achieved_goals']
-
-        if training:
-            self.replay_buffer.add(**buffer_trajectories)
-            # Update normalizer if state_normalizer
-            next_obs, next_goals = self.extract_states_goals(next_states)
-            if self.state_normalizer:
-                self.state_normalizer.add(next_obs)
-            if self.goal_normalizer:
-                self.goal_normalizer.add(next_goals)
-
-        done_episodes = T.nonzero(dones, as_tuple=False).flatten()
-        episode_logs = []
-
-        for i in done_episodes:
-            # Increment completed episodes for env by 1
-            completed_episodes[i] += 1
-            score_history.append(float(episode_scores[i].item()))
-            avg_reward = sum(score_history) / len(score_history)
-
-            # check if best reward
-            if training and avg_reward > best_reward:
-                best_reward = avg_reward
-                self.save()
-            episode_log = {
-                'env': i,
-                'episode': int(completed_episodes.sum()),
-                'episode_reward': round(float(episode_scores[i]), 2),
-                'avg_reward': round(float(avg_reward), 2)
-            }
-
-            if training:
-                episode_log.update({
-                    'best_reward': round(float(best_reward), 2),
-                    'best': 1 if avg_reward > best_reward else 0
-                })
-            episode_logs.append(episode_log)
-
-        step_log = {} # Collect step metrics
-
-        # Check if past warmup
-        if learn and step > self.warmup and self.replay_buffer.counter > self.batch_size:
-            # Check if distributed
-            # if self._distributed:
-            #     self._distributed_learn(step, self._run_number)
-            # else:
-            learn_metrics = self.learn(step)
-            step_log.update({**learn_metrics})
-
-        # self._train_step_config["step_reward"] = rewards.mean()
-        step_log.update({
-            'step_reward': rewards.mean(),
-        })
-
-        # Step schedulers
-        if self.noise_schedule is not None:
-            self.noise_schedule.step()
-
-        return{
-            'episode_scores': episode_scores,
-            'completed_episodes': completed_episodes,
-            'score_history': score_history,
-            'next_states': next_states,
-            'step_log': step_log,
-            'episode_logs': episode_logs,
-            'done': completed_episodes.sum() >= max_episodes
-        }
-
-    def train(self, num_episodes: int, steps_per_learn: int = 1, render_freq: int = 0, seed: int | None = None):
-        """Trains the model for 'episodes' number of episodes."""
-
-        init_dict = self._initialize_run(seed=seed, num_episodes=num_episodes)
-        step = init_dict['step']
-        states = init_dict['states']
-        episode_scores = init_dict['episode_scores']
-        completed_episodes = init_dict['completed_episodes']
-        score_history = init_dict['score_history']
-        best_reward = init_dict['best_reward']
-
-        while completed_episodes.sum() < num_episodes:
-            # Increment step count
-            step += 1
-            # If distributed, sync to shared agent
-            # if self._distributed and _step % self._sync_iter == 0:
-            #     params = self.get_parameters()
-            #     self.apply_parameters(params)
-
-            # Determine if step should perform update
-            learn = step % steps_per_learn == 0
-            # Perform train step
-            step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn)
-            # Update states, episode scores, completed episodes, and score history
-            states = step_result['next_states']
-            episode_scores = step_result['episode_scores']
-            completed_episodes = step_result['completed_episodes']
-            score_history = step_result['score_history']
-
-            # log to callbacks
-            if self.callbacks:
-                for callback in self.callbacks:
-                    callback.on_train_step_end(step=step, logs=step_result['step_log'])
-
-            render = True # Flag to keep track of render status to avoid rendering multiple times per step
-            for episode_log in step_result['episode_logs']:
-                # Print complete episode metrics to console
-                print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-                # Reset episode score
-                episode_scores[episode_log['env']] = 0
-                best_reward = episode_log['best_reward']
-
-                if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_train_epoch_end(epoch=step, logs=episode_log)
-
-                # Check if number of completed episodes should trigger render
-                if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
-                    print(f"Rendering episode {episode_log['episode']} during training...")
-                    # Call the test function to render an episode
-                    self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
-                    render = False
-
-        if self.callbacks:
-            for callback in self.callbacks:
-                callback.on_train_end(logs=episode_log)
-        
-        self.env.close()
+    #     self.env.close()
        
-    def test(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
-        """Runs a test over 'num_episodes'."""
+    # def test(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
+    #     """Runs a test over 'num_episodes'."""
 
-        init_dict = self._initialize_run(seed=seed, training=False)
-        step = init_dict['step']
-        states = init_dict['states']
-        episode_scores = init_dict['episode_scores']
-        completed_episodes = init_dict['completed_episodes']
-        score_history = init_dict['score_history']
-        best_reward = init_dict['best_reward']
+    #     init_dict = self._initialize_run(seed=seed, training=False)
+    #     step = init_dict['step']
+    #     states = init_dict['states']
+    #     episode_scores = init_dict['episode_scores']
+    #     completed_episodes = init_dict['completed_episodes']
+    #     score_history = init_dict['score_history']
+    #     best_reward = init_dict['best_reward']
 
-        while completed_episodes.sum() < num_episodes:
-            # Increment step counter
-            step += 1
-            step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn = False, training = False)
-            states = step_result['next_states']
-            episode_scores = step_result['episode_scores']
-            completed_episodes = step_result['completed_episodes']
-            score_history = step_result['score_history']
+    #     while completed_episodes.sum() < num_episodes:
+    #         # Increment step counter
+    #         step += 1
+    #         step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn = False, training = False)
+    #         states = step_result['next_states']
+    #         episode_scores = step_result['episode_scores']
+    #         completed_episodes = step_result['completed_episodes']
+    #         score_history = step_result['score_history']
 
-            if self.callbacks:
-                for callback in self.callbacks:
-                    callback.on_test_step_end(step=step, logs=step_result['step_log'])
+    #         if self.callbacks:
+    #             for callback in self.callbacks:
+    #                 callback.on_test_step_end(step=step, logs=step_result['step_log'])
 
-            render = True
-            for i, episode_log in enumerate(step_result['episode_logs']):
-                # Print complete episode metrics to console
-                print(f"Testing Environment {i}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-                # Reset episode score
-                episode_scores[episode_log['env']] = 0
+    #         render = True
+    #         for i, episode_log in enumerate(step_result['episode_logs']):
+    #             # Print complete episode metrics to console
+    #             print(f"Testing Environment {i}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
+    #             # Reset episode score
+    #             episode_scores[episode_log['env']] = 0
 
-                if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_test_epoch_end(epoch=step, logs=episode_log)
+    #             if self.callbacks:
+    #                 for callback in self.callbacks:
+    #                     callback.on_test_epoch_end(epoch=step, logs=episode_log)
             
-                if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
-                    print(f"Rendering episode {episode_log['episode']} during testing...")
-                    self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
+    #             if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
+    #                 print(f"Rendering episode {episode_log['episode']} during testing...")
+    #                 self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
 
-        if self.callbacks:
-            for callback in self.callbacks:
-                callback.on_test_end(logs=episode_log)
+    #     if self.callbacks:
+    #         for callback in self.callbacks:
+    #             callback.on_test_end(logs=episode_log)
 
-        self.env.close()
+    #     self.env.close()
 
     def get_config(self):
-        return {
-            "agent_type": self.__class__.__name__,
-            "env": self.env.to_json(),
-            "actor_model": self.policy.get_config(),
-            "critic_model": self.critic.get_config(),
-            "replay_buffer": self.replay_buffer.get_config(),
-            "discount": self.discount,
-            "tau": self.tau,
-            "action_epsilon": self.action_epsilon,
-            "batch_size": self.batch_size,
-            "noise": self.noise.get_config(),
-            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
-            "noise_clip": self.noise_clip,
-            'grad_clip': self.grad_clip,
-            'warmup': self.warmup,
-            'N': self.N,
-            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
-            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
-            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
-            "obs_key": self.obs_key,
-            "goal_key": self.goal_key,
-            "achieved_goal_key": self.achieved_goal_key,
-            "callbacks": [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
-            "save_dir": self.save_dir,
-            "device": self.device.type,
-            "log_level": logging.getLevelName(self.logger.getEffectiveLevel()).lower()
-        }
+        config = super().get_config()
+        config["type"] = self.__class__.__name__
+        config["config"].update({"action_epsilon": self.action_epsilon})
+        return config
 
 
     def save(self):
@@ -1756,98 +2040,99 @@ class DDPG(Agent):
     def load(cls, config_dir:str | Path, load_weights:bool = True):
         """Loads the model."""
         config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["env"])
-        policy = ActorModel.load(config_dir, 'policy', load_weights, env=env_wrapper)
-        critic = ContinuousCritic.load(config_dir, 'critic', load_weights, env=env_wrapper)
-        if config['replay_buffer'] is not None:
-            config['replay_buffer']['config']['env'] = env_wrapper
-            if config['replay_buffer']['type'] == 'PrioritizedReplayBuffer':
-                replay_buffer = PrioritizedReplayBuffer(**config["replay_buffer"]["config"])
-            else:
-                replay_buffer = ReplayBuffer(**config["replay_buffer"]["config"])
-        else:
-            replay_buffer = None
+        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
+        policy = ActorModel.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
+        critic = ContinuousCritic.load(Path(config_dir) / 'critic', load_weights, env=env_wrapper)
         noise = Noise.create_instance(config["noise"]["type"], **config["noise"]["config"])
         curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
         state_normalizer = Normalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = Normalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
+        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
         callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
 
         agent = cls(
-            env = env_wrapper,
             policy = policy,
             critic = critic,
             discount=config["discount"],
             tau=config["tau"],
             action_epsilon=config["action_epsilon"],
-            replay_buffer=replay_buffer,
-            batch_size=config["batch_size"],
+            state_normalizer=state_normalizer,
+            goal_normalizer=goal_normalizer,
+            reward_normalizer=reward_normalizer,
             noise=noise,
             noise_schedule=ScheduleWrapper(config["noise_schedule"]) if config["noise_schedule"] else None,
             noise_clip=config["noise_clip"],
-            grad_clip=config['grad_clip'],
+            policy_grad_clip=config['policy_grad_clip'],
+            value_grad_clip=config['value_grad_clip'],
             warmup = config['warmup'],
             N = config['N'],
             curiosity=curiosity,
-            state_normalizer=state_normalizer,
-            goal_normalizer=goal_normalizer,
-            obs_key=config["obs_key"],
-            goal_key=config["goal_key"],
-            achieved_goal_key=config["achieved_goal_key"],
-            callbacks=callbacks,
             save_dir=config["save_dir"],
-            device=config["device"],
-            log_level=config["log_level"]
+            device=config["device"]
         )
 
         return agent
     
 
-class TD3(Agent):
+class TD3(OffPolicyAgent):
     """Twin Delayed Deep Deterministic Policy Gradient Agent."""
     
     def __init__(
         self,
-        env: EnvWrapper,
         policy: ActorModel,
-        critic_a: ContinuousCritic,
-        critic_b: Optional[ContinuousCritic] = None,
+        critic: ContinuousCritic,
+        critic_b: ContinuousCritic|None = None,
         *,
-        replay_buffer: Optional[Buffer] = None,
         discount: float = 0.99,
         tau: float = 0.005,
         action_epsilon: float = 0.0,
-        batch_size: int = 256,
-        noise: Optional[Noise] = None,
-        noise_schedule: Optional[ScheduleWrapper] = None,
-        target_noise: Optional[Noise] = None,
-        target_noise_schedule: Optional[ScheduleWrapper] = None,
-        noise_clip: float = 0.5,
-        policy_update_delay: int = 2,
-        grad_clip: float = 40.0,
-        warmup: int = 1000,
-        N: int=1, # N-steps
-        curiosity: Optional[ICM] = None,
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
-        obs_key: str = 'observation',
-        goal_key: str = 'desired_goal',
-        achieved_goal_key: str = 'achieved_goal', # For HER
-        callbacks: Optional[list[Callback]] = None, #TODO Remove once Trainer implemented
+        reward_normalizer: RewardNorm|None = None,
+        noise: Noise|None = None,
+        noise_schedule: ScheduleWrapper|None = None,
+        noise_clip: float = 0.5,
+        target_noise: Noise|None = None,
+        target_noise_schedule: ScheduleWrapper|None = None,
+        policy_update_delay: int = 2,
+        policy_grad_clip: float = float('inf'),
+        value_grad_clip: float = float('inf'),
+        warmup: int = 1000,
+        N: int=1, # N-steps
+        curiosity: ICM|None = None,
         save_dir: str = "models",
-        device: Optional[str | T.device] = None,
-        log_level: str = 'info'
+        device: str|T.device|None = None,
+        **kwargs
     ):
         try:
-            super().__init__(env, callbacks, obs_key, goal_key, save_dir, device, log_level)
+            super().__init__(
+                policy=policy,
+                critic=critic,
+                discount=discount,
+                tau=tau,
+                state_normalizer=state_normalizer,
+                goal_normalizer=goal_normalizer,
+                reward_normalizer=reward_normalizer,
+                noise=noise,
+                noise_schedule=noise_schedule,
+                noise_clip=noise_clip,
+                policy_grad_clip=policy_grad_clip,
+                value_grad_clip=value_grad_clip,
+                warmup=warmup,
+                N=N,
+                curiosity=curiosity,
+                save_dir=save_dir,
+                device=device,
+                **kwargs
+            )
             self.policy = policy
-            self.critic_a = critic_a
+            self.critic = critic
             self.critic_b = critic_b
             # clone second critic (do not copy weights) if critic_b None
             if not critic_b:
-                self.critic_b = self.critic_a.clone(copy_weights=False, device=self.critic_a.device)
+                self.critic_b = self.critic.clone(copy_weights=False, device=self.critic.device)
             self.target_policy = self.policy.clone(device=self.policy.device)
-            self.target_critic_a = self.critic_a.clone(device=self.critic_a.device)
+            self.target_critic = self.critic.clone(device=self.critic.device)
             self.target_critic_b = self.critic_b.clone(device=self.critic_b.device)
             self.discount = discount
             self.tau = tau
@@ -1893,7 +2178,7 @@ class TD3(Agent):
                 for callback in self.callbacks:
                     if isinstance(callback, WandbCallback):
                         if not callback.initialized:
-                            models = (self.policy, self.critic_a, self.critic_b)
+                            models = (self.policy, self.critic, self.critic_b)
                             config = self.get_config()
                             # if learn_iter:
                             #     self._learn_iter = learn_iter
@@ -2078,9 +2363,9 @@ class TD3(Agent):
 
         # Ensure training data is on correct device
         actions = actions.to(self.target_policy.device)
-        rewards = rewards.to(self.target_critic_a.device)
-        dones = dones.to(self.target_critic_a.device)
-        trajectory_lengths = trajectory_lengths.to(self.target_critic_a.device)
+        rewards = rewards.to(self.target_critic.device)
+        dones = dones.to(self.target_critic.device)
+        trajectory_lengths = trajectory_lengths.to(self.target_critic.device)
 
         # Train ICM if curiosity and update _use_extrinsic flag
         if self.curiosity:
@@ -2117,7 +2402,7 @@ class TD3(Agent):
             targets = compute_n_step_return(
                 rewards,
                 self.discount,
-                device=self.target_critic_a.device
+                device=self.target_critic.device
             ).squeeze()
 
             target_actions, _, _ = self.get_action(
@@ -2141,7 +2426,7 @@ class TD3(Agent):
             # Add noise to target actions and clamp to action space
             target_actions = (target_actions + noise).clamp(float(self.env.action_space.low.min()), float(self.env.action_space.high.max()))
             
-            target_critic_values_a = self.target_critic_a(
+            target_critic_values_a = self.target_critic(
                 next_states[:,-1,:],
                 target_actions,
                 desired_goals[:,-1,:] if desired_goals is not None else None).squeeze()
@@ -2162,7 +2447,7 @@ class TD3(Agent):
                     targets = T.clamp(targets, min=-1/(1-self.discount))
 
         # Get current critic predictions
-        predictions_a = self.critic_a(
+        predictions_a = self.critic(
             states[:,0,:],
             actions[:,0,:],
             desired_goals[:,0,:] if desired_goals is not None else None
@@ -2182,7 +2467,7 @@ class TD3(Agent):
 
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            critic_loss_a = (weights.to(self.critic_a.device) * error_a.pow(2)).mean()
+            critic_loss_a = (weights.to(self.critic.device) * error_a.pow(2)).mean()
             critic_loss_b = (weights.to(self.critic_b.device) * error_b.pow(2)).mean()
             critic_loss = critic_loss_a + critic_loss_b
         else:
@@ -2193,15 +2478,15 @@ class TD3(Agent):
             critic_loss = critic_loss_a + critic_loss_b
 
         # Update critics
-        self.critic_a.optimizer.zero_grad()
+        self.critic.optimizer.zero_grad()
         self.critic_b.optimizer.zero_grad()
         critic_loss_a.backward()
         critic_loss_b.backward()
 
         if self.grad_clip:
-            T.nn.utils.clip_grad_norm_(self.critic_a.parameters(), self.grad_clip)
+            T.nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip)
             T.nn.utils.clip_grad_norm_(self.critic_b.parameters(), self.grad_clip)
-        self.critic_a.optimizer.step()
+        self.critic.optimizer.step()
         self.critic_b.optimizer.step()
         
          # Get actor's action predictions
@@ -2212,7 +2497,7 @@ class TD3(Agent):
         )
         
         # Calculate actor loss based on critic A
-        critic_values = self.critic_a(
+        critic_values = self.critic(
             states[:,0,:],
             action_values,
             desired_goals[:,0,:] if desired_goals is not None else None
@@ -2240,7 +2525,7 @@ class TD3(Agent):
             if not self._use_her:
                 # Perform soft update on target networks
                 self.soft_update(self.policy, self.target_policy)
-                self.soft_update(self.critic_a, self.target_critic_a)
+                self.soft_update(self.critic, self.target_critic)
                 self.soft_update(self.critic_b, self.target_critic_b)
 
         # Update priorities if using prioritized replay - only on update_freq steps
@@ -2267,19 +2552,6 @@ class TD3(Agent):
             })
         
         return learn_metrics
-        
-    
-    def soft_update(self, current, target):
-        with T.no_grad():
-            for current_params, target_params in zip(current.parameters(), target.parameters()):
-                target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
-
-        # Copy buffers (running_mean, running_var)
-        main_buffers = dict(current.named_buffers())
-        target_buffers = dict(target.named_buffers())
-        for name in main_buffers:
-            if name in target_buffers:
-                target_buffers[name].copy_(main_buffers[name])
         
     def _step(self,
               step: int,
@@ -2504,7 +2776,7 @@ class TD3(Agent):
             "agent_type": "TD3",
             "env": self.env.to_json(),
             "policy": self.policy.get_config(),
-            "critic_a": self.critic_a.get_config(),
+            "critic_a": self.critic.get_config(),
             "critic_b": self.critic_b.get_config(),
             "replay_buffer": self.replay_buffer.get_config(),
             "discount": self.discount,
@@ -2539,7 +2811,7 @@ class TD3(Agent):
         with open(os.path.join(self.save_dir, "config.json"), "w", encoding="utf-8") as f:
             json.dump(config, f)
         self.policy.save(self.save_dir)
-        self.critic_a.save(self.save_dir, 'critic_a')
+        self.critic.save(self.save_dir, 'critic_a')
         self.critic_b.save(self.save_dir, 'critic_b')
         if self.curiosity:
             self.curiosity.save(self.save_dir)
@@ -2553,7 +2825,7 @@ class TD3(Agent):
     def load(cls, config_dir:str | Path, load_weights:bool=True):
         """Loads the model."""
         config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["env"])
+        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
         policy = ActorModel.load(config_dir, 'policy', load_weights, env=env_wrapper)
         critic_a = ContinuousCritic.load(config_dir, 'critic_a', load_weights, env=env_wrapper)
         critic_b = ContinuousCritic.load(config_dir, 'critic_b', load_weights, env=env_wrapper)
@@ -2610,44 +2882,38 @@ class SAC(Agent):
 
     def __init__(
         self,
-        env: EnvWrapper,
         policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
-        # value_model: ValueModel,
-        critic_a: ContinuousCritic|DiscreteCritic,
+        critic: ContinuousCritic|DiscreteCritic,
         critic_b: ContinuousCritic|DiscreteCritic|None = None,
         *,
-        replay_buffer: Buffer,
         discount: float=0.99,
         tau: float=0.005,
+        state_normalizer: BaseNormalizer|None = None,
+        goal_normalizer: BaseNormalizer|None = None,
+        reward_normalizer: RewardNorm|None = None,
         entropy_coefficient: float=0.2, # Auto set to 1.0 if auto-tuning
         auto_entropy_tuning: bool=True,
         entropy_lr: float=3e-4, # Only used if auto entropy = True
-        batch_size: int = 256,
-        grad_clip: Optional[float]=None,
+        policy_grad_clip: float = float('inf'),
+        value_grad_clip: float = float('inf'),
         warmup: int=1000,
         N: int=1,
         curiosity: Optional[ICM] = None,
-        state_normalizer: BaseNormalizer|None = None,
-        goal_normalizer: BaseNormalizer|None = None,
-        obs_key: str = 'observation',
-        goal_key: str = 'desired_goal',
-        achieved_goal_key: str = 'achieved_goal',
-        callbacks: Optional[list[Callback]] = None, #TODO Remove once Trainer implemented
         save_dir: str = "models",
         device: Optional[str | T.device] = None,
-        log_level: str = 'info'
+        **kwargs
     ):
         try:
             super().__init__(env, callbacks, obs_key, goal_key, save_dir, device, log_level)
             self.policy = policy
-            self.critic_a = critic_a
+            self.critic = critic_a
             self.critic_b = critic_b
             # clone second critic (do not copy weights) if critic_model_b None
             if not critic_b:
-                self.critic_b = self.critic_a.clone(copy_weights=False)
+                self.critic_b = self.critic.clone(copy_weights=False)
             # self.value_model = value_model
             # self.target_value_model = self.clone_model(value_model)
-            self.target_critic_a = self.critic_a.clone()
+            self.target_critic = self.critic.clone()
             self.target_critic_b = self.critic_b.clone()
             self.discount = discount
             self.tau = tau
@@ -2702,7 +2968,7 @@ class SAC(Agent):
                 for callback in self.callbacks:
                     if isinstance(callback, WandbCallback):
                         if not callback.initialized:
-                            models = (self.policy, self.critic_a, self.critic_b)
+                            models = (self.policy, self.critic, self.critic_b)
                             config = self.get_config()
                             # if learn_iter:
                             #     self._learn_iter = learn_iter
@@ -2890,9 +3156,9 @@ class SAC(Agent):
 
         # Ensure training data is on correct device
         actions = actions.to(self.policy.device)
-        rewards = rewards.to(self.target_critic_a.device)
-        dones = dones.to(self.target_critic_a.device)
-        trajectory_lengths = trajectory_lengths.to(self.target_critic_a.device)
+        rewards = rewards.to(self.target_critic.device)
+        dones = dones.to(self.target_critic.device)
+        trajectory_lengths = trajectory_lengths.to(self.target_critic.device)
 
         # action_space_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.policy_model.device)
         # print(f'action_space_high: {action_space_high}')
@@ -2962,7 +3228,7 @@ class SAC(Agent):
             q_targets = compute_n_step_return(
                 rewards,
                 self.discount,
-                device=self.target_critic_a.device
+                device=self.target_critic.device
             ).squeeze()
 
             # Sample new actions from current policy 
@@ -2979,7 +3245,7 @@ class SAC(Agent):
 
             # Continuous critic target values
             if self.policy.distribution in ['normal', 'beta']:
-                target_values_1 = self.target_critic_a(
+                target_values_1 = self.target_critic(
                     next_states[:,-1,:],
                     target_actions,
                     desired_goals[:,-1,:] if desired_goals is not None else None
@@ -2992,7 +3258,7 @@ class SAC(Agent):
                 target_values = T.minimum(target_values_1, target_values_2) - cur_entropy_coef * log_probs
 
             else: # Discrete critic target values
-                target_values_1 = self.target_critic_a(
+                target_values_1 = self.target_critic(
                     next_states[:,-1,:],
                     desired_goals[:,-1,:] if desired_goals is not None else None
                 )
@@ -3015,7 +3281,7 @@ class SAC(Agent):
 
         # Continuous critic predictions
         if self.policy.distribution in ['normal', 'beta']:
-            q1_preds = self.critic_a(
+            q1_preds = self.critic(
                 states[:,0,:],
                 actions[:,0,:],
                 desired_goals[:,0,:] if desired_goals is not None else None).squeeze()
@@ -3025,7 +3291,7 @@ class SAC(Agent):
                 desired_goals[:,0,:] if desired_goals is not None else None).squeeze()
 
         else: # Discrete critic predictions
-            q1 = self.critic_a(
+            q1 = self.critic(
                 states[:,0,:],
                 desired_goals[:,0,:] if desired_goals is not None else None
             )
@@ -3042,17 +3308,17 @@ class SAC(Agent):
         q2_loss = (q2_preds - q_targets.detach()).pow(2)
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            q1_loss = weights.to(self.critic_a.device) * q1_loss
+            q1_loss = weights.to(self.critic.device) * q1_loss
             q2_loss = weights.to(self.critic_b.device) * q2_loss
         critic_loss = 0.5 * (q1_loss.mean() + q2_loss.mean())
 
-        self.critic_a.optimizer.zero_grad()
+        self.critic.optimizer.zero_grad()
         self.critic_b.optimizer.zero_grad()
         critic_loss.backward()
         if self.grad_clip:
-            T.nn.utils.clip_grad_norm_(self.critic_a.parameters(), self.grad_clip)
+            T.nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip)
             T.nn.utils.clip_grad_norm_(self.critic_b.parameters(), self.grad_clip)
-        self.critic_a.optimizer.step()
+        self.critic.optimizer.step()
         self.critic_b.optimizer.step()
 
         ## Update Policy ##
@@ -3066,13 +3332,13 @@ class SAC(Agent):
         new_actions, log_probs, dist = self.get_action(states[:,0,:], desired_goals[:,0,:] if desired_goals is not None else None, context='learn')
         # Continuous policy update
         if self.policy.distribution in ['normal', 'beta']:
-            q1 = self.critic_a(states[:,0,:], new_actions, desired_goals[:,0,:] if desired_goals is not None else None).squeeze()
+            q1 = self.critic(states[:,0,:], new_actions, desired_goals[:,0,:] if desired_goals is not None else None).squeeze()
             q2 = self.critic_b(states[:,0,:], new_actions, desired_goals[:,0,:] if desired_goals is not None else None).squeeze()
             min_q = T.minimum(q1, q2)
             actor_loss = cur_entropy_coef * log_probs - min_q
         
         else: # Discrete policy update
-            q1 = self.critic_a(states[:,0,:], desired_goals[:,0,:] if desired_goals is not None else None)
+            q1 = self.critic(states[:,0,:], desired_goals[:,0,:] if desired_goals is not None else None)
             q2 = self.critic_b(states[:,0,:], desired_goals[:,0,:] if desired_goals is not None else None)
             min_q = T.minimum(q1, q2)
             actor_loss = (dist.probs * (cur_entropy_coef * log_probs - min_q)).sum(-1)
@@ -3100,7 +3366,7 @@ class SAC(Agent):
 
         # Perform soft update on target networks
         if not self._use_her:
-            self.soft_update(self.critic_a, self.target_critic_a)
+            self.soft_update(self.critic, self.target_critic)
             self.soft_update(self.critic_b, self.target_critic_b)
 
         # Calculate TD Error to update priorities and for logging
@@ -3133,18 +3399,6 @@ class SAC(Agent):
             })
 
         return learn_metrics
-
-    def soft_update(self, current, target):
-        with T.no_grad():
-            for current_params, target_params in zip(current.parameters(), target.parameters()):
-                target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
-
-            # Copy buffers (running_mean, running_var)
-            main_buffers = dict(current.named_buffers())
-            target_buffers = dict(target.named_buffers())
-            for name in main_buffers:
-                if name in target_buffers:
-                    target_buffers[name].copy_(main_buffers[name])
 
     def _step(self,
               step: int,
@@ -3358,7 +3612,7 @@ class SAC(Agent):
             "env": self.env.to_json(),
             "policy_model": self.policy.get_config(),
             # "value_model": self.value_model.get_config(),
-            "critic_model_a": self.critic_a.get_config(),
+            "critic_model_a": self.critic.get_config(),
             "critic_model_b": self.critic_b.get_config(),
             "replay_buffer": self.replay_buffer.get_config(),
             "discount": self.discount,
@@ -3391,7 +3645,7 @@ class SAC(Agent):
             json.dump(config, f)
         self.policy.save(self.save_dir)
         # self.value_model.save(self.save_dir)
-        self.critic_a.save(self.save_dir, 'critic_a')
+        self.critic.save(self.save_dir, 'critic_a')
         self.critic_b.save(self.save_dir, 'critic_b')
         if self.curiosity:
             self.curiosity.save(self.save_dir)
@@ -3798,10 +4052,10 @@ class HER(Agent):
                     elif isinstance(self.base_agent, TD3):
                         # self.agent.logger.debug(f"Updating TD3 target networks")
                         self.agent.soft_update(self.base_agent.policy, self.base_agent.target_policy)
-                        self.agent.soft_update(self.base_agent.critic_a, self.base_agent.target_critic_a)
+                        self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
                         self.agent.soft_update(self.base_agent.critic_b, self.base_agent.target_critic_b)
                     elif isinstance(self.base_agent, SAC):
-                        self.agent.soft_update(self.base_agent.critic_a, self.base_agent.target_critic_a)
+                        self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
                         self.agent.soft_update(self.base_agent.critic_b, self.base_agent.target_critic_b)
 
                 else:
@@ -3985,522 +4239,6 @@ class HER(Agent):
         her = cls(agent, config["strategy"], config["tolerance"], config["num_goals"], config["save_dir"])
         
         return her
-    
-class PPO(OnPolicyAgent):
-    """
-    Proximal Policy Optimization (PPO) agent implementation.
-
-    Attributes:
-        policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
-        value: (ValueModel): The value model used for state-value prediction.
-        discount: (float): Discount factor for future rewards.
-        gae_coefficient: (float): GAE smoothing coefficient.
-        state_normalizer: (BaseNormalizer): Normalizer for state inputs.
-        goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
-        advantage_normalizer: (BaseNormalizer): Normalizer for advantages
-        reward_normalizer:(RewardNorm): Normalizer for rewards.
-        entropy_coefficient: (float): Coefficient for entropy regularization.
-        entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
-        auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
-        entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
-        kl_coefficient: (float): Coefficient for KL divergence penalty.
-        kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
-        policy_clip: (float): Clipping value for policy ratio updates.
-        policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
-        policy_grad_clip: (float): Maximum norm for policy model gradients.
-        value_clip: (float): Clipping value for value model updates.
-        value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
-        value_grad_clip: (float): Maximum norm for value model gradients.
-        value_coef: (float): value to weight the value loss by.
-        reward_clip: (float): Maximum absolute value for reward clipping.
-        curiosity: (ICM): Intrinsic Curiosity Module for curiosity-driven learning.
-        bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
-        save_dir: (str): Directory to save models and configurations.
-        device: (str): Device for computations ('cpu' or 'cuda').
-    """
-
-    def __init__(self,
-                 policy: StochasticContinuousPolicy | StochasticDiscretePolicy,
-                 value: ValueModel,
-                 discount: float = 0.99,
-                 gae_coefficient: float = 0.95,
-                 state_normalizer: BaseNormalizer|None = None,
-                 goal_normalizer: BaseNormalizer|None = None,
-                 advantage_normalizer: BaseNormalizer|None = None,
-                 reward_normalizer: RewardNorm|None = None,
-                 entropy_coefficient: float = 0.01,
-                 entropy_schedule: ScheduleWrapper|None = None,
-                 auto_entropy_tuning: bool = True,
-                 entropy_lr: float = 3e-4,
-                 kl_coefficient: float = 0.0,
-                 kl_adapter: AdaptiveKL|None = None,
-                 policy_clip: float = 0.2,
-                 policy_clip_schedule: ScheduleWrapper|None = None,
-                 policy_grad_clip: float = float('inf'),
-                 value_clip: float = 0.2,
-                 value_clip_schedule: ScheduleWrapper|None = None,
-                 value_grad_clip: float = float('inf'),
-                 value_coef: float = 0.5,
-                 reward_clip: float = float('inf'),
-                 curiosity: ICM|None = None,
-                 bootstrap_truncations: bool=True,
-                 save_dir: str = 'models',
-                 device: str = None,
-                 **kwargs,
-                 ):
-        """
-        Initialize the PPO agent.
-
-        Args:
-            policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
-            value: (ValueModel): The value model used for state-value prediction.
-            discount: (float): Discount factor for future rewards.
-            gae_coefficient: (float): GAE smoothing coefficient.
-            state_normalizer: (BaseNormalizer): Normalizer for state inputs.
-            goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
-            advantage_normalizer: (BaseNormalizer): Normalizer for advantages.
-            reward_normalizer: (RewardNorm): Normalizer for rewards.
-            entropy_coefficient: (float): Coefficient for entropy regularization.
-            entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
-            auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
-            entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
-            kl_coefficient: (float): Coefficient for KL divergence penalty.
-            kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
-            policy_clip: (float): Clipping value for policy ratio updates.
-            policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
-            policy_grad_clip: (float): Maximum norm for policy model gradients.
-            value_clip: (float): Clipping value for value model updates.
-            value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
-            value_grad_clip: (float): Maximum norm for value model gradients.
-            value_coef: (float): value to weight the value loss by.
-            reward_clip: (float): Maximum absolute value for reward clipping.
-            curiosity: (ICM): Intrinsic Curiosity Module for curiosity-driven learning.
-            bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
-            save_dir: (str): Directory to save models and configurations.
-            device: (str): Device for computations ('cpu' or 'cuda').
-            kwargs: Additional keyword arguments.
-        """
-        try:
-            super().__init__(
-                policy,
-                value,
-                discount,
-                state_normalizer,
-                None,
-                advantage_normalizer = advantage_normalizer,
-                reward_normalizer = reward_normalizer,
-                entropy_coefficient = entropy_coefficient,
-                entropy_schedule = entropy_schedule,
-                auto_entropy_tuning = auto_entropy_tuning,
-                entropy_lr = entropy_lr,
-                save_dir = save_dir,
-                device=device,
-                **kwargs
-            )
-            self.gae_coefficient = gae_coefficient
-            self.kl_coefficient = kl_coefficient
-            self.kl_adapter = kl_adapter
-            self.policy_clip = policy_clip
-            self.policy_clip_schedule = policy_clip_schedule
-            self.policy_grad_clip = policy_grad_clip
-            self.value_clip = value_clip
-            self.value_clip_schedule = value_clip_schedule
-            self.value_grad_clip = value_grad_clip
-            self.value_coef = value_coef
-            self.reward_clip = reward_clip
-            self.curiosity = curiosity
-            self.bootstrap_truncations = bootstrap_truncations
-        except Exception as e:
-            self.logger.error(f"Error in PPO.__init__: {e}", exc_info=True)
-
-    def learn(self, step:int, rollouts:dict, batch_size:int, learning_epochs:int):
-        """
-        Perform learning updates using the collected trajectory.
-
-        Args:
-            rollouts (dict): Collected rollouts containing states, actions, etc.
-            batch_size (int): Batch size for training.
-            learning_epochs (int): Number of epochs per update.
-
-        Returns:
-            dict: Learning metrics.
-        """
-        self._learn_count += 1
-        if self._diag_freq is not None:
-            should_log_diag = (self._learn_count % self._diag_freq == 0)
-        else:
-            should_log_diag = False
-        
-        learn_metrics = {}
-
-        # Unpack trajectory
-        (
-            states,
-            actions,
-            rewards,
-            next_states,
-            terminations,
-            truncations,
-            ach_goals,
-            next_ach_goals,
-            goals,
-        ) = rollouts.values()
-
-        # Get current values of policy/value clip and entropy/kl coefficients
-        policy_clip = self.policy_clip
-        if self.policy_clip_schedule:
-            policy_clip *= self.policy_clip_schedule.get_factor()
-
-        value_clip = self.value_clip
-        if self.value_clip_schedule:
-            value_clip *= self.value_clip_schedule.get_factor()
-
-        if self.auto_entropy_tuning:
-            entropy_coefficient = self.log_alpha.exp()
-        else:
-            entropy_coefficient = self.entropy_coefficient
-            if self.entropy_schedule:
-                entropy_coefficient *= self.entropy_schedule.get_factor()
-
-        kl_coefficient = self.kl_coefficient
-        if self.kl_adapter:
-            kl_coefficient *= self.kl_adapter.get_beta()
-
-        # Normalize states and goals
-        if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
-            next_states = self.state_normalizer.normalize(next_states)
-        if self.goal_normalizer:
-            ach_goals = self.goal_normalizer.normalize(ach_goals)
-            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
-            goals = self.goal_normalizer.normalize(goals)
-        if self.reward_normalizer:
-            rewards = self.reward_normalizer.normalize(rewards)
-
-        # Clip rewards if finite and not using reward normalizer
-        if T.isfinite(T.tensor(self.reward_clip)) and self.reward_normalizer is None:
-            rewards = T.clamp(rewards, min=-self.reward_clip, max=self.reward_clip)
-
-        # Get trajectory length, num envs, and total samples for reshaping
-        traj_len, num_envs = rewards.shape
-        total_samples = traj_len * num_envs
-
-        # Flatten trajectory data
-        states_flat = states.reshape(total_samples, -1)
-        next_states_flat = next_states.reshape(total_samples, -1)
-        goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
-        ach_goals_flat = ach_goals.reshape(total_samples, -1) if ach_goals is not None else None
-        next_ach_goals_flat = next_ach_goals.reshape(total_samples, -1) if next_ach_goals is not None else None
-        actions_flat = actions.reshape(total_samples, -1)
-        terminations_flat = terminations.reshape(total_samples, 1)
-        truncations_flat = truncations.reshape(total_samples, 1)
-
-        # Use intrinsic rewards if ICM
-        if self.curiosity:
-            curiosity_loss = self.curiosity.train(states_flat, next_states_flat, actions_flat)
-            intrinsic_reward = self.curiosity.compute_intrinsic_reward(states_flat, next_states_flat, actions_flat)
-            intrinsic_reward = intrinsic_reward.reshape(num_steps, num_envs)
-            if step > self.curiosity.extrinsic_threshold:
-                rewards += self.curiosity.reward_weight * intrinsic_reward
-            else:
-                rewards = self.curiosity.reward_weight * intrinsic_reward
-
-        # Get current log probs and values
-        with T.no_grad():
-            cur_dist = self.policy(states_flat, goals_flat)
-            if self.policy.distribution == 'categorical':
-                cur_log_probs = cur_dist.log_prob(actions_flat.view(-1)).unsqueeze(-1)
-            else:
-                cur_log_probs = cur_dist.log_prob(actions_flat)
-            
-            cur_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
-            cur_next_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs)
-
-        # Calculate advantages and returns (also normalizes via _preprocess_inputs func if using normalizers)
-        advantages, returns, td_errors = compute_advantages_and_returns(
-            rewards,
-            cur_values,
-            cur_next_values,
-            terminations,
-            truncations,
-            self.discount,
-            self.gae_coefficient,
-            self.bootstrap_truncations,
-            self.device
-        )
-
-        # Reshape tensors for batching
-        cur_values_flat = cur_values.reshape(total_samples, 1)
-        advantages_flat = advantages.reshape(total_samples, 1)
-        returns_flat = returns.reshape(total_samples, 1)
-
-        # Create random indices for shuffling
-        indices = T.randperm(total_samples)
-        num_batches = total_samples // batch_size
-
-        # Training loop
-        for epoch in range(learning_epochs):
-            for batch_num in range(num_batches):
-                batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
-                # print("batch_indices:", batch_indices)
-                states_batch = states_flat[batch_indices]
-                goals_batch = goals_flat[batch_indices] if goals is not None else None
-                actions_batch = actions_flat[batch_indices]
-                cur_log_probs_batch = cur_log_probs[batch_indices].detach()
-                cur_values_batch = cur_values_flat[batch_indices].detach()
-                advantages_batch = advantages_flat[batch_indices].detach()
-                returns_batch = returns_flat[batch_indices].detach()
-
-                ## POLICY ##
-                # Create new distribution
-                new_dist = self.policy(states_batch, goals_batch)
-                if self.policy.distribution == 'categorical':
-                    new_log_probs = new_dist.log_prob(actions_batch.view(-1)).unsqueeze(-1)
-                else: # Continuous Distributions
-                    new_log_probs = new_dist.log_prob(actions_batch)
-
-                prob_ratio = T.exp(new_log_probs - cur_log_probs_batch)
-
-                # Calculate Surrogate Loss
-                surr1 = prob_ratio * advantages_batch
-                surr2 = T.clamp(prob_ratio, 1 - policy_clip, 1 + policy_clip) * advantages_batch
-                surrogate_loss = -T.min(surr1, surr2).mean()
-
-                # Calculate Entropy penalty
-                entropies = new_dist.entropy()
-                mean_entropy = entropies.mean()
-                entropy_penalty = mean_entropy * -entropy_coefficient
-
-                # Calculate the KL penalty
-                with T.no_grad():
-                    log_ratio = new_log_probs - cur_log_probs_batch
-                    kl = ((prob_ratio - 1) - log_ratio)
-                    mean_kl = kl.mean()
-                kl_penalty = mean_kl * kl_coefficient
-
-                # Calculate policy loss
-                policy_loss = surrogate_loss + entropy_penalty + kl_penalty
-
-                ## VALUE ##
-                values = self.value(states_batch, goals_batch)
-                loss = (values - returns_batch).pow(2)
-                clipped_values = cur_values_batch + (values - cur_values_batch).clamp(-value_clip, value_clip)
-                clipped_value_loss = (clipped_values - returns_batch).pow(2)
-                value_loss = self.value_coef * (0.5 * T.max(loss, clipped_value_loss).mean())
-
-                # Calculate gradients
-                self.policy.optimizer.zero_grad()
-                policy_loss.backward()
-                if self.policy_grad_clip:
-                    policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
-
-                self.value.optimizer.zero_grad()
-                value_loss.backward()
-                if self.value_grad_clip:
-                    value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), max_norm=self.value_grad_clip)
-
-                # Log diag data
-                if should_log_diag:
-                    nonfinite_values = (
-                    count_nonfinite(cur_values)
-                    + count_nonfinite(cur_next_values)
-                    + count_nonfinite(td_errors)
-                    + count_nonfinite(advantages)
-                    + count_nonfinite(returns)
-                    + count_nonfinite(cur_log_probs)
-                    + count_nonfinite(new_log_probs)
-                    + count_nonfinite(prob_ratio)
-                    + count_nonfinite(entropies)
-                    + count_nonfinite(kl)
-                    + count_nonfinite(surr1)
-                    + count_nonfinite(surr2)
-                    )
-                    self.logger.debug(
-                        "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
-                        step,
-                        self._learn_count,
-                        summarize_tensor(states, "states"),
-                        summarize_tensor(actions, "actions"),
-                        summarize_tensor(rewards, "rewards"),
-                        summarize_tensor(next_states, "next_states"),
-                        summarize_tensor(goals, "goals"),
-                        summarize_tensor(next_ach_goals, "next_ach_goals"),
-                        summarize_tensor(terminations, "terminations"),
-                        summarize_tensor(truncations, "truncations"),
-                        summarize_tensor(cur_values, "values"),
-                        summarize_tensor(cur_next_values, "next_values"),
-                        summarize_tensor(td_errors, "td_errors"),
-                        summarize_tensor(advantages, "advantages"),
-                        summarize_tensor(returns, "returns"),
-                        summarize_tensor(cur_log_probs, "log_probs"),
-                        summarize_tensor(new_log_probs, "new_log_probs"),
-                        summarize_tensor(prob_ratio, "prob_ratio"),
-                        summarize_tensor(entropies, "entropies"),
-                        summarize_tensor(kl, "kl"),
-                        summarize_tensor(surr1, "surr1"),
-                        summarize_tensor(surr2, "surr2"),
-                        f"entropy_coef={float(entropy_coefficient)}",
-                    )
-
-                    self.logger.debug(
-                        "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
-                        "value_loss=%.6f policy_loss=%.6f",
-                        step,
-                        self._learn_count,
-                        float(value_grad_norm) if value_grad_norm is not None else -1.0,
-                        float(policy_grad_norm) if policy_grad_norm is not None else -1.0,
-                        float(value_loss.item()),
-                        float(policy_loss.item()),
-                    )
-
-                # Update models
-                self.policy.optimizer.step()
-                self.value.optimizer.step()
-
-        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
-        if self.policy.lr_scheduler:
-            policy_learning_rate = self.policy.lr_scheduler.get_last_lr()[0] * policy_learning_rate
-        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
-        if self.value.lr_scheduler:
-            value_learning_rate = self.value.lr_scheduler.get_last_lr()[0] * value_learning_rate
-
-        # Step schedulers/adapters
-        if self.kl_adapter:
-            self.kl_adapter.step(mean_kl)
-
-        if self.auto_entropy_tuning:
-            self.entropy_optimizer.zero_grad()
-            alpha_loss = -(self.log_alpha * (new_log_probs + self.target_entropy).detach()).mean()
-            alpha_loss.backward()
-            self.entropy_optimizer.step()
-
-        # Get temperature value from policy if categorical
-        if self.policy.distribution == 'categorical':
-            temperature = self.policy.temperature
-            if self.policy.temperature_schedule:
-                temperature *= self.policy.temperature_schedule.get_factor()
-            learn_metrics.update({'temperature': temperature})
-
-        learn_metrics.update({
-            'policy_loss': policy_loss.item(),
-            'value_loss': value_loss.item(),
-            'entropy': mean_entropy.item(),
-            'kl': mean_kl.item(),
-            'prob_ratio': prob_ratio.detach().cpu().flatten().mean().item(),
-            'advantages': advantages.detach().cpu().flatten().mean().item(),
-            'returns': returns.detach().cpu().flatten().mean().item(),
-            'policy_clip': policy_clip,
-            'value_clip': value_clip,
-            'entropy_coefficient': entropy_coefficient,
-            'kl_coefficient': kl_coefficient,
-            'policy_learning_rate': policy_learning_rate,
-            'value_learning_rate': value_learning_rate
-        })
-        return learn_metrics
-
-    def get_config(self):
-        """
-        Get the current configuration of the PPO agent.
-
-        Returns:
-            dict: Configuration dictionary.
-        """
-        config = super().get_config()
-        config["type"] = self.__class__.__name__
-        config.update({
-            "gae_coefficient": self.gae_coefficient,
-            "policy_clip": self.policy_clip,
-            "policy_clip_schedule": self.policy_clip_schedule.get_config() if self.policy_clip_schedule else None,
-            "policy_grad_clip": self.policy_grad_clip,
-            "value_clip": self.value_clip,
-            "value_clip_schedule": self.value_clip_schedule.get_config() if self.value_clip_schedule else None,
-            "value_grad_clip": self.value_grad_clip,
-            "value_coef": self.value_coef,
-            "reward_clip": self.reward_clip,
-            "kl_coefficient": self.kl_coefficient,
-            "kl_adapter": self.kl_adapter.get_config() if self.kl_adapter else None,
-            "curiosity": self.curiosity.get_config() if self.curiosity else None,
-            "bootstrap_truncations": self.bootstrap_truncations
-        })
-        return config
-
-    def save(self, save_dir=None):
-        """
-        Save the model and its configuration.
-
-        Args:
-            save_dir (str, optional): Directory to save the model. Defaults to self.save_dir.
-        """
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        self.value.save(self.save_dir)
-        if self.curiosity:
-            self.curiosity.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.goal_normalizer:
-            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
-        if self.advantage_normalizer:
-            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool=True):
-        """
-        Load a PPO agent from a saved configuration.
-
-        Args:
-            config (dict): Configuration dictionary.
-            load_weights (bool): Whether to load model weights.
-
-        Returns:
-            PPO: Loaded PPO agent.
-        """
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        # env_wrapper = EnvWrapper.from_json(config["env"])
-        distribution = config['policy']['distribution']
-        if distribution == 'categorical':
-            policy = StochasticDiscretePolicy.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
-        elif distribution in ['beta', 'normal']:
-            policy = StochasticContinuousPolicy.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
-        else:
-            raise ValueError(f"Invalid distribution: {distribution}")
-        value = ValueModel.load(Path(config_dir) / 'value', load_weights, env=env_wrapper)
-        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config["state_normalizer"] else None
-        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "/goal_normalizer.pt") if config["goal_normalizer"] else None
-        advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "/advantage_normalizer.pt") if config["advantage_normalizer"] else None
-        # callbacks = [callback_load(callback) for callback in config['callbacks']] if config.get('callbacks') else None
-        agent = cls(
-            # env_wrapper,
-            policy = policy,
-            value = value,
-            discount=config["discount"],
-            gae_coefficient = config["gae_coefficient"],
-            policy_clip = config["policy_clip"],
-            policy_clip_schedule = ScheduleWrapper(config["policy_clip_schedule"]) if config["policy_clip_schedule"] else None,
-            value_clip = config["value_clip"],
-            value_clip_schedule = ScheduleWrapper(config["value_clip_schedule"]) if config["value_clip_schedule"] else None,
-            value_loss_coefficient = config["value_loss_coefficient"],
-            entropy_coefficient = config["entropy_coefficient"],
-            entropy_schedule = ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
-            kl_coefficient = config["kl_coefficient"],
-            kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config["kl_adapter"] else None,
-            # normalize_advantages = config["normalize_advantages"],
-            curiosity = curiosity,
-            state_normalizer = state_normalizer,
-            goal_normalizer = goal_normalizer,
-            advantage_normalizer = advantage_normalizer,
-            grad_clip = config["grad_clip"],
-            reward_clip = config['reward_clip'],
-            # callbacks=callbacks,
-            save_dir=config["save_dir"],
-            device=config["device"],
-        )
-
-        return agent
     
 
     

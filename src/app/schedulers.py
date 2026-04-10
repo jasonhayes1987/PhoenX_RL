@@ -37,13 +37,19 @@ class ScheduleWrapper:
         self.start_value = start_value
         self.end_value = end_value
         self.kwargs = kwargs
+        self.optimizer = optimizer
+        self.scheduler = None
+        self._param = None
+        self._last_epoch = 0
         
-        if optimizer:
-            self.optimizer = optimizer
-        else:
-            self.param = T.nn.Parameter(T.zeros(1), requires_grad=False)
-            self.optimizer = optim.SGD([self.param], lr=1.0)
+        if optimizer is None:
+            self._param = T.nn.Parameter(T.zeros(1), requires_grad=False)
+            self.optimizer = optim.SGD([self._param], lr=1.0)
+
+        self._create_scheduler()
         
+    def _create_scheduler(self):
+        """Creates scheduler."""
         # Map scheduler type to PyTorch's built-in schedulers
         if self.schedule_type == "linear":
             if self.end_value is None or self.start_value is None or self.steps is None:
@@ -80,6 +86,23 @@ class ScheduleWrapper:
 
         else:
             raise ValueError(f"Unsupported scheduler type: {self.schedule_type}")
+
+        # Restore last epoch if there was a previous state
+        if hasattr(self.scheduler, 'last_epoch') and self._last_epoch > 0:
+            self.scheduler.last_epoch = self._last_epoch
+
+    def attach_optimizer(self, optimizer: Optimizer):
+        """Attaches optimizer to scheduler."""
+        if optimizer is None:
+            return
+
+        self.optimizer = optimizer
+
+        # Save the current state of the optimizer before rebuilding it
+        if self.scheduler is not None and hasattr(self.scheduler, 'last_epoch'):
+            self._last_epoch = self.scheduler.last_epoch
+
+        self._create_scheduler()
 
     def step(self, num_steps: int = 1):
         """
