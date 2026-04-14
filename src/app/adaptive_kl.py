@@ -4,9 +4,15 @@ class AdaptiveKL():
     Keeps track of a KL penalty coefficient `beta` that is adjusted
     after each update so the observed KL divergence hovers near `target_kl`.
     """
-    def __init__(self, initial_beta=1.0, target_kl=0.01,
-                 scale_up=2.0, scale_down=0.5,
-                 kl_tolerance_high=1.5, kl_tolerance_low=0.5):
+    def __init__(
+        self,
+        initial_beta=1.0,
+        beta_max=100.0,
+        target_kl=0.01,
+        scale_up=2.0,
+        scale_down=0.5,
+        kl_tolerance_high=1.5,
+        kl_tolerance_low=0.5):
         """
         Args:
             initial_beta (float): initial KL penalty
@@ -20,6 +26,7 @@ class AdaptiveKL():
         """
         self.initial_beta = initial_beta
         self.beta = initial_beta
+        self.beta_max = beta_max
         self.target_kl = target_kl
         self.scale_up = scale_up
         self.scale_down = scale_down
@@ -33,7 +40,7 @@ class AdaptiveKL():
         """
         # If KL is way above target, raise beta
         if observed_kl > self.target_kl * self.kl_tolerance_high:
-            self.beta *= self.scale_up
+            self.beta = min(self.beta * self.scale_up, self.beta_max)
         # If KL is much below target, lower beta
         elif observed_kl < self.target_kl * self.kl_tolerance_low:
             self.beta *= self.scale_down

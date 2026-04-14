@@ -105,8 +105,8 @@ class Model(nn.Module):
         # Dry run forward pass to initialize lazy modules
         # Check if the observation space is a dictionary AND contains goal-conditioned keys
         is_goal_conditioned = (isinstance(obs_space, gym.spaces.Dict) and 
-                              self.env.obs_key in obs_space and 
-                              self.env.goal_key in obs_space)
+                              self.env.obs_key in obs_space.spaces and 
+                              self.env.goal_key in obs_space.spaces)
         
         if is_goal_conditioned:
             obs_shape = obs_space[self.env.obs_key].shape
@@ -689,22 +689,22 @@ class StochasticContinuousPolicy(Model):
         param_1 = self.output_layer['policy_output_param_1'](x)
         param_2 = self.output_layer['policy_output_param_2'](x)
 
+        # Check if parameters are finite
+        if not T.isfinite(param_1).all() or not T.isfinite(param_2).all():
+            # self.logger.warning(f'Non-finite parameters: {param_1}, {param_2}')
+            param_1 = T.nan_to_num(param_1, nan=0.0, posinf=5.0, neginf=-5.0)
+            param_2 = T.nan_to_num(param_2, nan=0.0, posinf=2.0, neginf=-10.0)
+
         if self.distribution in ['beta', 'kumaraswamy']:
-            # Check if parameters are finite
-            if not T.isfinite(param_1).all() or not T.isfinite(param_2).all():
-                self.logger.warning(f'Non-finite parameters: {param_1}, {param_2}')
-            # Prevent nans
-            # param_1 = T.nan_to_num(param_1, nan=0.0, posinf=5.0, neginf=-5.0)
-            # param_2 = T.nan_to_num(param_2, nan=0.0, posinf=5.0, neginf=-5.0)
             # Clamp params between -12 and 6 to allow max expressiveness within safe bounds of dist
-            # param_1 = T.clamp(param_1, min=-12, max=6)
-            # param_2 = T.clamp(param_2, min=-12, max=6)
+            param_1 = T.clamp(param_1, min=-12, max=6)
+            param_2 = T.clamp(param_2, min=-12, max=6)
             # softplus params to ensure >0 and add 1.0 for numerical stability
             alpha = F.softplus(param_1) + 1.0
             beta = F.softplus(param_2) + 1.0
             # Clamp alpha/beta to prevent exploding gradients
-            alpha = T.clamp(alpha, min=1e-3, max=15.0)
-            beta = T.clamp(beta, min=1e-3, max=15.0)
+            alpha = T.clamp(alpha, min=1e-3, max=10.0)
+            beta = T.clamp(beta, min=1e-3, max=10.0)
 
             if self.distribution == 'beta':
                 dist = ScaledBeta(Beta(alpha, beta), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
@@ -713,11 +713,14 @@ class StochasticContinuousPolicy(Model):
                 dist = ScaledKumaraswamy(Kumaraswamy(alpha, beta), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
 
         elif self.distribution == 'normal':
-            mu = param_1
-            log_std = T.clamp(param_2, min=-10, max=2)
+            mu = T.clamp(param_1, min=-10.0, max=10.0)
+            log_std = T.clamp(param_2, min=-6, max=2)
             sigma = T.exp(log_std) + 1e-8
-            dist = SquashedNormal(Normal(mu, sigma), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
-            # return dist, T.cat([mu, sigma], dim=-1)
+            dist = SquashedNormal(
+                Normal(mu, sigma),
+                low=self.env.single_action_space.low,
+                high=self.env.single_action_space.high
+            )
         else:
             raise ValueError(f"Distribution {self.distribution} not supported.")
 
