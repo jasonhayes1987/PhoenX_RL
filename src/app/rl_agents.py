@@ -1032,7 +1032,7 @@ class PPO(OnPolicyAgent):
 
         kl_coefficient = self.kl_coefficient
         if self.kl_adapter:
-            kl_coefficient *= self.kl_adapter.get_beta()
+            kl_coefficient = self.kl_adapter.get_beta()
 
         # Normalize states and goals
         if self.state_normalizer:
@@ -1080,6 +1080,7 @@ class PPO(OnPolicyAgent):
                 cur_log_probs = cur_dist.log_prob(actions_flat.view(-1)).unsqueeze(-1)
             else:
                 cur_log_probs = cur_dist.log_prob(actions_flat).unsqueeze(-1)
+            cur_log_probs = T.nan_to_num(cur_log_probs, nan=0.0, posinf=20.0, neginf=-20.0)
             
             cur_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
             cur_next_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs)
@@ -1102,12 +1103,18 @@ class PPO(OnPolicyAgent):
         advantages_flat = advantages.reshape(total_samples, 1)
         returns_flat = returns.reshape(total_samples, 1)
 
-        # Create random indices for shuffling
-        indices = T.randperm(total_samples)
-        num_batches = total_samples // batch_size
+        # Normalize advantages
+        if self.advantage_normalizer:
+            if getattr(self.advantage_normalizer, 'add', None):
+                self.advantage_normalizer.add(advantages_flat)
+            advantages_flat = self.advantage_normalizer.normalize(advantages_flat)
 
         # Training loop
         for epoch in range(learning_epochs):
+            # Create random indices for shuffling
+            indices = T.randperm(total_samples)
+            num_batches = total_samples // batch_size
+
             for batch_num in range(num_batches):
                 batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
                 # print("batch_indices:", batch_indices)
@@ -1126,8 +1133,12 @@ class PPO(OnPolicyAgent):
                     new_log_probs = new_dist.log_prob(actions_batch.view(-1)).unsqueeze(-1)
                 else: # Continuous Distributions
                     new_log_probs = new_dist.log_prob(actions_batch).unsqueeze(-1)
+                    new_log_probs = T.nan_to_num(new_log_probs, nan=0.0, posinf=20.0, neginf=-20.0)
 
-                prob_ratio = T.exp(new_log_probs - cur_log_probs_batch)
+                # prob_ratio = T.exp(new_log_probs - cur_log_probs_batch)
+                log_ratio = new_log_probs - cur_log_probs_batch
+                log_ratio = T.clamp(log_ratio, min=-10.0, max=10.0)
+                prob_ratio = T.exp(log_ratio)
 
                 # Calculate Surrogate Loss
                 surr1 = prob_ratio * advantages_batch
@@ -1135,14 +1146,16 @@ class PPO(OnPolicyAgent):
                 surrogate_loss = -T.min(surr1, surr2).mean()
 
                 # Calculate Entropy penalty
+                # if self.policy.distribution == 'normal':
+                #     entropies = -new_log_probs
+                # else:
                 entropies = new_dist.entropy()
                 mean_entropy = entropies.mean()
                 entropy_penalty = mean_entropy * -entropy_coefficient
 
                 # Calculate the KL penalty
                 with T.no_grad():
-                    log_ratio = new_log_probs - cur_log_probs_batch
-                    kl = 0.5 * (prob_ratio - 1 - log_ratio).pow(2)
+                    kl = prob_ratio - 1 - log_ratio
                     mean_kl = kl.mean()
                 kl_penalty = mean_kl * kl_coefficient
 
@@ -1227,6 +1240,9 @@ class PPO(OnPolicyAgent):
                 # Update models
                 self.policy.optimizer.step()
                 self.value.optimizer.step()
+
+            if mean_kl > self.kl_adapter.target_kl * 1.5:
+                break  # Stop this learn cycle's epochs early
 
         # Step schedulers/adapters
         if self.kl_adapter:
@@ -1561,7 +1577,7 @@ class DDPG(OffPolicyAgent):
     #     self.target_actor_model.load_state_dict(params['target_actor_model'])
     #     self.target_critic_model.load_state_dict(params['target_critic_model'])
 
-    def learn(self, step: int, samples: dict):
+    def learn(self, sample: dict)->dict:
         
         self._learn_count += 1
         if self._diag_freq is not None:
@@ -1640,7 +1656,7 @@ class DDPG(OffPolicyAgent):
         #     else:
         #         states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
 
-        # Normalize states and goals
+        # Normalize states/goals/rewards
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
@@ -2125,8 +2141,6 @@ class TD3(OffPolicyAgent):
                 device=device,
                 **kwargs
             )
-            self.policy = policy
-            self.critic = critic
             self.critic_b = critic_b
             # clone second critic (do not copy weights) if critic_b None
             if not critic_b:
@@ -2134,58 +2148,21 @@ class TD3(OffPolicyAgent):
             self.target_policy = self.policy.clone(device=self.policy.device)
             self.target_critic = self.critic.clone(device=self.critic.device)
             self.target_critic_b = self.critic_b.clone(device=self.critic_b.device)
-            self.discount = discount
-            self.tau = tau
             self.action_epsilon = action_epsilon
-            self.replay_buffer = replay_buffer
-            self.batch_size = batch_size
-            self.noise = noise
-            self.noise_schedule = noise_schedule
-            if target_noise is None:
-                target_noise = NormalNoise(self.env.single_action_space.shape, stddev=0.2, device=device)
             self.target_noise = target_noise
             self.target_noise_schedule = target_noise_schedule
-            self.noise_clip = noise_clip
             self.policy_update_delay = policy_update_delay
-            self.grad_clip = grad_clip
-            self.warmup = warmup
-            self.N = N
-            self.curiosity = curiosity
-            self.state_normalizer = state_normalizer
-            self.goal_normalizer = goal_normalizer
-            self.obs_key = obs_key
-            self.goal_key = goal_key
-            self.achieved_goal_key = achieved_goal_key
 
         except Exception as e:
             self.logger.error(f"Error in TD3 init: {e}", exc_info=True)
         
         # set internal attributes
-        try:
-            self._use_her = False
-            self._learn_iter = 0
-
+        # try:
             # Set sync_iter to 0. For distributed training
             # self._sync_iter = 0
 
-        except Exception as e:
-            self.logger.error(f"Error in TD3 init internal attributes: {e}", exc_info=True)
-    
-    def _initialize_wandb(self, run_number:str=None, run_name_prefix:str=None, learn_iter:int=None):
-        """Initialize WandbCallback if using WandbCallback"""
-        try:
-            if self._wandb:
-                for callback in self.callbacks:
-                    if isinstance(callback, WandbCallback):
-                        if not callback.initialized:
-                            models = (self.policy, self.critic, self.critic_b)
-                            config = self.get_config()
-                            # if learn_iter:
-                            #     self._learn_iter = learn_iter
-                            #     config['learn_interval'] = learn_iter
-                            callback.initialize_run(models, config, run_number=run_number, run_name_prefix=run_name_prefix)
-        except Exception as e:
-            self.logger.error(f"Error in _initialize_wandb: {e}", exc_info=True)
+        # except Exception as e:
+        #     self.logger.error(f"Error in TD3 init internal attributes: {e}", exc_info=True)
 
     def _init_her(self):
         self._use_her = True
@@ -2232,134 +2209,163 @@ class TD3(OffPolicyAgent):
     #     self.target_critic_model_b.load_state_dict(params['target_critic_model_b'])
     
 
-    def get_action(self,
-                   states: np.ndarray|T.Tensor,
-                   goals: np.ndarray|T.Tensor|None=None,
-                   step: int|None=None,
-                   context: str = 'train'
-                   )->tuple[T.Tensor, T.Tensor, Distribution | None]:
-        """
-        Select an action based on the current policy.
+    # def get_action(self,
+    #                states: np.ndarray|T.Tensor,
+    #                goals: np.ndarray|T.Tensor|None=None,
+    #                step: int|None=None,
+    #                context: str = 'train'
+    #                )->tuple[T.Tensor, T.Tensor, Distribution | None]:
+    #     """
+    #     Select an action based on the current policy.
 
-        Args:
-            states: np.ndarray | T.Tensor: The current states.
-            goals: np.ndarray | T.Tensor | None: The current goals.
-            step: Optional[int]: The current step.
-            context: str: The context of the action (train, test, or learn).
+    #     Args:
+    #         states: np.ndarray | T.Tensor: The current states.
+    #         goals: np.ndarray | T.Tensor | None: The current goals.
+    #         step: Optional[int]: The current step.
+    #         context: str: The context of the action (train, test, or learn).
         
-        Returns:
-            tuple[np.ndarray | T.Tensor, T.Tensor | None, Distribution | None]: actions, raw actions, and distribution.
-        """
+    #     Returns:
+    #         tuple[np.ndarray | T.Tensor, T.Tensor | None, Distribution | None]: actions, raw actions, and distribution.
+    #     """
 
-        raw_actions = None
-        dist = None
+    #     raw_actions = None
+    #     dist = None
 
-        # If training
-        if context == 'train':
-            # If warmup, sample random action from action space
-            if (step is not None) and (step <= self.warmup):
-                return self.env.action_space.sample(), raw_actions, dist
-            # if random number is less than epsilon, sample random action
-            elif np.random.random() < self.action_epsilon:
-                return self.env.action_space.sample(), raw_actions, dist
-            # otherwise, sample action from policy
-            else:
-                noise = self.noise(self.env.action_space.shape)
-                # Apply noise clipping if needed
-                if self.noise_clip > 0:
-                    noise = noise.clamp(-self.noise_clip, self.noise_clip)
-                # Apply noise schedule if needed
-                if self.noise_schedule:
-                    noise *= self.noise_schedule.get_factor()
+    #     # If training
+    #     if context == 'train':
+    #         # If warmup, sample random action from action space
+    #         if (step is not None) and (step <= self.warmup):
+    #             return self.env.action_space.sample(), raw_actions, dist
+    #         # if random number is less than epsilon, sample random action
+    #         elif np.random.random() < self.action_epsilon:
+    #             return self.env.action_space.sample(), raw_actions, dist
+    #         # otherwise, sample action from policy
+    #         else:
+    #             noise = self.noise(self.env.action_space.shape)
+    #             # Apply noise clipping if needed
+    #             if self.noise_clip > 0:
+    #                 noise = noise.clamp(-self.noise_clip, self.noise_clip)
+    #             # Apply noise schedule if needed
+    #             if self.noise_schedule:
+    #                 noise *= self.noise_schedule.get_factor()
                 
-                with T.no_grad():
-                    raw_actions, squashed_actions = self.policy(states, goals)
+    #             with T.no_grad():
+    #                 raw_actions, squashed_actions = self.policy(states, goals)
                 
-                # Convert the action space bounds to a tensor on the same device
-                action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.policy.device)
-                action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.policy.device)
-                actions = (squashed_actions + noise).clip(action_space_low, action_space_high)
+    #             # Convert the action space bounds to a tensor on the same device
+    #             action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.policy.device)
+    #             action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.policy.device)
+    #             actions = (squashed_actions + noise).clip(action_space_low, action_space_high)
 
-                return actions.detach(), raw_actions, dist
+    #             return actions.detach(), raw_actions, dist
 
-        # check if get action is for testing
-        if context == 'test':
-            with T.no_grad():
-                raw_actions, squashed_actions = self.target_policy(states, goals)
-            return squashed_actions.detach(), raw_actions, dist
+    #     # check if get action is for testing
+    #     if context == 'test':
+    #         with T.no_grad():
+    #             raw_actions, squashed_actions = self.target_policy(states, goals)
+    #         return squashed_actions.detach(), raw_actions, dist
 
-        else: # learn
-            raw_actions, squashed_actions = self.policy(states, goals)
-            return squashed_actions, raw_actions, dist
+    #     else: # learn
+    #         raw_actions, squashed_actions = self.policy(states, goals)
+    #         return squashed_actions, raw_actions, dist
             
-    def learn(self, step: int):
-        self._learn_iter += 1
+    def learn(self, sample: dict)->dict:
+        self._learn_count += 1
+        if self._diag_freq is not None:
+            should_log_diag = (self._learn_count % self._diag_freq == 0)
+        else:
+            should_log_diag = False
 
         learn_metrics = {}
-            
-        if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
-            if self._use_her:  # HER with prioritized replay
-                #DEBUG
-                # print(f"HER with prioritized replay")
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-            else:  # Just prioritized replay
-                #DEBUG
-                # print(f"Just prioritized replay")
-                states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-                
-            # Log PER-specific metrics
-            if self._wandb:
-                # Get the actual size of used buffer (not the full capacity)
-                actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
-                # Get indices for all actual entries in the buffer
-                valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
-                # Get priority info for logging
-                if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
-                    indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
-                    # Get tree indices for sampled transitions
-                    tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
-                    # Get priorities for sampled transitions
-                    sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
-                    valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
-                    buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
 
-                else:
-                    buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
-                    sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
-                    
-                # Add priority buffer metrics to learn_metrics dict
-                learn_metrics.update({
-                    'PER/beta': self.replay_buffer.beta,
-                    'PER/sampled_priorities': sampled_priorities,
-                    'PER/buffer_priorities': buffer_priorities,
-                    'PER/weights': weights,
-                    'PER/probs': probs,
-                    'PER/mean_sampled_priority': np.mean(sampled_priorities),
-                    'PER/mean_buffer_priority': np.mean(buffer_priorities),
-                    'PER/max_sampled_priority': np.max(sampled_priorities),
-                    'PER/max_buffer_priority': np.max(buffer_priorities),
-                    'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
-                    'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
-                })
-
-        else:  # Standard replay buffer
-            if self._use_her:
-                states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-            else:
-                states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-            
+        # Unpack trajectory
+        (
+            states,
+            actions,
+            rewards,
+            next_states,
+            terminations,
+            truncations,
+            trajectory_lengths,
+            ach_goals,
+            next_ach_goals,
+            goals,
+        ) = samples.values()
+        
+        if 'weights' in samples:
+            weights = samples['weights']
+            probs = samples['probs']
+            indices = samples['indices']
+        else:
             weights = None
+            probs = None
             indices = None
+            
+        # if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
+        #     if self._use_her:  # HER with prioritized replay
+        #         #DEBUG
+        #         # print(f"HER with prioritized replay")
+        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+        #     else:  # Just prioritized replay
+        #         #DEBUG
+        #         # print(f"Just prioritized replay")
+        #         states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
+                
+        #     # Log PER-specific metrics
+        #     if self._wandb:
+        #         # Get the actual size of used buffer (not the full capacity)
+        #         actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
+        #         # Get indices for all actual entries in the buffer
+        #         valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
+        #         # Get priority info for logging
+        #         if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
+        #             indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
+        #             # Get tree indices for sampled transitions
+        #             tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
+        #             # Get priorities for sampled transitions
+        #             sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
+        #             valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
+        #             buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
+
+        #         else:
+        #             buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
+        #             sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
+                    
+        #         # Add priority buffer metrics to learn_metrics dict
+        #         learn_metrics.update({
+        #             'PER/beta': self.replay_buffer.beta,
+        #             'PER/sampled_priorities': sampled_priorities,
+        #             'PER/buffer_priorities': buffer_priorities,
+        #             'PER/weights': weights,
+        #             'PER/probs': probs,
+        #             'PER/mean_sampled_priority': np.mean(sampled_priorities),
+        #             'PER/mean_buffer_priority': np.mean(buffer_priorities),
+        #             'PER/max_sampled_priority': np.max(sampled_priorities),
+        #             'PER/max_buffer_priority': np.max(buffer_priorities),
+        #             'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
+        #             'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
+        #         })
+
+        # else:  # Standard replay buffer
+        #     if self._use_her:
+        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
+        #     else:
+        #         states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
+            
+        #     weights = None
+        #     indices = None
 
 
-        # Normalize states if self.normalize_inputs
+        # Normalize states/goals/rewards
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
             next_states = self.state_normalizer.normalize(next_states)
         if self.goal_normalizer:
-            desired_goals = self.goal_normalizer.normalize(desired_goals)
-        else:
-            desired_goals = None
+            ach_goals = self.goal_normalizer.normalize(ach_goals)
+            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
+            goals = self.goal_normalizer.normalize(goals)
+        if self.reward_normalizer:
+            rewards = self.reward_normalizer.normalize(rewards)
 
         # Ensure training data is on correct device
         actions = actions.to(self.target_policy.device)
@@ -2515,7 +2521,7 @@ class TD3(OffPolicyAgent):
         
         # Update actor
         # Only update actor every actor_update_delay steps
-        if self._learn_iter % self.policy_update_delay == 0:
+        if self._learn_count % self.policy_update_delay == 0:
             self.policy.optimizer.zero_grad()
             actor_loss.backward()
             if self.grad_clip:
