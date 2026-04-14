@@ -28,11 +28,11 @@ class Schedule:
 class OnPolicySchedule(Schedule):
     # Training length
     unit: Literal["timestep", "episode"] = 'episode'
-    num_units: int = 1000
+    units: int = 1000
 
-    # learning Frequency
+    # learning Params
     learn_unit: Literal["timestep", "trajectory"] = 'trajectory'
-    num_learn_units: int = 10
+    learn_units: int = 10
 
     # Algo specific (ie. PPO)
     batch_size: int|None = None
@@ -45,15 +45,13 @@ class OnPolicySchedule(Schedule):
 class OffPolicySchedule(Schedule):
     # Training length
     unit: Literal["timestep", "episode"] = 'episode'
-    num_units: int = 1000
+    units: int = 1000
 
-    # learning Frequency
-    learn_unit: Literal["timestep", "trajectory"] = 'trajectory'
-    num_learn_units: int = 10
-
-    # Algo specific
+    # learning Params
+    cycles: int = 10
+    episodes: int = 10
+    updates: int = 10
     batch_size: int|None = None
-    learning_epochs: int|None = None
 
     # Set seed
     seed: int|None = None
@@ -331,11 +329,11 @@ class OnPolicyTrainer(Trainer):
             raise ValueError(f"Invalid learn unit: {self.schedule.learn_unit}")
         elif self.schedule.learn_unit == 'timestep':
             self._learn_counter += self.env.num_envs
-            if self._learn_counter >= self.schedule.num_learn_units:
+            if self._learn_counter >= self.schedule.learn_units:
                 self._learn_counter = 0
                 return True
         else: # self.schedule.learn_unit == 'trajectory'
-            if self._completed_episodes.sum() >= self.schedule.num_learn_units * (self._learn_counter + 1):
+            if self._completed_episodes.sum() >= self.schedule.learn_units * (self._learn_counter + 1):
                 self._learn_counter += 1
                 return True
         return False
@@ -403,11 +401,9 @@ class OnPolicyTrainer(Trainer):
 
         # Normalize observations and goals if normalizers
         obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._cur_obs.current_states, self._cur_obs.current_goals, self._cur_obs.current_ach_goals)
-
         actions = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
         observation = self.env.step(actions)
-        # Increment episode step counts
-        self._episode_steps += 1
+       
         
         # Add normalized transitions to the buffer
         self.buffer.add(
@@ -422,6 +418,8 @@ class OnPolicyTrainer(Trainer):
             desired_goals=self._cur_obs.current_goals,
         )
 
+        # Increment episode steps and rewards
+        self._episode_steps += 1
         self._episode_scores += observation.rewards.flatten()
 
         # Add step metrics to step log
@@ -472,10 +470,10 @@ class OnPolicyTrainer(Trainer):
         with Live(console=console, refresh_per_second=8, transient=True) as live:
             while True:
                 if self.schedule.unit == 'timestep':
-                    if self._step >= self.schedule.num_units:
+                    if self._step >= self.schedule.units:
                         break
                 elif self.schedule.unit == 'episode':
-                    if self._completed_episodes.sum() >= self.schedule.num_units:
+                    if self._completed_episodes.sum() >= self.schedule.units:
                         break
                 else:
                     raise ValueError(f"Invalid unit: {self.schedule.unit}")
@@ -570,6 +568,16 @@ class OffPolicyTrainer(Trainer):
             if hasattr(self.agent.target_noise, 'reset'):
                 self.agent.noise.reset()
 
+    def learn(self)->dict:
+        """
+        Calls Agent.learn() passing samples from the buffer.
+        
+        Returns:
+            dict: A dictionary containing the learn metrics.
+        """
+        learn_metrics = self.agent.learn(self._step, self.buffer.sample())
+        return learn_metrics
+
     def get_action(self,
         states: np.ndarray|T.Tensor,
         goals: np.ndarray|T.Tensor|None=None,
@@ -581,23 +589,21 @@ class OffPolicyTrainer(Trainer):
         Args:
             states: np.ndarray | T.Tensor: The current states.
             goals: np.ndarray | T.Tensor | None: The current goals.
-            context: str: The context of the action (train, test, learn).
+            context: str: The context of the action (train, test).
         
         Returns:
             T.Tensor: actions.
         """
-
         raw_actions = None
-        dist = None
-
+        
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
             if (self._step is not None) and (self._step <= self.agent.warmup):
-                return self.env.action_space.sample()
+                return self.env.action_space.sample(), raw_actions
             # if random number is less than epsilon, sample random action
-            elif np.random.random() < self.agent.action_epsilon:
-                return self.env.action_space.sample()
+            if np.random.random() < self.agent.action_epsilon:
+                return self.env.action_space.sample(), raw_actions
             # otherwise, sample action from policy
             else:
                 noise = self.agent.noise(self.env.action_space.shape)
@@ -618,15 +624,14 @@ class OffPolicyTrainer(Trainer):
 
                 return actions.detach(), raw_actions
 
-        # check if get action is for testing
-        if context == 'test':
+        else: # context == 'test'
             with T.no_grad():
                 raw_actions, squashed_actions = self.agent.target_policy(states, goals)
             return squashed_actions.detach(), raw_actions
 
-        else: # learn
-            raw_actions, squashed_actions = self.agent.policy(states, goals)
-            return squashed_actions, raw_actions
+        # else: # learn
+        #     raw_actions, squashed_actions = self.agent.policy(states, goals)
+        #     return squashed_actions, raw_actions
 
     def step(self, training: bool = True):
         """
@@ -716,10 +721,10 @@ class OffPolicyTrainer(Trainer):
         with Live(console=console, refresh_per_second=8, transient=True) as live:
             while True:
                 if self.schedule.unit == 'timestep':
-                    if self._step >= self.schedule.num_units:
+                    if self._step >= self.schedule.units:
                         break
                 elif self.schedule.unit == 'episode':
-                    if self._completed_episodes.sum() >= self.schedule.num_units:
+                    if self._completed_episodes.sum() >= self.schedule.units:
                         break
                 else:
                     raise ValueError(f"Invalid unit: {self.schedule.unit}")

@@ -458,16 +458,16 @@ class VectorNStepReward(VectorWrapper):
         self.current_states = None
 
         # Padding tensors (unchanged)
-        device = get_device()
+        self.device = get_device()
         state_shape = (self.single_observation_space[self.obs_key].shape
                        if self.obs_key is not None
                        else self.single_observation_space.shape)
-        self._pad_state = T.zeros(state_shape, dtype=T.float32, device=device)
-        self._pad_action = T.zeros(self.single_action_space.shape, dtype=T.float32, device=device)
-        self._pad_reward = T.tensor(0.0, dtype=T.float32, device=device)
-        self._pad_done = T.tensor(0.0, dtype=T.float32, device=device)
+        self._pad_state = T.zeros(state_shape, dtype=T.float32, device=self.device)
+        self._pad_action = T.zeros(self.single_action_space.shape, dtype=T.float32, device=self.device)
+        self._pad_reward = T.tensor(0.0, dtype=T.float32, device=self.device)
+        self._pad_done = T.tensor(0.0, dtype=T.float32, device=self.device)
         if self.goal_key:
-            self._pad_goal = T.zeros(self.single_observation_space[self.goal_key].shape, dtype=T.float32, device=device)
+            self._pad_goal = T.zeros(self.single_observation_space[self.goal_key].shape, dtype=T.float32, device=self.device)
 
     def reset(self, **kwargs):
         states, infos = self.env.reset(**kwargs)
@@ -490,13 +490,11 @@ class VectorNStepReward(VectorWrapper):
     def step(self, actions: T.Tensor):
         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
         # dones = terminations | truncations
-
-        device = get_device()
-        rewards = T.as_tensor(rewards, device=device)
+        rewards = T.as_tensor(rewards, device=self.device)
         # dones = T.as_tensor(dones, device=device)
-        actions = T.as_tensor(actions, device=device)
-        terminations = T.as_tensor(terminations, device=device)
-        truncations = T.as_tensor(truncations, device=device)
+        actions = T.as_tensor(actions, device=self.device)
+        terminations = T.as_tensor(terminations, device=self.device)
+        truncations = T.as_tensor(truncations, device=self.device)
 
         dones = T.logical_or(terminations, truncations)
 
@@ -537,8 +535,8 @@ class VectorNStepReward(VectorWrapper):
                      else self.current_states[i])
 
             # ensure tensors (unchanged)
-            state = T.as_tensor(state, device=device)
-            next_state = T.as_tensor(next_state, device=device)
+            state = T.as_tensor(state, device=self.device)
+            next_state = T.as_tensor(next_state, device=self.device)
 
             # Append current step
             self.n_states[i].append(state)
@@ -575,14 +573,12 @@ class VectorNStepReward(VectorWrapper):
 
     def build_trajectories(self):
         """Construct batched n-step trajectory dict from per-env deques."""
-        device = get_device()
-
         states = self.format_trajectory(self.n_states, pad_mode="repeat")
         next_states = self.format_trajectory(self.n_next_states, pad_mode="repeat")
         actions = self.format_trajectory(self.n_actions, pad_mode="repeat")
-        rewards = self.format_trajectory(self.n_rewards, pad_mode=T.tensor(0.0, dtype=T.float32, device=device))
-        terminations = self.format_trajectory(self.n_terminations, pad_mode=T.tensor(0.0, dtype=T.float32, device=device))
-        truncations = self.format_trajectory(self.n_truncations, pad_mode=T.tensor(0.0, dtype=T.float32, device=device))
+        rewards = self.format_trajectory(self.n_rewards, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
+        terminations = self.format_trajectory(self.n_terminations, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
+        truncations = self.format_trajectory(self.n_truncations, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
         if self.goal_key:
             desired_goals = self.format_trajectory(self.n_desired_goals, pad_mode="repeat")
             state_achieved_goals = self.format_trajectory(self.n_state_achieved_goals, pad_mode="repeat")
@@ -592,7 +588,7 @@ class VectorNStepReward(VectorWrapper):
         lengths = []
         for d in self.n_terminations:
             lengths.append(len(d))
-        lengths = T.tensor(lengths, device=device)
+        lengths = T.tensor(lengths, device=self.device)
 
         trajectory = {
             'states': states,
@@ -628,7 +624,7 @@ class VectorNStepReward(VectorWrapper):
                 padding = pad_mode
             while len(seq) < self.n:
                 seq.append(padding)
-            trajs.append(T.stack(seq, dim=0))
+            trajs.append(T.stack(to_torch(seq, device=self.device), dim=0))
         return T.stack(trajs, dim=0)
 
     @property
@@ -1144,16 +1140,49 @@ class GymnasiumWrapper(EnvWrapper):
         states, rewards, terminations, truncations, infos = self.env.step(action)
 
         # Set initial value of transition states to states
-        transition_states = states.clone()
-        # If env terminated/truncated, get terminal state and set as transition
+        transition_states = states.clone() if isinstance(states, T.Tensor) else states.copy()
+         # If env terminated/truncated, get terminal state and set as transition
         if "final_obs" in infos:
             if self.num_envs > 1:
                 mask = infos.get("_final_obs").cpu()
-                term_states = np.stack(infos["final_obs"][mask])
-                transition_states[mask] = T.as_tensor(term_states, dtype=states.dtype, device=states.device)
+                final_obs = infos.get("final_obs", [])
+                
+                if isinstance(transition_states, dict):
+                    # Build list of only the terminal dicts corresponding to the mask
+                    term_dicts = [final_obs[i] for i, m in enumerate(mask) if m]
+                    
+                    for key in transition_states.keys():
+                        term_values = np.stack([d[key] for d in term_dicts])
+                        term_tensor = T.as_tensor(
+                            term_values, 
+                            dtype=transition_states[key].dtype, 
+                            device=transition_states[key].device
+                        )
+                        transition_states[key][mask] = term_tensor
+                else:
+                    term_states = np.stack([final_obs[i] for i, m in enumerate(mask) if m])
+                    transition_states[mask] = T.as_tensor(
+                        term_states, 
+                        dtype=states.dtype, 
+                        device=states.device
+                    )
             else:
-                term_states = infos["final_obs"][0]
-                transition_states = T.as_tensor(term_states, dtype=states.dtype, device=states.device)
+                # Single env case
+                term_state = infos["final_obs"][0]
+                if isinstance(transition_states, T.Tensor):
+                    transition_states = T.as_tensor(
+                        term_state, 
+                        dtype=states.dtype, 
+                        device=states.device
+                    )
+                else:
+                    for key in transition_states.keys():
+                        term_value = term_state[key] if isinstance(term_state, dict) else term_state[0][key]
+                        transition_states[key] = T.as_tensor(
+                            term_value, 
+                            dtype=transition_states[key].dtype, 
+                            device=transition_states[key].device
+                        )
 
         # Separate observations, goals, and achieved goals 
         obs, goals, ach_goals = self.extract_states_goals(states)
