@@ -10,7 +10,7 @@ import yaml
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.buffer import Buffer
-from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
 from app.trainer import OnPolicySchedule, OnPolicyTrainer
@@ -45,6 +45,8 @@ def create_env(config: dict) -> EnvWrapper:
         return IsaacSimWrapper(**env_config)
     if env_type == "gymnasium":
         return GymnasiumWrapper(**env_config)
+    if env_type == "envpool":
+        return EnvPoolWrapper(**env_config)
     raise ValueError(f"Invalid environment type: {env_type}")
 
 

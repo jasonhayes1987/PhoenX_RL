@@ -159,12 +159,12 @@ class Trainer:
                     observation = self.env.sample_observation()
                     if self.agent.state_normalizer:
                         self.agent.state_normalizer.train()
-                        self.agent.state_normalizer.add(observation.current_states.to(device=self.agent.state_normalizer.device))
+                        self.agent.state_normalizer.add(observation.states.to(device=self.agent.state_normalizer.device))
                         self.agent.state_normalizer.update()
                     if self.agent.goal_normalizer:
                         self.agent.goal_normalizer.train()
                         # Concatenate current goals and achieved goals into 1 tensor
-                        goals = T.cat([observation.current_goals, observation.current_ach_goals], dim=0).to(device=self.agent.goal_normalizer.device)
+                        goals = T.cat([observation.goals, observation.ach_goals], dim=0).to(device=self.agent.goal_normalizer.device)
                         self.agent.goal_normalizer.add(goals)
                         self.agent.goal_normalizer.update()
                     if self.agent.advantage_normalizer:
@@ -240,9 +240,9 @@ class Trainer:
     def add_to_normalizers(self):
         """Adds to the normalizers."""
         if self.agent.state_normalizer:
-            self.agent.state_normalizer.add(self._cur_obs.transition_states.to(device=self.agent.state_normalizer.device))
+            self.agent.state_normalizer.add(self._cur_obs.states.to(device=self.agent.state_normalizer.device))
         if self.agent.goal_normalizer:
-            self.agent.goal_normalizer.add(T.cat([self._cur_obs.transition_goals, self._cur_obs.transition_ach_goals], dim=0).to(device=self.agent.goal_normalizer.device))
+            self.agent.goal_normalizer.add(T.cat([self._cur_obs.goals, self._cur_obs.ach_goals], dim=0).to(device=self.agent.goal_normalizer.device))
         if self.agent.reward_normalizer:
             self.agent.reward_normalizer.add(self._cur_obs.rewards, T.logical_or(self._cur_obs.terminations, self._cur_obs.truncations))
 
@@ -400,22 +400,22 @@ class OnPolicyTrainer(Trainer):
         episode_logs = []
 
         # Normalize observations and goals if normalizers
-        obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._cur_obs.current_states, self._cur_obs.current_goals, self._cur_obs.current_ach_goals)
+        obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._cur_obs.states, self._cur_obs.goals, self._cur_obs.ach_goals)
         actions = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
         observation = self.env.step(actions)
        
         
         # Add normalized transitions to the buffer
         self.buffer.add(
-            states=self._cur_obs.current_states,
+            states=self._cur_obs.states,
             actions=actions,
             rewards=observation.rewards,
-            next_states=observation.transition_states,
+            next_states=observation.states,
             terminations=observation.terminations,
             truncations=observation.truncations,
-            state_achieved_goals=self._cur_obs.current_ach_goals,
-            next_state_achieved_goals=observation.transition_ach_goals,
-            desired_goals=self._cur_obs.current_goals,
+            state_achieved_goals=self._cur_obs.ach_goals,
+            next_state_achieved_goals=observation.ach_goals,
+            desired_goals=self._cur_obs.goals,
         )
 
         # Increment episode steps and rewards

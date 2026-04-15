@@ -56,6 +56,7 @@ expecttest = "^0.3.0"
 optree = ">=0.9.1"
 wandb = "^0.16.4"
 gymnasium = {extras = ["mujoco", "atari", "box2d", "classic-control", "toy-text", "other"], version = "==1.2.0"}
+envpool = ">=1.0.1"
 
 [tool.poetry.group.dev.dependencies]  # Development dependencies (testing, linting)
 pytest = "^7.4.0"

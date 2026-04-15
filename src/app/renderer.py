@@ -9,7 +9,7 @@ from moviepy.editor import ImageSequenceClip
 
 
 from .rl_agents import OnPolicyAgent
-from .env_wrapper import EnvWrapper, IsaacSimWrapper, GymnasiumWrapper
+from .env_wrapper import EnvWrapper, IsaacSimWrapper, GymnasiumWrapper, EnvPoolWrapper
 from .rl_callbacks import WandbCallback
 from .logging_config import get_logger
 
@@ -63,7 +63,7 @@ class Renderer:
         while not done:
             local_step += 1
             # obs, goals, _ = trainer.extract_states_goals(states)
-            obs, goals, _ = trainer.normalize_inputs(observation.current_states, observation.current_goals, observation.current_ach_goals)
+            obs, goals, _ = trainer.normalize_inputs(observation.states, observation.goals, observation.ach_goals)
 
             actions = trainer.get_action(obs, goals, context="test")
             # actions = env.format_actions(actions)
