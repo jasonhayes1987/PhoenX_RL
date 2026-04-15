@@ -28,7 +28,7 @@ agent:
     _diag_freq: 10
 
 env:
-  type: gymnasium
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
     cfg: Humanoid-v5
     num_envs: 64
