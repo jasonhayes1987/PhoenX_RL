@@ -9,8 +9,8 @@ log_level: INFO
 agent:
   type: PPO
   config:
-    discount: 0.999
-    gae_coefficient: 0.98
+    discount: 0.99
+    gae_coefficient: 0.95
     entropy_coefficient: &entropy_coefficient 0.02
     auto_entropy_tuning: false
     entropy_lr: 1.0e-2
@@ -22,15 +22,15 @@ agent:
     value_coef: 0.5
     reward_clip: .inf
     bootstrap_truncations: true
-    log_level: DEBUG
+    log_level: INFO
     _diag_freq: 10
 
 env:
-  type: gymnasium # "isaacsim" or "gymnasium"
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: LunarLanderContinuous-v3
-    num_envs: 16
+    num_envs: 64
     # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
     wrappers: []
     render_mode: null
@@ -43,14 +43,14 @@ models:
   policy:
     layer_config:
       - type: dense
-        params: {units: 128, kernel: default, kernel_params: {}}
-      - type: relu
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+      - type: tanh
       - type: dense
-        params: {units: 64, kernel: default, kernel_params: {}}
-      - type: relu
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+      - type: tanh
     output_config:
       - type: dense
-        params: {kernel: default, kernel_params: {}}
+        params: {kernel: orthogonal, kernel_params: {gain: 0.01}}
     optimizer_params: {type: Adam, params: {lr: &policy_lr 3.0e-4}}
     distribution: normal
     # temperature: &temperature 1.0
@@ -59,7 +59,7 @@ models:
   value:
     layer_config:
       - type: dense
-        params: {units: 128, kernel: default, kernel_params: {}}
+        params: {units: 64, kernel: default, kernel_params: {}}
       - type: relu
       - type: dense
         params: {units: 64, kernel: default, kernel_params: {}}
@@ -76,7 +76,7 @@ normalizers:
     config:
       clip_value: 10.0
       device: *device
-      log_level: DEBUG
+      log_level: INFO
       # kwargs
       _diag_freq: 10240
   state:
@@ -85,7 +85,7 @@ normalizers:
       clip_value: 10.0
       warmup_steps: 1000
       device: *device
-      log_level: DEBUG
+      log_level: INFO
       # kwargs
       _diag_freq: 10240
   reward:
@@ -94,7 +94,7 @@ normalizers:
       gamma: 0.99
       clip_value: 10.0
       device: *device
-      log_level: DEBUG
+      log_level: INFO
       # kwargs
       _diag_freq: 10240
 
@@ -139,18 +139,18 @@ kl_adapter:
 buffer:
   type: RolloutBuffer
   config:
-    buffer_size: 1024
+    buffer_size: 128
     device: *device
 
 schedule:
   type: OnPolicySchedule
   config:
     unit: timestep
-    num_units: 2000000
+    units: 2000000
     learn_unit: timestep
-    num_learn_units: 16384 # 1024 * 16
-    batch_size: 64
-    learning_epochs: 4
+    learn_units: 8192  # 128 * 64 envs
+    batch_size: 256
+    learning_epochs: 5
     seed: *seed
 
 renderer:

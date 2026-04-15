@@ -105,6 +105,9 @@ print("Installing IsaacLab...")
 os.environ['OMNI_KIT_ACCEPT_EULA'] = 'yes'
 subprocess.run([sys.executable, '-m', 'pip', 'install', 'isaaclab[isaacsim]==2.3.0', '--extra-index-url', 'https://pypi.nvidia.com'], check=True)
 
+print("Installing EnvPool...")
+subprocess.run([sys.executable, '-m', 'pip', 'install', 'envpool>=1.0.1'], check=True)
+
 print("Installing Gymnasium Robotics...")
 subprocess.run([sys.executable, '-m', 'pip', 'install', 'git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0'], check=True)
 
