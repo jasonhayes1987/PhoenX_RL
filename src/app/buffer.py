@@ -218,7 +218,6 @@ class ReplayBuffer(Buffer):
         self,
         env: EnvWrapper,
         buffer_size: int = 100000,
-        # goal_shape: Optional[Tuple[int]] = None,
         N: int = 1,
         device: str | T.device | None = None,
     ):

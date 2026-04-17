@@ -13,7 +13,7 @@ agent:
   config:
     discount: 0.99
     gae_coefficient: 0.95
-    entropy_coefficient: &entropy_coefficient 0.01
+    entropy_coefficient: &entropy_coefficient 0.005
     auto_entropy_tuning: false
     entropy_lr: 1.0e-4
     kl_coefficient: 0.0
@@ -25,13 +25,12 @@ agent:
     reward_clip: 10.0
     bootstrap_truncations: true
     log_level: INFO
-    _diag_freq: 50
-
+    _diag_freq: 10
 env:
-  type: gymnasium
+  type: envpool
   config:
     cfg: FetchPickAndPlaceDense-v4
-    num_envs: 32
+    num_envs: 64
     wrappers: []
     render_mode: null
     seed: *seed
@@ -43,14 +42,14 @@ models:
   policy:
     layer_config:
       - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+      - type: tanh
       - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+      - type: tanh
     output_config:
       - type: dense
-        params: {kernel: default, kernel_params: {}}
+        params: {kernel: orthogonal, kernel_params: {gain: 0.01}}
     optimizer_params: {type: Adam, params: {lr: &policy_lr 3.0e-4}}
     distribution: normal
     device: *device
@@ -58,10 +57,10 @@ models:
   value:
     layer_config:
       - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
+        params: {units: 64, kernel: default, kernel_params: {}}
       - type: relu
       - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
+        params: {units: 64, kernel: default, kernel_params: {}}
       - type: relu
     output_config:
       - type: dense
@@ -92,16 +91,16 @@ normalizers:
       _diag_freq: 10240
 
 policy_lr_schedule:
-  schedule_type: "linear"
-  steps: 5000000
+  schedule_type: cosine
+  steps: 50000000
   start_value: *policy_lr
-  end_value: 1.0e-5
+  end_value: 1.0e-4
 
-entropy_schedule:
-  schedule_type: "cosine"
-  steps: 5000000
-  start_value: *entropy_coefficient
-  end_value: 0.001
+# entropy_schedule:
+#   schedule_type: "cosine"
+#   steps: 5000000
+#   start_value: *entropy_coefficient
+#   end_value: 0.001
 
 kl_adapter:
   initial_beta: 0.5
@@ -114,18 +113,18 @@ kl_adapter:
 buffer:
   type: RolloutBuffer
   config:
-    buffer_size: 256
+    buffer_size: 128
     device: *device
 
 schedule:
   type: OnPolicySchedule
   config:
     unit: timestep
-    units: 5000000
+    units: 50000000
     learn_unit: timestep
-    learn_units: 8192  # 256 * 32 envs
-    batch_size: 8192
-    learning_epochs: 10
+    learn_units: 8192  # 128 * 64 envs
+    batch_size: 256
+    learning_epochs: 5
     seed: *seed
 
 renderer:

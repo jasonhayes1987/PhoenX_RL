@@ -1,33 +1,32 @@
-n: &n 3 # n-step reward
-obs_key: &obs_key null
-goal_key: &goal_key null
-achieved_goal_key: &achieved_goal_key null
 device: &device "cuda"
 seed: &seed 42
-save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_2/DDPG/"
-log_level: "info"
+save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/DDPG/
+log_level: INFO
 
 agent:
-  discount: 0.99
-  tau: 0.005
-  action_epsilon: 0.2
-  batch_size: 128
-  noise_clip: 0.5
-  grad_clip: 40.0
-  warmup: 1000
-  N: *n
+  type: DDPG
+  config:
+    discount: 0.99
+    tau: 0.005
+    action_epsilon: 0.2
+    noise_clip: 0.5
+    policy_grad_clip: 40.0
+    value_grad_clip: 40.0
+    warmup: 1000
+    N: &n 3
 
 env:
-  type: "gymnasium" # "isaacsim" or "gymnasium"
+  type: "envpool" # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: "LunarLanderContinuous-v3"
-    num_envs: 4
-    wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *achieved_goal_key}}]
+    num_envs: 8
+    obs_key: &obs_key null
+    goal_key: &goal_key null
+    ach_goal_key: &ach_goal_key null
+    wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *ach_goal_key}}]
     render_mode: null
     seed: *seed
-    obs_key: *obs_key
-    goal_key: *goal_key
 
 models:
   policy:
@@ -41,8 +40,7 @@ models:
     output_config:
       - type: dense
         params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-    optimizer_params: {type: Adam, params: {lr: 0.0001}}
-    obs_key: *obs_key
+    optimizer_params: {type: Adam, params: {lr: &policy_lr 0.0001}}
     device: *device
 
   critic:
@@ -57,15 +55,36 @@ models:
     output_config:
       - type: dense
         params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-    optimizer_params: {type: Adam, params: {lr: 0.001}}
-    obs_key: *obs_key
+    optimizer_params: {type: Adam, params: {lr: &critic_lr 0.001}}
     device: *device
+
+policy_lr_schedule:
+  schedule_type: "cosine"
+  steps: 100000
+  start_value: *policy_lr
+  end_value: 1.0e-4
+
+value_lr_schedule:
+  schedule_type: "cosine"
+  steps: 100000
+  start_value: *critic_lr
+  end_value: 1.0e-4
 
 normalizers:
   state:
-    momentum: 0.99
-    update_freq: 200
-    clip_range: 5.0
+    type: RunningNorm
+    config:
+      clip_value: 10.0
+      warmup_steps: 5000
+      device: *device
+      _diag_freq: 10240
+  reward:
+    type: RewardNorm
+    config:
+      gamma: 0.99
+      clip_value: 10.0
+      device: *device
+      _diag_freq: 10240
 
 # replay_buffer:
 #   type: PrioritizedReplayBuffer
@@ -83,18 +102,23 @@ normalizers:
 #     N: *n
 #     device: *device
 
-replay_buffer:
+buffer:
   type: ReplayBuffer
   config:
     buffer_size: 1000000
     N: *n
-    obs_key: *obs_key
-    goal_key: *goal_key
     device: *device
 
 noise:
   type: NormalNoise
-  params: {stddev: 0.1}
+  config:
+    stddev: &noise_stddev 1.0
+
+noise_schedule:
+  schedule_type: linear
+  steps: 100000
+  start_value: *noise_stddev
+  end_value: 0.1
 
 # curiosity:
 #   model_configs: {
@@ -133,19 +157,21 @@ noise:
   # extrinsic_threshold: 0
   # device: *device
 
+schedule:
+  type: OffPolicySchedule
+  config:
+    unit: timestep
+    units: 100000
+    cycles: 10
+    episodes: 10
+    updates: 10
+    batch_size: 256
+    seed: *seed
+
+renderer:
+  render_freq: 5000 # episodes
+  save_dir: *save_dir
+
 callbacks:
   - type: "WandbCallback"
     config: {project_name: "LunarLanderContinuous-v3"}
-
-train_config:
-  load_weights: false
-  num_episodes: 1000
-  steps_per_learn: 1
-  render_freq: 100
-  seed: *seed
-
-test_config:
-  load_weights: true
-  num_episodes: 20
-  render_freq: 1
-  seed: 42

@@ -136,7 +136,7 @@ class Trainer:
                 self.agent.state_normalizer.train()
             if self.agent.goal_normalizer:
                 self.agent.goal_normalizer.train()
-            if self.agent.advantage_normalizer:
+            if hasattr(self.agent, 'advantage_normalizer') and self.agent.advantage_normalizer:
                 self.agent.advantage_normalizer.train()
         
         elif context == "test":
@@ -144,7 +144,7 @@ class Trainer:
                 self.agent.state_normalizer.eval()
             if self.agent.goal_normalizer:
                 self.agent.goal_normalizer.eval()
-            if self.agent.advantage_normalizer:
+            if hasattr(self.agent, 'advantage_normalizer') and self.agent.advantage_normalizer:
                 self.agent.advantage_normalizer.eval()
 
         # Set internal attributes
@@ -158,27 +158,27 @@ class Trainer:
                 for _ in range(self.agent.state_normalizer.warmup_steps):
                     observation = self.env.sample_observation()
                     if self.agent.state_normalizer:
-                        self.agent.state_normalizer.train()
+                        # self.agent.state_normalizer.train()
                         self.agent.state_normalizer.add(observation.states.to(device=self.agent.state_normalizer.device))
                         self.agent.state_normalizer.update()
                     if self.agent.goal_normalizer:
-                        self.agent.goal_normalizer.train()
+                        # self.agent.goal_normalizer.train()
                         # Concatenate current goals and achieved goals into 1 tensor
                         goals = T.cat([observation.goals, observation.ach_goals], dim=0).to(device=self.agent.goal_normalizer.device)
                         self.agent.goal_normalizer.add(goals)
                         self.agent.goal_normalizer.update()
-                    if self.agent.advantage_normalizer:
-                        if context == "train":
-                            self.agent.advantage_normalizer.train()
+                    # if hasattr(self.agent, 'advantage_normalizer') and self.agent.advantage_normalizer:
+                    #     if context == "train":
+                    #         self.agent.advantage_normalizer.train()
                     # Reset environments
                 observation = self.env.reset()
-            else:
-                if self.agent.state_normalizer:
-                    self.agent.state_normalizer.eval()
-                if self.agent.goal_normalizer:
-                    self.agent.goal_normalizer.eval()
-                if self.agent.advantage_normalizer:
-                    self.agent.advantage_normalizer.eval()
+            # else:
+            #     if self.agent.state_normalizer:
+            #         self.agent.state_normalizer.eval()
+            #     if self.agent.goal_normalizer:
+            #         self.agent.goal_normalizer.eval()
+                # if hasattr(self.agent, 'advantage_normalizer') and self.agent.advantage_normalizer:
+                #     self.agent.advantage_normalizer.eval()
 
         # Set callbacks
         if self.callbacks:
@@ -254,7 +254,7 @@ class Trainer:
             self.agent.goal_normalizer.update()
         if self.agent.reward_normalizer:
             self.agent.reward_normalizer.update()
-        if self.agent.advantage_normalizer:
+        if hasattr(self.agent, 'advantage_normalizer') and self.agent.advantage_normalizer:
             self.agent.advantage_normalizer.update()
 
     def normalize_inputs(
@@ -285,14 +285,27 @@ class Trainer:
 
     def update_schedulers(self):
         """Updates the schedulers."""
-        if self.agent.entropy_schedule:
+        if hasattr(self.agent, 'entropy_schedule') and self.agent.entropy_schedule:
             self.agent.entropy_schedule.step(self.env.num_envs)
-        if getattr(self.agent.policy, 'temperature_schedule', None):
+        if hasattr(self.agent.policy, 'temperature_schedule') and self.agent.policy.temperature_schedule:
             self.agent.policy.temperature_schedule.step(self.env.num_envs)
-        if getattr(self.agent.value, 'lr_scheduler', None):
+        if hasattr(self.agent.policy, 'lr_scheduler') and self.agent.policy.lr_scheduler:
+            self.agent.policy.lr_scheduler.step(self.env.num_envs) 
+        if hasattr(self.agent, 'value') and self.agent.value and hasattr(self.agent.value, 'lr_scheduler') and self.agent.value.lr_scheduler:
             self.agent.value.lr_scheduler.step(self.env.num_envs)
-        if getattr(self.agent.policy, 'lr_scheduler', None):
-            self.agent.policy.lr_scheduler.step(self.env.num_envs)
+        if hasattr(self.agent, 'critic') and self.agent.critic and hasattr(self.agent.critic, 'lr_scheduler') and self.agent.critic.lr_scheduler:
+            self.agent.critic.lr_scheduler.step(self.env.num_envs)
+        if hasattr(self.agent, 'critic_b') and self.agent.critic_b and hasattr(self.agent.critic_b, 'lr_scheduler') and self.agent.critic_b.lr_scheduler:
+            self.agent.critic_b.lr_scheduler.step(self.env.num_envs)
+
+    def training_complete(self)->bool:
+        """Checks if the training is complete."""
+        if self.schedule.unit == 'timestep':
+            return self._step >= self.schedule.units
+        elif self.schedule.unit == 'episode':
+            return self._completed_episodes.sum() >= self.schedule.units
+        else:
+            raise ValueError(f"Invalid unit: {self.schedule.unit}")
 
     @abstractmethod
     def get_action(self, states:np.ndarray|T.Tensor, goals:np.ndarray|T.Tensor|None, context: str = 'train')->T.Tensor:
@@ -469,14 +482,16 @@ class OnPolicyTrainer(Trainer):
 
         with Live(console=console, refresh_per_second=8, transient=True) as live:
             while True:
-                if self.schedule.unit == 'timestep':
-                    if self._step >= self.schedule.units:
-                        break
-                elif self.schedule.unit == 'episode':
-                    if self._completed_episodes.sum() >= self.schedule.units:
-                        break
-                else:
-                    raise ValueError(f"Invalid unit: {self.schedule.unit}")
+                if self.training_complete():
+                    break
+                # if self.schedule.unit == 'timestep':
+                #     if self._step >= self.schedule.units:
+                #         break
+                # elif self.schedule.unit == 'episode':
+                #     if self._completed_episodes.sum() >= self.schedule.units:
+                #         break
+                # else:
+                #     raise ValueError(f"Invalid unit: {self.schedule.unit}")
 
                 step_result =self.step(training=True)
                 self._step += self.env.num_envs
@@ -522,7 +537,6 @@ class OnPolicyTrainer(Trainer):
                 live.update(table)
 
                 for episode_log in step_result['episode_logs']:
-                    # self.logger.info(f"Training Episode {episode_log['episode']}: Reward {episode_log['episode_reward']}, Avg Reward {episode_log['avg_reward']}")
                     # Reset episode score and step count to 0
                     self._episode_scores[episode_log['env']] = 0
                     self._episode_steps[episode_log['env']] = 0
@@ -575,7 +589,8 @@ class OffPolicyTrainer(Trainer):
         Returns:
             dict: A dictionary containing the learn metrics.
         """
-        learn_metrics = self.agent.learn(self._step, self.buffer.sample())
+        sample = self.buffer.sample(self.schedule.batch_size)
+        learn_metrics = self.agent.learn(self._step, sample)
         return learn_metrics
 
     def get_action(self,
@@ -648,9 +663,9 @@ class OffPolicyTrainer(Trainer):
         episode_logs = []
 
         # Normalize observations and goals if normalizers
-        obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._cur_obs.current_states, self._cur_obs.current_goals, self._cur_obs.current_ach_goals)
+        obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._cur_obs.states, self._cur_obs.goals, self._cur_obs.ach_goals)
 
-        actions = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
+        actions, _ = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
         observation = self.env.step(actions)
 
         if observation.n_step_trajectory is not None:
@@ -659,15 +674,15 @@ class OffPolicyTrainer(Trainer):
         else:
             # Add single transitions to the buffer
             self.buffer.add(
-                states=self._cur_obs.current_states,
+                states=self._cur_obs.states,
                 actions=actions,
                 rewards=observation.rewards,
-                next_states=observation.transition_states,
+                next_states=observation.states,
                 terminations=observation.terminations,
                 truncations=observation.truncations,
-                state_achieved_goals=self._cur_obs.current_ach_goals,
-                next_state_achieved_goals=observation.transition_ach_goals,
-                desired_goals=self._cur_obs.current_goals,
+                state_achieved_goals=self._cur_obs.ach_goals,
+                next_state_achieved_goals=observation.ach_goals,
+                desired_goals=self._cur_obs.goals,
             )
 
         # Increment episode step and rewards
@@ -712,7 +727,6 @@ class OffPolicyTrainer(Trainer):
         """Trains On-Policy Agent following the Schedule."""
         self.initialize_run(context="train")
         # Set internal learn counter for timestep based learning
-        self._learn_counter = 0
 
         # Initialize Rich Console
         console = Console()
@@ -720,72 +734,75 @@ class OffPolicyTrainer(Trainer):
 
         with Live(console=console, refresh_per_second=8, transient=True) as live:
             while True:
-                if self.schedule.unit == 'timestep':
-                    if self._step >= self.schedule.units:
+                if self.training_complete():
+                    break
+                for cycle in range(self.schedule.cycles):
+                    if self.training_complete():
                         break
-                elif self.schedule.unit == 'episode':
-                    if self._completed_episodes.sum() >= self.schedule.units:
-                        break
-                else:
-                    raise ValueError(f"Invalid unit: {self.schedule.unit}")
+                    completed_before_cycle = self._completed_episodes.sum()
+                    
+                    while self._completed_episodes.sum() < completed_before_cycle + self.schedule.episodes:
+                        if self.training_complete():
+                            break
+                        step_result =self.step(training=True)
+                        self._step += self.env.num_envs
+                        self.add_to_normalizers()
+                        self.update_schedulers()
 
-                step_result =self.step(training=True)
-                self._step += self.env.num_envs
-                self.add_to_normalizers()
-                self.update_schedulers()
-
-                if self.should_learn():
-                    learn_metrics = self.learn()
+                    for _ in range(self.schedule.updates):
+                        learn_metrics = self.learn()
                     step_result['step_log'].update(learn_metrics)
+
+                    # Update target networks
+                    self.agent.soft_update_targets()
 
                     # Update normalizers
                     self.update_normalizers()
 
-                if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_train_step_end(self._step, step_result['step_log'])
-
-                # Calculate metrics for dashboard
-                elapsed = time.time() - start_time
-                completed_episodes = self._completed_episodes.sum().item()
-                episodes_per_sec = completed_episodes / elapsed if elapsed > 0 else 0.0
-                avg_reward = sum(self._score_history) / len(self._score_history) if self._score_history else 0.0
-
-                # Build table and update
-                table = Table(
-                    title="Live Training Dashboard",
-                    expand=True,
-                    highlight=True,
-                    border_style="bold blue"
-                )
-                table.add_column("Steps", justify="right", style="cyan")
-                table.add_column("Episodes", justify="right", style="green")
-                table.add_column("Avg Reward", justify="right", style="magenta")
-                table.add_column("Episodes/sec", justify="right", style="yellow")
-                table.add_column("Elapsed", justify="right", style="dim")
-                table.add_row(
-                    f"{self._step:,}",
-                    f"{completed_episodes:,}",
-                    f"{avg_reward:.2f}",
-                    f"{episodes_per_sec:.2f}",
-                    str(timedelta(seconds=int(elapsed)))
-                )
-                live.update(table)
-
-                for episode_log in step_result['episode_logs']:
-                    # self.logger.info(f"Training Episode {episode_log['episode']}: Reward {episode_log['episode_reward']}, Avg Reward {episode_log['avg_reward']}")
-                    # Reset episode score and step count to 0
-                    self._episode_scores[episode_log['env']] = 0
-                    self._episode_steps[episode_log['env']] = 0
-                    if self.renderer and self.renderer.should_render(episode_log['episode']):
-                        # Set normalizers to eval mode
-                        self.set_normalizers(context="test")
-                        self.renderer.render_episode(self, episode_log['episode'], self._step, context='train', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
-                        # Set normalizers to train mode
-                        self.set_normalizers(context="train")
                     if self.callbacks:
                         for callback in self.callbacks:
-                            callback.on_train_epoch_end(self._step, episode_log)
+                            callback.on_train_step_end(self._step, step_result['step_log'])
+
+                    # Calculate metrics for dashboard
+                    elapsed = time.time() - start_time
+                    completed_episodes = self._completed_episodes.sum().item()
+                    episodes_per_sec = completed_episodes / elapsed if elapsed > 0 else 0.0
+                    avg_reward = sum(self._score_history) / len(self._score_history) if self._score_history else 0.0
+
+                    # Build table and update
+                    table = Table(
+                        title="Live Training Dashboard",
+                        expand=True,
+                        highlight=True,
+                        border_style="bold blue"
+                    )
+                    table.add_column("Steps", justify="right", style="cyan")
+                    table.add_column("Episodes", justify="right", style="green")
+                    table.add_column("Avg Reward", justify="right", style="magenta")
+                    table.add_column("Episodes/sec", justify="right", style="yellow")
+                    table.add_column("Elapsed", justify="right", style="dim")
+                    table.add_row(
+                        f"{self._step:,}",
+                        f"{completed_episodes:,}",
+                        f"{avg_reward:.2f}",
+                        f"{episodes_per_sec:.2f}",
+                        str(timedelta(seconds=int(elapsed)))
+                    )
+                    live.update(table)
+
+                    for episode_log in step_result['episode_logs']:
+                        # Reset episode score and step count to 0
+                        self._episode_scores[episode_log['env']] = 0
+                        self._episode_steps[episode_log['env']] = 0
+                        if self.renderer and self.renderer.should_render(episode_log['episode']):
+                            # Set normalizers to eval mode
+                            self.set_normalizers(context="test")
+                            self.renderer.render_episode(self, episode_log['episode'], self._step, context='train', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
+                            # Set normalizers to train mode
+                            self.set_normalizers(context="train")
+                        if self.callbacks:
+                            for callback in self.callbacks:
+                                callback.on_train_epoch_end(self._step, episode_log)
 
         if self.callbacks:
             for episode_log in step_result['episode_logs']:

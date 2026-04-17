@@ -35,9 +35,7 @@ class Model(nn.Module):
         layer_config (list): List of dictionaries specifying the layers and their parameters.
         output_config (dict): Configuration for output layer initialization.
         optimizer_params (dict): Dictionary specifying optimizer type and parameters.
-        scheduler_params (dict): Dictionary specifying scheduler type and parameters (optional).
-        # obs_key (str|None): Observation key (default: None).
-        # goal_key (str|None): Goal key (default: None).
+        lr_scheduler (ScheduleWrapper|None): Learning rate scheduler.
         device (str|None): The device ('cpu' or 'cuda') to run the model on (default: None = Cuda if available else CPU).
         log_level (str): Log level (default: 'info').
     """
@@ -61,8 +59,6 @@ class Model(nn.Module):
             output_config (dict): Configuration for output layer initialization.
             optimizer_params (dict): Optimizer configuration.
             lr_scheduler (ScheduleWrapper|None): LR scheduler configuration.
-            # obs_key (str|None): Observation key (default: None).
-            # goal_key (str|None): Goal key (default: None).
             device (str|None): Device to run on (default: None = Cuda if available else CPU).
             log_level (str): Log level (default: 'info').
         """
@@ -608,8 +604,6 @@ class StochasticContinuousPolicy(Model):
         optimizer_params (dict): Parameters for the optimizer.
         lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
         distribution (str): Type of distribution for actions (default: 'beta').
-        # obs_key (str|None): Observation key (default: None).
-        # goal_key (str | None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         # log_level (str): logger level. Default=info.
     """
@@ -805,8 +799,6 @@ class ValueModel(Model):
         output_config (dict): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        # obs_key (str|None): Observation key (default: None).
-        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
     """
 
@@ -817,8 +809,6 @@ class ValueModel(Model):
         output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
-        # obs_key: str|None = None,
-        # goal_key: str | None = None,
         device: str|T.device|None = None,
         # log_level: str = 'info'
     ):
@@ -831,8 +821,6 @@ class ValueModel(Model):
             output_config (dict): Configuration for output layer initialization (default: {}).
             optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
             lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
-            # obs_key (str|None): Observation key (default: None).
-            # goal_key (str|None): Goal key (default: None).
             device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
@@ -956,23 +944,20 @@ class ActorModel(Model):
         output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        # obs_key (str|None): Observation key (default: None).
-        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         # log_level (str): Log level (default: 'info').
     """
     
-    def __init__(self,
-                 env: EnvWrapper,
-                 layer_config: List[Dict],
-                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
-                 optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
-                 lr_scheduler: ScheduleWrapper|None = None,
-                #  obs_key: str|None = None,
-                #  goal_key: str | None = None,
-                 device: str|T.device|None = None,
-                 # log_level: str='info'
-                 ):
+    def __init__(
+        self,
+        env: EnvWrapper,
+        layer_config: List[Dict],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
+        lr_scheduler: ScheduleWrapper|None = None,
+        device: str|T.device|None = None,
+        # log_level: str='info'
+    ):
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
         # Set lower/upper bounds of environment attributes
@@ -1081,17 +1066,16 @@ class BaseCritic(Model):
     Base class for critic models.
     """
 
-    def __init__(self,
-                 env: EnvWrapper,
-                 layer_config: List[Dict],
-                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
-                 optimizer_params: dict = {'type':'Adam', 'params':{'lr':0.001}},
-                 lr_scheduler: ScheduleWrapper|None = None,
-                #  obs_key: str|None = None,
-                #  goal_key: str | None = None,
-                 device: str|T.device|None = None,
-                 # log_level: str='info'
-                 ):
+    def __init__(
+        self,
+        env: EnvWrapper,
+        layer_config: List[Dict],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        optimizer_params: dict = {'type':'Adam', 'params':{'lr':0.001}},
+        lr_scheduler: ScheduleWrapper|None = None,
+        device: str|T.device|None = None,
+        # log_level: str='info'
+        ):
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
     @abstractmethod
@@ -1122,24 +1106,20 @@ class ContinuousCritic(BaseCritic):
         output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        # obs_key (str|None): Observation key (default: None).
-        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         # log_level (str): Log level (default: 'info').
     """
-    def __init__(self,
-                 env: EnvWrapper,
-                 layer_config: List[Dict],
-                 merged_config: List[Dict],
-                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
-                #  goal_shape: tuple=None,
-                 optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
-                 lr_scheduler: ScheduleWrapper|None = None,
-                #  obs_key: str|None = None,
-                #  goal_key: str | None = None,
-                 device: str|T.device|None = None,
-                 # log_level: str='info'  
-                 ):
+    def __init__(
+        self,
+        env: EnvWrapper,
+        layer_config: List[Dict],
+        merged_config: List[Dict],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
+        lr_scheduler: ScheduleWrapper|None = None,
+        device: str|T.device|None = None,
+        # log_level: str='info'  
+    ):
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.merged_config = merged_config
         # self.output_config = output_layer_kernel
@@ -1271,23 +1251,19 @@ class DiscreteCritic(BaseCritic):
         output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
         optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
         lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        # obs_key (str|None): Observation key (default: None).
-        # goal_key (str|None): Goal key (default: None).
         device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         log_level (str): Log level (default: 'info').
     """
-    def __init__(self,
-                 env: EnvWrapper,
-                 layer_config: List[Dict],
-                 output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
-                #  goal_shape: tuple=None,
-                 optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
-                 lr_scheduler: ScheduleWrapper|None = None,
-                #  obs_key: str|None = None,
-                #  goal_key: str | None = None,
-                 device: str|T.device|None = None,
-                 # log_level: str='info'
-                 ):
+    def __init__(
+        self,
+        env: EnvWrapper,
+        layer_config: List[Dict],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
+        lr_scheduler: ScheduleWrapper|None = None,
+        device: str|T.device|None = None,
+        # log_level: str='info'
+    ):
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         # self.output_config = output_layer_kernel
 
