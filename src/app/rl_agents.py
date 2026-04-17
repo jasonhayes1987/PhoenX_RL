@@ -1577,7 +1577,11 @@ class DDPG(OffPolicyAgent):
     #     self.target_actor_model.load_state_dict(params['target_actor_model'])
     #     self.target_critic_model.load_state_dict(params['target_critic_model'])
 
-    def learn(self, sample: dict)->dict:
+    def soft_update_targets(self):
+        self.soft_update(self.policy, self.target_policy)
+        self.soft_update(self.critic, self.target_critic)
+
+    def learn(self, step: int, sample: dict)->dict:
         
         self._learn_count += 1
         if self._diag_freq is not None:
@@ -1599,12 +1603,12 @@ class DDPG(OffPolicyAgent):
             ach_goals,
             next_ach_goals,
             goals,
-        ) = samples.values()
+        ) = sample.values()
         
-        if 'weights' in samples:
-            weights = samples['weights']
-            probs = samples['probs']
-            indices = samples['indices']
+        if 'weights' in sample:
+            weights = sample['weights']
+            probs = sample['probs']
+            indices = sample['indices']
         else:
             weights = None
             probs = None
@@ -1783,9 +1787,9 @@ class DDPG(OffPolicyAgent):
         self.policy.optimizer.step()
 
         # Perform soft update on target networks
-        if not self._use_her:
-            self.soft_update(self.policy, self.target_policy)
-            self.soft_update(self.critic, self.target_critic)
+        # if not self._use_her:
+        #     self.soft_update(self.policy, self.target_policy)
+        #     self.soft_update(self.critic, self.target_critic)
 
         # Update priorities if using prioritized replay - only on update_freq steps
         if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
@@ -2268,6 +2272,11 @@ class TD3(OffPolicyAgent):
     #     else: # learn
     #         raw_actions, squashed_actions = self.policy(states, goals)
     #         return squashed_actions, raw_actions, dist
+
+    def soft_update_targets(self):
+        self.soft_update(self.policy, self.target_policy)
+        self.soft_update(self.critic, self.target_critic)
+        self.soft_update(self.critic_b, self.target_critic_b)
             
     def learn(self, sample: dict)->dict:
         self._learn_count += 1
@@ -2290,12 +2299,12 @@ class TD3(OffPolicyAgent):
             ach_goals,
             next_ach_goals,
             goals,
-        ) = samples.values()
+        ) = sample.values()
         
-        if 'weights' in samples:
-            weights = samples['weights']
-            probs = samples['probs']
-            indices = samples['indices']
+        if 'weights' in sample:
+            weights = sample['weights']
+            probs = sample['probs']
+            indices = sample['indices']
         else:
             weights = None
             probs = None
@@ -2958,30 +2967,30 @@ class SAC(Agent):
         except Exception as e:
             self.logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
 
-    def clone_model(self, model, copy_weights: bool = True, device: Optional[str | T.device] = None):
-        """Clones a model."""
-        if device:
-            device = get_device(device)
-        else:
-            device = self.device
+    # def clone_model(self, model, copy_weights: bool = True, device: Optional[str | T.device] = None):
+    #     """Clones a model."""
+    #     if device:
+    #         device = get_device(device)
+    #     else:
+    #         device = self.device
 
-        return model.clone(copy_weights, device)
+    #     return model.clone(copy_weights, device)
     
-    def _initialize_wandb(self, run_number:Optional[str]=None, run_name_prefix:Optional[str]=None, learn_iter:Optional[int]=None):
-        """Initialize WandbCallback if using WandbCallback"""
-        try:
-            if self._wandb:
-                for callback in self.callbacks:
-                    if isinstance(callback, WandbCallback):
-                        if not callback.initialized:
-                            models = (self.policy, self.critic, self.critic_b)
-                            config = self.get_config()
-                            # if learn_iter:
-                            #     self._learn_iter = learn_iter
-                            #     config['learn_interval'] = learn_iter
-                            callback.initialize_run(models, config, run_number=run_number, run_name_prefix=run_name_prefix)
-        except Exception as e:
-            self.logger.error(f"Error in _initialize_wandb: {e}", exc_info=True)
+    # def _initialize_wandb(self, run_number:Optional[str]=None, run_name_prefix:Optional[str]=None, learn_iter:Optional[int]=None):
+    #     """Initialize WandbCallback if using WandbCallback"""
+    #     try:
+    #         if self._wandb:
+    #             for callback in self.callbacks:
+    #                 if isinstance(callback, WandbCallback):
+    #                     if not callback.initialized:
+    #                         models = (self.policy, self.critic, self.critic_b)
+    #                         config = self.get_config()
+    #                         # if learn_iter:
+    #                         #     self._learn_iter = learn_iter
+    #                         #     config['learn_interval'] = learn_iter
+    #                         callback.initialize_run(models, config, run_number=run_number, run_name_prefix=run_name_prefix)
+    #     except Exception as e:
+    #         self.logger.error(f"Error in _initialize_wandb: {e}", exc_info=True)
 
     def _init_her(self):
             self._use_her = True
@@ -3028,72 +3037,76 @@ class SAC(Agent):
     #     self.value_model.load_state_dict(params['value_model'])
     #     self.target_value_model.load_state_dict(params['target_value_model'])
 
-    def get_action(self,
-                   states: np.ndarray|T.Tensor,
-                   goals: np.ndarray|T.Tensor|None=None,
-                   step: int|None=None,
-                   context: str = 'train'
-                   )->tuple[T.Tensor, T.Tensor, Distribution | None]:
-        """
-        Select an action based on the current policy.
+    # def get_action(self,
+    #                states: np.ndarray|T.Tensor,
+    #                goals: np.ndarray|T.Tensor|None=None,
+    #                step: int|None=None,
+    #                context: str = 'train'
+    #                )->tuple[T.Tensor, T.Tensor, Distribution | None]:
+    #     """
+    #     Select an action based on the current policy.
 
-        Args:
-            states: np.ndarray | T.Tensor: The current states.
-            goals: np.ndarray | T.Tensor | None: The current goals.
-            step: Optional[int]: The current step.
-            context: str: The context of the action (train, test, or learn).
+    #     Args:
+    #         states: np.ndarray | T.Tensor: The current states.
+    #         goals: np.ndarray | T.Tensor | None: The current goals.
+    #         step: Optional[int]: The current step.
+    #         context: str: The context of the action (train, test, or learn).
         
-        Returns:
-            tuple[np.ndarray | T.Tensor, T.Tensor, Distribution | None]: Selected actions, log probabilities, and distribution.
-        """
-        # Set log probs and dist to None (overwritten if used)
-        log_probs = None
-        dist = None
+    #     Returns:
+    #         tuple[np.ndarray | T.Tensor, T.Tensor, Distribution | None]: Selected actions, log probabilities, and distribution.
+    #     """
+    #     # Set log probs and dist to None (overwritten if used)
+    #     log_probs = None
+    #     dist = None
 
-        # If warmup, sample random action from action space
-        if (context == 'train') and (step is not None) and (step <= self.warmup):
-            return self.env.action_space.sample(), log_probs, dist
+    #     # If warmup, sample random action from action space
+    #     if (context == 'train') and (step is not None) and (step <= self.warmup):
+    #         return self.env.action_space.sample(), log_probs, dist
 
-        else:
-            if self.policy.distribution in ['normal', 'beta']:
-                # Get action space bounds
-                action_space_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.policy.device)
-                action_space_low = T.tensor(self.env.single_action_space.low, dtype=T.float32, device=self.policy.device)
-                dist, _, _ = self.policy(states, goals)
-                if context == 'learn':
-                    raw_actions = dist.rsample()
-                elif context == 'test':
-                    raw_actions = dist.mean
-                else: # train
-                    raw_actions = dist.sample()
-                # Use squash (Normal/Gaussian) and scale technique
-                if self.policy.distribution == 'normal':
-                    squashed_actions = T.tanh(raw_actions)
-                    actions = action_space_low + (action_space_high - action_space_low) * (squashed_actions + 1) / 2
-                    log_probs = dist.log_prob(raw_actions).sum(-1)
-                    log_probs -= T.log(1 - squashed_actions.pow(2) + 1e-6).sum(-1)
-                    log_probs -= T.log((action_space_high - action_space_low) / 2).sum()
-                elif self.policy.distribution == 'beta':
-                    actions = action_space_low + (action_space_high - action_space_low) * raw_actions
-                    log_probs = dist.log_prob(raw_actions).sum(-1)
-                    log_probs -= T.log(action_space_high - action_space_low).sum()
-            else: # Discrete actor
-                dist, _ = self.policy(states, goals)
-                if context == 'learn':
-                    actions = dist.probs.argmax(dim=-1)
-                    probs = dist.probs
-                    log_probs = T.log(probs + 1e-6)
-                elif context == 'test':
-                    actions = dist.probs.argmax(dim=-1)
-                else: # train
-                    actions = dist.sample()
+    #     else:
+    #         if self.policy.distribution in ['normal', 'beta']:
+    #             # Get action space bounds
+    #             action_space_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.policy.device)
+    #             action_space_low = T.tensor(self.env.single_action_space.low, dtype=T.float32, device=self.policy.device)
+    #             dist, _, _ = self.policy(states, goals)
+    #             if context == 'learn':
+    #                 raw_actions = dist.rsample()
+    #             elif context == 'test':
+    #                 raw_actions = dist.mean
+    #             else: # train
+    #                 raw_actions = dist.sample()
+    #             # Use squash (Normal/Gaussian) and scale technique
+    #             if self.policy.distribution == 'normal':
+    #                 squashed_actions = T.tanh(raw_actions)
+    #                 actions = action_space_low + (action_space_high - action_space_low) * (squashed_actions + 1) / 2
+    #                 log_probs = dist.log_prob(raw_actions).sum(-1)
+    #                 log_probs -= T.log(1 - squashed_actions.pow(2) + 1e-6).sum(-1)
+    #                 log_probs -= T.log((action_space_high - action_space_low) / 2).sum()
+    #             elif self.policy.distribution == 'beta':
+    #                 actions = action_space_low + (action_space_high - action_space_low) * raw_actions
+    #                 log_probs = dist.log_prob(raw_actions).sum(-1)
+    #                 log_probs -= T.log(action_space_high - action_space_low).sum()
+    #         else: # Discrete actor
+    #             dist, _ = self.policy(states, goals)
+    #             if context == 'learn':
+    #                 actions = dist.probs.argmax(dim=-1)
+    #                 probs = dist.probs
+    #                 log_probs = T.log(probs + 1e-6)
+    #             elif context == 'test':
+    #                 actions = dist.probs.argmax(dim=-1)
+    #             else: # train
+    #                 actions = dist.sample()
             
-            if context != 'learn':
-                actions = actions.detach()
-                if log_probs is not None:
-                    log_probs = log_probs.detach()
+    #         if context != 'learn':
+    #             actions = actions.detach()
+    #             if log_probs is not None:
+    #                 log_probs = log_probs.detach()
             
-            return actions, log_probs, dist
+    #         return actions, log_probs, dist
+
+    def soft_update_targets(self):
+        self.soft_update(self.critic, self.target_critic)
+        self.soft_update(self.critic_b, self.target_critic_b)
 
     # TODO: Add support for stochastic discrete policy
     def learn(self, step: int):
