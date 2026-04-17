@@ -13,7 +13,7 @@ from app.buffer import Buffer
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
-from app.trainer import OnPolicySchedule, OnPolicyTrainer
+from app.trainer import OnPolicySchedule, OnPolicyTrainer, OffPolicySchedule, OffPolicyTrainer
 
 
 def load_config(config_file: str | Path) -> dict:
@@ -90,6 +90,8 @@ def build_schedule(config: dict):
     schedule_kwargs = dict(schedule_spec.get("config", {}))
     if schedule_type == "OnPolicySchedule":
         return OnPolicySchedule(**schedule_kwargs)
+    elif schedule_type == "OffPolicySchedule":
+        return OffPolicySchedule(**schedule_kwargs)
 
     raise ValueError(f"Unsupported schedule type: {schedule_type}")
 
@@ -102,6 +104,8 @@ def build_agent(config: dict, env: EnvWrapper):
         from scripts.reinforce import build
     elif agent_type == "PPO":
         from scripts.ppo import build
+    elif agent_type == "DDPG":
+        from scripts.ddpg import build
     else:
         raise NotImplementedError(f"Agent builder for '{agent_type}' is not implemented yet.")
     return build(config, env)
@@ -119,6 +123,17 @@ def build_trainer_from_config(config: dict):
 
     if agent_type in {"ActorCritic", "Reinforce", "PPO"}:
         return OnPolicyTrainer(
+            agent=agent,
+            env=env,
+            buffer=buffer,
+            schedule=schedule,
+            renderer=renderer,
+            callbacks=callbacks,
+            log_level=config.get('log_level', 'INFO'),
+        )
+    
+    elif agent_type in {"DDPG", "TD3", "SAC"}:
+        return OffPolicyTrainer(
             agent=agent,
             env=env,
             buffer=buffer,

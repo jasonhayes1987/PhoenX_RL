@@ -135,6 +135,7 @@ class ScheduleWrapper:
             self.steps,
             self.start_value,
             self.end_value,
+            self.optimizer,
             **self.kwargs
         )
         if self.scheduler:
