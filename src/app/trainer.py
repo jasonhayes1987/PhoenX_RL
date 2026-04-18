@@ -215,6 +215,7 @@ class Trainer:
         self._episode_steps = T.zeros(self.env.num_envs, dtype=T.int32, device=self.agent.device)
         self._completed_episodes = T.zeros(self.env.num_envs, dtype=T.int32, device=self.agent.device)
         self._episode_scores = T.zeros(self.env.num_envs, dtype=T.float32, device=self.agent.device)
+        self._episode_start = T.zeros(self.env.num_envs, dtype=T.bool, device=self.agent.device)
         self._score_history = deque(maxlen=100)
         self._render_counter = 0
 
@@ -416,20 +417,33 @@ class OnPolicyTrainer(Trainer):
         obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._cur_obs.states, self._cur_obs.goals, self._cur_obs.ach_goals)
         actions = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
         observation = self.env.step(actions)
+
+        valid = ~self._episode_start
        
         
         # Add normalized transitions to the buffer
+        # self.buffer.add(
+        #     states=self._cur_obs.states,
+        #     actions=actions,
+        #     rewards=observation.rewards,
+        #     next_states=observation.states,
+        #     terminations=observation.terminations,
+        #     truncations=observation.truncations,
+        #     state_achieved_goals=self._cur_obs.ach_goals,
+        #     next_state_achieved_goals=observation.ach_goals,
+        #     desired_goals=self._cur_obs.goals,
+        # )
         self.buffer.add(
-            states=self._cur_obs.states,
-            actions=actions,
-            rewards=observation.rewards,
-            next_states=observation.states,
-            terminations=observation.terminations,
-            truncations=observation.truncations,
-            state_achieved_goals=self._cur_obs.ach_goals,
-            next_state_achieved_goals=observation.ach_goals,
-            desired_goals=self._cur_obs.goals,
-        )
+                states=self._cur_obs.states[valid],
+                actions=actions[valid],
+                rewards=observation.rewards[valid],
+                next_states=observation.states[valid],
+                terminations=observation.terminations[valid],
+                truncations=observation.truncations[valid],
+                state_achieved_goals=self._cur_obs.ach_goals[valid] if self._cur_obs.ach_goals is not None else None,
+                next_state_achieved_goals=observation.ach_goals[valid] if observation.ach_goals is not None else None,
+                desired_goals=self._cur_obs.goals[valid] if self._cur_obs.goals is not None else None,
+            )
 
         # Increment episode steps and rewards
         self._episode_steps += 1
@@ -463,6 +477,7 @@ class OnPolicyTrainer(Trainer):
             episode_logs.append(episode_log)
 
         # set _cur_obs to observation
+        self._episode_start = done_episodes
         self._cur_obs = observation
 
         return{
@@ -668,21 +683,26 @@ class OffPolicyTrainer(Trainer):
         actions, _ = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
         observation = self.env.step(actions)
 
+        valid = ~self._episode_start
+
         if observation.n_step_trajectory is not None:
             # Add n-step transitions to the buffer
+            # if valid.any():
+            #     masked_traj = {k: v[valid] for k, v in observation.n_step_trajectory.items()}
+            #     self.buffer.add(**masked_traj)
             self.buffer.add(**observation.n_step_trajectory)
         else:
             # Add single transitions to the buffer
             self.buffer.add(
-                states=self._cur_obs.states,
-                actions=actions,
-                rewards=observation.rewards,
-                next_states=observation.states,
-                terminations=observation.terminations,
-                truncations=observation.truncations,
-                state_achieved_goals=self._cur_obs.ach_goals,
-                next_state_achieved_goals=observation.ach_goals,
-                desired_goals=self._cur_obs.goals,
+                states=self._cur_obs.states,#[valid],
+                actions=actions,#[valid],
+                rewards=observation.rewards,#[valid],
+                next_states=observation.states,#[valid],
+                terminations=observation.terminations,#[valid],
+                truncations=observation.truncations,#[valid],
+                state_achieved_goals=self._cur_obs.ach_goals,#[valid],
+                next_state_achieved_goals=observation.ach_goals,#[valid],
+                desired_goals=self._cur_obs.goals#[valid],
             )
 
         # Increment episode step and rewards
@@ -717,6 +737,7 @@ class OffPolicyTrainer(Trainer):
 
         # set _cur_obs to observation
         self._cur_obs = observation
+        self._episode_start = T.logical_or(observation.terminations, observation.truncations)
 
         return{
         'step_log': step_log,
