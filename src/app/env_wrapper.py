@@ -456,18 +456,10 @@ class VectorNStepReward(VectorWrapper):
             self.n_desired_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
 
         self.current_states = None
-
-        # Padding tensors (unchanged)
         self.device = get_device()
-        state_shape = (self.single_observation_space[self.obs_key].shape
-                       if self.obs_key is not None
-                       else self.single_observation_space.shape)
-        self._pad_state = T.zeros(state_shape, dtype=T.float32, device=self.device)
-        self._pad_action = T.zeros(self.single_action_space.shape, dtype=T.float32, device=self.device)
-        self._pad_reward = T.tensor(0.0, dtype=T.float32, device=self.device)
-        self._pad_done = T.tensor(0.0, dtype=T.float32, device=self.device)
-        if self.goal_key:
-            self._pad_goal = T.zeros(self.single_observation_space[self.goal_key].shape, dtype=T.float32, device=self.device)
+        # Keep track of previous done steps to avoid adding terminal state as current state
+        # and next state as reset state
+        self.prev_done = T.zeros(self.num_envs, dtype=T.bool, device=self.device)
 
     def reset(self, **kwargs):
         states, infos = self.env.reset(**kwargs)
@@ -500,29 +492,32 @@ class VectorNStepReward(VectorWrapper):
 
         for i in range(self.num_envs):
             # === IMPROVED FINAL-OBS HANDLING (robust for both old and new Gym/Isaac Lab keys) ===
-            if dones[i].item():
-                final_obs_key = None
-                if "_final_obs" in infos and infos["_final_obs"][i]:
-                    final_obs_key = "final_obs"
-                elif "final_observation" in infos and infos.get("_final_observation", [False]*self.num_envs)[i]:
-                    final_obs_key = "final_observation"
-                elif "final_obs" in infos:
-                    final_obs_key = "final_obs"
+            # if dones[i].item():
+            #     final_obs_key = None
+            #     if "_final_obs" in infos and infos["_final_obs"][i]:
+            #         final_obs_key = "final_obs"
+            #     elif "final_observation" in infos and infos.get("_final_observation", [False]*self.num_envs)[i]:
+            #         final_obs_key = "final_observation"
+            #     elif "final_obs" in infos:
+            #         final_obs_key = "final_obs"
 
-                if final_obs_key:
-                    final = infos[final_obs_key][i]
-                    next_state = final[self.obs_key] if self.obs_key is not None else final
-                    if self.goal_key:
-                        goal = self.current_states[self.goal_key][i]
-                        ach_goal = self.current_states[self.ach_goal_key][i]
-                        next_ach_goal = infos['final_obs'][i][self.ach_goal_key]
-                else:
-                    # fallback
-                    next_state = next_states[self.obs_key][i] if self.obs_key is not None else next_states[i]
-                    if self.goal_key:
-                        goal = self.current_states[self.goal_key][i]
-                        ach_goal = self.current_states[self.ach_goal_key][i]
-                        next_ach_goal = next_states[self.ach_goal_key][i]
+            #     if final_obs_key:
+            #         final = infos[final_obs_key][i]
+            #         next_state = final[self.obs_key] if self.obs_key is not None else final
+            #         if self.goal_key:
+            #             goal = self.current_states[self.goal_key][i]
+            #             ach_goal = self.current_states[self.ach_goal_key][i]
+            #             next_ach_goal = infos['final_obs'][i][self.ach_goal_key]
+            
+                # else:
+                #     # fallback
+                #     next_state = next_states[self.obs_key][i] if self.obs_key is not None else next_states[i]
+                #     if self.goal_key:
+                #         goal = self.current_states[self.goal_key][i]
+                #         ach_goal = self.current_states[self.ach_goal_key][i]
+                #         next_ach_goal = next_states[self.ach_goal_key][i]
+            if self.prev_done[i].item():
+                continue
             else:
                 next_state = next_states[self.obs_key][i] if self.obs_key is not None else next_states[i]
                 if self.goal_key:
@@ -530,25 +525,23 @@ class VectorNStepReward(VectorWrapper):
                     ach_goal = self.current_states[self.ach_goal_key][i]
                     next_ach_goal = next_states[self.ach_goal_key][i]
 
-            state = (self.current_states[self.obs_key][i]
-                     if self.obs_key is not None
-                     else self.current_states[i])
+                state = self.current_states[self.obs_key][i] if self.obs_key is not None else self.current_states[i]
 
-            # ensure tensors (unchanged)
-            state = T.as_tensor(state, device=self.device)
-            next_state = T.as_tensor(next_state, device=self.device)
+                # ensure tensors (unchanged)
+                state = T.as_tensor(state, device=self.device)
+                next_state = T.as_tensor(next_state, device=self.device)
 
-            # Append current step
-            self.n_states[i].append(state)
-            self.n_actions[i].append(actions[i])
-            self.n_rewards[i].append(rewards[i])
-            self.n_next_states[i].append(next_state)
-            self.n_terminations[i].append(terminations[i])
-            self.n_truncations[i].append(truncations[i])
-            if self.goal_key:
-                self.n_state_achieved_goals[i].append(ach_goal if self.ach_goal_key is not None else None)
-                self.n_next_state_achieved_goals[i].append(next_ach_goal if self.ach_goal_key is not None else None)
-                self.n_desired_goals[i].append(goal if self.goal_key is not None else None)
+                # Append current step
+                self.n_states[i].append(state)
+                self.n_actions[i].append(actions[i])
+                self.n_rewards[i].append(rewards[i])
+                self.n_next_states[i].append(next_state)
+                self.n_terminations[i].append(terminations[i])
+                self.n_truncations[i].append(truncations[i])
+                if self.goal_key:
+                    self.n_state_achieved_goals[i].append(ach_goal if self.ach_goal_key is not None else None)
+                    self.n_next_state_achieved_goals[i].append(next_ach_goal if self.ach_goal_key is not None else None)
+                    self.n_desired_goals[i].append(goal if self.goal_key is not None else None)
 
         # Build batched trajectory (unchanged)
         trajectory = self.build_trajectories()
@@ -568,6 +561,7 @@ class VectorNStepReward(VectorWrapper):
                     self.n_next_state_achieved_goals[i].clear()
                     self.n_desired_goals[i].clear()
 
+        self.prev_done = dones
         self.current_states = next_states
         return next_states, rewards, terminations, truncations, infos
 
@@ -605,25 +599,56 @@ class VectorNStepReward(VectorWrapper):
             trajectory['desired_goals'] = desired_goals
         return trajectory
 
-    def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode:str|T.Tensor="repeat"):
-        """Format trajectory from per-env deques to batched tensor.
+    # def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode:str|T.Tensor="repeat"):
+    #     """Format trajectory from per-env deques to batched tensor.
 
-        Args:
-            trajectory: List of deques containing tensors.
-            pad_mode: Mode to pad the trajectory. "repeat" to repeat the last value or tensor to pad with passed value.
+    #     Args:
+    #         trajectory: List of deques containing tensors.
+    #         pad_mode: Mode to pad the trajectory. "repeat" to repeat the last value or tensor to pad with passed value.
 
-        Returns:
-            Tensor: Batched trajectory.
-        """
+    #     Returns:
+    #         Tensor: Batched trajectory.
+    #     """
+    #     trajs = []
+    #     for d in trajectory:
+    #         seq = list(d)
+    #         if pad_mode == "repeat":
+    #             padding = seq[-1]
+    #         else:
+    #             padding = pad_mode
+    #         while len(seq) < self.n:
+    #             seq.append(padding)
+    #         trajs.append(T.stack(to_torch(seq, device=self.device), dim=0))
+    #     return T.stack(trajs, dim=0)
+
+    def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode: str | T.Tensor = "repeat"):
+        # Find reference shape/dtype from any non-empty deque in this batch
+        ref = None
+        for d in trajectory:
+            if len(d) > 0:
+                ref = d[0]
+                break
+
         trajs = []
         for d in trajectory:
             seq = list(d)
-            if pad_mode == "repeat":
-                padding = seq[-1]
+            if len(seq) == 0:
+                # Phantom-step env — trainer will mask this out.
+                # Emit a zero placeholder of the right shape so T.stack works.
+                if ref is None:
+                    # All envs empty simultaneously — shouldn't happen in normal flow,
+                    # but fall back to pad_mode if it's a concrete tensor
+                    if isinstance(pad_mode, T.Tensor):
+                        seq = [pad_mode] * self.n
+                    else:
+                        raise RuntimeError("All envs in phantom state with no reference shape")
+                else:
+                    zero = T.zeros_like(ref)
+                    seq = [zero] * self.n
             else:
-                padding = pad_mode
-            while len(seq) < self.n:
-                seq.append(padding)
+                padding = seq[-1] if pad_mode == "repeat" else pad_mode
+                while len(seq) < self.n:
+                    seq.append(padding)
             trajs.append(T.stack(to_torch(seq, device=self.device), dim=0))
         return T.stack(trajs, dim=0)
 

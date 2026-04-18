@@ -1614,6 +1614,7 @@ class DDPG(OffPolicyAgent):
             probs = None
             indices = None
             
+        # TODO: Move to OffPolicyTrainer
         # if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
         #     if self._use_her:  # HER with prioritized replay
         #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
@@ -1671,11 +1672,12 @@ class DDPG(OffPolicyAgent):
         if self.reward_normalizer:
             rewards = self.reward_normalizer.normalize(rewards)
 
+        # MIGHT NOT NEED
         # Ensure training data is on correct device
-        actions = actions.to(self.target_policy.device)
-        rewards = rewards.to(self.target_critic.device)
-        dones = dones.to(self.target_critic.device)
-        trajectory_lengths = trajectory_lengths.to(self.target_critic.device)
+        # actions = actions.to(self.target_policy.device)
+        # rewards = rewards.to(self.target_critic.device)
+        # dones = dones.to(self.target_critic.device)
+        # trajectory_lengths = trajectory_lengths.to(self.target_critic.device)
 
         # Train ICM if curiosity and update _use_extrinsic flag
         if self.curiosity:
@@ -1715,19 +1717,18 @@ class DDPG(OffPolicyAgent):
                 device=self.target_critic.device
             ).squeeze()
 
-            target_actions, _, _ = self.get_action(
+            _, target_actions = self.target_policy(
                 next_states[:,-1,:],
-                desired_goals[:,-1,:] if desired_goals is not None else None,
-                context='test'
+                goals[:,-1,:] if goals is not None else None
             )
 
             target_critic_values = self.target_critic(
                 next_states[:,-1,:],
                 target_actions,
-                desired_goals[:,-1,:] if desired_goals is not None else None
+                goals[:,-1,:] if goals is not None else None
             ).squeeze()
 
-            no_dones_mask = (dones.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
+            no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
             gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
             targets += no_dones_mask * gamma_pow * target_critic_values
 
@@ -1742,7 +1743,7 @@ class DDPG(OffPolicyAgent):
         predictions = self.critic(
             states[:,0,:],
             actions[:,0,:],
-            desired_goals[:,0,:] if desired_goals is not None else None
+            goals[:,0,:] if goals is not None else None
         ).squeeze()
 
         # Calculate TD errors
@@ -1757,19 +1758,18 @@ class DDPG(OffPolicyAgent):
         # Update critic
         self.critic.optimizer.zero_grad()
         critic_loss.backward()
-        if self.grad_clip:
-            T.nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip)
+        if self.value_grad_clip:
+            T.nn.utils.clip_grad_norm_(self.critic.parameters(), self.value_grad_clip)
         self.critic.optimizer.step()
 
         # Get actor's action predictions
-        action_values, raw_actions, _ = self.get_action(
+        _, pred_actions = self.policy(
             states[:,0,:],
-            desired_goals[:,0,:] if desired_goals is not None else None,
-            context='learn'
+            goals[:,0,:] if goals is not None else None
         )
         
         # Calculate actor loss based on critic
-        critic_values = self.critic(states[:,0,:], action_values, desired_goals[:,0,:] if desired_goals is not None else None)
+        critic_values = self.critic(states[:,0,:], pred_actions, goals[:,0,:] if goals is not None else None)
         if weights is not None:
             actor_loss = -(weights.to(self.policy.device) * critic_values).mean()
         else:
@@ -1782,8 +1782,8 @@ class DDPG(OffPolicyAgent):
         # Update actor
         self.policy.optimizer.zero_grad()
         actor_loss.backward()
-        if self.grad_clip:
-            T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
+        if self.policy_grad_clip:
+            T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
         self.policy.optimizer.step()
 
         # Perform soft update on target networks
@@ -1791,15 +1791,16 @@ class DDPG(OffPolicyAgent):
         #     self.soft_update(self.policy, self.target_policy)
         #     self.soft_update(self.critic, self.target_critic)
 
+        # TODO: Move to OffPolicyTrainer
         # Update priorities if using prioritized replay - only on update_freq steps
-        if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
-            self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
+        # if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
+        #     self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
 
         learn_metrics.update({
             "actor_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
             "td_error": error.mean().item(),
-            "actor_predictions": action_values.mean().item(),
+            "actor_predictions": pred_actions.mean().item(),
             "critic_predictions": critic_values.mean().item(),
             "target_actor_predictions": target_actions.mean().item(),
             "target_critic_predictions": targets.mean().item(),
