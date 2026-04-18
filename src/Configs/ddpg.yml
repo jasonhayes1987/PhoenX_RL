@@ -60,13 +60,13 @@ models:
 
 policy_lr_schedule:
   schedule_type: "cosine"
-  steps: 100000
+  steps: 1000000
   start_value: *policy_lr
   end_value: 1.0e-4
 
 value_lr_schedule:
   schedule_type: "cosine"
-  steps: 100000
+  steps: 1000000
   start_value: *critic_lr
   end_value: 1.0e-4
 
@@ -116,7 +116,7 @@ noise:
 
 noise_schedule:
   schedule_type: linear
-  steps: 100000
+  steps: 1000000
   start_value: *noise_stddev
   end_value: 0.1
 
@@ -161,7 +161,7 @@ schedule:
   type: OffPolicySchedule
   config:
     unit: timestep
-    units: 100000
+    units: 1000000
     cycles: 10
     episodes: 10
     updates: 10
