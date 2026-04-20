@@ -615,11 +615,13 @@ class ActorCritic(OnPolicyAgent):
         actions = rollouts['actions']
         rewards = rollouts['rewards']
         next_states = rollouts['next_states']
-        goals = rollouts['desired_goals']
-        ach_goals = rollouts['state_achieved_goals']
-        next_ach_goals = rollouts['next_state_achieved_goals']
         terminations = rollouts['terminations']
         truncations = rollouts['truncations']
+        first_steps = rollouts["first_steps"]
+        valid_indices = rollouts["valid_indices"]
+        ach_goals = rollouts["state_achieved_goals"]
+        next_ach_goals = rollouts["next_state_achieved_goals"]
+        goals = rollouts["desired_goals"]
 
         # Normalize states and goals
         if self.state_normalizer:
@@ -640,27 +642,28 @@ class ActorCritic(OnPolicyAgent):
                 entropy_coefficient *= self.entropy_schedule.get_factor()
 
         # Get trajectory length, num_envs, and feature dims
-        trajectory_length, num_envs, obs_dim = states.shape
-        action_dim = actions.shape[-1]
+        # trajectory_length, num_envs, obs_dim = states.shape
+        # action_dim = actions.shape[-1]
+        traj_len, num_envs = rewards.shape
+        total_samples = traj_len * num_envs
 
-        # Flatten actions
-        flat_actions = actions.reshape(trajectory_length * num_envs, action_dim)
-
-        # Flatten states and next_states before passing through value function
-        flat_states = states.reshape(trajectory_length * num_envs, obs_dim)
-        flat_next_states = next_states.reshape(trajectory_length * num_envs, obs_dim)
+        # Flatten trajectory data
+        states_flat = states.reshape(total_samples, -1)
+        next_states_flat = next_states.reshape(total_samples, -1)
+        actions_flat = actions.reshape(total_samples, -1)
+        goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
 
         # Flatten goals if not None
-        if goals is not None:
-            goal_dim = goals.shape[-1]
-            flat_goals = goals.reshape(trajectory_length * num_envs, goal_dim)
-            flat_next_ach_goals = next_ach_goals.reshape(trajectory_length * num_envs, goal_dim)
-        else:
-            flat_goals = None
-            flat_next_ach_goals = None
+        # if goals is not None:
+        #     goal_dim = goals.shape[-1]
+        #     flat_goals = goals.reshape(trajectory_length * num_envs, goal_dim)
+        #     flat_next_ach_goals = next_ach_goals.reshape(trajectory_length * num_envs, goal_dim)
+        # else:
+        #     flat_goals = None
+        #     flat_next_ach_goals = None
 
-        state_values = self.value(flat_states, flat_goals).reshape(trajectory_length, num_envs).squeeze(-1)
-        next_state_values = self.value(flat_next_states, flat_next_ach_goals).reshape(trajectory_length, num_envs).squeeze(-1).detach()
+        state_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
+        next_state_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs).detach()
 
         advantages, returns, td_errors = compute_advantages_and_returns(
             rewards,
@@ -674,30 +677,43 @@ class ActorCritic(OnPolicyAgent):
             device=self.device
         )
 
+        # Filter phantom steps
+        valid_idx = valid_indices.squeeze(-1)
+        num_valid = valid_idx.numel()
+        states_flat = states_flat[valid_idx]
+        next_states_flat = next_states_flat[valid_idx]
+        actions_flat = actions_flat[valid_idx]
+        goals_flat = goals_flat[valid_idx] if goals is not None else None
+        state_values_flat = state_values.reshape(total_samples)[valid_idx]
+        next_state_values_flat = next_state_values.reshape(total_samples)[valid_idx]
+        advantages_flat = advantages.reshape(total_samples)[valid_idx]
+        returns_flat = returns.reshape(total_samples)[valid_idx]
+        td_errors_flat = td_errors.reshape(total_samples)[valid_idx]
+
         # Calculate value loss
-        value_loss = self.value_coef * (state_values - returns.detach()).pow(2).mean()
+        value_loss = self.value_coef * (state_values_flat - returns_flat.detach()).pow(2).mean()
 
         # Create separate policy advantage in case using advantage normalizer
-        policy_advantages = advantages.detach()
+        policy_advantages = advantages_flat.detach()
         if self.advantage_normalizer:
-            flat_advantages = policy_advantages.reshape(-1,1)
+            policy_advantages = policy_advantages.reshape(-1,1)
             if getattr(self.advantage_normalizer, 'add', None):
-                self.advantage_normalizer.add(flat_advantages)
-            policy_advantages = self.advantage_normalizer.normalize(flat_advantages).reshape(trajectory_length, num_envs)
+                self.advantage_normalizer.add(policy_advantages)
+            policy_advantages = self.advantage_normalizer.normalize(policy_advantages).reshape(-1)
 
         # Get log probs and entropy values from current policy dist
-        dist = self.policy(flat_states, flat_goals)
+        dist = self.policy(states_flat, goals_flat)
         # dist = self.policy.transform_distribution(base_dist)
         # reshape flat actions to be vector if categorical distribution
         if self.policy.distribution == 'categorical':
-            flat_actions = flat_actions.squeeze(-1)
-            log_probs = dist.log_prob(flat_actions).reshape(trajectory_length, num_envs)
-        else:
-            log_probs = dist.log_prob(flat_actions).sum(dim=-1).reshape(trajectory_length, num_envs)
+            actions_flat = actions_flat.squeeze(-1)
+        log_probs = dist.log_prob(actions_flat).flatten()#.reshape(traj_len, num_envs)
+        # else:
+        #     log_probs = dist.log_prob(actions_flat).flatten()#.reshape(traj_len, num_envs)
         
         # Only calculate entropy if entropy coefficient > 0
         # if entropy_coefficient > 0.0:
-        entropies = dist.entropy().reshape(trajectory_length, num_envs)
+        entropies = dist.entropy().flatten()#.reshape(traj_len, num_envs)
         # else:
         #     entropies = T.zeros_like(log_probs)
 
@@ -736,11 +752,11 @@ class ActorCritic(OnPolicyAgent):
                 summarize_tensor(next_ach_goals, "next_ach_goals"),
                 summarize_tensor(terminations, "terminations"),
                 summarize_tensor(truncations, "truncations"),
-                summarize_tensor(state_values, "values"),
-                summarize_tensor(next_state_values, "next_values"),
-                summarize_tensor(td_errors, "td_errors"),
-                summarize_tensor(advantages, "advantages"),
-                summarize_tensor(returns, "returns"),
+                summarize_tensor(state_values_flat, "values"),
+                summarize_tensor(next_state_values_flat, "next_values"),
+                summarize_tensor(td_errors_flat, "td_errors"),
+                summarize_tensor(advantages_flat, "advantages"),
+                summarize_tensor(returns_flat, "returns"),
                 summarize_tensor(log_probs, "log_probs"),
                 summarize_tensor(entropies, "entropies"),
                 f"entropy_coef={float(entropy_coefficient)}",
@@ -779,9 +795,9 @@ class ActorCritic(OnPolicyAgent):
         learn_metrics.update({
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
-            'temporal_difference': td_errors.mean().item(),
-            'advantages': advantages.mean().item(),
-            'returns': returns.mean().item(),
+            'temporal_difference': td_errors_flat.mean().item(),
+            'advantages': advantages_flat.mean().item(),
+            'returns': returns_flat.mean().item(),
             'entropy': entropies.mean().item(),
             'entropy_coefficient': entropy_coefficient,
             'policy_learning_rate': policy_learning_rate,
@@ -1002,17 +1018,17 @@ class PPO(OnPolicyAgent):
         learn_metrics = {}
 
         # Unpack trajectory
-        (
-            states,
-            actions,
-            rewards,
-            next_states,
-            terminations,
-            truncations,
-            ach_goals,
-            next_ach_goals,
-            goals,
-        ) = rollouts.values()
+        states = rollouts["states"]
+        actions = rollouts["actions"]
+        rewards = rollouts["rewards"]
+        next_states = rollouts["next_states"]
+        terminations = rollouts["terminations"]
+        truncations = rollouts["truncations"]
+        first_steps = rollouts["first_steps"]
+        valid_indices = rollouts["valid_indices"]
+        ach_goals = rollouts["state_achieved_goals"]
+        next_ach_goals = rollouts["next_state_achieved_goals"]
+        goals = rollouts["desired_goals"]
 
         # Get current values of policy/value clip and entropy/kl coefficients
         policy_clip = self.policy_clip
@@ -1056,12 +1072,12 @@ class PPO(OnPolicyAgent):
         # Flatten trajectory data
         states_flat = states.reshape(total_samples, -1)
         next_states_flat = next_states.reshape(total_samples, -1)
-        goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
-        ach_goals_flat = ach_goals.reshape(total_samples, -1) if ach_goals is not None else None
-        next_ach_goals_flat = next_ach_goals.reshape(total_samples, -1) if next_ach_goals is not None else None
         actions_flat = actions.reshape(total_samples, -1)
-        terminations_flat = terminations.reshape(total_samples, 1)
-        truncations_flat = truncations.reshape(total_samples, 1)
+        goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
+        # ach_goals_flat = ach_goals.reshape(total_samples, -1) if ach_goals is not None else None
+        # next_ach_goals_flat = next_ach_goals.reshape(total_samples, -1) if next_ach_goals is not None else None
+        # terminations_flat = terminations.reshape(total_samples, -1)
+        # truncations_flat = truncations.reshape(total_samples, -1)
 
         # Use intrinsic rewards if ICM
         if self.curiosity:
@@ -1085,7 +1101,7 @@ class PPO(OnPolicyAgent):
             cur_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
             cur_next_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs)
 
-        # Calculate advantages and returns (also normalizes via _preprocess_inputs func if using normalizers)
+        # Calculate advantages and returns
         advantages, returns, td_errors = compute_advantages_and_returns(
             rewards,
             cur_values,
@@ -1098,10 +1114,17 @@ class PPO(OnPolicyAgent):
             self.device
         )
 
-        # Reshape tensors for batching
-        cur_values_flat = cur_values.reshape(total_samples, 1)
-        advantages_flat = advantages.reshape(total_samples, 1)
-        returns_flat = returns.reshape(total_samples, 1)
+        # Filter phantom steps
+        valid_idx = valid_indices.squeeze(-1)
+        num_valid = valid_idx.numel()
+        states_flat = states_flat[valid_idx]
+        next_states_flat = next_states_flat[valid_idx]
+        actions_flat = actions_flat[valid_idx]
+        goals_flat = goals_flat[valid_idx] if goals is not None else None
+        cur_log_probs = cur_log_probs[valid_idx]
+        cur_values_flat = cur_values.reshape(total_samples, 1)[valid_idx]
+        advantages_flat = advantages.reshape(total_samples, 1)[valid_idx]
+        returns_flat = returns.reshape(total_samples, 1)[valid_idx]
 
         # Normalize advantages
         if self.advantage_normalizer:
@@ -1112,8 +1135,8 @@ class PPO(OnPolicyAgent):
         # Training loop
         for epoch in range(learning_epochs):
             # Create random indices for shuffling
-            indices = T.randperm(total_samples)
-            num_batches = total_samples // batch_size
+            indices = T.randperm(num_valid, device=self.device)
+            num_batches = num_valid // batch_size
 
             for batch_num in range(num_batches):
                 batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
@@ -1241,7 +1264,8 @@ class PPO(OnPolicyAgent):
                 self.policy.optimizer.step()
                 self.value.optimizer.step()
 
-            if mean_kl > self.kl_adapter.target_kl * 1.5:
+            
+            if self.kl_adapter and mean_kl > self.kl_adapter.target_kl * 1.5:
                 break  # Stop this learn cycle's epochs early
 
         # Step schedulers/adapters
@@ -1270,9 +1294,9 @@ class PPO(OnPolicyAgent):
             'entropy': mean_entropy.item(),
             'kl': mean_kl.item(),
             'prob_ratio': prob_ratio.detach().cpu().flatten().mean().item(),
-            'temporal_difference': td_errors.detach().cpu().flatten().mean().item(),
-            'advantages': advantages.detach().cpu().flatten().mean().item(),
-            'returns': returns.detach().cpu().flatten().mean().item(),
+            'temporal_difference': td_errors.reshape(total_samples, 1)[valid_idx].cpu().flatten().mean().item(),
+            'advantages': advantages.reshape(total_samples, 1)[valid_idx].cpu().flatten().mean().item(),
+            'returns': returns.reshape(total_samples, 1)[valid_idx].cpu().flatten().mean().item(),
             'policy_clip': policy_clip,
             'value_clip': value_clip,
             'entropy_coefficient': entropy_coefficient,

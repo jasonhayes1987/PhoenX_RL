@@ -658,6 +658,9 @@ class RolloutBuffer(Buffer):
         self.next_states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.terminations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
         self.truncations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
+        # Tracks initial steps of each environment (Phantom steps)
+        self.first_steps = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
+        
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.desired_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
@@ -671,28 +674,40 @@ class RolloutBuffer(Buffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
-        state_achieved_goals: Optional[T.Tensor] = None,
-        next_state_achieved_goals: Optional[T.Tensor] = None,
-        desired_goals: Optional[T.Tensor] = None,
+        state_achieved_goals: T.Tensor|None = None,
+        next_state_achieved_goals: T.Tensor|None = None,
+        desired_goals: T.Tensor|None = None,
+        first_steps: T.Tensor|None = None,
     ) -> None:
 
         # Ensure actions are 2d tensors
         if actions.ndim == 1:
             actions = actions.unsqueeze(-1)
+        # Check valid_steps and create if None
+        if first_steps is None:
+            first_steps = T.zeros((self.env.num_envs,), dtype=T.bool, device=self.device)
+        else:
+            first_steps = first_steps.to(device=self.device, dtype=T.bool)
+            if first_steps.numel() != self.env.num_envs:
+                raise ValueError(f"first_steps must have {self.env.num_envs} elements, got {first_steps.numel()}")
         # Get per environment indices to add values to
         idx = self.cur_idx.clone()
+        # Get env id's
+        env_ids = T.arange(self.env.num_envs, device=self.device)
+
         
         # Add values to buffers at indices
-        self.states[idx, T.arange(self.env.num_envs)] = states.to(device=self.device, dtype=T.float32)
-        self.actions[idx, T.arange(self.env.num_envs)] = actions.to(device=self.device, dtype=self.action_type)
-        self.rewards[idx, T.arange(self.env.num_envs)] = rewards.to(device=self.device, dtype=T.float32)
-        self.next_states[idx, T.arange(self.env.num_envs)] = next_states.to(device=self.device, dtype=T.float32)
-        self.terminations[idx, T.arange(self.env.num_envs)] = terminations.to(device=self.device, dtype=T.bool)
-        self.truncations[idx, T.arange(self.env.num_envs)] = truncations.to(device=self.device, dtype=T.bool)
+        self.states[idx, env_ids] = states.to(device=self.device, dtype=T.float32)
+        self.actions[idx, env_ids] = actions.to(device=self.device, dtype=self.action_type)
+        self.rewards[idx, env_ids] = rewards.to(device=self.device, dtype=T.float32)
+        self.next_states[idx, env_ids] = next_states.to(device=self.device, dtype=T.float32)
+        self.terminations[idx, env_ids] = terminations.to(device=self.device, dtype=T.bool)
+        self.truncations[idx, env_ids] = truncations.to(device=self.device, dtype=T.bool)
+        self.first_steps[idx, env_ids] = first_steps
         if self.env.goal_key is not None and self.goal_space_shape is not None:
-            self.state_achieved_goals[idx, T.arange(self.env.num_envs)] = state_achieved_goals.to(device=self.device, dtype=T.float32)
-            self.next_state_achieved_goals[idx, T.arange(self.env.num_envs)] = next_state_achieved_goals.to(device=self.device, dtype=T.float32)
-            self.desired_goals[idx, T.arange(self.env.num_envs)] = desired_goals.to(device=self.device, dtype=T.float32)
+            self.state_achieved_goals[idx, env_ids] = state_achieved_goals.to(device=self.device, dtype=T.float32)
+            self.next_state_achieved_goals[idx, env_ids] = next_state_achieved_goals.to(device=self.device, dtype=T.float32)
+            self.desired_goals[idx, env_ids] = desired_goals.to(device=self.device, dtype=T.float32)
         
         # Increment step indices
         self.cur_idx += 1
@@ -702,7 +717,13 @@ class RolloutBuffer(Buffer):
         Returns a dictionary of all buffer tensors up to the current index of each environment.
         Current index values will match across all tensors because all rollouts are of same length.
         """
-        idx = self.cur_idx.max().item()
+        idx = int(self.cur_idx.max().item())
+        if idx <= 0:
+            raise ValueError("Cannot sample from empty buffer")
+
+        # Create tensor of non first step (Phantom) indices for valid training samples
+        first_steps = self.first_steps[:idx].clone()
+        valid_indices = (first_steps.reshape(-1) == 0).nonzero()
         sample = {
             "states": self.states[:idx].clone(),
             "actions": self.actions[:idx].clone(),
@@ -710,6 +731,8 @@ class RolloutBuffer(Buffer):
             "next_states": self.next_states[:idx].clone(),
             "terminations": self.terminations[:idx].clone(),
             "truncations": self.truncations[:idx].clone(),
+            "first_steps": first_steps,
+            "valid_indices": valid_indices,
         }
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             sample.update({
@@ -730,6 +753,7 @@ class RolloutBuffer(Buffer):
     def reset(self) -> None:
         """Reset the current index of each environment to zero."""
         self.cur_idx.zero_()
+        self.first_steps.zero_()
     
     def get_config(self) -> Dict[str, Any]:
         """Get buffer config."""
@@ -758,39 +782,51 @@ class TrajectoryBuffer(RolloutBuffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
-        state_achieved_goals: Optional[T.Tensor] = None,
-        next_state_achieved_goals: Optional[T.Tensor] = None,
-        desired_goals: Optional[T.Tensor] = None,
+        state_achieved_goals: T.Tensor|None = None,
+        next_state_achieved_goals: T.Tensor|None = None,
+        desired_goals: T.Tensor|None = None,
+        first_steps: T.Tensor|None = None,
     ) -> None:
-        super().add(states, actions, rewards, next_states, terminations, truncations, state_achieved_goals, next_state_achieved_goals, desired_goals)
+        super().add(states, actions, rewards, next_states, terminations, truncations, state_achieved_goals, next_state_achieved_goals, desired_goals, first_steps)
 
         # Store completed trajectories if any last stored dones are True
         for i in range(self.env.num_envs):
-            idx = self.cur_idx[i].item()
-            if idx > 0 and (self.terminations[idx - 1, i].item() or self.truncations[idx - 1, i].item()):
-                trajectory = {
-                    "states": self.states[:idx, i].clone(),
-                    "actions": self.actions[:idx, i].clone(),
-                    "rewards": self.rewards[:idx, i].clone(),
-                    "next_states": self.next_states[:idx, i].clone(),
-                    "terminations": self.terminations[:idx, i].clone(),
-                    "truncations": self.truncations[:idx, i].clone(),
-                }
-                if self.env.goal_key is not None and self.goal_space_shape is not None:
-                    trajectory.update({
-                        "state_achieved_goals": self.state_achieved_goals[:idx, i].clone(),
-                        "next_state_achieved_goals": self.next_state_achieved_goals[:idx, i].clone(),
-                        "desired_goals": self.desired_goals[:idx, i].clone(),
-                    })
-                else:
-                    trajectory.update({
-                        "state_achieved_goals": None,
-                        "next_state_achieved_goals": None,
-                        "desired_goals": None,
-                    })
-                self.completed_trajectories.append(trajectory)
-                # Reset step counter for done env
+            idx = int(self.cur_idx[i].item())
+            if idx <= 0:
+                continue
+            done = bool(self.terminations[idx - 1, i].item() or self.truncations[idx - 1, i].item())
+            if not done:
+                continue
+            # Check to make sure there are valid steps in the trajectory
+            valid_steps = T.logical_not(self.first_steps[:idx, i])
+            if not valid_steps.any():
                 self.cur_idx[i] = 0
+                continue
+
+            # if idx > 0 and (self.terminations[idx - 1, i].item() or self.truncations[idx - 1, i].item()):
+            trajectory = {
+                "states": self.states[:idx, i][valid_steps].clone(),
+                "actions": self.actions[:idx, i][valid_steps].clone(),
+                "rewards": self.rewards[:idx, i][valid_steps].clone(),
+                "next_states": self.next_states[:idx, i][valid_steps].clone(),
+                "terminations": self.terminations[:idx, i][valid_steps].clone(),
+                "truncations": self.truncations[:idx, i][valid_steps].clone(),
+            }
+            if self.env.goal_key is not None and self.goal_space_shape is not None:
+                trajectory.update({
+                    "state_achieved_goals": self.state_achieved_goals[:idx, i][valid_steps].clone(),
+                    "next_state_achieved_goals": self.next_state_achieved_goals[:idx, i][valid_steps].clone(),
+                    "desired_goals": self.desired_goals[:idx, i][valid_steps].clone(),
+                })
+            else:
+                trajectory.update({
+                    "state_achieved_goals": None,
+                    "next_state_achieved_goals": None,
+                    "desired_goals": None,
+                })
+            self.completed_trajectories.append(trajectory)
+            # Reset step counter for done env
+            self.cur_idx[i] = 0
 
     def sample(self) -> List[Dict[str, T.Tensor]]:
         """Returns a list of completed trajectories."""
