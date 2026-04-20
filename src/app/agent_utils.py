@@ -99,7 +99,6 @@ def compute_gae(
     truncations:T.Tensor,
     gamma:float,
     gae_lambda:float,
-    bootstrap_truncations: bool,
     device:T.device|str|None = None
     ) -> T.Tensor:
     """
@@ -111,7 +110,7 @@ def compute_gae(
         truncations: Tensor of truncation flags [timesteps, num_envs].
         gamma: Discount factor.
         gae_lambda: GAE lambda parameter.
-        bootstrap_truncations: Whether to bootstrap the returns on truncated episodes.
+        # bootstrap_truncations: Whether to bootstrap the returns on truncated episodes.
         device: Device for tensor operations.
     """
     device = get_device(device)
@@ -119,10 +118,10 @@ def compute_gae(
     advantages = T.zeros(timesteps, num_envs, device=device)
     advantage = T.zeros(num_envs, device=device)
 
-    if bootstrap_truncations:
-        dones = terminations
-    else:
-        dones = T.logical_or(terminations, truncations)
+    # if bootstrap_truncations:
+    #     dones = T.logical_or(terminations, first_steps)
+    # else:
+    dones = T.logical_or(terminations, truncations)
 
     for t in reversed(range(timesteps)):
         advantage = td_errors[t] + gamma * gae_lambda * advantage * T.logical_not(dones[t])
@@ -161,7 +160,7 @@ def compute_advantages_and_returns(
     """
     device = get_device(device)
     td_errors = compute_td_error(rewards, values, next_values, terminations, truncations, gamma, bootstrap_truncations)
-    advantages = compute_gae(td_errors, terminations, truncations, gamma, gae_lambda, bootstrap_truncations, device)
+    advantages = compute_gae(td_errors, terminations, truncations, gamma, gae_lambda, device)
     returns = advantages + values
     return advantages, returns, td_errors
 
