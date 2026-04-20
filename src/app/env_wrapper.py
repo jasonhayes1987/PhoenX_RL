@@ -442,7 +442,7 @@ class VectorNStepReward(VectorWrapper):
         self.goal_key = goal_key
         self.ach_goal_key = ach_goal_key
 
-        # Per-env deques (unchanged)
+        # Per-env deques
         self.n_states = [deque(maxlen=self.n) for _ in range(self.num_envs)]
         self.n_actions = [deque(maxlen=self.n) for _ in range(self.num_envs)]
         self.n_rewards = [deque(maxlen=self.n) for _ in range(self.num_envs)]
@@ -481,13 +481,11 @@ class VectorNStepReward(VectorWrapper):
 
     def step(self, actions: T.Tensor):
         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
-        # dones = terminations | truncations
+        
         rewards = T.as_tensor(rewards, device=self.device)
-        # dones = T.as_tensor(dones, device=device)
         actions = T.as_tensor(actions, device=self.device)
         terminations = T.as_tensor(terminations, device=self.device)
         truncations = T.as_tensor(truncations, device=self.device)
-
         dones = T.logical_or(terminations, truncations)
 
         for i in range(self.num_envs):
@@ -528,8 +526,8 @@ class VectorNStepReward(VectorWrapper):
                 state = self.current_states[self.obs_key][i] if self.obs_key is not None else self.current_states[i]
 
                 # ensure tensors (unchanged)
-                state = T.as_tensor(state, device=self.device)
-                next_state = T.as_tensor(next_state, device=self.device)
+                # state = T.as_tensor(state, device=self.device)
+                # next_state = T.as_tensor(next_state, device=self.device)
 
                 # Append current step
                 self.n_states[i].append(state)
@@ -573,16 +571,18 @@ class VectorNStepReward(VectorWrapper):
         rewards = self.format_trajectory(self.n_rewards, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
         terminations = self.format_trajectory(self.n_terminations, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
         truncations = self.format_trajectory(self.n_truncations, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
-        if self.goal_key:
-            desired_goals = self.format_trajectory(self.n_desired_goals, pad_mode="repeat")
-            state_achieved_goals = self.format_trajectory(self.n_state_achieved_goals, pad_mode="repeat")
-            next_state_achieved_goals = self.format_trajectory(self.n_next_state_achieved_goals, pad_mode="repeat")
+        # if self.goal_key:
+        #     desired_goals = self.format_trajectory(self.n_desired_goals, pad_mode="repeat")
+        #     state_achieved_goals = self.format_trajectory(self.n_state_achieved_goals, pad_mode="repeat")
+        #     next_state_achieved_goals = self.format_trajectory(self.n_next_state_achieved_goals, pad_mode="repeat")
 
         # Determine actual trajectory lengths to compute n-step returns
-        lengths = []
-        for d in self.n_terminations:
-            lengths.append(len(d))
-        lengths = T.tensor(lengths, device=self.device)
+        # lengths = []
+        # for d in self.n_terminations:
+        #     lengths.append(len(d))
+        # lengths = T.tensor(lengths, device=self.device)
+        lengths = T.tensor([len(d) for d in self.n_terminations], device=self.device)
+        valid_mask = lengths > 0
 
         trajectory = {
             'states': states,
@@ -592,11 +592,12 @@ class VectorNStepReward(VectorWrapper):
             'terminations': terminations,
             'truncations': truncations,
             'trajectory_lengths': lengths,
+            'valid_mask': valid_mask,
         }
         if self.goal_key:
-            trajectory['state_achieved_goals'] = state_achieved_goals
-            trajectory['next_state_achieved_goals'] = next_state_achieved_goals
-            trajectory['desired_goals'] = desired_goals
+            trajectory['state_achieved_goals'] = self.format_trajectory(self.n_state_achieved_goals, pad_mode="repeat")
+            trajectory['next_state_achieved_goals'] = self.format_trajectory(self.n_next_state_achieved_goals, pad_mode="repeat")
+            trajectory['desired_goals'] = self.format_trajectory(self.n_desired_goals, pad_mode="repeat")
         return trajectory
 
     # def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode:str|T.Tensor="repeat"):
@@ -633,11 +634,7 @@ class VectorNStepReward(VectorWrapper):
         for d in trajectory:
             seq = list(d)
             if len(seq) == 0:
-                # Phantom-step env — trainer will mask this out.
-                # Emit a zero placeholder of the right shape so T.stack works.
                 if ref is None:
-                    # All envs empty simultaneously — shouldn't happen in normal flow,
-                    # but fall back to pad_mode if it's a concrete tensor
                     if isinstance(pad_mode, T.Tensor):
                         seq = [pad_mode] * self.n
                     else:

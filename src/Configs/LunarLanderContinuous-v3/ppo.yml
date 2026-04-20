@@ -22,7 +22,7 @@ agent:
     value_coef: 0.5
     reward_clip: .inf
     bootstrap_truncations: true
-    log_level: INFO
+    log_level: DEBUG
     _diag_freq: 10
 
 env:
@@ -76,7 +76,7 @@ normalizers:
     config:
       clip_value: 10.0
       device: *device
-      log_level: INFO
+      log_level: DEBUG
       # kwargs
       _diag_freq: 10240
   state:
@@ -85,7 +85,7 @@ normalizers:
       clip_value: 10.0
       warmup_steps: 1000
       device: *device
-      log_level: INFO
+      log_level: DEBUG
       # kwargs
       _diag_freq: 10240
   reward:
@@ -94,7 +94,7 @@ normalizers:
       gamma: 0.99
       clip_value: 10.0
       device: *device
-      log_level: INFO
+      log_level: DEBUG
       # kwargs
       _diag_freq: 10240
 
@@ -128,13 +128,13 @@ entropy_schedule:
 #   start_value: *value_clip
 #   end_value: 0.01
 
-kl_adapter:
-  initial_beta: 0.5
-  target_kl: 0.01
-  scale_up: 2.0
-  scale_down: 0.5
-  kl_tolerance_high: 1.5
-  kl_tolerance_low: 0.5
+# kl_adapter:
+#   initial_beta: 0.5
+#   target_kl: 0.01
+#   scale_up: 2.0
+#   scale_down: 0.5
+#   kl_tolerance_high: 1.5
+#   kl_tolerance_low: 0.5
 
 buffer:
   type: RolloutBuffer
