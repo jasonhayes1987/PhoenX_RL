@@ -298,6 +298,10 @@ class Trainer:
             self.agent.critic.lr_scheduler.step(self.env.num_envs)
         if hasattr(self.agent, 'critic_b') and self.agent.critic_b and hasattr(self.agent.critic_b, 'lr_scheduler') and self.agent.critic_b.lr_scheduler:
             self.agent.critic_b.lr_scheduler.step(self.env.num_envs)
+        if hasattr(self.agent, 'noise_schedule') and self.agent.noise_schedule:
+            self.agent.noise_schedule.step(self.env.num_envs)
+        if hasattr(self.agent, 'target_noise_schedule') and self.agent.target_noise_schedule:
+            self.agent.target_noise_schedule.step(self.env.num_envs)
 
     def training_complete(self)->bool:
         """Checks if the training is complete."""
@@ -601,13 +605,18 @@ class OffPolicyTrainer(Trainer):
 
     def learn(self)->dict:
         """
-        Calls Agent.learn() passing samples from the buffer.
+        Calls Agent.learn() schedule.update times, passing samples from the buffer.
         
         Returns:
             dict: A dictionary containing the learn metrics.
         """
-        sample = self.buffer.sample(self.schedule.batch_size)
-        learn_metrics = self.agent.learn(self._step, sample)
+        total_samples = self.schedule.updates * self.schedule.batch_size
+        samples = self.buffer.sample(total_samples)
+        for update in range(self.schedule.updates):
+            lo_idx = update * self.schedule.batch_size
+            hi_idx = lo_idx + self.schedule.batch_size
+            sample = {k: (v[lo_idx:hi_idx] if v is not None else None) for k, v in samples.items()}
+            learn_metrics = self.agent.learn(self._step, sample)
         return learn_metrics
 
     def get_action(self,
@@ -626,16 +635,16 @@ class OffPolicyTrainer(Trainer):
         Returns:
             T.Tensor: actions.
         """
-        raw_actions = None
+        # raw_actions = None
         
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
             if (self._step is not None) and (self._step <= self.agent.warmup):
-                return self.env.action_space.sample(), raw_actions
+                return self.env.action_space.sample()
             # if random number is less than epsilon, sample random action
             if np.random.random() < self.agent.action_epsilon:
-                return self.env.action_space.sample(), raw_actions
+                return self.env.action_space.sample()
             # otherwise, sample action from policy
             else:
                 noise = self.agent.noise(self.env.action_space.shape)
@@ -647,19 +656,19 @@ class OffPolicyTrainer(Trainer):
                     noise *= self.agent.noise_schedule.get_factor()
                 
                 with T.no_grad():
-                    raw_actions, squashed_actions = self.agent.policy(states, goals)
+                    _, actions = self.agent.policy(states, goals)
                 
                 # Convert the action space bounds to a tensor on the same device
                 action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.agent.policy.device)
                 action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.agent.policy.device)
-                actions = (squashed_actions + noise).clip(action_space_low, action_space_high)
+                actions = (actions + noise).clip(action_space_low, action_space_high)
 
-                return actions.detach(), raw_actions
+                return actions.detach()
 
         else: # context == 'test'
             with T.no_grad():
-                raw_actions, squashed_actions = self.agent.target_policy(states, goals)
-            return squashed_actions.detach(), raw_actions
+                _, actions = self.agent.target_policy(states, goals)
+            return actions.detach()
 
         # else: # learn
         #     raw_actions, squashed_actions = self.agent.policy(states, goals)
@@ -681,17 +690,13 @@ class OffPolicyTrainer(Trainer):
         # Normalize observations and goals if normalizers
         obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._cur_obs.states, self._cur_obs.goals, self._cur_obs.ach_goals)
 
-        actions, _ = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
+        actions = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
         observation = self.env.step(actions)
 
         if observation.n_step_trajectory is not None:
-            traj = observation.n_step_trajectory
-            valid_steps = traj.get('valid_mask', traj['trajectory_lengths'] > 0)
-            if valid_steps.any():
-                masked_traj = {k: v[valid_steps] for k, v in traj.items() if k != 'valid_mask'}
-                self.buffer.add(**masked_traj)
+            self.buffer.add(**observation.n_step_trajectory)
         else:
-            raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper.")
+            raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using OffPolicyTrainer.")
         # else:
         #     # Add single transitions to the buffer
         #     self.buffer.add(
@@ -707,11 +712,11 @@ class OffPolicyTrainer(Trainer):
         #     )
 
         # Increment episode step and rewards
-        self._episode_steps[valid_steps] += 1
-        self._episode_scores[valid_steps] += observation.rewards.flatten()
+        self._episode_steps += 1
+        self._episode_scores += observation.rewards.flatten()
         # Add step metrics to step log
         step_log.update({
-            'step_reward': observation.rewards[valid_steps].mean().item()
+            'step_reward': observation.rewards.mean().item()
         })
 
         # Check if any env is done
@@ -771,8 +776,8 @@ class OffPolicyTrainer(Trainer):
                         self.add_to_normalizers()
                         self.update_schedulers()
 
-                    for _ in range(self.schedule.updates):
-                        learn_metrics = self.learn()
+                    # for _ in range(self.schedule.updates):
+                    learn_metrics = self.learn()
                     step_result['step_log'].update(learn_metrics)
 
                     # Update target networks
