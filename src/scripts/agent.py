@@ -106,6 +106,8 @@ def build_agent(config: dict, env: EnvWrapper):
         from scripts.ppo import build
     elif agent_type == "DDPG":
         from scripts.ddpg import build
+    elif agent_type == "TD3":
+        from scripts.td3 import build
     else:
         raise NotImplementedError(f"Agent builder for '{agent_type}' is not implemented yet.")
     return build(config, env)

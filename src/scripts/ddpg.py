@@ -19,7 +19,7 @@ def build(config: dict, env: EnvWrapper):
     # build critic model
     critic_config = config['models']['critic']
     critic_config['env'] = env
-    critic_config['lr_scheduler'] = ScheduleWrapper(**config['value_lr_schedule']) if config.get('value_lr_schedule', None) else None
+    critic_config['lr_scheduler'] = ScheduleWrapper(**config['critic_lr_schedule']) if config.get('critic_lr_schedule', None) else None
     if isinstance(env.single_action_space, gym.spaces.Discrete):
         critic = DiscreteCritic(**critic_config)
     elif isinstance(env.single_action_space, gym.spaces.Box):

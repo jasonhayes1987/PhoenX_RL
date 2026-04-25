@@ -434,228 +434,409 @@ class NStepReward(gym.Wrapper):
 #     def single_observation_space(self):
 #         return self.env.single_observation_space
 
+# class VectorNStepReward(VectorWrapper):
+#     def __init__(self, env, n: int, obs_key: str | None = None, goal_key: str | None = None, ach_goal_key: str | None = None):
+#         super().__init__(env)  # handles both gym.vector.VectorEnv and ManagerBasedRLEnv
+#         self.n = n
+#         self.obs_key = obs_key
+#         self.goal_key = goal_key
+#         self.ach_goal_key = ach_goal_key
+
+#         # Per-env deques
+#         self.n_states = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+#         self.n_actions = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+#         self.n_rewards = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+#         self.n_next_states = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+#         self.n_terminations = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+#         self.n_truncations = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+
+#         if self.goal_key:
+#             self.n_state_achieved_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+#             self.n_next_state_achieved_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+#             self.n_desired_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+
+#         self.current_states = None
+#         self.device = get_device()
+#         # Keep track of previous done steps to avoid adding terminal state as current state
+#         # and next state as reset state
+#         self.prev_done = T.zeros(self.num_envs, dtype=T.bool, device=self.device)
+
+#     def reset(self, **kwargs):
+#         states, infos = self.env.reset(**kwargs)
+#         # Clear env deques
+#         for i in range(self.num_envs):
+#             self.n_states[i].clear()
+#             self.n_actions[i].clear()
+#             self.n_rewards[i].clear()
+#             self.n_next_states[i].clear()
+#             self.n_terminations[i].clear()
+#             self.n_truncations[i].clear()
+#             if self.goal_key:
+#                 self.n_state_achieved_goals[i].clear()
+#                 self.n_next_state_achieved_goals[i].clear()
+#                 self.n_desired_goals[i].clear()
+#         self.current_states = states
+#         self.prev_done = T.zeros(self.num_envs, dtype=T.bool, device=self.device)
+#         infos.setdefault('n-step trajectory', {})
+#         return states, infos
+
+#     def step(self, actions: T.Tensor):
+#         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
+        
+#         rewards = T.as_tensor(rewards, device=self.device)
+#         actions = T.as_tensor(actions, device=self.device)
+#         terminations = T.as_tensor(terminations, device=self.device)
+#         truncations = T.as_tensor(truncations, device=self.device)
+#         dones = T.logical_or(terminations, truncations)
+
+#         for i in range(self.num_envs):
+#             if self.prev_done[i].item():
+#                 continue
+#             else:
+#                 next_state = next_states[self.obs_key][i] if self.obs_key is not None else next_states[i]
+#                 if self.goal_key:
+#                     goal = self.current_states[self.goal_key][i]
+#                     ach_goal = self.current_states[self.ach_goal_key][i]
+#                     next_ach_goal = next_states[self.ach_goal_key][i]
+
+#                 state = self.current_states[self.obs_key][i] if self.obs_key is not None else self.current_states[i]
+
+#                 # ensure tensors (unchanged)
+#                 # state = T.as_tensor(state, device=self.device)
+#                 # next_state = T.as_tensor(next_state, device=self.device)
+
+#                 # Append current step
+#                 self.n_states[i].append(state)
+#                 self.n_actions[i].append(actions[i])
+#                 self.n_rewards[i].append(rewards[i])
+#                 self.n_next_states[i].append(next_state)
+#                 self.n_terminations[i].append(terminations[i])
+#                 self.n_truncations[i].append(truncations[i])
+#                 if self.goal_key:
+#                     self.n_state_achieved_goals[i].append(ach_goal if self.ach_goal_key is not None else None)
+#                     self.n_next_state_achieved_goals[i].append(next_ach_goal if self.ach_goal_key is not None else None)
+#                     self.n_desired_goals[i].append(goal if self.goal_key is not None else None)
+
+#         # Build batched trajectory (unchanged)
+#         trajectory = self.build_trajectories()
+#         infos['n-step trajectory'] = trajectory
+
+#         # Clear done trajectories
+#         for i in range(self.num_envs):
+#             if dones[i].item():
+#                 self.n_states[i].clear()
+#                 self.n_actions[i].clear()
+#                 self.n_rewards[i].clear()
+#                 self.n_next_states[i].clear()
+#                 self.n_terminations[i].clear()
+#                 self.n_truncations[i].clear()
+#                 if self.goal_key:
+#                     self.n_state_achieved_goals[i].clear()
+#                     self.n_next_state_achieved_goals[i].clear()
+#                     self.n_desired_goals[i].clear()
+
+#         self.prev_done = dones
+#         self.current_states = next_states
+#         return next_states, rewards, terminations, truncations, infos
+
+#     def build_trajectories(self):
+#         """Construct batched n-step trajectory dict from per-env deques."""
+
+#         valid_trajs = [i for i in range(self.num_envs) if len(self.n_terminations[i]) > 0]
+#         if len(valid_trajs) == 0:
+#             return None
+#         states = self.format_trajectory(
+#             [self.n_states[i] for i in valid_trajs],
+#             pad_mode="repeat"
+#         )
+#         next_states = self.format_trajectory(
+#             [self.n_next_states[i] for i in valid_trajs],
+#             pad_mode="repeat"
+#         )
+#         actions = self.format_trajectory(
+#             [self.n_actions[i] for i in valid_trajs],
+#             pad_mode="repeat"
+#         )
+#         rewards = self.format_trajectory(
+#             [self.n_rewards[i] for i in valid_trajs],
+#             pad_mode=T.tensor(0.0, dtype=T.float32,device=self.device)
+#         )
+#         terminations = self.format_trajectory(
+#             [self.n_terminations[i] for i in valid_trajs],
+#             pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device)
+#         )
+#         truncations = self.format_trajectory(
+#             [self.n_truncations[i] for i in valid_trajs],
+#             pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device)
+#         )
+#         # if self.goal_key:
+#         #     desired_goals = self.format_trajectory(self.n_desired_goals, pad_mode="repeat")
+#         #     state_achieved_goals = self.format_trajectory(self.n_state_achieved_goals, pad_mode="repeat")
+#         #     next_state_achieved_goals = self.format_trajectory(self.n_next_state_achieved_goals, pad_mode="repeat")
+
+#         # Determine actual trajectory lengths to compute n-step returns
+#         # lengths = []
+#         # for d in self.n_terminations:
+#         #     lengths.append(len(d))
+#         # lengths = T.tensor(lengths, device=self.device)
+#         lengths = T.tensor([len(self.n_terminations[i]) for i in valid_trajs], device=self.device)
+
+#         trajectory = {
+#             'states': states,
+#             'actions': actions,
+#             'rewards': rewards,
+#             'next_states': next_states,
+#             'terminations': terminations,
+#             'truncations': truncations,
+#             'trajectory_lengths': lengths
+#         }
+#         if self.goal_key:
+#             trajectory['state_achieved_goals'] = self.format_trajectory(
+#                 [self.n_state_achieved_goals[i] for i in valid_trajs],
+#                 pad_mode="repeat"
+#             )
+#             trajectory['next_state_achieved_goals'] = self.format_trajectory(
+#                 [self.n_next_state_achieved_goals[i] for i in valid_trajs],
+#                 pad_mode="repeat"
+#             )
+#             trajectory['desired_goals'] = self.format_trajectory(
+#                 [self.n_desired_goals[i] for i in valid_trajs],
+#                 pad_mode="repeat"
+#             )
+#         return trajectory
+
+#     # def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode:str|T.Tensor="repeat"):
+#     #     """Format trajectory from per-env deques to batched tensor.
+
+#     #     Args:
+#     #         trajectory: List of deques containing tensors.
+#     #         pad_mode: Mode to pad the trajectory. "repeat" to repeat the last value or tensor to pad with passed value.
+
+#     #     Returns:
+#     #         Tensor: Batched trajectory.
+#     #     """
+#     #     trajs = []
+#     #     for d in trajectory:
+#     #         seq = list(d)
+#     #         if pad_mode == "repeat":
+#     #             padding = seq[-1]
+#     #         else:
+#     #             padding = pad_mode
+#     #         while len(seq) < self.n:
+#     #             seq.append(padding)
+#     #         trajs.append(T.stack(to_torch(seq, device=self.device), dim=0))
+#     #     return T.stack(trajs, dim=0)
+
+#     def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode: str | T.Tensor = "repeat"):
+#         # Find reference shape/dtype from any non-empty deque in this batch
+#         ref = None
+#         for d in trajectory:
+#             if len(d) > 0:
+#                 ref = d[0]
+#                 break
+
+#         trajs = []
+#         for d in trajectory:
+#             seq = list(d)
+#             if len(seq) == 0:
+#                 if ref is None:
+#                     if isinstance(pad_mode, T.Tensor):
+#                         seq = [pad_mode] * self.n
+#                     else:
+#                         raise RuntimeError("All envs in phantom state with no reference shape")
+#                 else:
+#                     zero = T.zeros_like(ref)
+#                     seq = [zero] * self.n
+#             else:
+#                 padding = seq[-1] if pad_mode == "repeat" else pad_mode
+#                 while len(seq) < self.n:
+#                     seq.append(padding)
+#             trajs.append(T.stack(to_torch(seq, device=self.device), dim=0))
+#         return T.stack(trajs, dim=0)
+
+#     @property
+#     def single_action_space(self):
+#         return self.env.single_action_space
+
+#     @property
+#     def single_observation_space(self):
+#         return self.env.single_observation_space
+
 class VectorNStepReward(VectorWrapper):
     def __init__(self, env, n: int, obs_key: str | None = None, goal_key: str | None = None, ach_goal_key: str | None = None):
-        super().__init__(env)  # handles both gym.vector.VectorEnv and ManagerBasedRLEnv
+        super().__init__(env)
         self.n = n
         self.obs_key = obs_key
         self.goal_key = goal_key
         self.ach_goal_key = ach_goal_key
+        self.device = get_device()
 
-        # Per-env deques
-        self.n_states = [deque(maxlen=self.n) for _ in range(self.num_envs)]
-        self.n_actions = [deque(maxlen=self.n) for _ in range(self.num_envs)]
-        self.n_rewards = [deque(maxlen=self.n) for _ in range(self.num_envs)]
-        self.n_next_states = [deque(maxlen=self.n) for _ in range(self.num_envs)]
-        self.n_terminations = [deque(maxlen=self.n) for _ in range(self.num_envs)]
-        self.n_truncations = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+        # Buffer pointers
+        self.head = T.zeros(self.num_envs, dtype=T.long, device=self.device)
+        self.length = T.zeros(self.num_envs, dtype=T.long, device=self.device)
+        self.prev_done = T.zeros(self.num_envs, dtype=T.bool, device=self.device)
 
-        if self.goal_key:
-            self.n_state_achieved_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
-            self.n_next_state_achieved_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
-            self.n_desired_goals = [deque(maxlen=self.n) for _ in range(self.num_envs)]
+        # Buffer storage (shape/dtype inferred from the first real step)
+        self._buf_states = None
+        self._buf_actions = None
+        self._buf_rewards = None
+        self._buf_next_states = None
+        self._buf_terminations = None
+        self._buf_truncations = None
+        self._buf_state_ach_goals = None
+        self._buf_next_state_ach_goals = None
+        self._buf_desired_goals = None
 
         self.current_states = None
-        self.device = get_device()
-        # Keep track of previous done steps to avoid adding terminal state as current state
-        # and next state as reset state
-        self.prev_done = T.zeros(self.num_envs, dtype=T.bool, device=self.device)
+
+        # Helper index tensors
+        self._t_idx = T.arange(self.n, device=self.device)
+        self._env_idx = T.arange(self.num_envs, device=self.device)
+        self._env_idx_nx1 = self._env_idx.unsqueeze(1).expand(self.num_envs, self.n)
 
     def reset(self, **kwargs):
         states, infos = self.env.reset(**kwargs)
-        # Clear env deques
-        for i in range(self.num_envs):
-            self.n_states[i].clear()
-            self.n_actions[i].clear()
-            self.n_rewards[i].clear()
-            self.n_next_states[i].clear()
-            self.n_terminations[i].clear()
-            self.n_truncations[i].clear()
-            if self.goal_key:
-                self.n_state_achieved_goals[i].clear()
-                self.n_next_state_achieved_goals[i].clear()
-                self.n_desired_goals[i].clear()
+        self.head.zero_()
+        self.length.zero_()
+        self.prev_done.zero_()
         self.current_states = states
         infos.setdefault('n-step trajectory', {})
         return states, infos
 
+    def _alloc_like(self, sample: T.Tensor) -> T.Tensor:
+        """(num_envs, *tail) -> (num_envs, n, *tail) pre-allocated buffer."""
+        tail = tuple(sample.shape[1:])
+        return T.zeros((self.num_envs, self.n, *tail), dtype=sample.dtype, device=self.device)
+
     def step(self, actions: T.Tensor):
         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
-        
-        rewards = T.as_tensor(rewards, device=self.device)
+
+        # Ensure tensors
         actions = T.as_tensor(actions, device=self.device)
+        rewards = T.as_tensor(rewards, device=self.device)
         terminations = T.as_tensor(terminations, device=self.device)
         truncations = T.as_tensor(truncations, device=self.device)
         dones = T.logical_or(terminations, truncations)
 
-        for i in range(self.num_envs):
-            # === IMPROVED FINAL-OBS HANDLING (robust for both old and new Gym/Isaac Lab keys) ===
-            # if dones[i].item():
-            #     final_obs_key = None
-            #     if "_final_obs" in infos and infos["_final_obs"][i]:
-            #         final_obs_key = "final_obs"
-            #     elif "final_observation" in infos and infos.get("_final_observation", [False]*self.num_envs)[i]:
-            #         final_obs_key = "final_observation"
-            #     elif "final_obs" in infos:
-            #         final_obs_key = "final_obs"
+        state_b = self.current_states[self.obs_key] if self.obs_key is not None else self.current_states
+        next_state_b = next_states[self.obs_key]        if self.obs_key is not None else next_states
+        state_b = T.as_tensor(state_b,      device=self.device)
+        next_state_b = T.as_tensor(next_state_b, device=self.device)
+        if self.goal_key:
+            goals_b = T.as_tensor(self.current_states[self.goal_key], device=self.device)
+            ach_goals_b = T.as_tensor(self.current_states[self.ach_goal_key], device=self.device)
+            next_ach_goals_b = T.as_tensor(next_states[self.ach_goal_key], device=self.device)
 
-            #     if final_obs_key:
-            #         final = infos[final_obs_key][i]
-            #         next_state = final[self.obs_key] if self.obs_key is not None else final
-            #         if self.goal_key:
-            #             goal = self.current_states[self.goal_key][i]
-            #             ach_goal = self.current_states[self.ach_goal_key][i]
-            #             next_ach_goal = infos['final_obs'][i][self.ach_goal_key]
-            
-                # else:
-                #     # fallback
-                #     next_state = next_states[self.obs_key][i] if self.obs_key is not None else next_states[i]
-                #     if self.goal_key:
-                #         goal = self.current_states[self.goal_key][i]
-                #         ach_goal = self.current_states[self.ach_goal_key][i]
-                #         next_ach_goal = next_states[self.ach_goal_key][i]
-            if self.prev_done[i].item():
-                continue
-            else:
-                next_state = next_states[self.obs_key][i] if self.obs_key is not None else next_states[i]
-                if self.goal_key:
-                    goal = self.current_states[self.goal_key][i]
-                    ach_goal = self.current_states[self.ach_goal_key][i]
-                    next_ach_goal = next_states[self.ach_goal_key][i]
+        # If first-time allocation (buf = None) set shapes from tensors
+        if self._buf_states is None:
+            self._buf_states = self._alloc_like(state_b)
+            self._buf_next_states = self._alloc_like(next_state_b)
+            self._buf_actions = self._alloc_like(actions)
+            self._buf_rewards = self._alloc_like(rewards)
+            self._buf_terminations = T.zeros((self.num_envs, self.n), dtype=terminations.dtype, device=self.device)
+            self._buf_truncations = T.zeros((self.num_envs, self.n), dtype=truncations.dtype,  device=self.device)
+            if self.goal_key:
+                self._buf_state_ach_goals = self._alloc_like(ach_goals_b)
+                self._buf_next_state_ach_goals = self._alloc_like(next_ach_goals_b)
+                self._buf_desired_goals = self._alloc_like(goals_b)
 
-                state = self.current_states[self.obs_key][i] if self.obs_key is not None else self.current_states[i]
+        # Only envs whose previous step was NOT terminal get a new entry appended.
+        active = ~self.prev_done
+        write_pos = self.head
 
-                # ensure tensors (unchanged)
-                # state = T.as_tensor(state, device=self.device)
-                # next_state = T.as_tensor(next_state, device=self.device)
+        env_idx = self._env_idx
+        self._buf_states[env_idx, write_pos] = state_b
+        self._buf_next_states[env_idx, write_pos] = next_state_b
+        self._buf_actions[env_idx, write_pos] = actions
+        self._buf_rewards[env_idx, write_pos] = rewards
+        self._buf_terminations[env_idx, write_pos] = terminations
+        self._buf_truncations[env_idx, write_pos] = truncations
+        if self.goal_key:
+            self._buf_state_ach_goals[env_idx, write_pos] = ach_goals_b
+            self._buf_next_state_ach_goals[env_idx, write_pos] = next_ach_goals_b
+            self._buf_desired_goals[env_idx, write_pos] = goals_b
 
-                # Append current step
-                self.n_states[i].append(state)
-                self.n_actions[i].append(actions[i])
-                self.n_rewards[i].append(rewards[i])
-                self.n_next_states[i].append(next_state)
-                self.n_terminations[i].append(terminations[i])
-                self.n_truncations[i].append(truncations[i])
-                if self.goal_key:
-                    self.n_state_achieved_goals[i].append(ach_goal if self.ach_goal_key is not None else None)
-                    self.n_next_state_achieved_goals[i].append(next_ach_goal if self.ach_goal_key is not None else None)
-                    self.n_desired_goals[i].append(goal if self.goal_key is not None else None)
+        # Advance pointer / length only for envs that actually appended.
+        self.head = T.where(active, (self.head + 1) % self.n, self.head)
+        self.length = T.where(active, T.clamp(self.length + 1, max=self.n), self.length)
 
-        # Build batched trajectory (unchanged)
-        trajectory = self.build_trajectories()
+        # Build the batched trajectory (valid envs only)
+        trajectory = self._build_trajectories()
         infos['n-step trajectory'] = trajectory
 
-        # Clear done trajectories
-        for i in range(self.num_envs):
-            if dones[i].item():
-                self.n_states[i].clear()
-                self.n_actions[i].clear()
-                self.n_rewards[i].clear()
-                self.n_next_states[i].clear()
-                self.n_terminations[i].clear()
-                self.n_truncations[i].clear()
-                if self.goal_key:
-                    self.n_state_achieved_goals[i].clear()
-                    self.n_next_state_achieved_goals[i].clear()
-                    self.n_desired_goals[i].clear()
+        # Clear on done
+        self.head = T.where(dones, T.zeros_like(self.head),   self.head)
+        self.length = T.where(dones, T.zeros_like(self.length), self.length)
 
         self.prev_done = dones
         self.current_states = next_states
         return next_states, rewards, terminations, truncations, infos
 
-    def build_trajectories(self):
-        """Construct batched n-step trajectory dict from per-env deques."""
-        states = self.format_trajectory(self.n_states, pad_mode="repeat")
-        next_states = self.format_trajectory(self.n_next_states, pad_mode="repeat")
-        actions = self.format_trajectory(self.n_actions, pad_mode="repeat")
-        rewards = self.format_trajectory(self.n_rewards, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
-        terminations = self.format_trajectory(self.n_terminations, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
-        truncations = self.format_trajectory(self.n_truncations, pad_mode=T.tensor(0.0, dtype=T.float32, device=self.device))
-        # if self.goal_key:
-        #     desired_goals = self.format_trajectory(self.n_desired_goals, pad_mode="repeat")
-        #     state_achieved_goals = self.format_trajectory(self.n_state_achieved_goals, pad_mode="repeat")
-        #     next_state_achieved_goals = self.format_trajectory(self.n_next_state_achieved_goals, pad_mode="repeat")
+    def _build_trajectories(self):
+        """
+        Produces tensors of shape (num_valid_envs, n, *) where num_valid_envs is the
+        number of envs with length > 0.
+          - pad_mode "repeat" (states / next_states / actions): positions beyond
+            `length` repeat the most recent valid entry.
+          - pad_mode 0 (rewards / terminations / truncations): zero-filled.
+        """
+        valid = self.length > 0
+        if not bool(valid.any()):
+            return None
 
-        # Determine actual trajectory lengths to compute n-step returns
-        # lengths = []
-        # for d in self.n_terminations:
-        #     lengths.append(len(d))
-        # lengths = T.tensor(lengths, device=self.device)
-        lengths = T.tensor([len(d) for d in self.n_terminations], device=self.device)
-        valid_mask = lengths > 0
+        n = self.n
+        t = self._t_idx
+        length = self.length
+        head = self.head
+        start = (head - length) % n
 
+        # (num_envs, n) — True where this slot holds a real entry
+        valid_mask = t.unsqueeze(0) < length.unsqueeze(1)
+
+        # For "repeat" padding, map indices past `length` to the last real slot.
+        last_valid = T.clamp(length - 1, min=0)
+        t_for_gather = T.where(
+            valid_mask,
+            t.unsqueeze(0).expand(self.num_envs, n),
+            last_valid.unsqueeze(1).expand(self.num_envs, n),
+        )
+        gather_idx = (start.unsqueeze(1) + t_for_gather) % n
+
+        env_idx = self._env_idx_nx1
+
+        # Repeat-padded
+        states_all = self._buf_states[env_idx, gather_idx]
+        next_states_all = self._buf_next_states[env_idx, gather_idx]
+        actions_all = self._buf_actions[env_idx, gather_idx]
+
+        # Zero-padded: gather first, then mask out invalid positions
+        rewards_all = self._buf_rewards[env_idx, gather_idx]
+        terminations_all = self._buf_terminations[env_idx, gather_idx]
+        truncations_all = self._buf_truncations[env_idx, gather_idx]
+        rewards_all = T.where(valid_mask, rewards_all, T.zeros_like(rewards_all))
+        terminations_all = T.where(valid_mask, terminations_all, T.zeros_like(terminations_all))
+        truncations_all = T.where(valid_mask, truncations_all, T.zeros_like(truncations_all))
+
+        if self.goal_key:
+            state_ach_goals_all = self._buf_state_ach_goals[env_idx, gather_idx]
+            next_state_ach_goals_all = self._buf_next_state_ach_goals[env_idx, gather_idx]
+            desired_goals_all = self._buf_desired_goals[env_idx, gather_idx]
+
+        # Filter to envs with data — one boolean-mask slice per tensor.
         trajectory = {
-            'states': states,
-            'actions': actions,
-            'rewards': rewards,
-            'next_states': next_states,
-            'terminations': terminations,
-            'truncations': truncations,
-            'trajectory_lengths': lengths,
-            'valid_mask': valid_mask,
+            'states': states_all[valid],
+            'actions': actions_all[valid],
+            'rewards': rewards_all[valid],
+            'next_states': next_states_all[valid],
+            'terminations': terminations_all[valid],
+            'truncations': truncations_all[valid],
+            'trajectory_lengths': length[valid],
         }
         if self.goal_key:
-            trajectory['state_achieved_goals'] = self.format_trajectory(self.n_state_achieved_goals, pad_mode="repeat")
-            trajectory['next_state_achieved_goals'] = self.format_trajectory(self.n_next_state_achieved_goals, pad_mode="repeat")
-            trajectory['desired_goals'] = self.format_trajectory(self.n_desired_goals, pad_mode="repeat")
+            trajectory['state_achieved_goals'] = state_ach_goals_all[valid]
+            trajectory['next_state_achieved_goals'] = next_state_ach_goals_all[valid]
+            trajectory['desired_goals'] = desired_goals_all[valid]
         return trajectory
-
-    # def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode:str|T.Tensor="repeat"):
-    #     """Format trajectory from per-env deques to batched tensor.
-
-    #     Args:
-    #         trajectory: List of deques containing tensors.
-    #         pad_mode: Mode to pad the trajectory. "repeat" to repeat the last value or tensor to pad with passed value.
-
-    #     Returns:
-    #         Tensor: Batched trajectory.
-    #     """
-    #     trajs = []
-    #     for d in trajectory:
-    #         seq = list(d)
-    #         if pad_mode == "repeat":
-    #             padding = seq[-1]
-    #         else:
-    #             padding = pad_mode
-    #         while len(seq) < self.n:
-    #             seq.append(padding)
-    #         trajs.append(T.stack(to_torch(seq, device=self.device), dim=0))
-    #     return T.stack(trajs, dim=0)
-
-    def format_trajectory(self, trajectory: List[deque[T.Tensor]], pad_mode: str | T.Tensor = "repeat"):
-        # Find reference shape/dtype from any non-empty deque in this batch
-        ref = None
-        for d in trajectory:
-            if len(d) > 0:
-                ref = d[0]
-                break
-
-        trajs = []
-        for d in trajectory:
-            seq = list(d)
-            if len(seq) == 0:
-                if ref is None:
-                    if isinstance(pad_mode, T.Tensor):
-                        seq = [pad_mode] * self.n
-                    else:
-                        raise RuntimeError("All envs in phantom state with no reference shape")
-                else:
-                    zero = T.zeros_like(ref)
-                    seq = [zero] * self.n
-            else:
-                padding = seq[-1] if pad_mode == "repeat" else pad_mode
-                while len(seq) < self.n:
-                    seq.append(padding)
-            trajs.append(T.stack(to_torch(seq, device=self.device), dim=0))
-        return T.stack(trajs, dim=0)
-
-    @property
-    def single_action_space(self):
-        return self.env.single_action_space
-
-    @property
-    def single_observation_space(self):
-        return self.env.single_observation_space
 
 class OneHotObservationWrapper(gym.ObservationWrapper):
     def __init__(self, env):
