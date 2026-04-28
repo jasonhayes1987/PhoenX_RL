@@ -7,7 +7,7 @@ schedule:
   config:
     unit: timestep
     units: &units 1000000
-    cycles: 1
+    # cycles: 1
     episodes: 1
     updates: 10
     batch_size: 2048
@@ -22,6 +22,7 @@ agent:
     noise_clip: 0.3
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
+    policy_update_delay: 2
     warmup: 10000
     N: &n 3
     log_level: DEBUG
@@ -70,17 +71,17 @@ models:
     optimizer_params: {type: Adam, params: {lr: &critic_lr 1.4e-3}}
     device: *device
 
-policy_lr_schedule:
-  schedule_type: "cosine"
-  steps: *units
-  start_value: *policy_lr
-  end_value: 1.0e-4
+# policy_lr_schedule:
+#   schedule_type: "cosine"
+#   steps: *units
+#   start_value: *policy_lr
+#   end_value: 1.0e-4
 
-critic_lr_schedule:
-  schedule_type: "cosine"
-  steps: *units
-  start_value: *critic_lr
-  end_value: 1.0e-4
+# critic_lr_schedule:
+#   schedule_type: "cosine"
+#   steps: *units
+#   start_value: *critic_lr
+#   end_value: 1.0e-4
 
 normalizers:
   state:
@@ -130,22 +131,22 @@ noise:
   config:
     stddev: &noise_stddev 0.2
 
-noise_schedule:
-  schedule_type: linear
-  steps: *units
-  start_value: *noise_stddev
-  end_value: 0.1
+# noise_schedule:
+#   schedule_type: linear
+#   steps: *units
+#   start_value: *noise_stddev
+#   end_value: 0.1
 
 target_noise:
   type: NormalNoise
   config:
     stddev: &target_noise_stddev 0.1
 
-target_noise_schedule:
-  schedule_type: linear
-  steps: *units
-  start_value: *target_noise_stddev
-  end_value: 0.05
+# target_noise_schedule:
+#   schedule_type: linear
+#   steps: *units
+#   start_value: *target_noise_stddev
+#   end_value: 0.05
 
 # curiosity:
 #   model_configs: {

@@ -110,13 +110,11 @@ buffer:
     device: *device
 
 schedule:
-  type: OnPolicySchedule
-  config:
-    unit: timestep
-    num_units: 500000
-    learn_unit: timestep
-    num_learn_units: 16384
-    seed: *seed
+  stop_unit: timestep
+  stop_units: 500000
+  learn_every_unit: timestep
+  learn_every: 16384
+  seed: *seed
 
 renderer:
   render_freq: 1000

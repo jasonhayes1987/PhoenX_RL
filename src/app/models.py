@@ -69,10 +69,15 @@ class Model(nn.Module):
         self.layers = nn.ModuleDict()
         self.optimizer_params = optimizer_params or {'type': 'Adam', 'params': {'lr': 0.001}}
         self.lr_scheduler = lr_scheduler
-        # self.obs_key = obs_key
-        # self.goal_key = goal_key
         self.device = get_device(device)
         self.logger = get_logger(self.__class__.__name__, level='INFO')
+
+        # Set references to env action and observation spaces
+        self.obs_space = (self.env.single_observation_space if hasattr(self.env, "single_observation_space") 
+                        else self.env.observation_space)
+        self.act_space = (self.env.single_action_space 
+                          if hasattr(self.env, "single_action_space") 
+                          else self.env.action_space)
 
         # Build the layers dynamically based on config
         for i, layer_info in enumerate(self.layer_config):
@@ -96,17 +101,16 @@ class Model(nn.Module):
                 a dummy input based on env.observation_space.shape. If your
                 environment is a 3D image (C, H, W), use (1, C, H, W).
         """
-        obs_space = (self.env.single_observation_space if hasattr(self.env, "single_observation_space") 
-                        else self.env.observation_space)
+
         # Dry run forward pass to initialize lazy modules
         # Check if the observation space is a dictionary AND contains goal-conditioned keys
-        is_goal_conditioned = (isinstance(obs_space, gym.spaces.Dict) and 
-                              self.env.obs_key in obs_space.spaces and 
-                              self.env.goal_key in obs_space.spaces)
+        is_goal_conditioned = (isinstance(self.obs_space, gym.spaces.Dict) and 
+                              self.env.obs_key in self.obs_space.spaces and 
+                              self.env.goal_key in self.obs_space.spaces)
         
         if is_goal_conditioned:
-            obs_shape = obs_space[self.env.obs_key].shape
-            goal_shape = obs_space[self.env.goal_key].shape
+            obs_shape = self.obs_space[self.env.obs_key].shape
+            goal_shape = self.obs_space[self.env.goal_key].shape
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
             goal_input = T.ones((32, *goal_shape), device=self.device, dtype=T.float)
             # Check if CriticModel instance to pass action dummy values
@@ -120,11 +124,11 @@ class Model(nn.Module):
                     _ = self.forward(state_input, goal_input)
         else:
             # Handle both regular Box spaces and non-goal-conditioned Dict spaces
-            if isinstance(obs_space, gym.spaces.Dict):
-                if self.env.obs_key in obs_space.spaces:
-                    obs_shape = obs_space.spaces[self.env.obs_key].shape
+            if isinstance(self.obs_space, gym.spaces.Dict):
+                if self.env.obs_key in self.obs_space.spaces:
+                    obs_shape = self.obs_space.spaces[self.env.obs_key].shape
             else:
-                obs_shape = obs_space.shape
+                obs_shape = self.obs_space.shape
             state_input = T.ones((32, *obs_shape), device=self.device, dtype=T.float)
             if isinstance(self, ContinuousCritic):
                 action_shape = self.env.single_action_space.shape
@@ -469,11 +473,7 @@ class StochasticDiscretePolicy(Model):
         self.temperature = temperature
         self.temperature_schedule = temperature_schedule
 
-        # Get the action space of the environment
-        # self.act_space = self.env.single_action_space if isinstance(self.env, GymnasiumWrapper) else self.env.action_space
-        self.act_space = (self.env.single_action_space 
-                          if hasattr(self.env, "single_action_space") 
-                          else self.env.action_space)
+        # Set reference to the number of actions in the environment
         self.num_actions = self.act_space.n
 
         # Create the output layer
@@ -635,11 +635,11 @@ class StochasticContinuousPolicy(Model):
         """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.distribution = distribution
-        # Get the action space of the environment
-        self.act_space = (self.env.single_action_space 
-                          if hasattr(self.env, "single_action_space") 
-                          else self.env.action_space)
         
+        # Set lower/upper bounds of action space to Tensors
+        self.act_space_low = T.tensor(self.act_space.low, dtype=T.float32, device=self.device)
+        self.act_space_high = T.tensor(self.act_space.high, dtype=T.float32, device=self.device)
+        # Set number of actions in the action space
         self.num_actions = self.act_space.shape[-1]
         # Create the output layer
         self.output_layer = nn.ModuleDict({
@@ -960,13 +960,13 @@ class ActorModel(Model):
     ):
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
-        # Set lower/upper bounds of environment attributes
-        self.env_action_low = T.tensor(self.env.single_action_space.low, dtype=T.float32, device=self.device)
-        self.env_action_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.device)
+        # Set lower/upper bounds of action space to Tensors
+        self.act_space_low = T.tensor(self.act_space.low, dtype=T.float32, device=self.device)
+        self.act_space_high = T.tensor(self.act_space.high, dtype=T.float32, device=self.device)
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
-            'actor_mu': nn.LazyLinear(self.env.single_action_space.shape[-1]),
+            'actor_mu': nn.LazyLinear(self.act_space.shape[-1]),
             'actor_pi': nn.Tanh()
         })
 
@@ -989,9 +989,9 @@ class ActorModel(Model):
 
         mu = self.output_layer["actor_mu"](x)
         pi = self.output_layer["actor_pi"](mu)
-        if not T.isinf(self.env_action_high).any() and not T.isinf(self.env_action_low).any():
+        if not T.isinf(self.act_space_high).any() and not T.isinf(self.act_space_low).any():
             # Map to actual [low,high] bounds of env
-            pi = self.env_action_low + (pi + 1.0) * 0.5 * (self.env_action_high - self.env_action_low)
+            pi = self.act_space_low + (pi + 1.0) * 0.5 * (self.act_space_high - self.act_space_low)
            
         return mu, pi
 
