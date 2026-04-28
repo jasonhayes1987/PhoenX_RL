@@ -101,17 +101,15 @@ normalizers:
 buffer:
   type: TrajectoryBuffer
   config:
-    buffer_size: 1000
+    buffer_size: 1001
     device: *device
 
 schedule:
-  type: OnPolicySchedule
-  config:
-    unit: timestep
-    num_units: 500000
-    learn_unit: trajectory
-    num_learn_units: 10
-    seed: *seed
+  stop_unit: timestep
+  stop_units: 500000
+  learn_every_unit: episode
+  learn_every: 10
+  seed: *seed
 
 renderer:
   render_freq: 1000 # episodes
