@@ -2,7 +2,7 @@ from abc import abstractmethod
 import torch as T
 import numpy as np
 import gymnasium as gym
-from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from .env_wrapper import Observation, EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 # from .utils import build_env_wrapper_obj
 from .torch_utils import get_device
 from typing import Optional, Tuple, List, Any, Dict
@@ -240,6 +240,19 @@ class ReplayBuffer(Buffer):
         # self.counter = 0
         self.gen = np.random.default_rng()
 
+    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
+        """
+        Record a transition into the buffer.
+
+        Args:
+            cur_observation: Observation: The observation of the current state.
+            **kwargs: Any: Additional arguments to pass to the add method.
+        """
+        if cur_observation.n_step_trajectory is not None:
+            self.add(**cur_observation.n_step_trajectory)
+        else:
+            raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using ReplayBuffer.")
+
     def add(
         self,
         states: T.Tensor,
@@ -379,6 +392,12 @@ class ReplayBuffer(Buffer):
 
     #     env = build_env_wrapper_obj(self.env.config)
     #     return ReplayBuffer(env, self.buffer_size, device)
+
+    def is_ready(self, batch_size: int, warmup: int) -> bool:
+        """
+        Check if the buffer is ready to sample.
+        """
+        return (self.counter >= warmup) and (self.counter >= batch_size)
     
     def get_config(self) -> Dict[str, Any]:
         config = super().get_config()
@@ -433,6 +452,19 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.sorted_indices = None
 
         # self.counter = 0
+
+    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
+        """
+        Record a transition into the buffer.
+
+        Args:
+            cur_observation: Observation: The observation of the current state.
+            **kwargs: Any: Additional arguments to pass to the add method.
+        """
+        if cur_observation.n_step_trajectory is not None:
+            self.add(**cur_observation.n_step_trajectory)
+        else:
+            raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using ReplayBuffer.")
 
     def add(
         self,
@@ -666,6 +698,29 @@ class RolloutBuffer(Buffer):
             self.state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.next_state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
 
+    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor) -> None:
+        """
+        Record a transition into the buffer.
+
+        Args:
+            cur_observation: Observation: The observation of the current state.
+            prev_observation: Observation: The observation of the previous state.
+            actions: T.Tensor: The actions taken.
+            prev_dones: T.Tensor: The previous dones of the environments.
+        """
+        self.add(
+            states=prev_observation.states,
+            actions=actions,
+            rewards=cur_observation.rewards,
+            next_states=cur_observation.states,
+            terminations=cur_observation.terminations,
+            truncations=cur_observation.truncations,
+            state_achieved_goals=prev_observation.ach_goals if prev_observation.ach_goals is not None else None,
+            next_state_achieved_goals=cur_observation.ach_goals if cur_observation.ach_goals is not None else None,
+            desired_goals=prev_observation.goals if prev_observation.goals is not None else None,
+            first_steps=prev_dones,
+        )
+
     def add(
         self,
         states: T.Tensor,
@@ -754,6 +809,12 @@ class RolloutBuffer(Buffer):
         """Reset the current index of each environment to zero."""
         self.cur_idx.zero_()
         self.first_steps.zero_()
+
+    def is_ready(self, **kwargs: Any) -> bool:
+        """
+        Check if the buffer is ready to sample. Always returns True.
+        """
+        return True
     
     def get_config(self) -> Dict[str, Any]:
         """Get buffer config."""
@@ -773,6 +834,29 @@ class TrajectoryBuffer(RolloutBuffer):
     ):
         super().__init__(env, buffer_size, device)
         self.completed_trajectories: List[Dict[str, T.Tensor]] = []
+
+    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor) -> None:
+        """
+        Record a transition into the buffer.
+
+        Args:
+            cur_observation: Observation: The observation of the current state.
+            prev_observation: Observation: The observation of the previous state.
+            actions: T.Tensor: The actions taken.
+            prev_dones: T.Tensor: The previous dones of the environments.
+        """
+        self.add(
+            states=prev_observation.states,
+            actions=actions,
+            rewards=cur_observation.rewards,
+            next_states=cur_observation.states,
+            terminations=cur_observation.terminations,
+            truncations=cur_observation.truncations,
+            state_achieved_goals=prev_observation.ach_goals if prev_observation.ach_goals is not None else None,
+            next_state_achieved_goals=cur_observation.ach_goals if cur_observation.ach_goals is not None else None,
+            desired_goals=prev_observation.goals if prev_observation.goals is not None else None,
+            first_steps=prev_dones,
+        )
 
     def add(
         self,
@@ -803,7 +887,6 @@ class TrajectoryBuffer(RolloutBuffer):
                 self.cur_idx[i] = 0
                 continue
 
-            # if idx > 0 and (self.terminations[idx - 1, i].item() or self.truncations[idx - 1, i].item()):
             trajectory = {
                 "states": self.states[:idx, i][valid_steps].clone(),
                 "actions": self.actions[:idx, i][valid_steps].clone(),

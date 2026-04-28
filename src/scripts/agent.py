@@ -13,7 +13,7 @@ from app.buffer import Buffer
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
-from app.trainer import OnPolicySchedule, OnPolicyTrainer, OffPolicySchedule, OffPolicyTrainer
+from app.trainer import TrainingSchedule, OnPolicyTrainer, OffPolicyTrainer
 
 
 def load_config(config_file: str | Path) -> dict:
@@ -86,16 +86,8 @@ def build_schedule(config: dict):
     if not schedule_spec:
         raise ValueError("Config is missing the required 'schedule' section.")
 
-    schedule_type = schedule_spec["type"]
-    schedule_kwargs = dict(schedule_spec.get("config", {}))
-    if schedule_type == "OnPolicySchedule":
-        return OnPolicySchedule(**schedule_kwargs)
-    elif schedule_type == "OffPolicySchedule":
-        return OffPolicySchedule(**schedule_kwargs)
-
-    raise ValueError(f"Unsupported schedule type: {schedule_type}")
-
-
+    return TrainingSchedule(**schedule_spec)
+    
 def build_agent(config: dict, env: EnvWrapper):
     agent_type = config["agent"]["type"]
     if agent_type == "ActorCritic":

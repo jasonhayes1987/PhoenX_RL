@@ -5,7 +5,7 @@ provides helper functions for loading any subclass of type Agent."""
 from abc import abstractmethod
 import json
 import os
-from typing import Optional, Dict, List, TypeAlias
+from typing import Optional, Dict, List, TypeAlias, Any
 from pathlib import Path
 import time
 from collections import deque
@@ -334,7 +334,41 @@ class Reinforce(OnPolicyAgent):
         except Exception as e:
             self.logger.error(f"Error in Reinforce.__init__: {e}", exc_info=True)
 
-    def learn(self, step: int, completed_trajectories: list[dict]):
+    def act(
+        self,
+        states: np.ndarray | T.Tensor,
+        goals: np.ndarray | T.Tensor | None = None,
+        context: str = 'train',
+        **kwargs: Any
+    ) -> T.Tensor:
+        """
+        Select an action based on the current policy.
+        Returns actions that are already scaled to the environment's action space.
+
+        Args:
+            states: np.ndarray | T.Tensor: The current states.
+            goals: np.ndarray | T.Tensor | None: The current goals.
+            context: str: The context of the action (train, test).
+        
+        Returns:
+            T.Tensor: actions.
+        """
+        
+        if context == 'train':
+            dist = self.policy(states, goals)
+            actions = dist.sample()
+
+        elif context == 'test':
+            with T.no_grad():
+                dist = self.policy(states, goals)
+                actions = self.policy.get_mean_actions(dist)
+            
+        else:
+            raise ValueError(f"Invalid context: {context}")
+
+        return actions
+
+    def learn(self, step: int, completed_trajectories: list[dict], **kwargs: Any):
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -346,11 +380,10 @@ class Reinforce(OnPolicyAgent):
         all_states = [trajectory['states'] for trajectory in completed_trajectories]
         all_actions = [trajectory['actions'] for trajectory in completed_trajectories]
         all_rewards = [trajectory['rewards'] for trajectory in completed_trajectories]
-        all_terminations = [trajectory['terminations'] for trajectory in completed_trajectories]
-        all_truncations = [trajectory['truncations'] for trajectory in completed_trajectories]
+        # all_terminations = [trajectory['terminations'] for trajectory in completed_trajectories]
+        # all_truncations = [trajectory['truncations'] for trajectory in completed_trajectories]
 
-        for i, (rewards, terminations, truncations) in enumerate(zip(all_rewards, all_terminations, all_truncations)):
-            dones = T.logical_or(terminations, truncations)
+        for i, rewards in enumerate(all_rewards):
             if self.reward_normalizer:
                 rewards = self.reward_normalizer.normalize(rewards)
             all_rewards[i] = rewards
@@ -432,14 +465,14 @@ class Reinforce(OnPolicyAgent):
 
         if should_log_diag or nonfinite_values > 0:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
                 summarize_tensor(actions, "actions"),
                 summarize_tensor(rewards, "rewards"),
-                summarize_tensor(terminations, "terminations"),
-                summarize_tensor(truncations, "truncations"),
+                # summarize_tensor(terminations, "terminations"),
+                # summarize_tensor(truncations, "truncations"),
                 summarize_tensor(values, "values"),
                 summarize_tensor(advantages, "advantages"),
                 summarize_tensor(returns, "returns"),
@@ -598,7 +631,41 @@ class ActorCritic(OnPolicyAgent):
         except Exception as e:
             self.logger.error(f"Error in ActorCritic init: {e}", exc_info=True)
 
-    def learn(self, step:int, rollouts:dict):
+    def act(
+        self,
+        states: np.ndarray | T.Tensor,
+        goals: np.ndarray | T.Tensor | None = None,
+        context: str = 'train',
+        **kwargs: Any
+    ) -> T.Tensor:
+        """
+        Select an action based on the current policy.
+        Returns actions that are already scaled to the environment's action space.
+
+        Args:
+            states: np.ndarray | T.Tensor: The current states.
+            goals: np.ndarray | T.Tensor | None: The current goals.
+            context: str: The context of the action (train, test).
+        
+        Returns:
+            T.Tensor: actions.
+        """
+        
+        if context == 'train':
+            dist = self.policy(states, goals)
+            actions = dist.sample()
+
+        elif context == 'test':
+            with T.no_grad():
+                dist = self.policy(states, goals)
+                actions = self.policy.get_mean_actions(dist)
+            
+        else:
+            raise ValueError(f"Invalid context: {context}")
+
+        return actions
+
+    def learn(self, step:int, rollouts:dict, **kwargs: Any):
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -679,7 +746,6 @@ class ActorCritic(OnPolicyAgent):
 
         # Filter phantom steps
         valid_idx = valid_indices.squeeze(-1)
-        num_valid = valid_idx.numel()
         states_flat = states_flat[valid_idx]
         next_states_flat = next_states_flat[valid_idx]
         actions_flat = actions_flat[valid_idx]
@@ -996,6 +1062,40 @@ class PPO(OnPolicyAgent):
             self.bootstrap_truncations = bootstrap_truncations
         except Exception as e:
             self.logger.error(f"Error in PPO.__init__: {e}", exc_info=True)
+
+    def act(
+        self,
+        states: np.ndarray | T.Tensor,
+        goals: np.ndarray | T.Tensor | None = None,
+        context: str = 'train',
+        **kwargs: Any
+    ) -> T.Tensor:
+        """
+        Select an action based on the current policy.
+        Returns actions that are already scaled to the environment's action space.
+
+        Args:
+            states: np.ndarray | T.Tensor: The current states.
+            goals: np.ndarray | T.Tensor | None: The current goals.
+            context: str: The context of the action (train, test).
+        
+        Returns:
+            T.Tensor: actions.
+        """
+        
+        if context == 'train':
+            dist = self.policy(states, goals)
+            actions = dist.sample()
+
+        elif context == 'test':
+            with T.no_grad():
+                dist = self.policy(states, goals)
+                actions = self.policy.get_mean_actions(dist)
+            
+        else:
+            raise ValueError(f"Invalid context: {context}")
+
+        return actions
 
     def learn(self, step:int, rollouts:dict, batch_size:int, learning_epochs:int):
         """
@@ -1419,16 +1519,13 @@ class OffPolicyAgent(Agent):
     """Base class for all off-policy agents."""
     def __init__(
         self,
-        policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
+        policy: ActorModel|StochasticDiscretePolicy|StochasticContinuousPolicy,
         critic: ContinuousCritic|DiscreteCritic,
         discount: float=0.99,
-        tau: float=0.001, # Target network update rate
+        tau: float=0.001,
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
         reward_normalizer: RewardNorm|None = None,
-        noise: Noise|None = None,
-        noise_schedule: ScheduleWrapper|None = None,
-        noise_clip: float = 0.5,
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
         warmup: int=1000,
@@ -1446,9 +1543,6 @@ class OffPolicyAgent(Agent):
         self.state_normalizer = state_normalizer
         self.goal_normalizer = goal_normalizer
         self.reward_normalizer = reward_normalizer
-        self.noise = noise
-        self.noise_schedule = noise_schedule
-        self.noise_clip = noise_clip
         self.policy_grad_clip = policy_grad_clip
         self.critic_grad_clip = critic_grad_clip
         self.warmup = warmup
@@ -1484,9 +1578,6 @@ class OffPolicyAgent(Agent):
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
-            "noise": self.noise.get_config() if self.noise is not None else None,
-            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
-            "noise_clip": self.noise_clip,
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
             "warmup": self.warmup,
@@ -1530,9 +1621,6 @@ class DDPG(OffPolicyAgent):
                 state_normalizer=state_normalizer,
                 goal_normalizer=goal_normalizer,
                 reward_normalizer=reward_normalizer,
-                noise=noise,
-                noise_schedule=noise_schedule,
-                noise_clip=noise_clip,
                 policy_grad_clip=policy_grad_clip,
                 critic_grad_clip=critic_grad_clip,
                 warmup=warmup,
@@ -1545,6 +1633,9 @@ class DDPG(OffPolicyAgent):
             self.target_policy = self.policy.clone(device=self.policy.device)
             self.target_critic = self.critic.clone(device=self.critic.device)
             self.action_epsilon = action_epsilon
+            self.noise = noise
+            self.noise_schedule = noise_schedule
+            self.noise_clip = noise_clip
 
         except Exception as e:
             self.logger.error(f"Error in DDPG init: {e}", exc_info=True)
@@ -1600,6 +1691,57 @@ class DDPG(OffPolicyAgent):
     #     self.critic_model.load_state_dict(params['critic_model'])
     #     self.target_actor_model.load_state_dict(params['target_actor_model'])
     #     self.target_critic_model.load_state_dict(params['target_critic_model'])
+
+    def act(
+        self,
+        states: np.ndarray | T.Tensor,
+        goals: np.ndarray | T.Tensor | None = None,
+        context: str = 'train',
+        step: int | None = None
+    ) -> T.Tensor | np.ndarray:
+        """
+        Select an action based on the current policy.
+
+        Args:
+            states: T.Tensor | np.ndarray: The current states.
+            goals: T.Tensor | np.ndarray | None: The current goals.
+            context: str: The context of the action (train, test).
+            step: int | None: The current step.
+        
+        Returns:
+            T.Tensor | np.ndarray: actions.
+        """
+        
+        # If training
+        if context == 'train':
+            # If warmup, sample random action from action space
+            if (step is not None) and (step <= self.warmup):
+                return self.policy.env.action_space.sample()
+            # if random number is less than epsilon, sample random action
+            if np.random.random() < self.action_epsilon:
+                return self.policy.env.action_space.sample()
+            # otherwise, sample action from policy
+            else:
+                noise = self.noise(self.policy.env.action_space.shape)
+                # Apply noise clipping if needed
+                if self.noise_clip > 0:
+                    noise = noise.clamp(-self.noise_clip, self.noise_clip)
+                # Apply noise schedule if needed
+                if self.noise_schedule:
+                    noise *= self.noise_schedule.get_factor()
+                
+                with T.no_grad():
+                    _, actions = self.policy(states, goals)
+                
+                # Convert the action space bounds to a tensor on the same device
+                actions = (actions + noise).clip(self.policy.act_space_low, self.policy.act_space_high)
+
+                return actions.detach()
+
+        else: # context == 'test'
+            with T.no_grad():
+                _, actions = self.target_policy(states, goals)
+            return actions.detach()
 
     def soft_update_targets(self):
         self.soft_update(self.policy, self.target_policy)
@@ -2113,7 +2255,12 @@ class DDPG(OffPolicyAgent):
     def get_config(self):
         config = super().get_config()
         config["type"] = self.__class__.__name__
-        config["config"].update({"action_epsilon": self.action_epsilon})
+        config["config"].update({
+            "action_epsilon": self.action_epsilon,
+            "noise": self.noise.get_config() if self.noise is not None else None,
+            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
+            "noise_clip": self.noise_clip
+        })
         return config
 
 
@@ -2193,6 +2340,7 @@ class TD3(OffPolicyAgent):
         noise_clip: float = 0.5,
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
+        policy_update_delay: int = 2,
         warmup: int = 1000,
         N: int=1, # N-steps
         curiosity: ICM|None = None,
@@ -2209,9 +2357,6 @@ class TD3(OffPolicyAgent):
                 state_normalizer=state_normalizer,
                 goal_normalizer=goal_normalizer,
                 reward_normalizer=reward_normalizer,
-                noise=noise,
-                noise_schedule=noise_schedule,
-                noise_clip=noise_clip,
                 policy_grad_clip=policy_grad_clip,
                 critic_grad_clip=critic_grad_clip,
                 warmup=warmup,
@@ -2229,8 +2374,12 @@ class TD3(OffPolicyAgent):
             self.target_critic = self.critic.clone(device=self.critic.device)
             self.target_critic_b = self.critic_b.clone(device=self.critic_b.device)
             self.action_epsilon = action_epsilon
+            self.noise = noise
+            self.noise_schedule = noise_schedule
+            self.noise_clip = noise_clip
             self.target_noise = target_noise
             self.target_noise_schedule = target_noise_schedule
+            self.policy_update_delay = policy_update_delay
 
         except Exception as e:
             self.logger.error(f"Error in TD3 init: {e}", exc_info=True)
@@ -2339,6 +2488,57 @@ class TD3(OffPolicyAgent):
     #     else: # learn
     #         raw_actions, squashed_actions = self.policy(states, goals)
     #         return squashed_actions, raw_actions, dist
+
+    def act(
+        self,
+        states: np.ndarray | T.Tensor,
+        goals: np.ndarray | T.Tensor | None = None,
+        context: str = 'train',
+        step: int | None = None
+    ) -> T.Tensor | np.ndarray:
+        """
+        Select an action based on the current policy.
+
+        Args:
+            states: T.Tensor | np.ndarray: The current states.
+            goals: T.Tensor | np.ndarray | None: The current goals.
+            context: str: The context of the action (train, test).
+            step: int | None: The current step.
+        
+        Returns:
+            T.Tensor | np.ndarray: actions.
+        """
+        
+        # If training
+        if context == 'train':
+            # If warmup, sample random action from action space
+            if (step is not None) and (step <= self.warmup):
+                return self.policy.env.action_space.sample()
+            # if random number is less than epsilon, sample random action
+            if np.random.random() < self.action_epsilon:
+                return self.policy.env.action_space.sample()
+            # otherwise, sample action from policy
+            else:
+                noise = self.noise(self.policy.env.action_space.shape)
+                # Apply noise clipping if needed
+                if self.noise_clip > 0:
+                    noise = noise.clamp(-self.noise_clip, self.noise_clip)
+                # Apply noise schedule if needed
+                if self.noise_schedule:
+                    noise *= self.noise_schedule.get_factor()
+                
+                with T.no_grad():
+                    _, actions = self.policy(states, goals)
+                
+                # Convert the action space bounds to a tensor on the same device
+                actions = (actions + noise).clip(self.policy.act_space_low, self.policy.act_space_high)
+
+                return actions.detach()
+
+        else: # context == 'test'
+            with T.no_grad():
+                _, actions = self.target_policy(states, goals)
+            return actions.detach()
 
     def soft_update_targets(self):
         self.soft_update(self.policy, self.target_policy)
@@ -2500,8 +2700,9 @@ class TD3(OffPolicyAgent):
                 noise *= self.target_noise_schedule.get_factor()
                 learn_metrics.update({'target_noise_anneal': self.target_noise_schedule.get_factor()})   
                 
-            # Add noise to target actions
+            # Add noise to target actions and clamp to env action space
             target_actions = target_actions + noise
+            target_actions = target_actions.clamp(self.policy.act_space_low, self.policy.act_space_high)
             
             target_critic_values_a = self.target_critic(
                 next_states[:,-1,:],
@@ -2598,7 +2799,8 @@ class TD3(OffPolicyAgent):
         actor_loss.backward()
         # Clip policy gradient
         policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
-        self.policy.optimizer.step()
+        if self._learn_count % self.policy_update_delay == 0:
+            self.policy.optimizer.step()
 
         # Log diag data
         if should_log_diag:
@@ -2694,8 +2896,12 @@ class TD3(OffPolicyAgent):
         config["config"].update({
             "action_epsilon": self.action_epsilon,
             "critic_b": self.critic_b.get_config(),
+            "noise": self.noise.get_config() if self.noise is not None else None,
+            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
+            "noise_clip": self.noise_clip,
             "target_noise": self.target_noise.get_config() if self.target_noise is not None else None,
             "target_noise_schedule": self.target_noise_schedule.get_config() if self.target_noise_schedule is not None else None,
+            "policy_update_delay": self.policy_update_delay,
         })
         return config
 
@@ -2751,6 +2957,7 @@ class TD3(OffPolicyAgent):
             noise_clip=config["noise_clip"],
             policy_grad_clip=config["policy_grad_clip"],
             critic_grad_clip=config["critic_grad_clip"],
+            policy_update_delay=config["policy_update_delay"],
             warmup=config["warmup"],
             N=config["N"],
             curiosity=curiosity,
@@ -2780,9 +2987,9 @@ class SAC(Agent):
         value_grad_clip: float = float('inf'),
         warmup: int=1000,
         N: int=1,
-        curiosity: Optional[ICM] = None,
+        curiosity: ICM|None = None,
         save_dir: str = "models",
-        device: Optional[str | T.device] = None,
+        device: str|T.device|None = None,
         **kwargs
     ):
         try:
@@ -2970,6 +3177,44 @@ class SAC(Agent):
     #                 log_probs = log_probs.detach()
             
     #         return actions, log_probs, dist
+
+    def act(
+        self,
+        states: np.ndarray | T.Tensor,
+        goals: np.ndarray | T.Tensor | None = None,
+        context: str = 'train',
+        step: int | None = None
+    ) -> T.Tensor | np.ndarray:
+        """
+        Select an action based on the current policy.
+
+        Args:
+            states: T.Tensor | np.ndarray: The current states.
+            goals: T.Tensor | np.ndarray | None: The current goals.
+            context: str: The context of the action (train, test).
+            step: int | None: The current step.
+        
+        Returns:
+            T.Tensor | np.ndarray: actions.
+        """
+        
+        if context == 'train':
+            # If warmup, sample random action from action space
+            if (step is not None) and (step <= self.warmup):
+                return self.policy.env.action_space.sample()
+            # otherwise, sample action from policy
+            dist = self.policy(states, goals)
+            actions = dist.sample()
+
+        elif context == 'test':
+            with T.no_grad():
+                dist = self.policy(states, goals)
+                actions = self.policy.get_mean_actions(dist)
+            
+        else:
+            raise ValueError(f"Invalid context: {context}")
+
+        return actions
 
     def soft_update_targets(self):
         self.soft_update(self.critic, self.target_critic)
