@@ -1,34 +1,41 @@
-n: &n 1 # n-step reward
-obs_key: &obs_key null
-goal_key: &goal_key null
-achieved_goal_key: &achieved_goal_key null
 device: &device "cuda"
-seed: &seed 42
-save_dir: "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLander-v3_2/SAC/"
-log_level: "info"
+save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/SAC/
+log_level: INFO
+
+schedule:
+  stop_unit: timestep
+  stop_units: 500000
+  learn_every_unit: timestep
+  learn_every: 64
+  seed: &seed 42
 
 agent:
-  discount: 0.99
-  tau: 0.005
-  alpha: 0.05
-  auto_entropy_tuning: false
-  alpha_lr: 0.0003
-  batch_size: 256
-  grad_clip: 1.0
-  warmup: 10000
-  N: *n
+  type: SAC
+  config:
+    discount: 0.99
+    tau: 0.005
+    entropy_coefficient: 0.05
+    auto_entropy_tuning: false
+    entropy_lr: 0.0003
+    policy_grad_clip: 1.0
+    critic_grad_clip: 1.0
+    warmup: 10000
+    N: &n 3
+    log_level: DEBUG
+    _diag_freq: 1000
 
 env:
-  type: "gymnasium" # "isaacsim" or "gymnasium"
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    cfg: "LunarLander-v3"
-    num_envs: 4
-    wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *achieved_goal_key}}]
+    cfg: LunarLanderContinuous-v3
+    num_envs: 64
+    obs_key: &obs_key null
+    goal_key: &goal_key null
+    ach_goal_key: &ach_goal_key null
+    wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *ach_goal_key}}]
     render_mode: null
     seed: *seed
-    obs_key: *obs_key
-    goal_key: *goal_key
 
 models:
   policy:
@@ -43,15 +50,15 @@ models:
       - type: dense
         params: {kernel: default, kernel_params: {}}
     optimizer_params: {type: Adam, params: {lr: 0.0003}}
-    distribution: categorical
-    obs_key: *obs_key
+    distribution: normal
     device: *device
 
-  critic_a:
+  critic:
     layer_config:
       - type: dense
         params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
+    merged_config:
       - type: dense
         params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
@@ -59,7 +66,6 @@ models:
       - type: dense
         params: {kernel: default, kernel_params: {}}
     optimizer_params: {type: Adam, params: {lr: 0.0003}}
-    obs_key: *obs_key
     device: *device
 
   critic_b:
@@ -67,6 +73,7 @@ models:
       - type: dense
         params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
+    merged_config:
       - type: dense
         params: {units: 256, kernel: default, kernel_params: {}}
       - type: relu
@@ -74,32 +81,39 @@ models:
       - type: dense
         params: {kernel: default, kernel_params: {}}
     optimizer_params: {type: Adam, params: {lr: 0.0003}}
-    obs_key: *obs_key
     device: *device
 
-# schedulers:
-#   policy_lr_schedule:
-#     type: "linear"
-#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
-#   critic_a_lr_schedule:
-#     type: "linear"
-#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
-#   critic_b_lr_schedule:
-#     type: "linear"
-#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
-#   value_lr_schedule:
-#     type: "linear"
-#     params: {start_factor: 1.0, end_factor: 0.02, total_iters: 15000}
+# policy_lr_schedule:
+#   schedule_type: "cosine"
+#   steps: *units
+#   start_value: *policy_lr
+#   end_value: 1.0e-4
 
-# normalizers:
-#   state:
-#     momentum: 0.99
-#     update_freq: 200
-#     clip_range: 5.0
-#   goal:
-#     momentum: 0.99
-#     update_freq: 200
-#     clip_range: 5.0
+# critic_lr_schedule:
+#   schedule_type: "cosine"
+#   steps: *units
+#   start_value: *critic_lr
+#   end_value: 1.0e-4
+
+normalizers:
+  state:
+    type: RunningNorm
+    config:
+      clip_value: 10.0
+      warmup_steps: 5000
+      device: *device
+      log_level: DEBUG
+      # kwargs
+      _diag_freq: 10000
+  # reward:
+  #   type: RewardNorm
+  #   config:
+  #     gamma: 0.99
+  #     clip_value: 10.0
+  #     device: *device
+  #     log_level: DEBUG
+  #     # kwargs
+  #     _diag_freq: 10000
 
 # replay_buffer:
 #   type: PrioritizedReplayBuffer
@@ -117,13 +131,11 @@ models:
 #     N: *n
 #     device: *device
 
-replay_buffer:
+buffer:
   type: ReplayBuffer
   config:
     buffer_size: 1000000
     N: *n
-    obs_key: *obs_key
-    goal_key: *goal_key
     device: *device
 
 
@@ -164,19 +176,10 @@ replay_buffer:
 #   extrinsic_threshold: 0
 #   device: *device
 
+renderer:
+  render_freq: 500 # episodes
+  save_dir: *save_dir
+
 callbacks:
   - type: "WandbCallback"
-    config: {project_name: "LunarLander-v3"}
-
-train_config:
-  load_weights: false
-  num_episodes: 2000
-  steps_per_learn: 1
-  render_freq: 100
-  seed: *seed
-
-test_config:
-  load_weights: true
-  num_episodes: 20
-  render_freq: 1
-  seed: 42
+    config: {project_name: "LunarLanderContinuous-v3"}

@@ -29,10 +29,10 @@ agent:
     _diag_freq: 1000
 
 env:
-  type: "envpool" # "isaacsim" or "gymnasium" or "envpool"
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    cfg: "LunarLanderContinuous-v3"
+    cfg: LunarLanderContinuous-v3
     num_envs: 64
     obs_key: &obs_key null
     goal_key: &goal_key null
@@ -93,6 +93,7 @@ normalizers:
       log_level: DEBUG
       # kwargs
       _diag_freq: 10000
+      
   # reward:
   #   type: RewardNorm
   #   config:
