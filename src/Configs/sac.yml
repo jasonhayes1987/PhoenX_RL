@@ -7,6 +7,8 @@ schedule:
   stop_units: 500000
   learn_every_unit: timestep
   learn_every: 64
+  batch_size: 256
+  warmup_steps: 10000
   seed: &seed 42
 
 agent:
@@ -19,7 +21,6 @@ agent:
     entropy_lr: 0.0003
     policy_grad_clip: 1.0
     critic_grad_clip: 1.0
-    warmup: 10000
     N: &n 3
     log_level: DEBUG
     _diag_freq: 1000
