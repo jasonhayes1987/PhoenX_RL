@@ -230,6 +230,7 @@ class OnPolicyAgent(Agent):
         entropy_schedule: ScheduleWrapper|None = None,
         auto_entropy_tuning: bool=True,
         entropy_lr: float=3e-4, # Only used if auto entropy = True
+        target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
         save_dir: str = "models/",
         device: Optional[str | T.device] = None,
         # log_level: str = 'info',
@@ -247,11 +248,12 @@ class OnPolicyAgent(Agent):
         self.entropy_schedule = entropy_schedule
         self.auto_entropy_tuning = auto_entropy_tuning
         self.entropy_lr = entropy_lr
+        self.target_entropy_scale = target_entropy_scale
         if self.auto_entropy_tuning:
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
                 self.target_entropy = -float(self.policy.num_actions)
             else: # Discrete actor
-                self.target_entropy = 0.98 * T.log(T.tensor(self.policy.num_actions, dtype=T.float32, device=self.device)).item()
+                self.target_entropy = self.target_entropy_scale * T.log(T.tensor(self.policy.num_actions, dtype=T.float32, device=self.device)).item()
             self.log_alpha = T.zeros(1, requires_grad=True, device=self.device)
             self.entropy_optimizer = T.optim.Adam([self.log_alpha], lr=self.entropy_lr)
 
@@ -275,6 +277,7 @@ class OnPolicyAgent(Agent):
             "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
             "auto_entropy_tuning": self.auto_entropy_tuning,
             "entropy_lr": self.entropy_lr,
+            "target_entropy_scale": self.target_entropy_scale,
         })
         return config
 
@@ -291,6 +294,7 @@ class Reinforce(OnPolicyAgent):
         entropy_schedule: ScheduleWrapper|None = None,
         auto_entropy_tuning: bool=True,
         entropy_lr: float=3e-4, # Only used if auto entropy = True
+        target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
         save_dir: str = "models",
         device: str = None,
         **kwargs,
@@ -309,6 +313,7 @@ class Reinforce(OnPolicyAgent):
             entropy_schedule: The schedule for entropy regularization.
             auto_entropy_tuning: Whether to automatically tune the entropy coefficient.
             entropy_lr: The learning rate for the entropy coefficient.
+            target_entropy_scale: The scale for the target entropy.
             save_dir: The directory to save the model.
             device: The device to use for computations.
             kwargs: Additional keyword arguments.
@@ -326,6 +331,7 @@ class Reinforce(OnPolicyAgent):
                 entropy_schedule = entropy_schedule,
                 auto_entropy_tuning = auto_entropy_tuning,
                 entropy_lr = entropy_lr,
+                target_entropy_scale = target_entropy_scale,
                 save_dir = save_dir,
                 device=device,
                 **kwargs
@@ -576,6 +582,7 @@ class Reinforce(OnPolicyAgent):
             entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
             auto_entropy_tuning=config["auto_entropy_tuning"],
             entropy_lr=config["entropy_lr"],
+            target_entropy_scale=config["target_entropy_scale"],
             save_dir=config["save_dir"],
         )
 
@@ -597,6 +604,7 @@ class ActorCritic(OnPolicyAgent):
         entropy_schedule: ScheduleWrapper|None = None, # Only used if auto entropy = False
         auto_entropy_tuning: bool=True,
         entropy_lr: float=3e-4, # Only used if auto entropy = True
+        target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
         gae_coefficient: float=0.95,
         policy_grad_clip: float=1.0,
         value_grad_clip: float=1.0,
@@ -619,6 +627,7 @@ class ActorCritic(OnPolicyAgent):
                 entropy_schedule = entropy_schedule,
                 auto_entropy_tuning = auto_entropy_tuning,
                 entropy_lr = entropy_lr,
+                target_entropy_scale = target_entropy_scale,
                 save_dir = save_dir,
                 device=device,
                 **kwargs
@@ -925,6 +934,7 @@ class ActorCritic(OnPolicyAgent):
             entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
             auto_entropy_tuning=config["auto_entropy_tuning"],
             entropy_lr=config["entropy_lr"],
+            target_entropy_scale=config["target_entropy_scale"],
             gae_coefficient=config["gae_coefficient"],
             policy_grad_clip=config["policy_grad_clip"],
             value_grad_clip=config["value_grad_clip"],
@@ -982,6 +992,7 @@ class PPO(OnPolicyAgent):
         entropy_schedule: ScheduleWrapper|None = None,
         auto_entropy_tuning: bool = True,
         entropy_lr: float = 3e-4,
+        target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
         kl_coefficient: float = 0.0,
         kl_adapter: AdaptiveKL|None = None,
         policy_clip: float = 0.2,
@@ -1014,6 +1025,7 @@ class PPO(OnPolicyAgent):
             entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
             auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
             entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
+            target_entropy_scale: (float): Scale for the target entropy. Only used if auto entropy = True and discrete action space
             kl_coefficient: (float): Coefficient for KL divergence penalty.
             kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
             policy_clip: (float): Clipping value for policy ratio updates.
@@ -1043,6 +1055,7 @@ class PPO(OnPolicyAgent):
                 entropy_schedule = entropy_schedule,
                 auto_entropy_tuning = auto_entropy_tuning,
                 entropy_lr = entropy_lr,
+                target_entropy_scale = target_entropy_scale,
                 save_dir = save_dir,
                 device=device,
                 **kwargs
@@ -1496,6 +1509,7 @@ class PPO(OnPolicyAgent):
             entropy_schedule = ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
             auto_entropy_tuning = config["auto_entropy_tuning"],
             entropy_lr = config["entropy_lr"],
+            target_entropy_scale = config["target_entropy_scale"],
             kl_coefficient = config["kl_coefficient"],
             kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config["kl_adapter"] else None,
             policy_clip = config["policy_clip"],
@@ -1528,7 +1542,6 @@ class OffPolicyAgent(Agent):
         reward_normalizer: RewardNorm|None = None,
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
-        warmup: int=1000,
         N: int=1, # N-steps
         curiosity: ICM|None = None,
         save_dir: str = "models/",
@@ -1545,7 +1558,6 @@ class OffPolicyAgent(Agent):
         self.reward_normalizer = reward_normalizer
         self.policy_grad_clip = policy_grad_clip
         self.critic_grad_clip = critic_grad_clip
-        self.warmup = warmup
         self.N = N
         self.curiosity = curiosity
         self._use_her = False
@@ -1580,7 +1592,6 @@ class OffPolicyAgent(Agent):
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
-            "warmup": self.warmup,
             "N": self.N,
             "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
         })
@@ -1605,7 +1616,6 @@ class DDPG(OffPolicyAgent):
         noise_clip: float = 0.5,
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
-        warmup: int=1000,
         N: int=1, # N-steps
         curiosity: ICM|None = None,
         save_dir: str = "models",
@@ -1623,7 +1633,6 @@ class DDPG(OffPolicyAgent):
                 reward_normalizer=reward_normalizer,
                 policy_grad_clip=policy_grad_clip,
                 critic_grad_clip=critic_grad_clip,
-                warmup=warmup,
                 N=N,
                 curiosity=curiosity,
                 save_dir=save_dir,
@@ -1697,7 +1706,8 @@ class DDPG(OffPolicyAgent):
         states: np.ndarray | T.Tensor,
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
-        step: int | None = None
+        step: int | None = None,
+        warmup: int | None = None
     ) -> T.Tensor | np.ndarray:
         """
         Select an action based on the current policy.
@@ -1707,6 +1717,7 @@ class DDPG(OffPolicyAgent):
             goals: T.Tensor | np.ndarray | None: The current goals.
             context: str: The context of the action (train, test).
             step: int | None: The current step.
+            warmup: int | None: The warmup steps.
         
         Returns:
             T.Tensor | np.ndarray: actions.
@@ -1715,7 +1726,7 @@ class DDPG(OffPolicyAgent):
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
-            if (step is not None) and (step <= self.warmup):
+            if (step is not None) and (step <= warmup):
                 return self.policy.env.action_space.sample()
             # if random number is less than epsilon, sample random action
             if np.random.random() < self.action_epsilon:
@@ -2308,7 +2319,6 @@ class DDPG(OffPolicyAgent):
             noise_clip=config["noise_clip"],
             policy_grad_clip=config['policy_grad_clip'],
             critic_grad_clip=config['critic_grad_clip'],
-            warmup = config['warmup'],
             N = config['N'],
             curiosity=curiosity,
             save_dir=config["save_dir"],
@@ -2341,7 +2351,6 @@ class TD3(OffPolicyAgent):
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
         policy_update_delay: int = 2,
-        warmup: int = 1000,
         N: int=1, # N-steps
         curiosity: ICM|None = None,
         save_dir: str = "models",
@@ -2359,7 +2368,6 @@ class TD3(OffPolicyAgent):
                 reward_normalizer=reward_normalizer,
                 policy_grad_clip=policy_grad_clip,
                 critic_grad_clip=critic_grad_clip,
-                warmup=warmup,
                 N=N,
                 curiosity=curiosity,
                 save_dir=save_dir,
@@ -2494,7 +2502,8 @@ class TD3(OffPolicyAgent):
         states: np.ndarray | T.Tensor,
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
-        step: int | None = None
+        step: int | None = None,
+        warmup: int | None = None
     ) -> T.Tensor | np.ndarray:
         """
         Select an action based on the current policy.
@@ -2504,6 +2513,7 @@ class TD3(OffPolicyAgent):
             goals: T.Tensor | np.ndarray | None: The current goals.
             context: str: The context of the action (train, test).
             step: int | None: The current step.
+            warmup: int | None: The warmup steps.
         
         Returns:
             T.Tensor | np.ndarray: actions.
@@ -2512,7 +2522,7 @@ class TD3(OffPolicyAgent):
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
-            if (step is not None) and (step <= self.warmup):
+            if (step is not None) and (step <= warmup):
                 return self.policy.env.action_space.sample()
             # if random number is less than epsilon, sample random action
             if np.random.random() < self.action_epsilon:
@@ -2958,7 +2968,6 @@ class TD3(OffPolicyAgent):
             policy_grad_clip=config["policy_grad_clip"],
             critic_grad_clip=config["critic_grad_clip"],
             policy_update_delay=config["policy_update_delay"],
-            warmup=config["warmup"],
             N=config["N"],
             curiosity=curiosity,
             save_dir=config["save_dir"],
@@ -2983,9 +2992,9 @@ class SAC(OffPolicyAgent):
         entropy_coefficient: float=0.2, # Auto set to 1.0 if auto-tuning
         auto_entropy_tuning: bool=True,
         entropy_lr: float=3e-4, # Only used if auto entropy = True
+        target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
-        warmup: int=1000,
         N: int=1,
         curiosity: ICM|None = None,
         save_dir: str = "models",
@@ -3003,7 +3012,6 @@ class SAC(OffPolicyAgent):
                 reward_normalizer=reward_normalizer,
                 policy_grad_clip=policy_grad_clip,
                 critic_grad_clip=critic_grad_clip,
-                warmup=warmup,
                 N=N,
                 curiosity=curiosity,
                 save_dir=save_dir,
@@ -3019,11 +3027,12 @@ class SAC(OffPolicyAgent):
             self.entropy_coefficient = entropy_coefficient
             self.auto_entropy_tuning = auto_entropy_tuning
             self.entropy_lr = entropy_lr
+            self.target_entropy_scale = target_entropy_scale
             if self.auto_entropy_tuning:
-                if self.policy.distribution in ['normal', 'beta']:
-                    self.target_entropy = -float(self.env.single_action_space.shape[-1])
+                if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+                    self.target_entropy = -float(self.policy.num_actions)
                 else: # Discrete actor
-                    self.target_entropy = 0.98 * T.log(T.tensor(self.env.single_action_space.n, dtype=T.float32, device=self.device)).item()
+                    self.target_entropy = self.target_entropy_scale * T.log(T.tensor(self.policy.num_actions, dtype=T.float32, device=self.device)).item()
                 self.log_alpha = T.zeros(1, requires_grad=True, device=self.device)
                 self.entropy_optimizer = T.optim.Adam([self.log_alpha], lr=self.entropy_lr)
         except Exception as e:
@@ -3045,7 +3054,8 @@ class SAC(OffPolicyAgent):
         states: np.ndarray | T.Tensor,
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
-        step: int | None = None
+        step: int | None = None,
+        warmup: int | None = None
     ) -> T.Tensor | np.ndarray:
         """
         Select an action based on the current policy.
@@ -3055,6 +3065,7 @@ class SAC(OffPolicyAgent):
             goals: T.Tensor | np.ndarray | None: The current goals.
             context: str: The context of the action (train, test).
             step: int | None: The current step.
+            warmup: int | None: The warmup steps.
 
         Returns:
             T.Tensor | np.ndarray: actions.
@@ -3062,7 +3073,7 @@ class SAC(OffPolicyAgent):
 
         if context == 'train':
             # If warmup, sample random action from action space
-            if (step is not None) and (step <= self.warmup):
+            if (step is not None) and (step <= warmup):
                 return self.policy.env.action_space.sample()
             # otherwise, sample action from policy
             dist = self.policy(states, goals)
@@ -3267,11 +3278,10 @@ class SAC(OffPolicyAgent):
                 goals[:,-1,:] if goals is not None else None
             )
 
-            target_actions = self.policy.get_mean_actions(dist)
-            log_probs = dist.log_prob(target_actions)
-
             # Continuous critic target values
-            if self.policy.distribution in ['normal', 'beta']:
+            if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+                target_actions = dist.sample()
+                log_probs = dist.log_prob(target_actions)
                 target_values_1 = self.target_critic(
                     next_states[:,-1,:],
                     target_actions,
@@ -3285,6 +3295,8 @@ class SAC(OffPolicyAgent):
                 target_values = T.minimum(target_values_1, target_values_2) - cur_entropy_coef * log_probs
 
             else: # Discrete critic target values
+                target_actions = dist.sample().float()
+                log_probs = dist.logits
                 target_values_1 = self.target_critic(
                     next_states[:,-1,:],
                     goals[:,-1,:] if goals is not None else None
@@ -3353,16 +3365,18 @@ class SAC(OffPolicyAgent):
             states[:,0,:],
             goals[:,0,:] if goals is not None else None
         )
-        new_actions = self.policy.get_mean_actions(dist)
-        log_probs = dist.log_prob(new_actions)
         # Continuous policy update
         if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+            new_actions = dist.rsample()
+            log_probs = dist.log_prob(new_actions)
             q1 = self.critic(states[:,0,:], new_actions, goals[:,0,:] if goals is not None else None).squeeze()
             q2 = self.critic_b(states[:,0,:], new_actions, goals[:,0,:] if goals is not None else None).squeeze()
             min_q = T.minimum(q1, q2)
             actor_loss = cur_entropy_coef * log_probs - min_q
 
         else: # Discrete policy update
+            new_actions = dist.sample().float()
+            log_probs = dist.logits
             q1 = self.critic(states[:,0,:], goals[:,0,:] if goals is not None else None)
             q2 = self.critic_b(states[:,0,:], goals[:,0,:] if goals is not None else None)
             min_q = T.minimum(q1, q2)
@@ -3380,12 +3394,13 @@ class SAC(OffPolicyAgent):
         policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
         self.policy.optimizer.step()
 
+        if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+            entropy = -log_probs
+        else:  # Discrete actor
+            entropy = -(dist.probs * log_probs).sum(dim=-1)
         if self.auto_entropy_tuning:
             self.entropy_optimizer.zero_grad()
-            if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-            else: # Discrete actor
-                alpha_loss = -(self.log_alpha * ((dist.probs * log_probs).sum(dim=-1) + self.target_entropy).detach()).mean()
+            alpha_loss = -(self.log_alpha * (-entropy + self.target_entropy).detach()).mean()
             alpha_loss.backward()
             self.entropy_optimizer.step()
 
@@ -3419,7 +3434,7 @@ class SAC(OffPolicyAgent):
             # + count_nonfinite(pred_actions)
             # )
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
@@ -3442,6 +3457,7 @@ class SAC(OffPolicyAgent):
                 summarize_tensor(critic_loss, "critic errors"),
                 summarize_tensor(new_actions, "predicted actions"),
                 summarize_tensor(log_probs, "log probs"),
+                summarize_tensor(entropy, "entropy"),
                 summarize_tensor(min_q, "predicted critic values"),
                 summarize_tensor(actor_loss, "actor loss"),
                 summarize_tensor(critic_loss, "critic loss"),
@@ -3470,8 +3486,8 @@ class SAC(OffPolicyAgent):
             "actor_predictions": new_actions.mean().item(),
             "critic_predictions": min_q.mean().item(),
             "target_critic_predictions": target_values.mean().item(),
-            "alpha": cur_entropy_coef,
-            "entropy": float(-log_probs.mean().item()),
+            "entropy_coefficient": cur_entropy_coef,
+            "entropy": float(entropy.mean().item()),
             'policy_learning_rate': policy_learning_rate,
             'critic_learning_rate': critic_learning_rate,
             'critic_b_learning_rate': critic_b_learning_rate,
@@ -3541,7 +3557,7 @@ class SAC(OffPolicyAgent):
             "entropy_coefficient": self.entropy_coefficient,
             "auto_entropy_tuning": self.auto_entropy_tuning,
             "entropy_lr": self.entropy_lr,
-            
+            "target_entropy_scale": self.target_entropy_scale,
         })
         return config
 
@@ -3596,9 +3612,9 @@ class SAC(OffPolicyAgent):
             entropy_coefficient=config["entropy_coefficient"],
             auto_entropy_tuning=config["auto_entropy_tuning"],
             entropy_lr=config["entropy_lr"],
+            target_entropy_scale=config["target_entropy_scale"],
             policy_grad_clip=config["policy_grad_clip"],
             critic_grad_clip=config["critic_grad_clip"],
-            warmup = config['warmup'],
             N = config['N'],
             curiosity=curiosity,
             save_dir=config["save_dir"],
