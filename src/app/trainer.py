@@ -30,8 +30,8 @@ class TrainingSchedule:
     learn_every:      int = 1
     # Per learn() call
     updates_per_learn: int = 1
-    batch_size:        int | None = None
-    learning_epochs:   int | None = None
+    batch_size:        int = 1
+    learning_epochs:   int = 1
     # Optional warmup gate (no learning until this many steps)
     warmup_steps: int = 0
     seed: int | None = None
@@ -372,7 +372,7 @@ class Trainer:
        
         
         # Add normalized transitions to the buffer
-        self.buffer.record(observation, self._prev_obs, actions, self._prev_done)
+        self.buffer.record(observation, prev_observation = self._prev_obs, actions = actions, prev_dones = self._prev_done)
 
         # Increment episode steps and rewards
         self._episode_steps[valid_steps] += 1
@@ -431,7 +431,13 @@ class Trainer:
             T.Tensor: actions.
         """
 
-        return self.agent.act(states, goals, context=context, step=self._step)
+        return self.agent.act(
+            states,
+            goals,
+            context,
+            step = self._step,
+            warmup = self.schedule.warmup_steps
+        )
 
     @abstractmethod
     def train(self):
@@ -716,14 +722,17 @@ class OffPolicyTrainer(Trainer):
             dict: A dictionary containing the learn metrics.
         """
         learn_metrics = {}
-        total_samples = self.schedule.updates * self.schedule.batch_size
-        if self.buffer.is_ready(total_samples, self.agent.warmup):
-            samples = self.buffer.sample(total_samples)
-            for update in range(self.schedule.updates):
-                lo_idx = update * self.schedule.batch_size
-                hi_idx = lo_idx + self.schedule.batch_size
-                sample = {k: (v[lo_idx:hi_idx] if v is not None else None) for k, v in samples.items()}
-                learn_metrics = self.agent.learn(self._step, sample)
+        total_samples = self.schedule.updates_per_learn * self.schedule.batch_size
+        if self.buffer.is_ready(samples = total_samples):
+            samples = self.buffer.sample(samples = total_samples)
+            if self.schedule.updates_per_learn == 1:
+                learn_metrics = self.agent.learn(self._step, samples)
+            else:
+                for update in range(self.schedule.updates_per_learn):
+                    lo_idx = update * self.schedule.batch_size
+                    hi_idx = lo_idx + self.schedule.batch_size
+                    sample = {k: (v[lo_idx:hi_idx] if v is not None else None) for k, v in samples.items()}
+                    learn_metrics = self.agent.learn(self._step, sample)
         return learn_metrics
 
     # def get_action(self,

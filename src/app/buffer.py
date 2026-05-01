@@ -250,8 +250,8 @@ class ReplayBuffer(Buffer):
         """
         if cur_observation.n_step_trajectory is not None:
             self.add(**cur_observation.n_step_trajectory)
-        else:
-            raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using ReplayBuffer.")
+        # else:
+        #     raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using ReplayBuffer.")
 
     def add(
         self,
@@ -321,11 +321,11 @@ class ReplayBuffer(Buffer):
 
         self.counter += batch_size
 
-    def sample(self, batch_size: int) -> Dict[str, T.Tensor]:
+    def sample(self, samples: int) -> Dict[str, T.Tensor]:
         """Returns a dictionary of n-step sequences sampled from the buffer.
         
         Args:
-            batch_size: int: The number of samples to draw from the buffer.
+            samples: int: The number of samples to draw from the buffer.
         
         Returns:
             Dict[str, T.Tensor]: A dictionary containing the sampled n-step sequences.
@@ -334,7 +334,7 @@ class ReplayBuffer(Buffer):
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
 
-        indices = self.gen.integers(0, size, (batch_size,))
+        indices = self.gen.integers(0, size, (samples,))
 
         sample = {
             "states": self.states[indices].clone(),
@@ -393,11 +393,11 @@ class ReplayBuffer(Buffer):
     #     env = build_env_wrapper_obj(self.env.config)
     #     return ReplayBuffer(env, self.buffer_size, device)
 
-    def is_ready(self, batch_size: int, warmup: int) -> bool:
+    def is_ready(self, samples: int) -> bool:
         """
         Check if the buffer is ready to sample.
         """
-        return (self.counter >= warmup) and (self.counter >= batch_size)
+        return self.counter >= samples
     
     def get_config(self) -> Dict[str, Any]:
         config = super().get_config()
@@ -542,8 +542,15 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self._total_steps += 1
 
 
-    def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
-        """Samples a batch of N-step transition sequences based on priority."""
+    def sample(self, samples: int) -> Tuple[T.Tensor, ...]:
+        """Samples a batch of N-step transition sequences based on priority.
+        
+        Args:
+            samples: int: The number of samples to draw from the buffer.
+        
+        Returns:
+            Tuple[T.Tensor, ...]: A tuple containing the sampled N-step sequences.
+        """
         if self._total_steps % self.beta_update_freq == 0:
             self.update_beta()
 
@@ -551,18 +558,18 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
 
-        batch_size = min(batch_size, size)
+        samples = min(samples, size)
 
         if self.priority == "proportional":
             total_priority = self.sum_tree.total_priority
             if total_priority <= 0:
-                indices = T.randint(0, size, (batch_size,), device=self.device)
-                weights = T.ones(batch_size, device=self.device)
-                probs = T.ones(batch_size, device=self.device) / size
+                indices = T.randint(0, size, (samples,), device=self.device)
+                weights = T.ones(samples, device=self.device)
+                probs = T.ones(samples, device=self.device) / size
             else:
-                segment_size = total_priority / batch_size
-                segment_boundaries = T.arange(0, batch_size, device=self.device) * segment_size
-                random_offsets = T.rand(batch_size, device=self.device) * segment_size
+                segment_size = total_priority / samples
+                segment_boundaries = T.arange(0, samples, device=self.device) * segment_size
+                random_offsets = T.rand(samples, device=self.device) * segment_size
                 p_values = segment_boundaries + random_offsets
                 indices, priorities = self.sum_tree.get(p_values)
                 probs = priorities / total_priority
@@ -570,7 +577,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
                 weights = weights / weights.max()
         else:  # rank-based
             self._prepare_rank_based()
-            u = T.rand(batch_size, device=self.device)
+            u = T.rand(samples, device=self.device)
             ranks = (u ** (1 / self.alpha) * size).long().clamp(max=size-1)
             indices = self.sorted_indices[ranks]
             cur_probs = 1 / ((ranks + 1) ** self.alpha)
@@ -767,7 +774,7 @@ class RolloutBuffer(Buffer):
         # Increment step indices
         self.cur_idx += 1
 
-    def sample(self) -> Dict[str, T.Tensor]:
+    def sample(self, **kwargs: Any) -> Dict[str, T.Tensor]:
         """
         Returns a dictionary of all buffer tensors up to the current index of each environment.
         Current index values will match across all tensors because all rollouts are of same length.
@@ -911,7 +918,7 @@ class TrajectoryBuffer(RolloutBuffer):
             # Reset step counter for done env
             self.cur_idx[i] = 0
 
-    def sample(self) -> List[Dict[str, T.Tensor]]:
+    def sample(self, **kwargs: Any) -> List[Dict[str, T.Tensor]]:
         """Returns a list of completed trajectories."""
         trajectories = self.completed_trajectories[:]
         # Clear trajectories
