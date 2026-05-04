@@ -1,6 +1,6 @@
-#DDPG template
+#DDPG tuned for LunarLanderContinuous-v3
 
-device: &device cuda
+device: &device "cuda"
 save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/DDPG/
 log_level: INFO
 
@@ -28,7 +28,7 @@ agent:
     _diag_freq: 1000
 
 env:
-  type: envpool # "isaacsim" or "gymnasium" or "envpool"
+  type: "envpool" # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: LunarLanderContinuous-v3

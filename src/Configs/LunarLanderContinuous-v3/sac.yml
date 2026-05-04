@@ -1,33 +1,30 @@
 # SAC tuned for LunarLanderContinuous-v3
-# Hyperparameters from Stable-Baselines3 RL Zoo (DLR-RM/rl-baselines3-zoo)
-#   ref: https://github.com/DLR-RM/rl-baselines3-zoo/blob/master/hyperparams/sac.yml
-#   verified mean reward: ~252 ± 72 (env solved at 200)
 
-device: &device "cuda"
+device: &device cuda
 save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/SAC/
 log_level: INFO
 
 schedule:
   stop_unit: timestep
-  stop_units: &stop_units 1000000          # n_timesteps: 1e6
+  stop_units: &stop_units 1000000
   learn_every_unit: timestep
-  learn_every: 64                          # train_freq (learn call per env step)
-  updates_per_learn: 1                    # gradient_steps
+  learn_every: 64
+  updates_per_learn: 1
   batch_size: 2048
-  warmup_steps: 10000                     # learning_starts
+  warmup_steps: 10000
   seed: &seed 42
 
 agent:
   type: SAC
   config:
-    discount: 0.99                        # gamma
-    tau: 0.01                             # RL Zoo override for LunarLanderContinuous (default 0.005)
-    entropy_coefficient: 1.0              # initial alpha; tuned automatically
-    auto_entropy_tuning: true             # ent_coef: 'auto'
+    discount: 0.99
+    tau: 0.01
+    entropy_coefficient: 1.0
+    auto_entropy_tuning: true
     entropy_lr: 0.0003
     policy_grad_clip: 1.0
     critic_grad_clip: 1.0
-    N: &n 1                               # 1-step returns (standard SAC)
+    N: &n 1
     log_level: DEBUG
     _diag_freq: 1000
 
@@ -35,7 +32,7 @@ env:
   type: envpool
   config:
     cfg: LunarLanderContinuous-v3
-    num_envs: 64                           # RL Zoo recipe assumes single env
+    num_envs: 64
     obs_key: &obs_key null
     goal_key: &goal_key null
     ach_goal_key: &ach_goal_key null
@@ -47,7 +44,7 @@ models:
   policy:
     layer_config:
       - type: dense
-        params: {units: 400, kernel: default, kernel_params: {}}    # net_arch: [400, 300]
+        params: {units: 400, kernel: default, kernel_params: {}}
       - type: relu
       - type: dense
         params: {units: 300, kernel: default, kernel_params: {}}
@@ -55,7 +52,7 @@ models:
     output_config:
       - type: dense
         params: {kernel: default, kernel_params: {}}
-    optimizer_params: {type: Adam, params: {lr: &policy_lr 0.00073}}  # lin_7.3e-4
+    optimizer_params: {type: Adam, params: {lr: &policy_lr 0.00073}}
     distribution: normal
     device: *device
 
@@ -89,7 +86,6 @@ models:
     optimizer_params: {type: Adam, params: {lr: &critic_b_lr 0.00073}}
     device: *device
 
-# RL Zoo uses `lin_7.3e-4` (linear decay 7.3e-4 -> 0 over training)
 policy_lr_schedule:
   schedule_type: "linear"
   steps: *stop_units
@@ -113,7 +109,6 @@ normalizers:
     type: RunningNorm
     config:
       clip_value: 10.0
-      warmup_steps: 5000
       device: *device
       log_level: DEBUG
       _diag_freq: 10000
@@ -121,7 +116,7 @@ normalizers:
 buffer:
   type: ReplayBuffer
   config:
-    buffer_size: 1000000                  # buffer_size: 1e6
+    buffer_size: 1000000
     N: *n
     device: *device
 

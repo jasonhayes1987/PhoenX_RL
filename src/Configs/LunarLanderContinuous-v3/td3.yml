@@ -1,7 +1,7 @@
-#DDPG template
+#TD3 tuned for LunarLanderContinuous-v3
 
 device: &device cuda
-save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/DDPG/
+save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/TD3/
 log_level: INFO
 
 schedule:
@@ -15,7 +15,7 @@ schedule:
   seed: &seed 42
 
 agent:
-  type: DDPG
+  type: TD3
   config:
     discount: 0.99
     tau: 0.05
@@ -23,6 +23,7 @@ agent:
     noise_clip: 0.3
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
+    policy_update_delay: 2
     N: &n 3
     log_level: DEBUG
     _diag_freq: 1000
@@ -134,6 +135,17 @@ noise:
 #   steps: &stop_units
 #   start_value: *noise_stddev
 #   end_value: 0.1
+
+target_noise:
+  type: NormalNoise
+  config:
+    stddev: &target_noise_stddev 0.1
+
+# target_noise_schedule:
+#   schedule_type: linear
+#   steps: &stop_units
+#   start_value: *target_noise_stddev
+#   end_value: 0.05
 
 # curiosity:
 #   model_configs: {

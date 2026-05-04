@@ -218,7 +218,6 @@ class RunningNorm(BaseNormalizer):
         num_features (int): Number of features to normalize.
         clip_value (float): Value to clip normalized values.
         epsilon (float): Small constant to prevent division by zero.
-        warmup_steps (int): Number of warmup steps.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
     """
     def __init__(
@@ -226,13 +225,11 @@ class RunningNorm(BaseNormalizer):
         num_features: int,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
-        warmup_steps: int = 1000,
         device: Optional[str | T.device] = None,
         log_level: str = 'INFO',
         **kwargs
     ):
         super().__init__(num_features, clip_value, epsilon, device, log_level, **kwargs)
-        self.warmup_steps = warmup_steps
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
@@ -247,8 +244,8 @@ class RunningNorm(BaseNormalizer):
         if v.device != self.device:
             v = v.to(self.device)
 
-        if self.training and self.step <= self.warmup_steps:
-            return v
+        # if self.training and self.step <= self.warmup_steps:
+        #     return v
 
         norms = T.clamp((v - self.running_mean) / self.running_std,
                        -self.clip_value, self.clip_value).float()
@@ -260,9 +257,6 @@ class RunningNorm(BaseNormalizer):
     def get_config(self) -> dict:
         config = super().get_config()
         config['type'] = self.__class__.__name__
-        config['config'].update({
-            'warmup_steps': self.warmup_steps,
-        })
         return config
 
     @classmethod
@@ -284,7 +278,6 @@ class RunningNorm(BaseNormalizer):
             num_features=config['num_features'],
             clip_value=config['clip_value'],
             epsilon=config['epsilon'],
-            warmup_steps=config['warmup_steps'],
             device=config['device']
         )
         normalizer.step = state['step']

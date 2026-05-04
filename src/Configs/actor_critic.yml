@@ -1,7 +1,15 @@
+# ActorCritic template
+
 device: &device cuda
-seed: &seed null
-save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLander-v3_test/ActorCritic/
+save_dir: &save_dir ./Trained_Models/LunarLander-v3/ActorCritic/
 log_level: INFO
+
+schedule:
+  stop_unit: timestep
+  stop_units: &stop_units 500000
+  learn_every_unit: timestep
+  learn_every: 16384
+  seed: &seed 42
 
 agent:
   type: ActorCritic
@@ -10,6 +18,7 @@ agent:
     entropy_coefficient: &entropy_coefficient 0.01
     auto_entropy_tuning: false
     entropy_lr: 1.0e-2
+    target_entropy_scale: 0.98
     gae_coefficient: 0.98
     policy_grad_clip: 0.5
     value_grad_clip: 0.5
@@ -19,18 +28,18 @@ agent:
     _diag_freq: 10
 
 env:
-  type: gymnasium # "isaacsim" or "gymnasium"
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: LunarLander-v3
     num_envs: 16
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
     # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
     wrappers: []
     render_mode: null
     seed: *seed
-    obs_key: null
-    goal_key: null
-    ach_goal_key: null
 
 models:
   policy:
@@ -76,7 +85,6 @@ normalizers:
     type: RunningNorm
     config:
       clip_value: 10.0
-      warmup_steps: 1000
       device: *device
       log_level: INFO
       # kwargs
@@ -93,13 +101,13 @@ normalizers:
 
 # entropy_schedule:
 #   schedule_type: "linear"
-#   steps: 100000
+#   steps: *stop_units
 #   start_value: *entropy_coefficient
 #   end_value: 0.001
 
 # temperature_schedule:
 #   schedule_type: "cosine"
-#   steps: 500000
+#   steps: *stop_units
 #   start_value: *temperature
 #   end_value: 1.0
 
@@ -108,15 +116,6 @@ buffer:
   config:
     buffer_size: 1024
     device: *device
-
-schedule:
-  type: OnPolicySchedule
-  config:
-    unit: timestep
-    num_units: 500000
-    learn_unit: timestep
-    num_learn_units: 16384
-    seed: *seed
 
 renderer:
   render_freq: 1000

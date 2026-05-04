@@ -1,17 +1,18 @@
-device: &device "cuda"
+#TD3 template
+
+device: &device cuda
 save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/TD3/
 log_level: INFO
 
 schedule:
-  type: OffPolicySchedule
-  config:
-    unit: timestep
-    units: &units 1000000
-    # cycles: 1
-    episodes: 1
-    updates: 10
-    batch_size: 2048
-    seed: &seed 42
+  stop_unit: timestep
+  stop_units: &stop_units 1000000
+  learn_every_unit: timestep
+  learn_every: 64
+  updates_per_learn: 1
+  batch_size: 256
+  warmup_steps: 10000
+  seed: &seed 42
 
 agent:
   type: TD3
@@ -23,7 +24,6 @@ agent:
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
     policy_update_delay: 2
-    warmup: 10000
     N: &n 3
     log_level: DEBUG
     _diag_freq: 1000
@@ -73,13 +73,13 @@ models:
 
 # policy_lr_schedule:
 #   schedule_type: "cosine"
-#   steps: *units
+#   steps: &stop_units
 #   start_value: *policy_lr
 #   end_value: 1.0e-4
 
 # critic_lr_schedule:
 #   schedule_type: "cosine"
-#   steps: *units
+#   steps: &stop_units
 #   start_value: *critic_lr
 #   end_value: 1.0e-4
 
@@ -88,21 +88,19 @@ normalizers:
     type: RunningNorm
     config:
       clip_value: 10.0
-      warmup_steps: 5000
       device: *device
       log_level: DEBUG
       # kwargs
       _diag_freq: 10000
-      
-  # reward:
-  #   type: RewardNorm
-  #   config:
-  #     gamma: 0.99
-  #     clip_value: 10.0
-  #     device: *device
-  #     log_level: DEBUG
-  #     # kwargs
-  #     _diag_freq: 10000
+  reward:
+    type: RewardNorm
+    config:
+      gamma: 0.99
+      clip_value: 10.0
+      device: *device
+      log_level: DEBUG
+      # kwargs
+      _diag_freq: 10000
 
 # replay_buffer:
 #   type: PrioritizedReplayBuffer
@@ -134,7 +132,7 @@ noise:
 
 # noise_schedule:
 #   schedule_type: linear
-#   steps: *units
+#   steps: &stop_units
 #   start_value: *noise_stddev
 #   end_value: 0.1
 
@@ -145,7 +143,7 @@ target_noise:
 
 # target_noise_schedule:
 #   schedule_type: linear
-#   steps: *units
+#   steps: &stop_units
 #   start_value: *target_noise_stddev
 #   end_value: 0.05
 

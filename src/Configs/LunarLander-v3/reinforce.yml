@@ -1,7 +1,15 @@
+# Reinforce tuned for LunarLander-v3
+
 device: &device cuda
-seed: &seed null
-save_dir: &save_dir "E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLander-v3_test/Reinforce/"
+save_dir: &save_dir ./Trained_Models/LunarLander-v3/Reinforce/
 log_level: INFO
+
+schedule:
+  stop_unit: timestep
+  stop_units: &stop_units 500000
+  learn_every_unit: episode
+  learn_every: 10
+  seed: &seed 42
 
 agent:
   type: Reinforce
@@ -10,22 +18,24 @@ agent:
     entropy_coefficient: &entropy_coefficient 0.01
     auto_entropy_tuning: false
     entropy_lr: 1.0e-2
+    target_entropy_scale: 0.98
     log_level: INFO
     _diag_freq: 10
 
 env:
-  type: gymnasium # "isaacsim" or "gymnasium"
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: LunarLander-v3
     num_envs: 8
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
     # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
     wrappers: []
     render_mode: null
     seed: *seed
-    obs_key: null
-    goal_key: null
-    ach_goal_key: null
+    
 
 models:
   policy:
@@ -71,7 +81,6 @@ normalizers:
     type: RunningNorm
     config:
       clip_value: 10.0
-      warmup_steps: 1000
       device: *device
       log_level: INFO
       # kwargs
@@ -103,13 +112,6 @@ buffer:
   config:
     buffer_size: 1001
     device: *device
-
-schedule:
-  stop_unit: timestep
-  stop_units: 500000
-  learn_every_unit: episode
-  learn_every: 10
-  seed: *seed
 
 renderer:
   render_freq: 1000 # episodes
