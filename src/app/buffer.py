@@ -250,8 +250,6 @@ class ReplayBuffer(Buffer):
         """
         if cur_observation.n_step_trajectory is not None:
             self.add(**cur_observation.n_step_trajectory)
-        # else:
-        #     raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using ReplayBuffer.")
 
     def add(
         self,
@@ -275,35 +273,38 @@ class ReplayBuffer(Buffer):
         else:
             indices = T.cat([T.arange(start_idx, self.buffer_size, device=self.device), T.arange(0, end_idx, device=self.device)])
 
-        # Add N dimension of 1 at index 1 if values are 2d
+        # Unsqueeze to add dimenstion at index -1 if feature dim missing
         if states.ndim == 2:
-            states = states[:, T.newaxis, :]
-            # states = states.unsqueeze(1)
+            # states = states[:, T.newaxis, :]
+            states = states.unsqueeze(-1)
         if actions.ndim == 2:
-            actions = actions[:, T.newaxis, :]
-            # actions = actions.unsqueeze(1)
+            # actions = actions[:, T.newaxis, :]
+            actions = actions.unsqueeze(-1)
         if rewards.ndim == 1:
-            rewards = rewards[:, T.newaxis]
-            # rewards = rewards.unsqueeze(1)
+            # rewards = rewards[:, T.newaxis]
+            rewards = rewards.unsqueeze(-1)
         if next_states.ndim == 2:
-            next_states = next_states[:, T.newaxis, :]
-            # next_states = next_states.unsqueeze(1)
+            # next_states = next_states[:, T.newaxis, :]
+            next_states = next_states.unsqueeze(-1)
         if terminations.ndim == 1:
-            terminations = terminations[:, T.newaxis]
+            # terminations = terminations[:, T.newaxis]
+            terminations = terminations.unsqueeze(-1)
         if truncations.ndim == 1:
-            truncations = truncations[:, T.newaxis]
+            # truncations = truncations[:, T.newaxis]
+            truncations = truncations.unsqueeze(-1)
 
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
                 raise ValueError("Goal data must be provided when using goals")
             if state_achieved_goals.ndim == 2:
-                state_achieved_goals = state_achieved_goals[:, T.newaxis, :]
-                # state_achieved_goals = state_achieved_goals.unsqueeze(1)
+                # state_achieved_goals = state_achieved_goals[:, T.newaxis, :]
+                state_achieved_goals = state_achieved_goals.unsqueeze(-1)
             if next_state_achieved_goals.ndim == 2:
-                next_state_achieved_goals = next_state_achieved_goals[:, T.newaxis, :]
-                # next_state_achieved_goals = next_state_achieved_goals.unsqueeze(1)
+                # next_state_achieved_goals = next_state_achieved_goals[:, T.newaxis, :]
+                next_state_achieved_goals = next_state_achieved_goals.unsqueeze(-1)
             if desired_goals.ndim == 2:
-                desired_goals = desired_goals[:, T.newaxis, :]
+                # desired_goals = desired_goals[:, T.newaxis, :]
+                desired_goals = desired_goals.unsqueeze(-1)
 
         # Store transitions (detach to avoid holding computation graphs)
         self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
@@ -378,21 +379,6 @@ class ReplayBuffer(Buffer):
             self.state_achieved_goals.zero_()
             self.next_state_achieved_goals.zero_()
 
-    # def clone(self, device: Optional[str] = None) -> 'ReplayBuffer':
-    #     """
-    #     Clone the replay buffer.
-
-    #     Returns:
-    #         ReplayBuffer: A new instance of the replay buffer with the same configuration.
-    #     """
-    #     if device:
-    #         device = get_device(device)
-    #     else:
-    #         device = self.device
-
-    #     env = build_env_wrapper_obj(self.env.config)
-    #     return ReplayBuffer(env, self.buffer_size, device)
-
     def is_ready(self, samples: int) -> bool:
         """
         Check if the buffer is ready to sample.
@@ -439,19 +425,12 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.beta_update_freq = beta_update_freq
         self.beta = self.beta_start
         self._total_steps = 0
-        # self.N = N  # Store N-step hyperparameter
-
-        # Tensors for trajectory metadata
-        # self.traj_ids = T.zeros(buffer_size, dtype=T.long, device=self.device)
-        # self.step_indices = T.zeros(buffer_size, dtype=T.long, device=self.device)
 
         if self.priority == "proportional":
             self.sum_tree = SumTree(buffer_size, self.device)
         else:  # rank-based
             self.priorities = T.zeros(buffer_size, dtype=T.float32, device=self.device)
             self.sorted_indices = None
-
-        # self.counter = 0
 
     def record(self, cur_observation: Observation, **kwargs: Any) -> None:
         """

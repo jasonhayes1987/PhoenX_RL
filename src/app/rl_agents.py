@@ -2,10 +2,10 @@
 provides helper functions for loading any subclass of type Agent."""
 
 # imports
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 import json
 import os
-from typing import Optional, Dict, List, TypeAlias, Any
+from typing import Protocol, Optional, Dict, List, TypeAlias, Any, runtime_checkable
 from pathlib import Path
 import time
 from collections import deque
@@ -27,7 +27,7 @@ from .schedulers import ScheduleWrapper
 from .adaptive_kl import AdaptiveKL
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, Buffer
 from .normalizer import BaseNormalizer, RewardNorm
-from .noise import Noise, NormalNoise, UniformNoise, OUNoise
+from .noise import Noise, NormalNoise, UniformNoise
 import wandb
 from . import wandb_support
 from .torch_utils import set_seed, get_device, move_to_device, VarianceScaling_
@@ -48,11 +48,11 @@ import numpy as np
 from isaaclab.app import AppLauncher
 
 
-from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, grad_norm_from_optimizer
+from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, grad_norm_from_optimizer, setup_auto_entropy, soft_update
 
 
 ## Base Agent Class ##
-class Agent:
+class Agent(ABC):
     """Base class for all RL agents."""
 
     def __init__(self,
@@ -94,24 +94,24 @@ class Agent:
         # else:
         return save_dir
 
-    def _step(self, env: EnvWrapper, step: int, states: np.ndarray, num_episodes: int, episode_scores: np.ndarray, completed_episodes: np.ndarray, score_history: deque, learn: bool = True, training: bool = True):
-        """Step function for the agent."""
-        raise NotImplementedError("Subclasses must implement _step.")
+    # def _step(self, env: EnvWrapper, step: int, states: np.ndarray, num_episodes: int, episode_scores: np.ndarray, completed_episodes: np.ndarray, score_history: deque, learn: bool = True, training: bool = True):
+    #     """Step function for the agent."""
+    #     raise NotImplementedError("Subclasses must implement _step.")
 
-    @abstractmethod
-    def _distributed_learn(self, *args, **kwargs):
-        """Handle distributed learning for both on-policy and off-policy agents."""
-        raise NotImplementedError("Subclasses must implement _distributed_learn.")
+    # @abstractmethod
+    # def _distributed_learn(self, *args, **kwargs):
+    #     """Handle distributed learning for both on-policy and off-policy agents."""
+    #     raise NotImplementedError("Subclasses must implement _distributed_learn.")
     
-    @abstractmethod
-    def get_parameters(self):
-        """Return a dictionary of model parameters: {model_name: params}."""
-        raise NotImplementedError("Subclasses must implement get_parameters.")
+    # @abstractmethod
+    # def get_parameters(self):
+    #     """Return a dictionary of model parameters: {model_name: params}."""
+    #     raise NotImplementedError("Subclasses must implement get_parameters.")
 
-    @abstractmethod
-    def apply_parameters(self, params):
-        """Apply the provided parameters to the agent's models."""
-        raise NotImplementedError("Subclasses must implement apply_parameters.")
+    # @abstractmethod
+    # def apply_parameters(self, params):
+    #     """Apply the provided parameters to the agent's models."""
+    #     raise NotImplementedError("Subclasses must implement apply_parameters.")
 
     def clone(self, device: Optional[str | T.device] = None) -> 'Agent':
         """
@@ -176,26 +176,6 @@ class Agent:
 
         return clone
 
-    @abstractmethod
-    def get_action(self, states: np.ndarray|T.Tensor, goals: np.ndarray|T.Tensor|None=None, step: int|None=None, context: str = 'train')->tuple[np.ndarray|T.Tensor, T.Tensor, Distribution|None]:
-        """Returns an action given a state."""
-        raise NotImplementedError("Subclasses must implement get_action.")
-
-    @abstractmethod
-    def train(self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
-        """Trains the model for 'episodes' number of episodes."""
-        raise NotImplementedError("Subclasses must implement train.")
-    
-    @abstractmethod
-    def learn(self):
-        """Updates the model."""
-        raise NotImplementedError("Subclasses must implement learn.")
-
-    @abstractmethod
-    def test(self, num_episodes=None, render=False, render_freq=10):
-        """Runs a test over 'num_episodes'."""
-        raise NotImplementedError("Subclasses must implement test.")
-
     def get_config(self):
         return {
             "type": self.__class__.__name__,
@@ -205,83 +185,43 @@ class Agent:
         }
 
     @abstractmethod
+    def act(
+        self,
+        states: np.ndarray | T.Tensor,
+        goals: np.ndarray | T.Tensor | None = None,
+        context: str = 'train',
+        **kwargs: Any
+    ) -> T.Tensor:
+        """Returns an action given a state."""
+        raise NotImplementedError("Subclasses must implement get_action.")
+
+    # @abstractmethod
+    # def train(self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
+    #     """Trains the model for 'episodes' number of episodes."""
+    #     raise NotImplementedError("Subclasses must implement train.")
+    
+    @abstractmethod
+    def learn(self, step:int, sample:dict, **kwargs: Any)->dict:
+        """Updates the model."""
+        raise NotImplementedError("Subclasses must implement learn.")
+
+    # @abstractmethod
+    # def test(self, num_episodes=None, render=False, render_freq=10):
+    #     """Runs a test over 'num_episodes'."""
+    #     raise NotImplementedError("Subclasses must implement test.")
+
+    @abstractmethod
     def save(self):
         """Saves the model."""
         raise NotImplementedError("Subclasses must implement save.")
     
     @classmethod
-    def load(cls, folder: str = "models"):
+    @abstractmethod
+    def load(cls, config_dir:str | Path, load_weights:bool = True):
         """Loads the model."""
         raise NotImplementedError("Subclasses must implement load.")
 
-## On-Policy Agent Classes ##
-class OnPolicyAgent(Agent):
-    """Base class for all on-policy agents."""
-    def __init__(
-        self,
-        policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
-        value: ValueModel|None = None,
-        discount: float=0.99,
-        state_normalizer: BaseNormalizer|None = None,
-        goal_normalizer: BaseNormalizer|None = None,
-        advantage_normalizer: BaseNormalizer|None = None,
-        reward_normalizer: RewardNorm|None = None,
-        entropy_coefficient: float=0.01,
-        entropy_schedule: ScheduleWrapper|None = None,
-        auto_entropy_tuning: bool=True,
-        entropy_lr: float=3e-4, # Only used if auto entropy = True
-        target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
-        save_dir: str = "models/",
-        device: Optional[str | T.device] = None,
-        # log_level: str = 'info',
-        **kwargs,
-    ):
-        super().__init__(save_dir, device, **kwargs)
-        self.policy = policy
-        self.value = value
-        self.discount = discount
-        self.state_normalizer = state_normalizer
-        self.goal_normalizer = goal_normalizer
-        self.advantage_normalizer = advantage_normalizer
-        self.reward_normalizer = reward_normalizer
-        self.entropy_coefficient = entropy_coefficient
-        self.entropy_schedule = entropy_schedule
-        self.auto_entropy_tuning = auto_entropy_tuning
-        self.entropy_lr = entropy_lr
-        self.target_entropy_scale = target_entropy_scale
-        if self.auto_entropy_tuning:
-            if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                self.target_entropy = -float(self.policy.num_actions)
-            else: # Discrete actor
-                self.target_entropy = self.target_entropy_scale * T.log(T.tensor(self.policy.num_actions, dtype=T.float32, device=self.device)).item()
-            self.log_alpha = T.zeros(1, requires_grad=True, device=self.device)
-            self.entropy_optimizer = T.optim.Adam([self.log_alpha], lr=self.entropy_lr)
-
-    @abstractmethod
-    def learn(self, sample: dict|list[dict])->dict:
-        """Learn from a sample of transitions."""
-        raise NotImplementedError("Subclasses must implement learn.")
-
-    def get_config(self):
-        config = super().get_config()
-        config["type"] = self.__class__.__name__
-        config["config"].update({
-            "policy": self.policy.get_config(),
-            "value": self.value.get_config(),
-            "discount": self.discount,
-            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
-            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
-            "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
-            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
-            "entropy_coefficient": self.entropy_coefficient,
-            "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
-            "auto_entropy_tuning": self.auto_entropy_tuning,
-            "entropy_lr": self.entropy_lr,
-            "target_entropy_scale": self.target_entropy_scale,
-        })
-        return config
-
-class Reinforce(OnPolicyAgent):
+class Reinforce(Agent):
     def __init__(
         self,
         policy: StochasticDiscretePolicy,
@@ -319,23 +259,42 @@ class Reinforce(OnPolicyAgent):
             kwargs: Additional keyword arguments.
         """
         try:
-            super().__init__(
-                policy,
-                value,
-                discount,
-                state_normalizer,
-                None,
-                advantage_normalizer = advantage_normalizer,
-                reward_normalizer = reward_normalizer,
-                entropy_coefficient = entropy_coefficient,
-                entropy_schedule = entropy_schedule,
-                auto_entropy_tuning = auto_entropy_tuning,
-                entropy_lr = entropy_lr,
-                target_entropy_scale = target_entropy_scale,
-                save_dir = save_dir,
-                device=device,
-                **kwargs
-            )
+            # super().__init__(
+            #     policy,
+            #     value,
+            #     discount,
+            #     state_normalizer,
+            #     None,
+            #     advantage_normalizer = advantage_normalizer,
+            #     reward_normalizer = reward_normalizer,
+            #     entropy_coefficient = entropy_coefficient,
+            #     entropy_schedule = entropy_schedule,
+            #     auto_entropy_tuning = auto_entropy_tuning,
+            #     entropy_lr = entropy_lr,
+            #     target_entropy_scale = target_entropy_scale,
+            #     save_dir = save_dir,
+            #     device=device,
+            #     **kwargs
+            # )
+            super().__init__(save_dir, device, **kwargs)
+            self.policy = policy
+            self.value = value
+            self.discount = discount
+            self.state_normalizer = state_normalizer
+            self.advantage_normalizer = advantage_normalizer
+            self.reward_normalizer = reward_normalizer
+            self.entropy_coefficient = entropy_coefficient
+            self.entropy_schedule = entropy_schedule
+            self.auto_entropy_tuning = auto_entropy_tuning
+            self.entropy_lr = entropy_lr
+            self.target_entropy_scale = target_entropy_scale
+            if self.auto_entropy_tuning:
+                self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
+                    self.policy,
+                    target_entropy_scale=target_entropy_scale,
+                    lr=entropy_lr,
+                    device=self.device,
+                )
             
         except Exception as e:
             self.logger.error(f"Error in Reinforce.__init__: {e}", exc_info=True)
@@ -374,7 +333,7 @@ class Reinforce(OnPolicyAgent):
 
         return actions
 
-    def learn(self, step: int, completed_trajectories: list[dict], **kwargs: Any):
+    def learn(self, step: int, sample: list[dict], **kwargs: Any)->dict:
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -383,9 +342,9 @@ class Reinforce(OnPolicyAgent):
         
         learn_metrics = {}
 
-        all_states = [trajectory['states'] for trajectory in completed_trajectories]
-        all_actions = [trajectory['actions'] for trajectory in completed_trajectories]
-        all_rewards = [trajectory['rewards'] for trajectory in completed_trajectories]
+        all_states = [trajectory['states'] for trajectory in sample]
+        all_actions = [trajectory['actions'] for trajectory in sample]
+        all_rewards = [trajectory['rewards'] for trajectory in sample]
         # all_terminations = [trajectory['terminations'] for trajectory in completed_trajectories]
         # all_truncations = [trajectory['truncations'] for trajectory in completed_trajectories]
 
@@ -461,15 +420,7 @@ class Reinforce(OnPolicyAgent):
         total_loss = policy_loss + value_loss
         total_loss.backward()
 
-        nonfinite_values = (
-            count_nonfinite(values)
-            + count_nonfinite(advantages)
-            + count_nonfinite(returns)
-            + count_nonfinite(log_probs)
-            + count_nonfinite(entropies)
-        )
-
-        if should_log_diag or nonfinite_values > 0:
+        if should_log_diag:
             self.logger.debug(
                 "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s",
                 step,
@@ -486,8 +437,6 @@ class Reinforce(OnPolicyAgent):
                 summarize_tensor(entropies, "entropies"),
                 f"entropy_coef={float(entropy_coefficient)}",
             )
-
-        if should_log_diag or nonfinite_values > 0:
             value_grad_norm = grad_norm_from_optimizer(self.value.optimizer)
             policy_grad_norm = grad_norm_from_optimizer(self.policy.optimizer)
             self.logger.debug(
@@ -541,6 +490,19 @@ class Reinforce(OnPolicyAgent):
     def get_config(self):
         config = super().get_config()
         config["type"] = self.__class__.__name__
+        config["config"].update({
+            "policy": self.policy.get_config(),
+            "value": self.value.get_config(),
+            "discount": self.discount,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "entropy_coefficient": self.entropy_coefficient,
+            "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
+            "auto_entropy_tuning": self.auto_entropy_tuning,
+            "entropy_lr": self.entropy_lr,
+            "target_entropy_scale": self.target_entropy_scale,
+        })
         return config
 
     def save(self):
@@ -579,7 +541,7 @@ class Reinforce(OnPolicyAgent):
             advantage_normalizer=advantage_normalizer,
             reward_normalizer=reward_normalizer,
             entropy_coefficient=config["entropy_coefficient"],
-            entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
+            entropy_schedule=ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
             auto_entropy_tuning=config["auto_entropy_tuning"],
             entropy_lr=config["entropy_lr"],
             target_entropy_scale=config["target_entropy_scale"],
@@ -588,7 +550,7 @@ class Reinforce(OnPolicyAgent):
 
         return agent
 
-class ActorCritic(OnPolicyAgent):
+class ActorCritic(Agent):
     """Actor Critic Agent."""
 
     def __init__(
@@ -615,23 +577,43 @@ class ActorCritic(OnPolicyAgent):
         **kwargs,
     ):
         try:
-            super().__init__(
-                policy,
-                value,
-                discount,
-                state_normalizer,
-                goal_normalizer,
-                advantage_normalizer = advantage_normalizer,
-                reward_normalizer = reward_normalizer,
-                entropy_coefficient = entropy_coefficient,
-                entropy_schedule = entropy_schedule,
-                auto_entropy_tuning = auto_entropy_tuning,
-                entropy_lr = entropy_lr,
-                target_entropy_scale = target_entropy_scale,
-                save_dir = save_dir,
-                device=device,
-                **kwargs
-            )
+            # super().__init__(
+            #     policy,
+            #     value,
+            #     discount,
+            #     state_normalizer,
+            #     goal_normalizer,
+            #     advantage_normalizer = advantage_normalizer,
+            #     reward_normalizer = reward_normalizer,
+            #     entropy_coefficient = entropy_coefficient,
+            #     entropy_schedule = entropy_schedule,
+            #     auto_entropy_tuning = auto_entropy_tuning,
+            #     entropy_lr = entropy_lr,
+            #     target_entropy_scale = target_entropy_scale,
+            #     save_dir = save_dir,
+            #     device=device,
+            #     **kwargs
+            # )
+            super().__init__(save_dir, device, **kwargs)
+            self.policy = policy
+            self.value = value
+            self.discount = discount
+            self.state_normalizer = state_normalizer
+            self.goal_normalizer = goal_normalizer
+            self.advantage_normalizer = advantage_normalizer
+            self.reward_normalizer = reward_normalizer
+            self.entropy_coefficient = entropy_coefficient
+            self.entropy_schedule = entropy_schedule
+            self.auto_entropy_tuning = auto_entropy_tuning
+            self.entropy_lr = entropy_lr
+            self.target_entropy_scale = target_entropy_scale
+            if self.auto_entropy_tuning:
+                self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
+                    self.policy,
+                    target_entropy_scale=target_entropy_scale,
+                    lr=entropy_lr,
+                    device=self.device,
+                )
             self.gae_coefficient = gae_coefficient
             self.policy_grad_clip = policy_grad_clip
             self.value_grad_clip = value_grad_clip
@@ -674,7 +656,7 @@ class ActorCritic(OnPolicyAgent):
 
         return actions
 
-    def learn(self, step:int, rollouts:dict, **kwargs: Any):
+    def learn(self, step:int, sample:dict, **kwargs: Any)->dict:
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -687,17 +669,17 @@ class ActorCritic(OnPolicyAgent):
         self.value.optimizer.zero_grad()
 
         # Extract trajectories from buffer
-        states = rollouts['states']
-        actions = rollouts['actions']
-        rewards = rollouts['rewards']
-        next_states = rollouts['next_states']
-        terminations = rollouts['terminations']
-        truncations = rollouts['truncations']
-        first_steps = rollouts["first_steps"]
-        valid_indices = rollouts["valid_indices"]
-        ach_goals = rollouts["state_achieved_goals"]
-        next_ach_goals = rollouts["next_state_achieved_goals"]
-        goals = rollouts["desired_goals"]
+        states = sample['states']
+        actions = sample['actions']
+        rewards = sample['rewards']
+        next_states = sample['next_states']
+        terminations = sample['terminations']
+        truncations = sample['truncations']
+        # first_steps = sample["first_steps"]
+        valid_indices = sample["valid_indices"]
+        ach_goals = sample["state_achieved_goals"]
+        next_ach_goals = sample["next_state_achieved_goals"]
+        goals = sample["desired_goals"]
 
         # Normalize states and goals
         if self.state_normalizer:
@@ -885,6 +867,17 @@ class ActorCritic(OnPolicyAgent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
+            "policy": self.policy.get_config(),
+            "value": self.value.get_config(),
+            "discount": self.discount,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "entropy_coefficient": self.entropy_coefficient,
+            "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
+            "auto_entropy_tuning": self.auto_entropy_tuning,
+            "entropy_lr": self.entropy_lr,
+            "target_entropy_scale": self.target_entropy_scale,
             "gae_coefficient": self.gae_coefficient,
             "policy_grad_clip": self.policy_grad_clip,
             "value_grad_clip": self.value_grad_clip,
@@ -931,7 +924,7 @@ class ActorCritic(OnPolicyAgent):
             advantage_normalizer=advantage_normalizer,
             reward_normalizer=reward_normalizer,
             entropy_coefficient=config["entropy_coefficient"],
-            entropy_schedule=ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
+            entropy_schedule=ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
             auto_entropy_tuning=config["auto_entropy_tuning"],
             entropy_lr=config["entropy_lr"],
             target_entropy_scale=config["target_entropy_scale"],
@@ -945,7 +938,7 @@ class ActorCritic(OnPolicyAgent):
 
         return agent
 
-class PPO(OnPolicyAgent):
+class PPO(Agent):
     """
     Proximal Policy Optimization (PPO) agent implementation.
 
@@ -962,6 +955,7 @@ class PPO(OnPolicyAgent):
         entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
         auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
         entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
+        target_entropy_scale: (float): Scale for the target entropy. Only used if auto entropy = True and discrete action space
         kl_coefficient: (float): Coefficient for KL divergence penalty.
         kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
         policy_clip: (float): Clipping value for policy ratio updates.
@@ -1043,23 +1037,43 @@ class PPO(OnPolicyAgent):
             kwargs: Additional keyword arguments.
         """
         try:
-            super().__init__(
-                policy,
-                value,
-                discount,
-                state_normalizer,
-                None,
-                advantage_normalizer = advantage_normalizer,
-                reward_normalizer = reward_normalizer,
-                entropy_coefficient = entropy_coefficient,
-                entropy_schedule = entropy_schedule,
-                auto_entropy_tuning = auto_entropy_tuning,
-                entropy_lr = entropy_lr,
-                target_entropy_scale = target_entropy_scale,
-                save_dir = save_dir,
-                device=device,
-                **kwargs
-            )
+            # super().__init__(
+            #     policy,
+            #     value,
+            #     discount,
+            #     state_normalizer,
+            #     None,
+            #     advantage_normalizer = advantage_normalizer,
+            #     reward_normalizer = reward_normalizer,
+            #     entropy_coefficient = entropy_coefficient,
+            #     entropy_schedule = entropy_schedule,
+            #     auto_entropy_tuning = auto_entropy_tuning,
+            #     entropy_lr = entropy_lr,
+            #     target_entropy_scale = target_entropy_scale,
+            #     save_dir = save_dir,
+            #     device=device,
+            #     **kwargs
+            # )
+            super().__init__(save_dir, device, **kwargs)
+            self.policy = policy
+            self.value = value
+            self.discount = discount
+            self.state_normalizer = state_normalizer
+            self.goal_normalizer = goal_normalizer
+            self.advantage_normalizer = advantage_normalizer
+            self.reward_normalizer = reward_normalizer
+            self.entropy_coefficient = entropy_coefficient
+            self.entropy_schedule = entropy_schedule
+            self.auto_entropy_tuning = auto_entropy_tuning
+            self.entropy_lr = entropy_lr
+            self.target_entropy_scale = target_entropy_scale
+            if self.auto_entropy_tuning:
+                self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
+                    self.policy,
+                    target_entropy_scale=target_entropy_scale,
+                    lr=entropy_lr,
+                    device=self.device,
+                )
             self.gae_coefficient = gae_coefficient
             self.kl_coefficient = kl_coefficient
             self.kl_adapter = kl_adapter
@@ -1110,14 +1124,15 @@ class PPO(OnPolicyAgent):
 
         return actions
 
-    def learn(self, step:int, rollouts:dict, batch_size:int, learning_epochs:int):
+    def learn(self, step:int, sample:dict, learning_epochs:int, mini_batch_size:int, **kwargs: Any)->dict:
         """
         Perform learning updates using the collected trajectory.
 
         Args:
-            rollouts (dict): Collected rollouts containing states, actions, etc.
-            batch_size (int): Batch size for training.
+            step (int): Current step.
+            sample (dict): Collected rollouts containing states, actions, etc.
             learning_epochs (int): Number of epochs per update.
+            mini_batch_size (int): Mini batch size for training.
 
         Returns:
             dict: Learning metrics.
@@ -1131,17 +1146,17 @@ class PPO(OnPolicyAgent):
         learn_metrics = {}
 
         # Unpack trajectory
-        states = rollouts["states"]
-        actions = rollouts["actions"]
-        rewards = rollouts["rewards"]
-        next_states = rollouts["next_states"]
-        terminations = rollouts["terminations"]
-        truncations = rollouts["truncations"]
-        first_steps = rollouts["first_steps"]
-        valid_indices = rollouts["valid_indices"]
-        ach_goals = rollouts["state_achieved_goals"]
-        next_ach_goals = rollouts["next_state_achieved_goals"]
-        goals = rollouts["desired_goals"]
+        states = sample["states"]
+        actions = sample["actions"]
+        rewards = sample["rewards"]
+        next_states = sample["next_states"]
+        terminations = sample["terminations"]
+        truncations = sample["truncations"]
+        first_steps = sample["first_steps"]
+        valid_indices = sample["valid_indices"]
+        ach_goals = sample["state_achieved_goals"]
+        next_ach_goals = sample["next_state_achieved_goals"]
+        goals = sample["desired_goals"]
 
         # Get current values of policy/value clip and entropy/kl coefficients
         policy_clip = self.policy_clip
@@ -1249,10 +1264,10 @@ class PPO(OnPolicyAgent):
         for epoch in range(learning_epochs):
             # Create random indices for shuffling
             indices = T.randperm(num_valid, device=self.device)
-            num_batches = num_valid // batch_size
+            num_batches = num_valid // mini_batch_size
 
             for batch_num in range(num_batches):
-                batch_indices = indices[batch_num * batch_size : (batch_num + 1) * batch_size]
+                batch_indices = indices[batch_num * mini_batch_size : (batch_num + 1) * mini_batch_size]
                 # print("batch_indices:", batch_indices)
                 states_batch = states_flat[batch_indices]
                 goals_batch = goals_flat[batch_indices] if goals is not None else None
@@ -1282,9 +1297,6 @@ class PPO(OnPolicyAgent):
                 surrogate_loss = -T.min(surr1, surr2).mean()
 
                 # Calculate Entropy penalty
-                # if self.policy.distribution == 'normal':
-                #     entropies = -new_log_probs
-                # else:
                 entropies = new_dist.entropy()
                 mean_entropy = entropies.mean()
                 entropy_penalty = mean_entropy * -entropy_coefficient
@@ -1318,20 +1330,6 @@ class PPO(OnPolicyAgent):
 
                 # Log diag data
                 if should_log_diag and (epoch == learning_epochs - 1) and (batch_num == num_batches - 1):
-                    nonfinite_values = (
-                    count_nonfinite(cur_values_batch)
-                    # + count_nonfinite(cur_next_values)
-                    + count_nonfinite(td_errors)
-                    + count_nonfinite(advantages_batch)
-                    + count_nonfinite(returns_batch)
-                    + count_nonfinite(cur_log_probs_batch)
-                    + count_nonfinite(new_log_probs)
-                    + count_nonfinite(prob_ratio)
-                    + count_nonfinite(entropies)
-                    + count_nonfinite(kl)
-                    + count_nonfinite(surr1)
-                    + count_nonfinite(surr2)
-                    )
                     self.logger.debug(
                         "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                         step,
@@ -1429,6 +1427,17 @@ class PPO(OnPolicyAgent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config.update({
+            "policy": self.policy.get_config(),
+            "value": self.value.get_config(),
+            "discount": self.discount,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "entropy_coefficient": self.entropy_coefficient,
+            "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
+            "auto_entropy_tuning": self.auto_entropy_tuning,
+            "entropy_lr": self.entropy_lr,
+            "target_entropy_scale": self.target_entropy_scale,
             "gae_coefficient": self.gae_coefficient,
             "policy_clip": self.policy_clip,
             "policy_clip_schedule": self.policy_clip_schedule.get_config() if self.policy_clip_schedule else None,
@@ -1506,17 +1515,17 @@ class PPO(OnPolicyAgent):
             advantage_normalizer = advantage_normalizer,
             reward_normalizer = reward_normalizer,
             entropy_coefficient = config["entropy_coefficient"],
-            entropy_schedule = ScheduleWrapper(config["entropy_schedule"]) if config["entropy_schedule"] else None,
+            entropy_schedule = ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
             auto_entropy_tuning = config["auto_entropy_tuning"],
             entropy_lr = config["entropy_lr"],
             target_entropy_scale = config["target_entropy_scale"],
             kl_coefficient = config["kl_coefficient"],
-            kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config["kl_adapter"] else None,
+            kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config.get("kl_adapter", None) else None,
             policy_clip = config["policy_clip"],
-            policy_clip_schedule = ScheduleWrapper(config["policy_clip_schedule"]) if config["policy_clip_schedule"] else None,
+            policy_clip_schedule = ScheduleWrapper(**config["policy_clip_schedule"]) if config.get("policy_clip_schedule", None) else None,
             policy_grad_clip = config["policy_grad_clip"],
             value_clip = config["value_clip"],
-            value_clip_schedule = ScheduleWrapper(config["value_clip_schedule"]) if config["value_clip_schedule"] else None,
+            value_clip_schedule = ScheduleWrapper(**config["value_clip_schedule"]) if config.get("value_clip_schedule", None) else None,
             value_grad_clip = config["value_grad_clip"],
             value_coef = config["value_coef"],
             reward_clip = config['reward_clip'],
@@ -1528,76 +1537,7 @@ class PPO(OnPolicyAgent):
 
         return agent
 
-## Off-Policy Agent Classes ##
-class OffPolicyAgent(Agent):
-    """Base class for all off-policy agents."""
-    def __init__(
-        self,
-        policy: ActorModel|StochasticDiscretePolicy|StochasticContinuousPolicy,
-        critic: ContinuousCritic|DiscreteCritic,
-        discount: float=0.99,
-        tau: float=0.001,
-        state_normalizer: BaseNormalizer|None = None,
-        goal_normalizer: BaseNormalizer|None = None,
-        reward_normalizer: RewardNorm|None = None,
-        policy_grad_clip: float = float('inf'),
-        critic_grad_clip: float = float('inf'),
-        N: int=1, # N-steps
-        curiosity: ICM|None = None,
-        save_dir: str = "models/",
-        device: str|T.device|None = None,
-        **kwargs,
-    ):
-        super().__init__(save_dir, device, **kwargs)
-        self.policy = policy
-        self.critic = critic
-        self.discount = discount
-        self.tau = tau
-        self.state_normalizer = state_normalizer
-        self.goal_normalizer = goal_normalizer
-        self.reward_normalizer = reward_normalizer
-        self.policy_grad_clip = policy_grad_clip
-        self.critic_grad_clip = critic_grad_clip
-        self.N = N
-        self.curiosity = curiosity
-        self._use_her = False
-
-    def soft_update(self, current, target):
-        with T.no_grad():
-            for current_params, target_params in zip(current.parameters(), target.parameters()):
-                target_params.data.copy_(self.tau * current_params.data + (1 - self.tau) * target_params.data)
-
-        # Copy buffers (running_mean, running_var)
-        main_buffers = dict(current.named_buffers())
-        target_buffers = dict(target.named_buffers())
-        for name in main_buffers:
-            if name in target_buffers:
-                target_buffers[name].copy_(main_buffers[name])
-
-    @abstractmethod
-    def learn(self, sample: dict|list[dict])->dict:
-        """Learn from a sample of transitions."""
-        raise NotImplementedError("Subclasses must implement learn.")
-
-    def get_config(self):
-        config = super().get_config()
-        config["type"] = self.__class__.__name__
-        config["config"].update({
-            "policy": self.policy.get_config(),
-            "critic": self.critic.get_config(),
-            "discount": self.discount,
-            "tau": self.tau,
-            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
-            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
-            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
-            "policy_grad_clip": self.policy_grad_clip,
-            "critic_grad_clip": self.critic_grad_clip,
-            "N": self.N,
-            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
-        })
-        return config
-
-class DDPG(OffPolicyAgent):
+class DDPG(Agent):
     """Deep Deterministic Policy Gradient Agent."""
 
     def __init__(
@@ -1623,28 +1563,42 @@ class DDPG(OffPolicyAgent):
         **kwargs
     ):
         try:
-            super().__init__(
-                policy=policy,
-                critic=critic,
-                discount=discount,
-                tau=tau,
-                state_normalizer=state_normalizer,
-                goal_normalizer=goal_normalizer,
-                reward_normalizer=reward_normalizer,
-                policy_grad_clip=policy_grad_clip,
-                critic_grad_clip=critic_grad_clip,
-                N=N,
-                curiosity=curiosity,
-                save_dir=save_dir,
-                device=device,
-                **kwargs
-            )
+            # super().__init__(
+            #     policy=policy,
+            #     critic=critic,
+            #     discount=discount,
+            #     tau=tau,
+            #     state_normalizer=state_normalizer,
+            #     goal_normalizer=goal_normalizer,
+            #     reward_normalizer=reward_normalizer,
+            #     policy_grad_clip=policy_grad_clip,
+            #     critic_grad_clip=critic_grad_clip,
+            #     N=N,
+            #     curiosity=curiosity,
+            #     save_dir=save_dir,
+            #     device=device,
+            #     **kwargs
+            # )
+            super().__init__(save_dir, device, **kwargs)
+            self.policy = policy
+            self.critic = critic
+            self.discount = discount
+            self.tau = tau
+            self.state_normalizer = state_normalizer
+            self.goal_normalizer = goal_normalizer
+            self.reward_normalizer = reward_normalizer
+            self.policy_grad_clip = policy_grad_clip
+            self.critic_grad_clip = critic_grad_clip
+            self.N = N
+            self.curiosity = curiosity
             self.target_policy = self.policy.clone(device=self.policy.device)
             self.target_critic = self.critic.clone(device=self.critic.device)
             self.action_epsilon = action_epsilon
             self.noise = noise
             self.noise_schedule = noise_schedule
             self.noise_clip = noise_clip
+
+            self._use_her = False
 
         except Exception as e:
             self.logger.error(f"Error in DDPG init: {e}", exc_info=True)
@@ -1755,10 +1709,10 @@ class DDPG(OffPolicyAgent):
             return actions.detach()
 
     def soft_update_targets(self):
-        self.soft_update(self.policy, self.target_policy)
-        self.soft_update(self.critic, self.target_critic)
+        soft_update(self.policy, self.target_policy, self.tau)
+        soft_update(self.critic, self.target_critic, self.tau)
 
-    def learn(self, step: int, sample: dict)->dict:
+    def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
         
         self._learn_count += 1
         if self._diag_freq is not None:
@@ -1970,15 +1924,6 @@ class DDPG(OffPolicyAgent):
 
         # Log diag data
         if should_log_diag:
-            # nonfinite_values = (
-            # count_nonfinite(critic_values)
-            # + count_nonfinite(target_critic_values)
-            # + count_nonfinite(targets)
-            # + count_nonfinite(target_actions)
-            # + count_nonfinite(predictions)
-            # + count_nonfinite(error)
-            # + count_nonfinite(pred_actions)
-            # )
             self.logger.debug(
                 "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
@@ -2267,6 +2212,17 @@ class DDPG(OffPolicyAgent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
+            "policy": self.policy.get_config(),
+            "critic": self.critic.get_config(),
+            "discount": self.discount,
+            "tau": self.tau,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "policy_grad_clip": self.policy_grad_clip,
+            "critic_grad_clip": self.critic_grad_clip,
+            "N": self.N,
+            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
             "action_epsilon": self.action_epsilon,
             "noise": self.noise.get_config() if self.noise is not None else None,
             "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
@@ -2315,7 +2271,7 @@ class DDPG(OffPolicyAgent):
             goal_normalizer=goal_normalizer,
             reward_normalizer=reward_normalizer,
             noise=noise,
-            noise_schedule=ScheduleWrapper(config["noise_schedule"]) if config["noise_schedule"] else None,
+            noise_schedule=ScheduleWrapper(**config["noise_schedule"]) if config.get("noise_schedule", None) else None,
             noise_clip=config["noise_clip"],
             policy_grad_clip=config['policy_grad_clip'],
             critic_grad_clip=config['critic_grad_clip'],
@@ -2328,7 +2284,7 @@ class DDPG(OffPolicyAgent):
         return agent
     
 
-class TD3(OffPolicyAgent):
+class TD3(Agent):
     """Twin Delayed Deep Deterministic Policy Gradient Agent."""
     
     def __init__(
@@ -2358,22 +2314,18 @@ class TD3(OffPolicyAgent):
         **kwargs
     ):
         try:
-            super().__init__(
-                policy=policy,
-                critic=critic,
-                discount=discount,
-                tau=tau,
-                state_normalizer=state_normalizer,
-                goal_normalizer=goal_normalizer,
-                reward_normalizer=reward_normalizer,
-                policy_grad_clip=policy_grad_clip,
-                critic_grad_clip=critic_grad_clip,
-                N=N,
-                curiosity=curiosity,
-                save_dir=save_dir,
-                device=device,
-                **kwargs
-            )
+            super().__init__(save_dir, device, **kwargs)
+            self.policy = policy
+            self.critic = critic
+            self.discount = discount
+            self.tau = tau
+            self.state_normalizer = state_normalizer
+            self.goal_normalizer = goal_normalizer
+            self.reward_normalizer = reward_normalizer
+            self.policy_grad_clip = policy_grad_clip
+            self.critic_grad_clip = critic_grad_clip
+            self.N = N
+            self.curiosity = curiosity
             self.critic_b = critic_b
             # clone second critic (do not copy weights) if critic_b None
             if not critic_b:
@@ -2388,6 +2340,8 @@ class TD3(OffPolicyAgent):
             self.target_noise = target_noise
             self.target_noise_schedule = target_noise_schedule
             self.policy_update_delay = policy_update_delay
+
+            self._use_her = False
 
         except Exception as e:
             self.logger.error(f"Error in TD3 init: {e}", exc_info=True)
@@ -2551,11 +2505,11 @@ class TD3(OffPolicyAgent):
             return actions.detach()
 
     def soft_update_targets(self):
-        self.soft_update(self.policy, self.target_policy)
-        self.soft_update(self.critic, self.target_critic)
-        self.soft_update(self.critic_b, self.target_critic_b)
+        soft_update(self.policy, self.target_policy, self.tau)
+        soft_update(self.critic, self.target_critic, self.tau)
+        soft_update(self.critic_b, self.target_critic_b, self.tau)
             
-    def learn(self, step: int, sample: dict)->dict:
+    def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -2814,15 +2768,6 @@ class TD3(OffPolicyAgent):
 
         # Log diag data
         if should_log_diag:
-            # nonfinite_values = (
-            # count_nonfinite(critic_values)
-            # + count_nonfinite(target_critic_values)
-            # + count_nonfinite(targets)
-            # + count_nonfinite(target_actions)
-            # + count_nonfinite(predictions)
-            # + count_nonfinite(error)
-            # + count_nonfinite(pred_actions)
-            # )
             self.logger.debug(
                 "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
@@ -2904,6 +2849,17 @@ class TD3(OffPolicyAgent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
+            "policy": self.policy.get_config(),
+            "critic": self.critic.get_config(),
+            "discount": self.discount,
+            "tau": self.tau,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "policy_grad_clip": self.policy_grad_clip,
+            "critic_grad_clip": self.critic_grad_clip,
+            "N": self.N,
+            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
             "action_epsilon": self.action_epsilon,
             "critic_b": self.critic_b.get_config(),
             "noise": self.noise.get_config() if self.noise is not None else None,
@@ -2961,9 +2917,9 @@ class TD3(OffPolicyAgent):
             goal_normalizer=goal_normalizer,
             reward_normalizer=reward_normalizer,
             noise=noise,
-            noise_schedule=ScheduleWrapper(config["noise_schedule"]) if config["noise_schedule"] else None,
+            noise_schedule=ScheduleWrapper(**config["noise_schedule"]) if config.get("noise_schedule", None) else None,
             target_noise=target_noise,
-            target_noise_schedule=ScheduleWrapper(config["target_noise_schedule"]) if config["target_noise_schedule"] else None,
+            target_noise_schedule=ScheduleWrapper(**config["target_noise_schedule"]) if config.get("target_noise_schedule", None) else None,
             noise_clip=config["noise_clip"],
             policy_grad_clip=config["policy_grad_clip"],
             critic_grad_clip=config["critic_grad_clip"],
@@ -2975,7 +2931,7 @@ class TD3(OffPolicyAgent):
         )
         return agent
 
-class SAC(OffPolicyAgent):
+class SAC(Agent):
     """Soft Actor Critic Agent."""
 
     def __init__(
@@ -3002,22 +2958,34 @@ class SAC(OffPolicyAgent):
         **kwargs
     ):
         try:
-            super().__init__(
-                policy=policy,
-                critic=critic,
-                discount=discount,
-                tau=tau,
-                state_normalizer=state_normalizer,
-                goal_normalizer=goal_normalizer,
-                reward_normalizer=reward_normalizer,
-                policy_grad_clip=policy_grad_clip,
-                critic_grad_clip=critic_grad_clip,
-                N=N,
-                curiosity=curiosity,
-                save_dir=save_dir,
-                device=device,
-                **kwargs
-            )
+            # super().__init__(
+            #     policy=policy,
+            #     critic=critic,
+            #     discount=discount,
+            #     tau=tau,
+            #     state_normalizer=state_normalizer,
+            #     goal_normalizer=goal_normalizer,
+            #     reward_normalizer=reward_normalizer,
+            #     policy_grad_clip=policy_grad_clip,
+            #     critic_grad_clip=critic_grad_clip,
+            #     N=N,
+            #     curiosity=curiosity,
+            #     save_dir=save_dir,
+            #     device=device,
+            #     **kwargs
+            # )
+            super().__init__(save_dir, device, **kwargs)
+            self.policy = policy
+            self.critic = critic
+            self.discount = discount
+            self.tau = tau
+            self.state_normalizer = state_normalizer
+            self.goal_normalizer = goal_normalizer
+            self.reward_normalizer = reward_normalizer
+            self.policy_grad_clip = policy_grad_clip
+            self.critic_grad_clip = critic_grad_clip
+            self.N = N
+            self.curiosity = curiosity
             self.critic_b = critic_b
             # clone second critic (do not copy weights) if critic_model_b None
             if not critic_b:
@@ -3029,12 +2997,12 @@ class SAC(OffPolicyAgent):
             self.entropy_lr = entropy_lr
             self.target_entropy_scale = target_entropy_scale
             if self.auto_entropy_tuning:
-                if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                    self.target_entropy = -float(self.policy.num_actions)
-                else: # Discrete actor
-                    self.target_entropy = self.target_entropy_scale * T.log(T.tensor(self.policy.num_actions, dtype=T.float32, device=self.device)).item()
-                self.log_alpha = T.zeros(1, requires_grad=True, device=self.device)
-                self.entropy_optimizer = T.optim.Adam([self.log_alpha], lr=self.entropy_lr)
+                self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
+                    self.policy,
+                    target_entropy_scale=target_entropy_scale,
+                    lr=entropy_lr,
+                    device=self.device,
+                )
         except Exception as e:
             self.logger.error(f"Error in SAC init: {e}", exc_info=True)
 
@@ -3076,8 +3044,9 @@ class SAC(OffPolicyAgent):
             if (step is not None) and (step <= warmup):
                 return self.policy.env.action_space.sample()
             # otherwise, sample action from policy
-            dist = self.policy(states, goals)
-            actions = dist.sample()
+            with T.no_grad():
+                dist = self.policy(states, goals)
+                actions = dist.sample()
 
         elif context == 'test':
             with T.no_grad():
@@ -3090,11 +3059,10 @@ class SAC(OffPolicyAgent):
         return actions
 
     def soft_update_targets(self):
-        self.soft_update(self.critic, self.target_critic)
-        self.soft_update(self.critic_b, self.target_critic_b)
+        soft_update(self.critic, self.target_critic, self.tau)
+        soft_update(self.critic_b, self.target_critic_b, self.tau)
 
-    # TODO: Add support for stochastic discrete policy
-    def learn(self, step: int, sample: dict)->dict:
+    def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
 
         self._learn_count += 1
         if self._diag_freq is not None:
@@ -3553,6 +3521,17 @@ class SAC(OffPolicyAgent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
+            "policy": self.policy.get_config(),
+            "critic": self.critic.get_config(),
+            "discount": self.discount,
+            "tau": self.tau,
+            "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
+            "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "policy_grad_clip": self.policy_grad_clip,
+            "critic_grad_clip": self.critic_grad_clip,
+            "N": self.N,
+            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
             "critic_b": self.critic_b.get_config(),
             "entropy_coefficient": self.entropy_coefficient,
             "auto_entropy_tuning": self.auto_entropy_tuning,
@@ -4148,8 +4127,14 @@ class HER(Agent):
         
         return her
     
+# @runtime_checkable
+# class HasNoise(Protocol):
+#     def reset_noise(self, env_indices: T.Tensor) -> None: ...
 
-    
+@runtime_checkable
+class HasTargetNetworks(Protocol):
+    def soft_update_targets(self) -> None: ...
+
 
 # class MAPPO(Agent):
 
@@ -5637,49 +5622,49 @@ class HER(Agent):
 #     except Exception as e:
 #         logger.error(f"Error in rl_agent.init_sweep: {e}", exc_info=True)
 
-def init_sweep(config):
-    try:
-        # Extract the model type (stored as a list) from the config.
-        model_type_list = config.get("model_type", [])
-        if not model_type_list:
-            raise ValueError("No model type provided in config.")
-        model_type = model_type_list[0]
+# def init_sweep(config):
+#     try:
+#         # Extract the model type (stored as a list) from the config.
+#         model_type_list = config.get("model_type", [])
+#         if not model_type_list:
+#             raise ValueError("No model type provided in config.")
+#         model_type = model_type_list[0]
 
-        # Inject wandb settings into the config if not already provided.
-        if "wandb" not in config:
-            run_number = wandb_support.get_next_run_number(config["project"])
-            config["wandb"] = {
-                "project": config["project"],
-                "name": f"train-{run_number}",
-                "job_type": "train",
-                "tags": ["train", model_type],
-                "group": f"group-{run_number}",
-            }
+#         # Inject wandb settings into the config if not already provided.
+#         if "wandb" not in config:
+#             run_number = wandb_support.get_next_run_number(config["project"])
+#             config["wandb"] = {
+#                 "project": config["project"],
+#                 "name": f"train-{run_number}",
+#                 "job_type": "train",
+#                 "tags": ["train", model_type],
+#                 "group": f"group-{run_number}",
+#             }
 
-        # Build the environment.
-        env_params = {
-            key.replace("env_", ""): config[key]
-            for key in config if key.startswith("env_")
-        }
-        env = gym.make(**env_params)
-        env_spec = env.spec.to_json()
-        logger.debug(f"Environment built: {env.spec}")
+#         # Build the environment.
+#         env_params = {
+#             key.replace("env_", ""): config[key]
+#             for key in config if key.startswith("env_")
+#         }
+#         env = gym.make(**env_params)
+#         env_spec = env.spec.to_json()
+#         logger.debug(f"Environment built: {env.spec}")
 
-        # Create callbacks (using your custom WandbCallback).
-        callbacks = []
-        callbacks.append(WandbCallback(
-            project_name=config["project"],
-            run_name=config["wandb"]["name"],
-            _sweep=True
-        ))
-        logger.debug("Callbacks created")
+#         # Create callbacks (using your custom WandbCallback).
+#         callbacks = []
+#         callbacks.append(WandbCallback(
+#             project_name=config["project"],
+#             run_name=config["wandb"]["name"],
+#             _sweep=True
+#         ))
+#         logger.debug("Callbacks created")
 
-        # Get the appropriate agent class from the model type.
-        agent = get_agent_class_from_type(model_type)
-        logger.debug("Agent class found. Calling sweep_train")
+#         # Get the appropriate agent class from the model type.
+#         agent = get_agent_class_from_type(model_type)
+#         logger.debug("Agent class found. Calling sweep_train")
 
-        # Call the sweep_train function on the agent with the full config.
-        agent.sweep_train(config, env_spec, callbacks, run_number)
-    except Exception as e:
-        logger.error(f"Error in init_sweep: {e}", exc_info=True)
+#         # Call the sweep_train function on the agent with the full config.
+#         agent.sweep_train(config, env_spec, callbacks, run_number)
+#     except Exception as e:
+#         logger.error(f"Error in init_sweep: {e}", exc_info=True)
 

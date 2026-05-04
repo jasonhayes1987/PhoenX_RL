@@ -1,6 +1,6 @@
 # SAC tuned for LunarLander-v3
 
-device: &device "cuda"
+device: &device cuda
 save_dir: &save_dir ./Trained_Models/LunarLander-v3/SAC/
 log_level: INFO
 
@@ -9,8 +9,8 @@ schedule:
   stop_units: &stop_units 1000000
   learn_every_unit: timestep
   learn_every: 64
-  updates_per_learn: 1
-  batch_size: 2048
+  updates_per_learn: 5
+  batch_size: 256
   warmup_steps: 5000
   seed: &seed 42
 
@@ -20,12 +20,12 @@ agent:
     discount: 0.99
     tau: 0.005
     entropy_coefficient: 0.01
-    auto_entropy_tuning: false
+    auto_entropy_tuning: true
     entropy_lr: 0.0003
-    target_entropy_scale: 0.3
+    target_entropy_scale: 0.2
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
-    N: &n 1
+    N: &n 5
     log_level: DEBUG
     _diag_freq: 1000
 
@@ -109,7 +109,6 @@ normalizers:
     type: RunningNorm
     config:
       clip_value: 10.0
-      warmup_steps: 5000
       device: *device
       log_level: DEBUG
       _diag_freq: 10000
@@ -126,7 +125,7 @@ normalizers:
 buffer:
   type: ReplayBuffer
   config:
-    buffer_size: 1000000
+    buffer_size: 100000
     N: *n
     device: *device
 

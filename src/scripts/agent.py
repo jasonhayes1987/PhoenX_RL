@@ -13,7 +13,7 @@ from app.buffer import Buffer
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
-from app.trainer import TrainingSchedule, OnPolicyTrainer, OffPolicyTrainer
+from app.trainer import TrainingSchedule, Trainer
 
 
 def load_config(config_file: str | Path) -> dict:
@@ -115,10 +115,7 @@ def build_trainer_from_config(config: dict):
     callbacks = build_callbacks(config)
     renderer = build_renderer(config)
 
-    agent_type = config["agent"]["type"]
-
-    if agent_type in {"ActorCritic", "Reinforce", "PPO"}:
-        return OnPolicyTrainer(
+    return Trainer(
             agent=agent,
             env=env,
             buffer=buffer,
@@ -127,20 +124,6 @@ def build_trainer_from_config(config: dict):
             callbacks=callbacks,
             log_level=config.get('log_level', 'INFO'),
         )
-    
-    elif agent_type in {"DDPG", "TD3", "SAC"}:
-        return OffPolicyTrainer(
-            agent=agent,
-            env=env,
-            buffer=buffer,
-            schedule=schedule,
-            renderer=renderer,
-            callbacks=callbacks,
-            log_level=config.get('log_level', 'INFO'),
-        )
-
-    raise ValueError(f"Unsupported trainer type for agent '{agent_type}'.")
-
 
 def build_trainer_from_config_path(config_path: str | Path):
     config = load_config(config_path)
