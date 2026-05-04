@@ -8,7 +8,7 @@ from torch.optim import Optimizer
 from .models import ActorModel, ContinuousCritic, ValueModel, StochasticContinuousPolicy, StochasticDiscretePolicy, select_policy_model, select_critic_model
 from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, NStepReward, VectorNStepReward
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
-from .noise import Noise, NormalNoise, UniformNoise, OUNoise
+from .noise import Noise, NormalNoise, UniformNoise
 from .normalizer import BaseNormalizer, RunningNorm, BatchNorm, RewardNorm
 from .rl_callbacks import load as callback_load, WandbCallback, RayWandbCallback
 from .schedulers import ScheduleWrapper
@@ -163,6 +163,37 @@ def compute_advantages_and_returns(
     advantages = compute_gae(td_errors, terminations, truncations, gamma, gae_lambda, device)
     returns = advantages + values
     return advantages, returns, td_errors
+
+def setup_auto_entropy(policy, *, target_entropy_scale=0.98,
+                      lr=3e-4, device=None):
+    """Build target_entropy / log_alpha / optimizer for auto-tuned entropy."""
+    if policy.distribution in ("normal", "beta", "kumaraswamy"):
+        target_entropy = -float(policy.num_actions)
+    else:  # discrete
+        target_entropy = target_entropy_scale * T.log(
+            T.tensor(policy.num_actions, dtype=T.float32, device=device)
+        ).item()
+    log_alpha = T.zeros(1, requires_grad=True, device=device)
+    optimizer = T.optim.Adam([log_alpha], lr=lr)
+    return target_entropy, log_alpha, optimizer
+
+@T.no_grad()
+def soft_update(current_module, target_module, tau: float) -> None:
+    """
+    Soft update a module's parameters and buffers to target_module.
+    
+    Args:
+        current_module: The module to update
+        target_module: The target module to update to
+        tau: The interpolation factor
+    """
+    for cp, tp in zip(current_module.parameters(), target_module.parameters()):
+        tp.data.lerp_(cp.data, tau)
+    main_buf = dict(current_module.named_buffers())
+    targ_buf = dict(target_module.named_buffers())
+    for name, buf in main_buf.items():
+        if name in targ_buf:
+            targ_buf[name].copy_(buf)
 
 def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
     total_sq = None

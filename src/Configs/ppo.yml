@@ -1,19 +1,30 @@
+#PPO template
+
 #TODO: Add ICM
 #TODO: Add learning rate schedulers
 
 device: &device cuda
-seed: &seed null
-save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_test/PPO/
+save_dir: &save_dir ./Trained_Models/LunarLanderContinuous/PPO/
 log_level: INFO
+
+schedule:
+  stop_unit: timestep
+  stop_units: &stop_units 2000000
+  learn_every_unit: timestep
+  learn_every: 8192
+  mini_batch_size: 256
+  learning_epochs: 5
+  seed: &seed 42
 
 agent:
   type: PPO
   config:
-    discount: 0.999
-    gae_coefficient: 0.98
+    discount: 0.99
+    gae_coefficient: 0.95
     entropy_coefficient: &entropy_coefficient 0.02
     auto_entropy_tuning: false
     entropy_lr: 1.0e-2
+    target_entropy_scale: 0.98
     kl_coefficient: 0.0
     policy_clip: &policy_clip 0.2
     policy_grad_clip: 0.5
@@ -26,31 +37,31 @@ agent:
     _diag_freq: 10
 
 env:
-  type: gymnasium # "isaacsim" or "gymnasium"
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: LunarLanderContinuous-v3
-    num_envs: 16
+    num_envs: 64
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
     # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
     wrappers: []
     render_mode: null
     seed: *seed
-    obs_key: null
-    goal_key: null
-    ach_goal_key: null
 
 models:
   policy:
     layer_config:
       - type: dense
-        params: {units: 128, kernel: default, kernel_params: {}}
-      - type: relu
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+      - type: tanh
       - type: dense
-        params: {units: 64, kernel: default, kernel_params: {}}
-      - type: relu
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+      - type: tanh
     output_config:
       - type: dense
-        params: {kernel: default, kernel_params: {}}
+        params: {kernel: orthogonal, kernel_params: {gain: 0.01}}
     optimizer_params: {type: Adam, params: {lr: &policy_lr 3.0e-4}}
     distribution: normal
     # temperature: &temperature 1.0
@@ -59,7 +70,7 @@ models:
   value:
     layer_config:
       - type: dense
-        params: {units: 128, kernel: default, kernel_params: {}}
+        params: {units: 64, kernel: default, kernel_params: {}}
       - type: relu
       - type: dense
         params: {units: 64, kernel: default, kernel_params: {}}
@@ -83,7 +94,6 @@ normalizers:
     type: RunningNorm
     config:
       clip_value: 10.0
-      warmup_steps: 1000
       device: *device
       log_level: DEBUG
       # kwargs
@@ -100,58 +110,47 @@ normalizers:
 
 policy_lr_schedule:
   schedule_type: "linear"
-  steps: 2000000
+  steps: *stop_units
   start_value: *policy_lr
   end_value: 1.0e-5
 
 entropy_schedule:
   schedule_type: "cosine"
-  steps: 2000000
+  steps: *stop_units
   start_value: *entropy_coefficient
   end_value: 0.001
 
 # temperature_schedule:
 #   schedule_type: "cosine"
-#   steps: 500000
+#   steps: *stop_units
 #   start_value: *temperature
 #   end_value: 1.0
 
 # policy_clip_schedule:
 #   schedule_type: "linear"
-#   steps: 100000
+#   steps: *stop_units
 #   start_value: *policy_clip
 #   end_value: 0.01
 
 # value_clip_schedule:
 #   schedule_type: "linear"
-#   steps: 100000
+#   steps: *stop_units
 #   start_value: *value_clip
 #   end_value: 0.01
 
-kl_adapter:
-  initial_beta: 0.5
-  target_kl: 0.01
-  scale_up: 2.0
-  scale_down: 0.5
-  kl_tolerance_high: 1.5
-  kl_tolerance_low: 0.5
+# kl_adapter:
+#   initial_beta: 0.5
+#   target_kl: 0.01
+#   scale_up: 2.0
+#   scale_down: 0.5
+#   kl_tolerance_high: 1.5
+#   kl_tolerance_low: 0.5
 
 buffer:
   type: RolloutBuffer
   config:
-    buffer_size: 1024
+    buffer_size: 128
     device: *device
-
-schedule:
-  type: OnPolicySchedule
-  config:
-    unit: timestep
-    num_units: 2000000
-    learn_unit: timestep
-    num_learn_units: 16384 # 1024 * 16
-    batch_size: 64
-    learning_epochs: 4
-    seed: *seed
 
 renderer:
   render_freq: 1000

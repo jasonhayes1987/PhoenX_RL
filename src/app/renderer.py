@@ -41,7 +41,6 @@ class Renderer:
     ):
         """Universal render_episode — works with Gymnasium only for now."""
         env = trainer.env
-        agent = trainer.agent
 
         if isinstance(env, IsaacSimWrapper):
             raise ValueError(
@@ -63,9 +62,9 @@ class Renderer:
         while not done:
             local_step += 1
             # obs, goals, _ = trainer.extract_states_goals(states)
-            obs, goals, _ = trainer.normalize_inputs(observation.states, observation.goals, observation.ach_goals)
+            obs_norm = trainer.normalize_observation(observation)
 
-            actions = trainer.get_action(obs, goals, context="test")
+            actions = trainer.get_action(obs_norm.states, obs_norm.goals, context="test")
             # actions = env.format_actions(actions)
 
             # Step the render env
