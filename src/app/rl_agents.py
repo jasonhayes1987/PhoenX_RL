@@ -1563,22 +1563,6 @@ class DDPG(Agent):
         **kwargs
     ):
         try:
-            # super().__init__(
-            #     policy=policy,
-            #     critic=critic,
-            #     discount=discount,
-            #     tau=tau,
-            #     state_normalizer=state_normalizer,
-            #     goal_normalizer=goal_normalizer,
-            #     reward_normalizer=reward_normalizer,
-            #     policy_grad_clip=policy_grad_clip,
-            #     critic_grad_clip=critic_grad_clip,
-            #     N=N,
-            #     curiosity=curiosity,
-            #     save_dir=save_dir,
-            #     device=device,
-            #     **kwargs
-            # )
             super().__init__(save_dir, device, **kwargs)
             self.policy = policy
             self.critic = critic
@@ -1602,58 +1586,9 @@ class DDPG(Agent):
 
         except Exception as e:
             self.logger.error(f"Error in DDPG init: {e}", exc_info=True)
-        
-        # set internal attributes
-        # try:
-        #     # Set learn_iter and sync_iter to 0. For distributed training
-        #     # self._learn_iter = 0
-        #     # self._sync_iter = 0
-
-        # except Exception as e:
-        #     self.logger.error(f"Error in DDPG init internal attributes: {e}", exc_info=True)
 
     def _init_her(self):
         self._use_her = True
-
-    # def _distributed_learn(self, step: int, run_number:Optional[str]=None, learn_iter:Optional[int]=None, num_updates:int=1,
-    #                       state_normalizer:Optional[Normalizer]=None, goal_normalizer:Optional[Normalizer]=None):
-    #     """Used in distributed training to update the shared models.
-    #     This function is overridden by the Worker class to point to the Learner class.
-    #     """
-    #     previous_step = self._step
-    #     # Set current step to step if greater than current step
-    #     if step > previous_step:
-    #         self._step = step
-    #         # Initialize wandb check
-    #         self._initialize_wandb(run_number=run_number, run_name_prefix="train", learn_iter=learn_iter)
-    #         for _ in range(num_updates):
-    #             actor_loss, critic_loss = self.learn(goal_normalizer)
-    #         # Only store log if current step greater than previous and self._wandb
-    #         if self._wandb:
-    #             self._train_step_config["actor_loss"] = actor_loss
-    #             self._train_step_config["critic_loss"] = critic_loss
-    #             for callback in self.callbacks:
-    #                 if isinstance(callback, WandbCallback):
-    #                     callback.on_train_step_end(step, self._train_step_config)
-    #     else:
-    #         for _ in range(num_updates):
-    #             actor_loss, critic_loss = self.learn(goal_normalizer)
-
-    # def get_parameters(self):
-    #     """Get the parameters of all models, ensuring they are on CPU for Ray serialization."""
-    #     return {
-    #         'actor_model': {k: v.cpu() for k, v in self.actor_model.state_dict().items()},
-    #         'critic_model': {k: v.cpu() for k, v in self.critic_model.state_dict().items()},
-    #         'target_actor_model': {k: v.cpu() for k, v in self.target_actor_model.state_dict().items()},
-    #         'target_critic_model': {k: v.cpu() for k, v in self.target_critic_model.state_dict().items()},
-    #     }
-
-    # def apply_parameters(self, params:Dict[str, Dict[str, T.Tensor]]):
-    #     """Apply params to a model. Used in distributed training."""
-    #     self.actor_model.load_state_dict(params['actor_model'])
-    #     self.critic_model.load_state_dict(params['critic_model'])
-    #     self.target_actor_model.load_state_dict(params['target_actor_model'])
-    #     self.target_critic_model.load_state_dict(params['target_critic_model'])
 
     def act(
         self,
@@ -1742,53 +1677,6 @@ class DDPG(Agent):
             weights = None
             probs = None
             indices = None
-            
-        # TODO: Move to OffPolicyTrainer
-        # if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
-        #     if self._use_her:  # HER with prioritized replay
-        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-        #     else:  # Just prioritized replay
-        #         states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-                
-            # Log PER-specific metrics
-        #     if self._wandb:
-        #         # Get the actual size of used buffer (not the full capacity)
-        #         actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
-        #         # Get indices for all actual entries in the buffer
-        #         valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
-        #         # Get priority info for logging
-        #         if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
-        #             indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
-        #             # Get tree indices for sampled transitions
-        #             tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
-        #             # Get priorities for sampled transitions
-        #             sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
-        #             valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
-        #             buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
-
-        #         else:
-        #             buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
-        #             sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
-                    
-        #         # Add priority buffer metrics to learn_metrics dict
-        #         learn_metrics.update({
-        #             'PER/beta': self.replay_buffer.beta,
-        #             'PER/sampled_priorities': sampled_priorities,
-        #             'PER/buffer_priorities': buffer_priorities,
-        #             'PER/weights': weights,
-        #             'PER/probs': probs,
-        #             'PER/mean_sampled_priority': np.mean(sampled_priorities),
-        #             'PER/mean_buffer_priority': np.mean(buffer_priorities),
-        #             'PER/max_sampled_priority': np.max(sampled_priorities),
-        #             'PER/max_buffer_priority': np.max(buffer_priorities),
-        #             'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
-        #             'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
-        #         })
-        # else:  # Standard replay buffer
-        #     if self._use_her:
-        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-        #     else:
-        #         states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
 
         # Normalize states/goals/rewards
         if self.state_normalizer:
@@ -1800,13 +1688,6 @@ class DDPG(Agent):
             goals = self.goal_normalizer.normalize(goals)
         if self.reward_normalizer:
             rewards = self.reward_normalizer.normalize(rewards)
-
-        # MIGHT NOT NEED
-        # Ensure training data is on correct device
-        # actions = actions.to(self.target_policy.device)
-        # rewards = rewards.to(self.target_critic.device)
-        # dones = dones.to(self.target_critic.device)
-        # trajectory_lengths = trajectory_lengths.to(self.target_critic.device)
 
         # Train ICM if curiosity and update _use_extrinsic flag
         if self.curiosity:
@@ -1957,12 +1838,6 @@ class DDPG(Agent):
                 float(critic_loss.item()),
                 float(actor_loss.item()),
             )
-        
-
-        # TODO: Move to OffPolicyTrainer
-        # Update priorities if using prioritized replay - only on update_freq steps
-        # if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
-        #     self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
 
         policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
         critic_learning_rate = self.critic.optimizer.param_groups[0]['lr']
@@ -1970,6 +1845,7 @@ class DDPG(Agent):
         learn_metrics.update({
             "policy_loss": actor_loss.item(),
             "value_loss": critic_loss.item(),
+            "td_errors": error.detach().flatten(),
             "critic_error": error.mean().item(),
             "actor_predictions": pred_actions.mean().item(),
             "critic_predictions": critic_values.mean().item(),
@@ -1992,221 +1868,6 @@ class DDPG(Agent):
             learn_metrics.update({'noise_anneal': self.noise_schedule.get_factor()})
 
         return learn_metrics
-
-    # def _step(self,
-    #           step: int,
-    #           states: np.ndarray | T.Tensor | dict,
-    #           max_episodes: int,
-    #           episode_scores: np.ndarray,
-    #           completed_episodes: np.ndarray,
-    #           score_history: deque[float],
-    #           best_reward: float,
-    #           learn: bool = True,
-    #           training: bool = True
-    #           ):
-
-    #     # reset noise if training
-    #     if training:
-    #         if type(self.noise) == OUNoise:
-    #             self.noise.reset()
-    #     obs, goals = self._preprocess_inputs(states)
-    #     actions, _, _ = self.get_action(obs, goals, step, context='train' if training else 'test')
-    #     actions = self.env.format_actions(actions)
-    #     next_states, rewards, dones, infos = self.env.step(actions)
-
-    #     # Ensure states, actions, rewards, next_states, and dones are tensors
-    #     obs, actions, rewards, next_states, dones = (
-    #         T.tensor(obs, dtype=T.float32, device=self.device) if isinstance(obs, np.ndarray) else obs,
-    #         T.tensor(actions, dtype=T.float32, device=self.device) if isinstance(actions, np.ndarray) else actions,
-    #         T.tensor(rewards, dtype=T.float32, device=self.device) if isinstance(rewards, np.ndarray) else rewards,
-    #         T.tensor(next_states, dtype=T.float32, device=self.device) if isinstance(next_states, np.ndarray) else next_states,
-    #         T.tensor(dones, dtype=T.int8, device=self.device) if isinstance(dones, np.ndarray) else dones,
-    #     )
-
-    #     episode_scores += rewards.flatten()
-
-    #     buffer_trajectories = {
-    #         'states': infos['n-step trajectory']['states'],
-    #         'actions': infos['n-step trajectory']['actions'],
-    #         'rewards': infos['n-step trajectory']['rewards'],
-    #         'next_states': infos['n-step trajectory']['next_states'],
-    #         'dones': infos['n-step trajectory']['dones'],
-    #         'trajectory_lengths': infos['n-step trajectory']['trajectory_lengths']
-    #     }
-    #     if self.goal_key:
-    #         buffer_trajectories['desired_goals'] = infos['n-step trajectory']['desired_goals']
-    #         buffer_trajectories['state_achieved_goals'] = infos['n-step trajectory']['state_achieved_goals']
-    #         buffer_trajectories['next_state_achieved_goals'] = infos['n-step trajectory']['next_state_achieved_goals']
-
-    #     if training:
-    #         self.replay_buffer.add(**buffer_trajectories)
-    #         # Update normalizer if state_normalizer
-    #         next_obs, next_goals = self.extract_states_goals(next_states)
-    #         if self.state_normalizer:
-    #             self.state_normalizer.add(next_obs)
-    #         if self.goal_normalizer:
-    #             self.goal_normalizer.add(next_goals)
-
-    #     done_episodes = T.nonzero(dones, as_tuple=False).flatten()
-    #     episode_logs = []
-
-    #     for i in done_episodes:
-    #         # Increment completed episodes for env by 1
-    #         completed_episodes[i] += 1
-    #         score_history.append(float(episode_scores[i].item()))
-    #         avg_reward = sum(score_history) / len(score_history)
-
-    #         # check if best reward
-    #         if training and avg_reward > best_reward:
-    #             best_reward = avg_reward
-    #             self.save()
-    #         episode_log = {
-    #             'env': i,
-    #             'episode': int(completed_episodes.sum()),
-    #             'episode_reward': round(float(episode_scores[i]), 2),
-    #             'avg_reward': round(float(avg_reward), 2)
-    #         }
-
-    #         if training:
-    #             episode_log.update({
-    #                 'best_reward': round(float(best_reward), 2),
-    #                 'best': 1 if avg_reward > best_reward else 0
-    #             })
-    #         episode_logs.append(episode_log)
-
-    #     step_log = {} # Collect step metrics
-
-    #     # Check if past warmup
-    #     if learn and step > self.warmup and self.replay_buffer.counter > self.batch_size:
-    #         # Check if distributed
-    #         # if self._distributed:
-    #         #     self._distributed_learn(step, self._run_number)
-    #         # else:
-    #         learn_metrics = self.learn(step)
-    #         step_log.update({**learn_metrics})
-
-    #     # self._train_step_config["step_reward"] = rewards.mean()
-    #     step_log.update({
-    #         'step_reward': rewards.mean(),
-    #     })
-
-    #     # Step schedulers
-    #     if self.noise_schedule is not None:
-    #         self.noise_schedule.step()
-
-    #     return{
-    #         'episode_scores': episode_scores,
-    #         'completed_episodes': completed_episodes,
-    #         'score_history': score_history,
-    #         'next_states': next_states,
-    #         'step_log': step_log,
-    #         'episode_logs': episode_logs,
-    #         'done': completed_episodes.sum() >= max_episodes
-    #     }
-
-    # def train(self, num_episodes: int, steps_per_learn: int = 1, render_freq: int = 0, seed: int | None = None):
-    #     """Trains the model for 'episodes' number of episodes."""
-
-    #     init_dict = self._initialize_run(seed=seed, num_episodes=num_episodes)
-    #     step = init_dict['step']
-    #     states = init_dict['states']
-    #     episode_scores = init_dict['episode_scores']
-    #     completed_episodes = init_dict['completed_episodes']
-    #     score_history = init_dict['score_history']
-    #     best_reward = init_dict['best_reward']
-
-    #     while completed_episodes.sum() < num_episodes:
-    #         # Increment step count
-    #         step += 1
-    #         # If distributed, sync to shared agent
-    #         # if self._distributed and _step % self._sync_iter == 0:
-    #         #     params = self.get_parameters()
-    #         #     self.apply_parameters(params)
-
-    #         # Determine if step should perform update
-    #         learn = step % steps_per_learn == 0
-    #         # Perform train step
-    #         step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn)
-    #         # Update states, episode scores, completed episodes, and score history
-    #         states = step_result['next_states']
-    #         episode_scores = step_result['episode_scores']
-    #         completed_episodes = step_result['completed_episodes']
-    #         score_history = step_result['score_history']
-
-    #         # log to callbacks
-    #         if self.callbacks:
-    #             for callback in self.callbacks:
-    #                 callback.on_train_step_end(step=step, logs=step_result['step_log'])
-
-    #         render = True # Flag to keep track of render status to avoid rendering multiple times per step
-    #         for episode_log in step_result['episode_logs']:
-    #             # Print complete episode metrics to console
-    #             print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-    #             # Reset episode score
-    #             episode_scores[episode_log['env']] = 0
-    #             best_reward = episode_log['best_reward']
-
-    #             if self.callbacks:
-    #                 for callback in self.callbacks:
-    #                     callback.on_train_epoch_end(epoch=step, logs=episode_log)
-
-    #             # Check if number of completed episodes should trigger render
-    #             if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
-    #                 print(f"Rendering episode {episode_log['episode']} during training...")
-    #                 # Call the test function to render an episode
-    #                 self.render_episode(episode_log['episode'], step, context='train', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
-    #                 render = False
-
-    #     if self.callbacks:
-    #         for callback in self.callbacks:
-    #             callback.on_train_end(logs=episode_log)
-        
-    #     self.env.close()
-       
-    # def test(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
-    #     """Runs a test over 'num_episodes'."""
-
-    #     init_dict = self._initialize_run(seed=seed, training=False)
-    #     step = init_dict['step']
-    #     states = init_dict['states']
-    #     episode_scores = init_dict['episode_scores']
-    #     completed_episodes = init_dict['completed_episodes']
-    #     score_history = init_dict['score_history']
-    #     best_reward = init_dict['best_reward']
-
-    #     while completed_episodes.sum() < num_episodes:
-    #         # Increment step counter
-    #         step += 1
-    #         step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn = False, training = False)
-    #         states = step_result['next_states']
-    #         episode_scores = step_result['episode_scores']
-    #         completed_episodes = step_result['completed_episodes']
-    #         score_history = step_result['score_history']
-
-    #         if self.callbacks:
-    #             for callback in self.callbacks:
-    #                 callback.on_test_step_end(step=step, logs=step_result['step_log'])
-
-    #         render = True
-    #         for i, episode_log in enumerate(step_result['episode_logs']):
-    #             # Print complete episode metrics to console
-    #             print(f"Testing Environment {i}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-    #             # Reset episode score
-    #             episode_scores[episode_log['env']] = 0
-
-    #             if self.callbacks:
-    #                 for callback in self.callbacks:
-    #                     callback.on_test_epoch_end(epoch=step, logs=episode_log)
-            
-    #             if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
-    #                 print(f"Rendering episode {episode_log['episode']} during testing...")
-    #                 self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
-
-    #     if self.callbacks:
-    #         for callback in self.callbacks:
-    #             callback.on_test_end(logs=episode_log)
-
-    #     self.env.close()
 
     def get_config(self):
         config = super().get_config()
@@ -2349,108 +2010,6 @@ class TD3(Agent):
     def _init_her(self):
         self._use_her = True
 
-    # def _distributed_learn(self, step: int, run_number:str=None, learn_iter:int=None):
-    #     """Used in distributed training to update the shared models.
-    #     This function is overridden by the Worker class to point to the Learner class.
-    #     """
-    #     previous_step = self._step
-    #     # Set current step to step if greater than current step
-    #     if step > previous_step:
-    #         self._step = step
-    #         # Initialize wandb check
-    #         self._initialize_wandb(run_number=run_number, run_name_prefix="train", learn_iter=learn_iter)
-    #         actor_loss, critic_loss = self.learn()
-    #         # Only store log if current step greater than previous and self._wandb
-    #         if self._wandb:
-    #             self._train_step_config["actor_loss"] = actor_loss
-    #             self._train_step_config["critic_loss"] = critic_loss
-    #             for callback in self.callbacks:
-    #                 if isinstance(callback, WandbCallback):
-    #                     callback.on_train_step_end(step, self._train_step_config)
-    #     else:
-    #         actor_loss, critic_loss = self.learn()
-
-    # def get_parameters(self):
-    #     """Get the parameters of all models, ensuring they are on CPU for Ray serialization."""
-    #     return {
-    #         'actor_model': {k: v.cpu() for k, v in self.actor_model.state_dict().items()},
-    #         'critic_model_a': {k: v.cpu() for k, v in self.critic_model_a.state_dict().items()},
-    #         'critic_model_b': {k: v.cpu() for k, v in self.critic_model_b.state_dict().items()},
-    #         'target_actor_model': {k: v.cpu() for k, v in self.target_actor_model.state_dict().items()},
-    #         'target_critic_model_a': {k: v.cpu() for k, v in self.target_critic_model_a.state_dict().items()},
-    #         'target_critic_model_b': {k: v.cpu() for k, v in self.target_critic_model_b.state_dict().items()},
-    #     }
-
-    # def apply_parameters(self, params:Dict[str, Dict[str, T.Tensor]]):
-    #     """Apply params to a model. Used in distributed training."""
-    #     self.actor_model.load_state_dict(params['actor_model'])
-    #     self.critic_model_a.load_state_dict(params['critic_model_a'])
-    #     self.critic_model_b.load_state_dict(params['critic_model_b'])
-    #     self.target_actor_model.load_state_dict(params['target_actor_model'])
-    #     self.target_critic_model_a.load_state_dict(params['target_critic_model_a'])
-    #     self.target_critic_model_b.load_state_dict(params['target_critic_model_b'])
-    
-
-    # def get_action(self,
-    #                states: np.ndarray|T.Tensor,
-    #                goals: np.ndarray|T.Tensor|None=None,
-    #                step: int|None=None,
-    #                context: str = 'train'
-    #                )->tuple[T.Tensor, T.Tensor, Distribution | None]:
-    #     """
-    #     Select an action based on the current policy.
-
-    #     Args:
-    #         states: np.ndarray | T.Tensor: The current states.
-    #         goals: np.ndarray | T.Tensor | None: The current goals.
-    #         step: Optional[int]: The current step.
-    #         context: str: The context of the action (train, test, or learn).
-        
-    #     Returns:
-    #         tuple[np.ndarray | T.Tensor, T.Tensor | None, Distribution | None]: actions, raw actions, and distribution.
-    #     """
-
-    #     raw_actions = None
-    #     dist = None
-
-    #     # If training
-    #     if context == 'train':
-    #         # If warmup, sample random action from action space
-    #         if (step is not None) and (step <= self.warmup):
-    #             return self.env.action_space.sample(), raw_actions, dist
-    #         # if random number is less than epsilon, sample random action
-    #         elif np.random.random() < self.action_epsilon:
-    #             return self.env.action_space.sample(), raw_actions, dist
-    #         # otherwise, sample action from policy
-    #         else:
-    #             noise = self.noise(self.env.action_space.shape)
-    #             # Apply noise clipping if needed
-    #             if self.noise_clip > 0:
-    #                 noise = noise.clamp(-self.noise_clip, self.noise_clip)
-    #             # Apply noise schedule if needed
-    #             if self.noise_schedule:
-    #                 noise *= self.noise_schedule.get_factor()
-                
-    #             with T.no_grad():
-    #                 raw_actions, squashed_actions = self.policy(states, goals)
-                
-    #             # Convert the action space bounds to a tensor on the same device
-    #             action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.policy.device)
-    #             action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.policy.device)
-    #             actions = (squashed_actions + noise).clip(action_space_low, action_space_high)
-
-    #             return actions.detach(), raw_actions, dist
-
-    #     # check if get action is for testing
-    #     if context == 'test':
-    #         with T.no_grad():
-    #             raw_actions, squashed_actions = self.target_policy(states, goals)
-    #         return squashed_actions.detach(), raw_actions, dist
-
-    #     else: # learn
-    #         raw_actions, squashed_actions = self.policy(states, goals)
-    #         return squashed_actions, raw_actions, dist
-
     def act(
         self,
         states: np.ndarray | T.Tensor,
@@ -2539,62 +2098,6 @@ class TD3(Agent):
             probs = None
             indices = None
 
-        # TODO: Move to OffPolicyTrainer 
-        # if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
-        #     if self._use_her:  # HER with prioritized replay
-        #         #DEBUG
-        #         # print(f"HER with prioritized replay")
-        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-        #     else:  # Just prioritized replay
-        #         #DEBUG
-        #         # print(f"Just prioritized replay")
-        #         states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-                
-        #     # Log PER-specific metrics
-        #     if self._wandb:
-        #         # Get the actual size of used buffer (not the full capacity)
-        #         actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
-        #         # Get indices for all actual entries in the buffer
-        #         valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
-        #         # Get priority info for logging
-        #         if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
-        #             indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
-        #             # Get tree indices for sampled transitions
-        #             tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
-        #             # Get priorities for sampled transitions
-        #             sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
-        #             valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
-        #             buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
-
-        #         else:
-        #             buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
-        #             sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
-                    
-        #         # Add priority buffer metrics to learn_metrics dict
-        #         learn_metrics.update({
-        #             'PER/beta': self.replay_buffer.beta,
-        #             'PER/sampled_priorities': sampled_priorities,
-        #             'PER/buffer_priorities': buffer_priorities,
-        #             'PER/weights': weights,
-        #             'PER/probs': probs,
-        #             'PER/mean_sampled_priority': np.mean(sampled_priorities),
-        #             'PER/mean_buffer_priority': np.mean(buffer_priorities),
-        #             'PER/max_sampled_priority': np.max(sampled_priorities),
-        #             'PER/max_buffer_priority': np.max(buffer_priorities),
-        #             'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
-        #             'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
-        #         })
-
-        # else:  # Standard replay buffer
-        #     if self._use_her:
-        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-        #     else:
-        #         states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-            
-        #     weights = None
-        #     indices = None
-
-
         # Normalize states/goals/rewards
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
@@ -2605,12 +2108,6 @@ class TD3(Agent):
             goals = self.goal_normalizer.normalize(goals)
         if self.reward_normalizer:
             rewards = self.reward_normalizer.normalize(rewards)
-
-        # Ensure training data is on correct device
-        # actions = actions.to(self.target_policy.device)
-        # rewards = rewards.to(self.target_critic.device)
-        # dones = dones.to(self.target_critic.device)
-        # trajectory_lengths = trajectory_lengths.to(self.target_critic.device)
 
         # Train ICM if curiosity and update _use_extrinsic flag
         if self.curiosity:
@@ -2808,11 +2305,6 @@ class TD3(Agent):
                 float(actor_loss.item()),
             )
 
-        # TODO: Move to OffPolicyTrainer
-        # Update priorities if using prioritized replay - only on update_freq steps
-        # if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:
-        #     self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
-
         policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
         critic_learning_rate = self.critic.optimizer.param_groups[0]['lr']
         critic_b_learning_rate = self.critic_b.optimizer.param_groups[0]['lr']
@@ -2821,6 +2313,7 @@ class TD3(Agent):
         learn_metrics.update({
             "policy_loss": actor_loss.item(),
             "value_loss": critic_loss.item(),
+            "td_errors": error.detach().flatten(),
             "critic_error": error.mean().item(),
             "actor_predictions": pred_actions.mean().item(),
             "critic_predictions": critic_values.mean().item(),
@@ -2958,22 +2451,6 @@ class SAC(Agent):
         **kwargs
     ):
         try:
-            # super().__init__(
-            #     policy=policy,
-            #     critic=critic,
-            #     discount=discount,
-            #     tau=tau,
-            #     state_normalizer=state_normalizer,
-            #     goal_normalizer=goal_normalizer,
-            #     reward_normalizer=reward_normalizer,
-            #     policy_grad_clip=policy_grad_clip,
-            #     critic_grad_clip=critic_grad_clip,
-            #     N=N,
-            #     curiosity=curiosity,
-            #     save_dir=save_dir,
-            #     device=device,
-            #     **kwargs
-            # )
             super().__init__(save_dir, device, **kwargs)
             self.policy = policy
             self.critic = critic
@@ -3093,56 +2570,6 @@ class SAC(Agent):
             probs = None
             indices = None
 
-        # TODO: Move to Trainer
-        # if self.replay_buffer.get_config()['type'] == 'PrioritizedReplayBuffer':
-        #     if self._use_her:  # HER with prioritized replay
-        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-        #     else:  # Just prioritized replay
-        #         states, actions, rewards, next_states, dones, trajectory_lengths, weights, probs, indices = self.replay_buffer.sample(self.batch_size)
-
-        #     # Log PER-specific metrics
-        #     if self._wandb:
-        #         # Get the actual size of used buffer (not the full capacity)
-        #         actual_size = min(self.replay_buffer.counter, self.replay_buffer.buffer_size)
-        #         # Get indices for all actual entries in the buffer
-        #         valid_indices = T.arange(actual_size, device=self.replay_buffer.device)
-        #         # Get priority info for logging
-        #         if hasattr(self.replay_buffer, 'sum_tree') and self.replay_buffer.sum_tree is not None:
-        #             indices_tensor = T.tensor(indices, device=self.replay_buffer.device)
-        #             # Get tree indices for sampled transitions
-        #             tree_indices = indices_tensor + self.replay_buffer.sum_tree.capacity - 1
-        #             # Get priorities for sampled transitions
-        #             sampled_priorities = self.replay_buffer.sum_tree.tree[tree_indices].cpu().numpy()
-        #             valid_tree_indices = valid_indices + self.replay_buffer.sum_tree.capacity - 1
-        #             buffer_priorities = self.replay_buffer.sum_tree.tree[valid_tree_indices].cpu().numpy()
-
-        #         else:
-        #             buffer_priorities = self.replay_buffer.priorities[valid_indices].cpu().numpy()
-        #             sampled_priorities = self.replay_buffer.priorities[indices].cpu().numpy()
-
-        #         # Add priority buffer metrics to learn_metrics dict
-        #         learn_metrics.update({
-        #             'PER/beta': self.replay_buffer.beta,
-        #             'PER/sampled_priorities': sampled_priorities,
-        #             'PER/buffer_priorities': buffer_priorities,
-        #             'PER/weights': weights,
-        #             'PER/probs': probs,
-        #             'PER/mean_sampled_priority': np.mean(sampled_priorities),
-        #             'PER/mean_buffer_priority': np.mean(buffer_priorities),
-        #             'PER/max_sampled_priority': np.max(sampled_priorities),
-        #             'PER/max_buffer_priority': np.max(buffer_priorities),
-        #             'PER/weight_mean': np.mean(weights.cpu().numpy()) if weights is not None else 0.0,
-        #             'PER/weight_std': np.std(weights.cpu().numpy()) if weights is not None else 0.0
-        #         })
-        # else:  # Standard replay buffer
-        #     if self._use_her:
-        #         states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-        #     else:
-        #         states, actions, rewards, next_states, dones, trajectory_lengths = self.replay_buffer.sample(self.batch_size)
-
-        #     weights = None
-        #     indices = None
-
         # Normalize states/goals/rewards
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
@@ -3153,15 +2580,6 @@ class SAC(Agent):
             goals = self.goal_normalizer.normalize(goals)
         if self.reward_normalizer:
             rewards = self.reward_normalizer.normalize(rewards)
-
-        # Ensure training data is on correct device
-        # actions = actions.to(self.policy.device)
-        # rewards = rewards.to(self.target_critic.device)
-        # dones = dones.to(self.target_critic.device)
-        # trajectory_lengths = trajectory_lengths.to(self.target_critic.device)
-
-        # action_space_high = T.tensor(self.env.single_action_space.high, dtype=T.float32, device=self.policy_model.device)
-        # print(f'action_space_high: {action_space_high}')
 
         # Train ICM if curiosity and update _use_extrinsic flag
         if self.curiosity:
@@ -3179,32 +2597,6 @@ class SAC(Agent):
                 self.curiosity._use_extrinsic = True
             else:
                 self.curiosity._use_extrinsic = False
-
-        # with T.no_grad():
-        #     # Get target values
-        #     dist, _, _ = self.actor_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
-        #     new_actions = dist.rsample()
-        #     squashed_actions = T.tanh(new_actions)
-        #     scaled_actions = squashed_actions * action_space_high
-        #     log_probs = dist.log_prob(new_actions).sum(-1)
-        #     log_probs -= T.log(1-squashed_actions.pow(2) + 1e-6).sum(-1)
-        #     log_probs -= T.log(action_space_high).sum()
-        #     q_1 = self.critic_model_a(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None).view(-1)
-        #     q_2 = self.critic_model_b(states[:,-1,:], scaled_actions, desired_goals[:,-1,:] if desired_goals is not None else None).view(-1)
-        #     min_q = T.minimum(q_1, q_2)
-        #     if self.auto_entropy_tuning:
-        #         current_alpha = self.log_alpha.exp()
-        #     else:
-        #         current_alpha = self.alpha
-        #     v_targ = min_q - current_alpha * log_probs
-
-        # v_preds = self.value_model(states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None).view(-1)
-        # self.value_model.optimizer.zero_grad()
-        # value_loss = 0.5 * F.mse_loss(v_preds, v_targ)
-        # value_loss.backward()
-        # if self.grad_clip:
-        #     T.nn.utils.clip_grad_norm_(self.value_model.parameters(), self.grad_clip)
-        # self.value_model.optimizer.step()
 
         if self.auto_entropy_tuning:
             cur_entropy_coef = self.log_alpha.exp()
@@ -3230,15 +2622,6 @@ class SAC(Agent):
                 self.discount,
                 device=self.target_critic.device
             ).squeeze()
-
-            # Sample new actions from current policy
-            # dist, _, _ = self.actor_model(next_states[:,-1,:], desired_goals[:,-1,:] if desired_goals is not None else None)
-            # new_actions = dist.rsample()
-            # squashed_actions = T.tanh(new_actions)
-            # scaled_actions = squashed_actions * action_space_high
-            # log_probs = dist.log_prob(new_actions).sum(-1)
-            # log_probs -= T.log(1-squashed_actions.pow(2) + 1e-6).sum(-1)
-            # log_probs -= T.log(action_space_high).sum()
 
             ## Critic Update ##
             dist = self.policy(
@@ -3372,35 +2755,11 @@ class SAC(Agent):
             alpha_loss.backward()
             self.entropy_optimizer.step()
 
-        # MOVED TO TRAINER
-        # Perform soft update on target networks
-        # if not self._use_her:
-        #     self.soft_update(self.critic, self.target_critic)
-        #     self.soft_update(self.critic_b, self.target_critic_b)
-
-        ### TODO: FIGURE OUT WHERE PRIORITIES SHOULD BE UPDATED ###
         # Calculate Error to update priorities and for logging
         error = q_targets - T.minimum(q1_preds, q2_preds)
 
-        # Update priorities if using prioritized replay - only on update_freq steps
-        # if hasattr(self.replay_buffer, 'update_priorities') and indices is not None:# and hasattr(self.replay_buffer, 'beta_update_freq'):
-            #DEBUG
-            # print(f'indices shape: {indices.shape}')
-            # print(f'error shape: {error.flatten().shape}')
-            # self.replay_buffer.update_priorities(indices, error.detach().flatten().to(self.replay_buffer.device))
-        ###
-
         # Log diag data
         if should_log_diag:
-            # nonfinite_values = (
-            # count_nonfinite(critic_values)
-            # + count_nonfinite(target_critic_values)
-            # + count_nonfinite(targets)
-            # + count_nonfinite(target_actions)
-            # + count_nonfinite(predictions)
-            # + count_nonfinite(error)
-            # + count_nonfinite(pred_actions)
-            # )
             self.logger.debug(
                 "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
@@ -3450,6 +2809,7 @@ class SAC(Agent):
         learn_metrics.update({
             "actor_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
+            "td_errors": error.detach().flatten(),
             "td_error": error.mean().item(),
             "actor_predictions": new_actions.mean().item(),
             "critic_predictions": min_q.mean().item(),
@@ -3470,51 +2830,6 @@ class SAC(Agent):
             })
 
         return learn_metrics
-
-    # def test(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
-    #     """Runs a test over 'num_episodes'."""
-
-    #     init_dict = self._initialize_run(seed=seed, training=False)
-    #     step = init_dict['step']
-    #     states = init_dict['states']
-    #     episode_scores = init_dict['episode_scores']
-    #     completed_episodes = init_dict['completed_episodes']
-    #     score_history = init_dict['score_history']
-    #     best_reward = init_dict['best_reward']
-
-    #     while completed_episodes.sum() < num_episodes:
-    #         # Increment step counter
-    #         step += 1
-    #         step_result = self._step(step, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, learn = False, training = False)
-    #         states = step_result['next_states']
-    #         episode_scores = step_result['episode_scores']
-    #         completed_episodes = step_result['completed_episodes']
-    #         score_history = step_result['score_history']
-
-    #         if self.callbacks:
-    #             for callback in self.callbacks:
-    #                 callback.on_test_step_end(step=step, logs=step_result['step_log'])
-
-    #         render = True
-    #         for episode_log in step_result['episode_logs']:
-    #             # Print complete episode metrics to console
-    #             print(f"Testing Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-    #             # Reset episode score
-    #             episode_scores[episode_log['env']] = 0
-
-    #             if self.callbacks:
-    #                 for callback in self.callbacks:
-    #                     callback.on_test_epoch_end(epoch=step, logs=episode_log)
-
-    #             if render and render_freq > 0 and completed_episodes.sum() % render_freq == 0:
-    #                 print(f"Rendering episode {episode_log['episode']} during testing...")
-    #                 self.render_episode(episode_log['episode'], step, context='test', render_mode='rgb_array', seed=np.random.randint(0, 1000000))
-
-    #     if self.callbacks:
-    #         for callback in self.callbacks:
-    #             callback.on_test_end(logs=episode_log)
-
-    #     self.env.close()
 
     def get_config(self):
 

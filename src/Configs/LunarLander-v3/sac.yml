@@ -123,11 +123,25 @@ normalizers:
   #     _diag_freq: 10240
 
 buffer:
-  type: ReplayBuffer
+  type: PrioritizedReplayBuffer
   config:
     buffer_size: 100000
+    alpha: 0.6
+    beta_start: 0.4
+    beta_iter: 100000
+    beta_update_freq: 10
+    priority: proportional
+    epsilon: 1.0e-6
+    sort_freq: 1000
     N: *n
     device: *device
+
+# buffer:
+#   type: ReplayBuffer
+#   config:
+#     buffer_size: 100000
+#     N: *n
+#     device: *device
 
 renderer:
   render_freq: 500

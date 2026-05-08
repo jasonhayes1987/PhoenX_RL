@@ -10,134 +10,211 @@ from collections import defaultdict
 import math
 
 
+# class SumTree:
+#     """
+#     A binary sum tree for efficient sampling based on priorities.
+#     """
+#     def __init__(self, capacity: int, device: T.device):
+#         self.capacity = capacity
+#         self.device = get_device(device)
+#         # Initialize the tree with zeros
+#         self.tree = T.zeros(2 * capacity - 1, dtype=T.float32, device=self.device)
+#         self.next_idx = 0
+#         # self.size = 0
+#         self.max_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
+#         # Add tracking for debugging
+#         self.debug_last_large_priority = None
+#         self.debug_last_large_priority_idx = None
+    
+#     # def update(self, data_indices, priorities):
+#     #     # Cap priorities to prevent extreme values
+#     #     priorities = T.clamp(priorities, min=1e-6)
+
+#     #     # Track maximum priority
+#     #     if priorities.numel() > 0:
+#     #         self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
+
+#     #     # Compute tree indices once
+#     #     tree_indices = data_indices + self.capacity - 1
+
+#     #     # Update leaf nodes in one operation
+#     #     self.tree[tree_indices] = priorities
+
+#     #     # Update parent nodes for each leaf individually - less vectorized but correct
+#     #     for idx in tree_indices:
+#     #         idx_item = idx.item()
+#     #         parent = (idx_item - 1) // 2
+
+#     #         # Traverse up to the root
+#     #         while parent >= 0:
+#     #             # Get children of this parent
+#     #             left = 2 * parent + 1
+#     #             right = 2 * parent + 2
+
+#     #             # Update the parent (handle case where right child might not exist)
+#     #             if right < self.tree.size(0):
+#     #                 self.tree[parent] = self.tree[left] + self.tree[right]
+#     #             else:
+#     #                 self.tree[parent] = self.tree[left]
+
+#     #             # Move to next parent up the tree
+#     #             parent = (parent - 1) // 2
+
+#     def update(self, data_indices, priorities):
+#         # Cap priorities to prevent extreme values
+#         priorities = T.clamp(priorities, min=1e-6)
+
+#         # Track maximum priority
+#         if priorities.numel() > 0:
+#             self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
+
+#         # Compute tree indices once
+#         indices = data_indices + self.capacity - 1
+
+#         # Update leaf nodes in one operation
+#         self.tree[indices] = priorities
+
+#         # Vectorized propagation: process level-by-level up the tree
+#         while True:
+#             parents = (indices - 1) // 2
+#             unique_parents, _ = T.unique(parents, return_inverse=True)  # Get unique to avoid redundant updates
+#             if unique_parents.min() >= 0:  # Continue until we reach the root
+#                 left_children = 2 * unique_parents + 1
+#                 right_children = 2 * unique_parents + 2
+#                 has_right = right_children < self.tree.size(0)
+                
+#                 # Sum children for each unique parent
+#                 sums = self.tree[left_children].clone()  # Start with left
+#                 sums[has_right] += self.tree[right_children[has_right]]  # Add right if exists
+                
+#                 self.tree[unique_parents] = sums
+#                 indices = unique_parents  # Move up to parents for next level
+#             else:
+#                 break
+
+#     @T.jit.script
+#     def _traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:
+#         batch_size = p_values.size(0)
+#         indices = T.zeros(batch_size, dtype=T.long, device=p_values.device)
+        
+#         for i in range(batch_size):
+#             idx = 0  # Start at root
+#             p = p_values[i]
+            
+#             # Binary search through the tree
+#             for _ in range(int(T.log2(T.tensor(capacity)).ceil().item())):
+#                 left = 2 * idx + 1
+#                 if left >= tree.size(0):
+#                     break
+                    
+#                 left_val = tree[left]
+#                 if p <= left_val:
+#                     idx = left
+#                 else:
+#                     p = p - left_val
+#                     idx = left + 1
+                    
+#                 if idx >= capacity - 1:  # Reached leaf nodes
+#                     break
+                    
+#             indices[i] = idx
+        
+#         return indices
+
+#     def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
+#         """Optimized sampling with JIT acceleration"""
+#         indices = self._traverse_tree(p_values, self.tree, self.capacity)
+        
+#         # Ensure leaf node validity and get priorities
+#         indices = T.clamp(indices, 0, self.tree.size(0) - 1)
+#         priorities = self.tree[indices]
+        
+#         # Convert to data indices
+#         data_indices = T.clamp(indices - (self.capacity - 1), 0, self.capacity - 1)
+        
+#         return data_indices, priorities
+    
+#     @property
+#     def total_priority(self) -> float:
+#         """Return the total priority (value at root)."""
+#         return self.tree[0].item() if self.tree.size(0) > 0 else 0.0
+
 class SumTree:
     """
-    A binary sum tree for efficient sampling based on priorities.
+    Binary sum tree for priority-based sampling.
     """
+ 
     def __init__(self, capacity: int, device: T.device):
-        self.capacity = capacity
+        if capacity <= 0:
+            raise ValueError(f"SumTree capacity must be positive, got {capacity}")
+ 
+        # Round up to next power of 2.
+        self.capacity: int = 1 if capacity == 1 else 1 << (capacity - 1).bit_length()
+        # depth = log2(capacity); how many levels to descend from root to a leaf.
+        self.depth: int = self.capacity.bit_length() - 1
         self.device = get_device(device)
-        # Initialize the tree with zeros
-        self.tree = T.zeros(2 * capacity - 1, dtype=T.float32, device=self.device)
-        self.next_idx = 0
-        # self.size = 0
+ 
+        # Tree has 2*capacity - 1 nodes.
+        self.tree = T.zeros(2 * self.capacity - 1, dtype=T.float32, device=self.device)
         self.max_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
-        # Add tracking for debugging
-        self.debug_last_large_priority = None
-        self.debug_last_large_priority_idx = None
-    
-    # def update(self, data_indices, priorities):
-    #     # Cap priorities to prevent extreme values
-    #     priorities = T.clamp(priorities, min=1e-6)
-
-    #     # Track maximum priority
-    #     if priorities.numel() > 0:
-    #         self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
-
-    #     # Compute tree indices once
-    #     tree_indices = data_indices + self.capacity - 1
-
-    #     # Update leaf nodes in one operation
-    #     self.tree[tree_indices] = priorities
-
-    #     # Update parent nodes for each leaf individually - less vectorized but correct
-    #     for idx in tree_indices:
-    #         idx_item = idx.item()
-    #         parent = (idx_item - 1) // 2
-
-    #         # Traverse up to the root
-    #         while parent >= 0:
-    #             # Get children of this parent
-    #             left = 2 * parent + 1
-    #             right = 2 * parent + 2
-
-    #             # Update the parent (handle case where right child might not exist)
-    #             if right < self.tree.size(0):
-    #                 self.tree[parent] = self.tree[left] + self.tree[right]
-    #             else:
-    #                 self.tree[parent] = self.tree[left]
-
-    #             # Move to next parent up the tree
-    #             parent = (parent - 1) // 2
-
-    def update(self, data_indices, priorities):
-        # Cap priorities to prevent extreme values
+ 
+    def update(self, data_indices: T.Tensor, priorities: T.Tensor) -> None:
+        """Write priorities at data indices and propagate sums up to root."""
+        # Floor priorities to avoid creating zero-probability leaves.
         priorities = T.clamp(priorities, min=1e-6)
-
-        # Track maximum priority
         if priorities.numel() > 0:
-            self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
-
-        # Compute tree indices once
-        indices = data_indices + self.capacity - 1
-
-        # Update leaf nodes in one operation
+            self.max_priority = T.maximum(self.max_priority, priorities.max())
+ 
+        # Map data indices to tree leaf indices.
+        indices = data_indices + (self.capacity - 1)
         self.tree[indices] = priorities
-
-        # Vectorized propagation: process level-by-level up the tree
-        while True:
-            parents = (indices - 1) // 2
-            unique_parents, _ = T.unique(parents, return_inverse=True)  # Get unique to avoid redundant updates
-            if unique_parents.min() >= 0:  # Continue until we reach the root
-                left_children = 2 * unique_parents + 1
-                right_children = 2 * unique_parents + 2
-                has_right = right_children < self.tree.size(0)
-                
-                # Sum children for each unique parent
-                sums = self.tree[left_children].clone()  # Start with left
-                sums[has_right] += self.tree[right_children[has_right]]  # Add right if exists
-                
-                self.tree[unique_parents] = sums
-                indices = unique_parents  # Move up to parents for next level
-            else:
+ 
+        # Propagate up.
+        for _ in range(self.depth):
+            parents = T.unique((indices - 1) // 2)
+            parents = parents[parents >= 0]
+            if parents.numel() == 0:
                 break
-
-    @T.jit.script
-    def _traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:
-        batch_size = p_values.size(0)
-        indices = T.zeros(batch_size, dtype=T.long, device=p_values.device)
-        
-        for i in range(batch_size):
-            idx = 0  # Start at root
-            p = p_values[i]
-            
-            # Binary search through the tree
-            for _ in range(int(T.log2(T.tensor(capacity)).ceil().item())):
-                left = 2 * idx + 1
-                if left >= tree.size(0):
-                    break
-                    
-                left_val = tree[left]
-                if p <= left_val:
-                    idx = left
-                else:
-                    p = p - left_val
-                    idx = left + 1
-                    
-                if idx >= capacity - 1:  # Reached leaf nodes
-                    break
-                    
-            indices[i] = idx
-        
-        return indices
-
+            left = 2 * parents + 1
+            right = 2 * parents + 2
+            self.tree[parents] = self.tree[left] + self.tree[right]
+            indices = parents
+ 
     def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
-        """Optimized sampling with JIT acceleration"""
-        indices = self._traverse_tree(p_values, self.tree, self.capacity)
-        
-        # Ensure leaf node validity and get priorities
-        indices = T.clamp(indices, 0, self.tree.size(0) - 1)
-        priorities = self.tree[indices]
-        
-        # Convert to data indices
-        data_indices = T.clamp(indices - (self.capacity - 1), 0, self.capacity - 1)
-        
+        """Map cumulative-priority values to (data_index, leaf_priority) pairs."""
+        tree_indices = self._traverse(p_values)
+        # Defensive clamp — shouldn't be needed if the tree is well-formed.
+        tree_indices = T.clamp(tree_indices, 0, self.tree.size(0) - 1)
+        priorities = self.tree[tree_indices]
+        data_indices = (tree_indices - (self.capacity - 1)).clamp(0, self.capacity - 1)
         return data_indices, priorities
-    
+ 
+    def _traverse(self, p_values: T.Tensor) -> T.Tensor:
+        """
+        Vectorized batch descent.
+ 
+        At each level every batch element is at some node `idx`; read its
+        left child's stored sum and decide left vs. right based on whether `p`
+        fits in the left subtree.
+        """
+        idx = T.zeros_like(p_values, dtype=T.long)
+        p = p_values.clone()
+        tree_size = self.tree.size(0)
+ 
+        for _ in range(self.depth):
+            left = 2 * idx + 1
+            in_bounds = left < tree_size  # guard against descending past leaves
+            left_safe = T.where(in_bounds, left, idx)
+            left_val = self.tree[left_safe]
+            go_right = (p > left_val) & in_bounds
+            p = T.where(go_right, p - left_val, p)
+            idx = T.where(go_right, left_safe + 1, left_safe)
+        return idx
+ 
     @property
     def total_priority(self) -> float:
-        """Return the total priority (value at root)."""
-        return self.tree[0].item() if self.tree.size(0) > 0 else 0.0
+        """Total priority lives at the root."""
+        return self.tree[0].item()
 
 class Buffer:
     """
@@ -179,13 +256,13 @@ class Buffer:
         """
         raise NotImplementedError
 
-    # @abstractmethod
-    # def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
-    #     """
-    #     Sample a batch of transitions from the buffer.
-    #     Abstract method to be implemented by subclasses.
-    #     """
-    #     raise NotImplementedError
+    @abstractmethod
+    def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
+        """
+        Sample a batch of transitions from the buffer.
+        Abstract method to be implemented by subclasses.
+        """
+        raise NotImplementedError
 
     def get_config(self) -> Dict[str, Any]:
         return {
@@ -228,6 +305,7 @@ class ReplayBuffer(Buffer):
         self.states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
+        self.intrinsic_rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.next_states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.terminations = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
         self.truncations = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
@@ -240,16 +318,16 @@ class ReplayBuffer(Buffer):
         # self.counter = 0
         self.gen = np.random.default_rng()
 
-    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
+    def record(self, cur_observation: Observation, intrinsic_rewards: T.Tensor | None = None) -> None:
         """
         Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
-            **kwargs: Any: Additional arguments to pass to the add method.
+            intrinsic_rewards: T.Tensor | None: The intrinsic rewards of the current state.
         """
         if cur_observation.n_step_trajectory is not None:
-            self.add(**cur_observation.n_step_trajectory)
+            self.add(**cur_observation.n_step_trajectory, intrinsic_rewards=intrinsic_rewards)
 
     def add(
         self,
@@ -259,10 +337,11 @@ class ReplayBuffer(Buffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
-        state_achieved_goals: Optional[T.Tensor] = None,
-        next_state_achieved_goals: Optional[T.Tensor] = None,
-        desired_goals: Optional[T.Tensor] = None,
-        trajectory_lengths: Optional[T.Tensor] = None,
+        intrinsic_rewards: T.Tensor | None = None,
+        state_achieved_goals: T.Tensor | None = None,
+        next_state_achieved_goals: T.Tensor | None = None,
+        desired_goals: T.Tensor | None = None,
+        trajectory_lengths: T.Tensor | None = None,
     ) -> None:
         batch_size = len(states)
         start_idx = self.counter % self.buffer_size
@@ -314,6 +393,11 @@ class ReplayBuffer(Buffer):
         self.terminations[indices] = terminations.detach().to(device=self.device, dtype=T.bool)
         self.truncations[indices] = truncations.detach().to(device=self.device, dtype=T.bool)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
+
+        if intrinsic_rewards is not None:
+            if intrinsic_rewards.ndim == 1:
+                intrinsic_rewards = intrinsic_rewards.unsqueeze(-1)
+            self.intrinsic_rewards[indices] = intrinsic_rewards.detach().to(device=self.device, dtype=T.float32)
         
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.state_achieved_goals[indices] = state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
@@ -341,6 +425,7 @@ class ReplayBuffer(Buffer):
             "states": self.states[indices].clone(),
             "actions": self.actions[indices].clone(),
             "rewards": self.rewards[indices].clone(),
+            "intrinsic_rewards": self.intrinsic_rewards[indices].clone(),
             "next_states": self.next_states[indices].clone(),
             "terminations": self.terminations[indices].clone(),
             "truncations": self.truncations[indices].clone(),
@@ -368,6 +453,7 @@ class ReplayBuffer(Buffer):
         self.states.zero_()
         self.actions.zero_()
         self.rewards.zero_()
+        self.intrinsic_rewards.zero_()
         self.next_states.zero_()
         self.terminations.zero_()
         self.truncations.zero_()
@@ -395,266 +481,309 @@ class ReplayBuffer(Buffer):
 
 class PrioritizedReplayBuffer(ReplayBuffer):
     """
-    Prioritized off-policy replay buffer that samples transitions based on TD error.
-    Supports both proportional and rank-based prioritization strategies.
+    Prioritized off-policy replay buffer.
+ 
+    Samples transitions with probability proportional to (|δ| + ε)^α and
+    corrects the resulting bias with importance weights (N · P)^(-β). β is
+    annealed from `beta_start` toward 1.0 over `beta_iter` gradient steps.
     """
+ 
     def __init__(
         self,
-        env: EnvWrapper,
+        env: "EnvWrapper",
         buffer_size: int = 100_000,
         alpha: float = 0.6,
         beta_start: float = 0.4,
         beta_iter: int = 100_000,
         beta_update_freq: int = 10,
-        priority: str = 'rank',
-        normalize: bool = False,  # Only applies to proportional priority strategy
+        priority: str = "proportional",
         epsilon: float = 1e-6,
+        sort_freq: int = 1000,
         N: int = 1,
-        device: Optional[str] = None,
+        device: str | T.device | None = None,
     ):
-        if priority not in ['proportional', 'rank']:
-            raise ValueError(f"Invalid priority type: {priority} (must be 'proportional' or 'rank')")
-
+        if priority not in ("proportional", "rank"):
+            raise ValueError(
+                f"Invalid priority type: {priority!r} (must be 'proportional' or 'rank')"
+            )
+ 
         super().__init__(env, buffer_size, N, device)
+ 
         self.alpha = alpha
         self.beta_start = beta_start
         self.beta_iter = beta_iter
-        self.priority = priority
-        self.normalize = normalize
-        self.epsilon = epsilon
         self.beta_update_freq = beta_update_freq
-        self.beta = self.beta_start
-        self._total_steps = 0
-
+        self.priority = priority
+        self.epsilon = epsilon
+        self.sort_freq = sort_freq
+        self.beta = beta_start
+        self._gradient_steps = 0 # Tracks how many times sample() has been called for beta annealing
+ 
         if self.priority == "proportional":
             self.sum_tree = SumTree(buffer_size, self.device)
-        else:  # rank-based
+        else:  # rank
             self.priorities = T.zeros(buffer_size, dtype=T.float32, device=self.device)
-            self.sorted_indices = None
-
-    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
-        """
-        Record a transition into the buffer.
-
-        Args:
-            cur_observation: Observation: The observation of the current state.
-            **kwargs: Any: Additional arguments to pass to the add method.
-        """
+            self.sorted_indices: T.Tensor | None = None
+            self.max_priority_rank = T.tensor(1.0, dtype=T.float32, device=self.device)
+            self._priority_updates_since_sort = 0
+            self._seg_cache_key: Tuple[int, int] = (-1, -1)
+            self._seg_starts: Optional[T.Tensor] = None
+            self._seg_ends: Optional[T.Tensor] = None
+            # Z = sum_r (r+1)^(-alpha) — computed alongside segments.
+            self._rank_Z = T.tensor(0.0, dtype=T.float32, device=self.device)
+ 
+    def record(self, cur_observation: Observation, intrinsic_rewards: T.Tensor | None = None) -> None:
         if cur_observation.n_step_trajectory is not None:
-            self.add(**cur_observation.n_step_trajectory)
+            self.add(**cur_observation.n_step_trajectory, intrinsic_rewards=intrinsic_rewards)
         else:
-            raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using ReplayBuffer.")
-
+            raise ValueError(
+                "n_step_trajectory is None. PrioritizedReplayBuffer requires the "
+                "VectorNStepReward wrapper to populate it."
+            )
+ 
     def add(
         self,
         states: T.Tensor,
         actions: T.Tensor,
         rewards: T.Tensor,
         next_states: T.Tensor,
-        dones: T.Tensor,
-        state_achieved_goals: Optional[T.Tensor] = None,
-        next_state_achieved_goals: Optional[T.Tensor] = None,
-        desired_goals: Optional[T.Tensor] = None,
-        trajectory_lengths: Optional[T.Tensor] = None,
+        terminations: T.Tensor,
+        truncations: T.Tensor,
+        intrinsic_rewards: T.Tensor | None = None,
+        state_achieved_goals: T.Tensor | None = None,
+        next_state_achieved_goals: T.Tensor | None = None,
+        desired_goals: T.Tensor | None = None,
+        trajectory_lengths: T.Tensor | None = None,
     ) -> None:
+
         batch_size = len(states)
         start_idx = self.counter % self.buffer_size
         end_idx = (self.counter + batch_size) % self.buffer_size
-
         if end_idx > start_idx:
             indices = T.arange(start_idx, end_idx, device=self.device)
         else:
-            indices = T.cat([T.arange(start_idx, self.buffer_size, device=self.device), 
-                             T.arange(0, end_idx, device=self.device)])
-
-        # Add N dimension of 1 at index 1 if values are 2d
-        if states.ndim == 2:
-            states = states[:, T.newaxis, :]
-            # states = states.unsqueeze(1)
-        if actions.ndim == 2:
-            actions = actions[:, T.newaxis, :]
-            # actions = actions.unsqueeze(1)
-        if rewards.ndim == 1:
-            rewards = rewards[:, T.newaxis]
-            # rewards = rewards.unsqueeze(1)
-        if next_states.ndim == 2:
-            next_states = next_states[:, T.newaxis, :]
-            # next_states = next_states.unsqueeze(1)
-        if dones.ndim == 1:
-            dones = dones[:, T.newaxis]
-
-
-        if self.env.goal_key is not None and self.goal_space_shape is not None:
-            if state_achieved_goals is None or next_state_achieved_goals is None or desired_goals is None:
-                raise ValueError("Goal data must be provided when using goals")
-            if state_achieved_goals.ndim == 2:
-                state_achieved_goals = state_achieved_goals[:, T.newaxis, :]
-                # state_achieved_goals = state_achieved_goals.unsqueeze(1)
-            if next_state_achieved_goals.ndim == 2:
-                next_state_achieved_goals = next_state_achieved_goals[:, T.newaxis, :]
-                # next_state_achieved_goals = next_state_achieved_goals.unsqueeze(1)
-            if desired_goals.ndim == 2:
-                desired_goals = desired_goals[:, T.newaxis, :]
-
-        # Store transitions (detach to avoid holding computation graphs)
-        self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
-        self.actions[indices] = actions.detach().to(device=self.device, dtype=self.action_type)
-        self.rewards[indices] = rewards.detach().to(device=self.device, dtype=T.float32)
-        self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
-        self.dones[indices] = dones.detach().to(device=self.device, dtype=T.bool)
-        self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
-
-        if self.env.goal_key is not None and self.goal_space_shape is not None:
-            self.state_achieved_goals[indices] = state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
-            self.next_state_achieved_goals[indices] = next_state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
-            self.desired_goals[indices] = desired_goals.detach().to(device=self.device, dtype=T.float32)
-
-        # Set initial priorities (will be normalized in update)
+            indices = T.cat([
+                T.arange(start_idx, self.buffer_size, device=self.device),
+                T.arange(0, end_idx, device=self.device),
+            ])
+ 
+        super().add(
+            states=states,
+            actions=actions,
+            rewards=rewards,
+            next_states=next_states,
+            terminations=terminations,
+            truncations=truncations,
+            intrinsic_rewards=intrinsic_rewards,
+            state_achieved_goals=state_achieved_goals,
+            next_state_achieved_goals=next_state_achieved_goals,
+            desired_goals=desired_goals,
+            trajectory_lengths=trajectory_lengths,
+        )
+ 
         if self.priority == "proportional":
-            priorities = T.ones(len(indices), device=self.device) * self.sum_tree.max_priority
-            self.sum_tree.update(indices, priorities)
-        else:  # rank-based
-            self.priorities[indices] = T.ones(len(indices), device=self.device) * self.priorities.max()
-            self.sorted_indices = None
+            init_priorities = self.sum_tree.max_priority.expand(batch_size)
+            self.sum_tree.update(indices, init_priorities)
+        else:  # rank
+            self.priorities[indices] = self.max_priority_rank.expand(batch_size)
+ 
+    def sample(self, samples: int) -> Dict[str, T.Tensor]:
+        """
+        Sample a batch weighted by priority.
 
-        self.counter += batch_size
-        self._total_steps += 1
-
-
-    def sample(self, samples: int) -> Tuple[T.Tensor, ...]:
-        """Samples a batch of N-step transition sequences based on priority.
-        
         Args:
             samples: int: The number of samples to draw from the buffer.
-        
-        Returns:
-            Tuple[T.Tensor, ...]: A tuple containing the sampled N-step sequences.
+ 
+        Returns a dict with the standard transition fields plus:
+            indices : buffer indices, needed for update_priorities() later
+            weights : importance-sampling weights, normalized so max == 1
+            probs   : sampling probabilities (priority / total)
         """
-        if self._total_steps % self.beta_update_freq == 0:
+        self._gradient_steps += 1
+        if self._gradient_steps % self.beta_update_freq == 0:
             self.update_beta()
-
+ 
         size = min(self.counter, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
-
         samples = min(samples, size)
-
+ 
         if self.priority == "proportional":
-            total_priority = self.sum_tree.total_priority
-            if total_priority <= 0:
-                indices = T.randint(0, size, (samples,), device=self.device)
-                weights = T.ones(samples, device=self.device)
-                probs = T.ones(samples, device=self.device) / size
-            else:
-                segment_size = total_priority / samples
-                segment_boundaries = T.arange(0, samples, device=self.device) * segment_size
-                random_offsets = T.rand(samples, device=self.device) * segment_size
-                p_values = segment_boundaries + random_offsets
-                indices, priorities = self.sum_tree.get(p_values)
-                probs = priorities / total_priority
-                weights = (size * probs) ** (-self.beta)
-                weights = weights / weights.max()
-        else:  # rank-based
-            self._prepare_rank_based()
-            u = T.rand(samples, device=self.device)
-            ranks = (u ** (1 / self.alpha) * size).long().clamp(max=size-1)
-            indices = self.sorted_indices[ranks]
-            cur_probs = 1 / ((ranks + 1) ** self.alpha)
-            all_ranks = T.arange(size, device=self.device)
-            sum_probs = T.sum(1 / (all_ranks + 1.0) ** self.alpha)
-            probs = cur_probs / sum_probs
-            weights = (size * probs) ** (-self.beta)
-            weights = weights / weights.max()
-
-        if self.env.goal_key is not None and self.goal_space_shape is not None:
-            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
-            self.dones[indices], self.state_achieved_goals[indices], self.next_state_achieved_goals[indices],
-            self.desired_goals[indices], self.trajectory_lengths[indices], weights, probs, indices)
+            indices, probs, weights = self._sample_proportional(samples, size)
         else:
-            return (self.states[indices], self.actions[indices], self.rewards[indices], self.next_states[indices],
-            self.dones[indices], self.trajectory_lengths[indices], weights, probs, indices)
+            indices, probs, weights = self._sample_rank(samples, size)
+ 
+        sample = {
+            "states": self.states[indices].clone(),
+            "actions": self.actions[indices].clone(),
+            "rewards": self.rewards[indices].clone(),
+            "intrinsic_rewards": self.intrinsic_rewards[indices].clone(),
+            "next_states": self.next_states[indices].clone(),
+            "terminations": self.terminations[indices].clone(),
+            "truncations": self.truncations[indices].clone(),
+            "trajectory_lengths": self.trajectory_lengths[indices].clone(),
+            "weights": weights,
+            "probs": probs,
+            "indices": indices,
+        }
+        if self.env.goal_key is not None and self.goal_space_shape is not None:
+            sample.update({
+                "state_achieved_goals": self.state_achieved_goals[indices].clone(),
+                "next_state_achieved_goals": self.next_state_achieved_goals[indices].clone(),
+                "desired_goals": self.desired_goals[indices].clone(),
+            })
+        else:
+            sample.update({
+                "state_achieved_goals": None,
+                "next_state_achieved_goals": None,
+                "desired_goals": None,
+            })
+        return sample
+ 
+    def _sample_proportional(
+        self, samples: int, size: int
+    ) -> Tuple[T.Tensor, T.Tensor, T.Tensor]:
 
+        total = self.sum_tree.total_priority
+        if total <= 0.0:
+            # Tree is empty or all-zero — fall back to uniform.
+            indices = T.randint(0, size, (samples,), device=self.device)
+            probs = T.full((samples,), 1.0 / size, device=self.device)
+            weights = T.ones(samples, device=self.device)
+            return indices, probs, weights
+ 
+        # Stratified sampling: divide [0, total] into `samples` equal-width
+        # segments, draw one cumulative-priority value uniformly from each.
+        segment = total / samples
+        boundaries = T.arange(samples, device=self.device, dtype=T.float32) * segment
+        offsets = T.rand(samples, device=self.device) * segment
+        p_values = boundaries + offsets
+ 
+        indices, priorities = self.sum_tree.get(p_values)
+        probs = priorities / total
+        weights = (size * probs).pow(-self.beta)
+        weights = weights / weights.max()
+        return indices, probs, weights
+ 
+    def _sample_rank(
+        self, samples: int, size: int
+    ) -> Tuple[T.Tensor, T.Tensor, T.Tensor]:
+        """
+        Stratified-segments rank-based sampling
+        """
+        self._maybe_resort(size)
+        seg_starts, seg_ends = self._get_segments(size, samples)
+
+        seg_widths = (seg_ends - seg_starts).float()
+        u = T.rand(samples, device=self.device)
+        ranks = (seg_starts.float() + u * seg_widths).long().clamp(max=size - 1)
+
+        indices = self.sorted_indices[ranks]
+
+        probs = (ranks.float() + 1.0).pow(-self.alpha) / self._rank_Z
+        weights = (size * probs).pow(-self.beta)
+        weights = weights / weights.max()
+        return indices, probs, weights
+
+    def _maybe_resort(self, size: int) -> None:
+        """Resort priorities[:size] if the cache is stale.
+
+        Two trigger conditions:
+          1. sorted_indices is None (first sample, or sort_freq).
+          2. sorted_indices.numel() != size (buffer size changed).
+        """
+        needs_resort = (
+            self.sorted_indices is None
+            or self.sorted_indices.numel() != size
+        )
+        if needs_resort:
+            self.sorted_indices = T.argsort(self.priorities[:size], descending=True)
+            self._priority_updates_since_sort = 0
+
+    def _get_segments(
+        self, size: int, samples: int
+    ) -> Tuple[T.Tensor, T.Tensor]:
+        """Return cached (seg_starts, seg_ends), recomputing if (size, samples) changed."""
+        key = (size, samples)
+        if self._seg_cache_key != key:
+            self._compute_segments(size, samples)
+            self._seg_cache_key = key
+        return self._seg_starts, self._seg_ends
+
+    def _compute_segments(self, size: int, k: int) -> None:
+        """Compute k equal-probability segment boundaries over rank distribution
+        P(r) = (r+1)^(-α) / Z for r = 0..size-1.
+        """
+        ranks_one_indexed = T.arange(1, size + 1, dtype=T.float32, device=self.device)
+        pmf = ranks_one_indexed.pow(-self.alpha)
+        self._rank_Z = pmf.sum()
+
+        cdf = T.cumsum(pmf / self._rank_Z, dim=0)
+
+        # For each i = 1..k, find smallest rank r where cdf[r] >= i/k.
+        target_cdf = T.arange(1, k + 1, dtype=T.float32, device=self.device) / k
+        seg_ends_inclusive = T.searchsorted(cdf, target_cdf, right=False).clamp(max=size - 1)
+        seg_ends = seg_ends_inclusive + 1  # exclusive end
+        seg_starts = T.cat([
+            T.zeros(1, dtype=T.long, device=self.device),
+            seg_ends[:-1].clone(),
+        ])
+        seg_ends = T.maximum(seg_ends, seg_starts + 1).clamp(max=size)
+
+        self._seg_starts = seg_starts
+        self._seg_ends = seg_ends
+ 
     def update_beta(self) -> None:
-        """Anneal beta param"""
-        progress = min(self._total_steps / self.beta_iter, 1.0)
+        """Linearly anneal β from β_start toward 1.0 over beta_iter gradient steps."""
+        progress = min(self._gradient_steps / self.beta_iter, 1.0)
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
-
-    def update_priorities(self, indices: T.Tensor, priorities: T.Tensor) -> None:
-        """Updates priorities of sampled transitions"""
+ 
+    def update_priorities(self, indices: T.Tensor, td_errors: T.Tensor) -> None:
+        """
+        Recompute priorities from new TD errors for previously-sampled transitions.
+ 
+        Stores p = (|δ| + ε)^α
+        """
         if not isinstance(indices, T.Tensor):
-            indices = T.tensor(indices, device=self.device)
-        
-        if not isinstance(priorities, T.Tensor):
-            priorities = T.tensor(priorities, device=self.device)
-
-        priorities = T.abs(priorities)
-
+            indices = T.tensor(indices, device=self.device, dtype=T.long)
+        if not isinstance(td_errors, T.Tensor):
+            td_errors = T.tensor(td_errors, device=self.device, dtype=T.float32)
+ 
+        priorities = (T.abs(td_errors) + self.epsilon).pow(self.alpha)
+ 
+        # Replace any NaN with the batch mean of valid entries
+        if T.isnan(priorities).any():
+            nan_mask = T.isnan(priorities)
+            valid = priorities[~nan_mask]
+            fill = (
+                valid.mean()
+                if valid.numel() > 0
+                else T.tensor(self.epsilon ** self.alpha, device=self.device)
+            )
+            priorities = T.where(nan_mask, fill, priorities)
+ 
         if self.priority == "proportional":
-            if priorities.numel() > 1 and self.normalize:
-                mean = priorities.mean()
-                std = priorities.std() + 1e-6
-                normalized = (priorities - mean) / std
-                priorities = T.clamp(normalized, -3.0, 3.0)
-                priorities = ((normalized + 3.0) / 6.0) + self.epsilon
-            else:
-                priorities = T.clamp(priorities, min=self.epsilon)
-
-            priorities = priorities ** self.alpha
-            if T.isnan(priorities).any():
-                nan_mask = T.isnan(priorities)
-                mean_non_nan = priorities[~nan_mask].mean()
-                priorities = T.where(nan_mask, mean_non_nan, priorities)
-
             self.sum_tree.update(indices, priorities)
-        else:  # rank-based
+        else:  # rank
             self.priorities[indices] = priorities
-            self.sorted_indices = None
-
-    def _prepare_rank_based(self) -> None:
-        """Sorts priorities for rank-based sampling"""
-        if self.sorted_indices is None:
-            size = min(self.counter, self.buffer_size)
-            if size > 0:
-                self.sorted_indices = T.argsort(self.priorities[:size], descending=True)
-            else:
-                self.sorted_indices = T.tensor([], dtype=T.long, device=self.device)
-
+            self.max_priority_rank = T.maximum(
+                self.max_priority_rank, priorities.max()
+            )
+            self.sorted_indices = None  # invalidate sort cache
+ 
     def get_config(self) -> Dict[str, Any]:
-        """Get buffer config."""
         config = super().get_config()
-        config['type'] = self.__class__.__name__
-        config['config'].update({
+        config["type"] = self.__class__.__name__
+        config["config"].update({
             "alpha": self.alpha,
             "beta_start": self.beta_start,
             "beta_iter": self.beta_iter,
             "beta_update_freq": self.beta_update_freq,
             "priority": self.priority,
-            "normalize": self.normalize,
             "epsilon": self.epsilon,
+            "sort_freq": self.sort_freq,
         })
         return config
-    
-    def clone(self, device: Optional[str] = None) -> 'PrioritizedReplayBuffer':
-        """Create a new instance with the same configuration."""
-        if device:
-            device = get_device(device)
-        else:
-            device = self.device.type
-
-        env = build_env_wrapper_obj(self.env.config)
-        return PrioritizedReplayBuffer(
-            env, 
-            self.buffer_size, 
-            self.alpha, 
-            self.beta_start, 
-            self.beta_iter,
-            self.beta_update_freq,
-            self.priority, 
-            self.normalize,
-            self.epsilon,
-            device,
-            self.N
-        )
 
 class RolloutBuffer(Buffer):
     """
@@ -664,7 +793,7 @@ class RolloutBuffer(Buffer):
         self,
         env: EnvWrapper,
         buffer_size: int,
-        device: Optional[str] = None
+        device: str | T.device | None = None
     ):
         super().__init__(env, buffer_size, device)
         self.cur_idx = T.zeros((env.num_envs,), dtype=T.long, device=self.device)
@@ -673,6 +802,7 @@ class RolloutBuffer(Buffer):
         self.states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.actions = T.zeros((buffer_size, env.num_envs, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.rewards = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
+        self.intrinsic_rewards = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
         self.next_states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.terminations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
         self.truncations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
@@ -684,7 +814,7 @@ class RolloutBuffer(Buffer):
             self.state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.next_state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
 
-    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor) -> None:
+    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor, intrinsic_rewards: T.Tensor | None = None) -> None:
         """
         Record a transition into the buffer.
 
@@ -693,6 +823,7 @@ class RolloutBuffer(Buffer):
             prev_observation: Observation: The observation of the previous state.
             actions: T.Tensor: The actions taken.
             prev_dones: T.Tensor: The previous dones of the environments.
+            intrinsic_rewards: T.Tensor | None: The intrinsic rewards of the current state.
         """
         self.add(
             states=prev_observation.states,
@@ -701,6 +832,7 @@ class RolloutBuffer(Buffer):
             next_states=cur_observation.states,
             terminations=cur_observation.terminations,
             truncations=cur_observation.truncations,
+            intrinsic_rewards=intrinsic_rewards,
             state_achieved_goals=prev_observation.ach_goals if prev_observation.ach_goals is not None else None,
             next_state_achieved_goals=cur_observation.ach_goals if cur_observation.ach_goals is not None else None,
             desired_goals=prev_observation.goals if prev_observation.goals is not None else None,
@@ -715,6 +847,7 @@ class RolloutBuffer(Buffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
+        intrinsic_rewards: T.Tensor | None = None,
         state_achieved_goals: T.Tensor|None = None,
         next_state_achieved_goals: T.Tensor|None = None,
         desired_goals: T.Tensor|None = None,
@@ -741,6 +874,8 @@ class RolloutBuffer(Buffer):
         self.states[idx, env_ids] = states.to(device=self.device, dtype=T.float32)
         self.actions[idx, env_ids] = actions.to(device=self.device, dtype=self.action_type)
         self.rewards[idx, env_ids] = rewards.to(device=self.device, dtype=T.float32)
+        if intrinsic_rewards is not None:
+            self.intrinsic_rewards[idx, env_ids] = intrinsic_rewards.to(device=self.device, dtype=T.float32)
         self.next_states[idx, env_ids] = next_states.to(device=self.device, dtype=T.float32)
         self.terminations[idx, env_ids] = terminations.to(device=self.device, dtype=T.bool)
         self.truncations[idx, env_ids] = truncations.to(device=self.device, dtype=T.bool)
@@ -769,6 +904,7 @@ class RolloutBuffer(Buffer):
             "states": self.states[:idx].clone(),
             "actions": self.actions[:idx].clone(),
             "rewards": self.rewards[:idx].clone(),
+            "intrinsic_rewards": self.intrinsic_rewards[:idx].clone(),
             "next_states": self.next_states[:idx].clone(),
             "terminations": self.terminations[:idx].clone(),
             "truncations": self.truncations[:idx].clone(),
@@ -821,7 +957,7 @@ class TrajectoryBuffer(RolloutBuffer):
         super().__init__(env, buffer_size, device)
         self.completed_trajectories: List[Dict[str, T.Tensor]] = []
 
-    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor) -> None:
+    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor, intrinsic_rewards: T.Tensor | None = None) -> None:
         """
         Record a transition into the buffer.
 
@@ -830,6 +966,7 @@ class TrajectoryBuffer(RolloutBuffer):
             prev_observation: Observation: The observation of the previous state.
             actions: T.Tensor: The actions taken.
             prev_dones: T.Tensor: The previous dones of the environments.
+            intrinsic_rewards: T.Tensor | None: The intrinsic rewards of the current state.
         """
         self.add(
             states=prev_observation.states,
@@ -838,6 +975,7 @@ class TrajectoryBuffer(RolloutBuffer):
             next_states=cur_observation.states,
             terminations=cur_observation.terminations,
             truncations=cur_observation.truncations,
+            intrinsic_rewards=intrinsic_rewards,
             state_achieved_goals=prev_observation.ach_goals if prev_observation.ach_goals is not None else None,
             next_state_achieved_goals=cur_observation.ach_goals if cur_observation.ach_goals is not None else None,
             desired_goals=prev_observation.goals if prev_observation.goals is not None else None,
@@ -852,12 +990,25 @@ class TrajectoryBuffer(RolloutBuffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
+        intrinsic_rewards: T.Tensor | None = None,
         state_achieved_goals: T.Tensor|None = None,
         next_state_achieved_goals: T.Tensor|None = None,
         desired_goals: T.Tensor|None = None,
         first_steps: T.Tensor|None = None,
     ) -> None:
-        super().add(states, actions, rewards, next_states, terminations, truncations, state_achieved_goals, next_state_achieved_goals, desired_goals, first_steps)
+        super().add(
+            states,
+            actions,
+            rewards,
+            next_states,
+            terminations,
+            truncations,
+            intrinsic_rewards,
+            state_achieved_goals,
+            next_state_achieved_goals,
+            desired_goals,
+            first_steps
+        )
 
         # Store completed trajectories if any last stored dones are True
         for i in range(self.env.num_envs):
@@ -877,6 +1028,7 @@ class TrajectoryBuffer(RolloutBuffer):
                 "states": self.states[:idx, i][valid_steps].clone(),
                 "actions": self.actions[:idx, i][valid_steps].clone(),
                 "rewards": self.rewards[:idx, i][valid_steps].clone(),
+                "intrinsic_rewards": self.intrinsic_rewards[:idx, i][valid_steps].clone(),
                 "next_states": self.next_states[:idx, i][valid_steps].clone(),
                 "terminations": self.terminations[:idx, i][valid_steps].clone(),
                 "truncations": self.truncations[:idx, i][valid_steps].clone(),

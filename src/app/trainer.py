@@ -15,7 +15,7 @@ from abc import abstractmethod
 from .torch_utils import set_seed
 from .rl_callbacks import Callback, WandbCallback
 from .rl_agents import Agent, HasTargetNetworks
-from .env_wrapper import EnvWrapper, Observation
+from .env_wrapper import EnvWrapper, Observation, VectorNStepReward
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, RolloutBuffer, TrajectoryBuffer
 from .renderer import Renderer
 from .logging_config import get_logger, configure_logging
@@ -56,42 +56,6 @@ class TrainingSchedule:
         }[self.learn_every_unit]
         return progress >= last_learn_at + self.learn_every
 
-# @dataclass
-# class Schedule:
-#     seed: int | None = None
-
-# @dataclass
-# class OnPolicySchedule(Schedule):
-#     # Training length
-#     unit: Literal["timestep", "episode"] = 'episode'
-#     units: int = 1000
-
-#     # learning Params
-#     learn_unit: Literal["timestep", "trajectory"] = 'trajectory'
-#     learn_units: int = 10
-
-#     # Algo specific (ie. PPO)
-#     batch_size: int|None = None
-#     learning_epochs: int|None = None
-
-#     # Set seed
-#     seed: int|None = None
-
-# @dataclass
-# class OffPolicySchedule(Schedule):
-#     # Training length
-#     unit: Literal["timestep", "episode"] = 'episode'
-#     units: int = 1000
-
-#     # learning Params
-#     # cycles: int = 10
-#     episodes: int = 16
-#     updates: int = 40
-#     batch_size: int = 128
-
-#     # Set seed
-#     seed: int|None = None
-
 class Trainer:
     def __init__(
         self,
@@ -125,7 +89,7 @@ class Trainer:
         self._score_history = None
         self._last_learn = None
 
-    def initialize_callbacks(self):
+    def _initialize_callbacks(self):
         """
         Initialize and configure callbacks for logging and monitoring.
 
@@ -140,7 +104,7 @@ class Trainer:
         except Exception as e:
             raise ValueError(f"Error initializing callbacks: {e}")
 
-    def initialize_run(self, context: Literal["train", "test"], **kwargs: Any):
+    def _initialize_run(self, context: Literal["train", "test"], **kwargs: Any):
         """
         Initializes the environment, seeds, and tracking variables for training.
         Args:
@@ -169,6 +133,13 @@ class Trainer:
                 model.eval()
                 model.logger.debug(f"Set {name} to eval mode")
 
+        # Set VectorNStepReward wrapper Intrinsic Motivation pointer
+        im = getattr(self.agent, 'intrinsic_motivation', None)
+        if im is not None:
+            nstep_wrapper = self._find_nstep_wrapper(self.env)
+            if nstep_wrapper is not None:
+                nstep_wrapper.set_intrinsic_motivation(im)
+
         # Set normalizers to train or eval mode
         self.set_normalizers(context)
 
@@ -177,15 +148,9 @@ class Trainer:
         set_seed(seed)
         observation = self.env.reset(seed=seed)
 
-        # Warmup normalizers if exist
-        # if context == "train":
-        #     new_obs = self.warmup_normalizers()
-        #     if new_obs is not None:
-        #         observation = new_obs
-
         # Set callbacks
         if self.callbacks:
-            self.initialize_callbacks()
+            self._initialize_callbacks()
             config = self.agent.get_config()
             config.update({'num_envs': self.env.num_envs, 'seed': seed})
             config.update(kwargs)
@@ -222,6 +187,12 @@ class Trainer:
         self._score_history = deque(maxlen=100)
         self._last_learn = 0
 
+    def _find_nstep_wrapper(self, env: EnvWrapper) -> VectorNStepReward | None:
+        while env is not None:
+            if isinstance(env, VectorNStepReward):
+                return env
+            env = getattr(env, 'env', None)
+
     def _iter_normalizers(self):
         """Yields (name, normalizer) for every normalizer the agent actually has."""
         for name in ("state_normalizer", "goal_normalizer",
@@ -230,24 +201,52 @@ class Trainer:
             if norm is not None:
                 yield name, norm
 
-    # def _warmup_steps(self) -> int:
-    #     """Get the maximum warmup_steps across normalizers that support warmup."""
-    #     return max(
-    #         (getattr(norm, "warmup_steps", 0) for _, norm in self._iter_normalizers()),
-    #         default=0,
-    #     )
+    def _apply_per_update(self, sample: dict, learn_metrics: dict) -> None:
+        """If using a PrioritizedReplayBuffer, push TD errors back as priorities
+        and (optionally) collect PER diagnostics for logging."""
+        # Pop so a per-sample tensor never leaks into wandb scalar logs.
+        td_errors = learn_metrics.pop("td_errors", None)
 
-    # def warmup_normalizers(self) -> Observation | None:
-    #     """Warmup the normalizers."""
-    #     n = self._warmup_steps()
-    #     if n == 0:
-    #         return None
-    #     for _ in range(n):
-    #         observation = self.env.sample_observation()
-    #         self.add_to_normalizers(observation, include_reward=False)
-    #         for _, norm in self._iter_normalizers():
-    #             norm.update()
-    #     return self.env.reset()
+        if not isinstance(self.buffer, PrioritizedReplayBuffer):
+            return
+        indices = sample.get("indices")
+        if indices is None or td_errors is None:
+            return
+
+        self.buffer.update_priorities(
+            indices,
+            td_errors.detach().flatten().to(self.buffer.device),
+        )
+
+        if self._wandb:
+            learn_metrics.update(self._collect_per_metrics(sample, indices))
+
+    def _collect_per_metrics(self, sample: dict, indices: T.Tensor) -> dict:
+        # pb = self.buffer  # PrioritizedReplayBuffer
+        actual_size = min(self.buffer.counter, self.buffer.buffer_size)
+        valid = T.arange(actual_size, device=self.buffer.device)
+
+        if self.buffer.priority == "proportional":
+            offset = self.buffer.sum_tree.capacity - 1
+            sampled_pri = self.buffer.sum_tree.tree[indices + offset]
+            buffer_pri = self.buffer.sum_tree.tree[valid + offset]
+        else:  # rank
+            sampled_pri = self.buffer.priorities[indices]
+            buffer_pri = self.buffer.priorities[valid]
+
+        weights = sample["weights"]
+        probs = sample["probs"]
+        return {
+            "PER/beta": self.buffer.beta,
+            "PER/sampled_priority_mean": sampled_pri.mean().item(),
+            "PER/sampled_priority_max": sampled_pri.max().item(),
+            "PER/buffer_priority_mean": buffer_pri.mean().item(),
+            "PER/buffer_priority_max": buffer_pri.max().item(),
+            "PER/weight_mean": weights.mean().item(),
+            "PER/weight_std": weights.std().item(),
+            "PER/prob_mean": probs.mean().item(),
+            "PER/prob_max": probs.max().item(),
+        }
 
     def set_normalizers(self, context: Literal["train", "test"]):
         """Sets the normalizers to train or eval mode."""
@@ -255,15 +254,18 @@ class Trainer:
             raise ValueError(f"Invalid context: {context}")
         for _, norm in self._iter_normalizers():
             norm.train() if context == "train" else norm.eval()
+        
+        # Set Intrinsic Motivation normalizers if present
+        im = getattr(self.agent, 'intrinsic_motivation', None)
+        if im is not None:
+            im.set_normalizers_mode(context)
 
-    def add_to_normalizers(self, obs: Observation, *, include_reward: bool = True):
+    def add_to_normalizers(self, obs: Observation):
         """
         Add relavent data from obs to the normalizers.
 
         Args:
             obs: Observation to feed.
-            include_reward: Whether to feed the reward normalizer. Set False when `obs`
-                            does not carry rewards (e.g. warmup from `sample_observation`).
         """
         for name, norm in self._iter_normalizers():
             if name == "state_normalizer":
@@ -273,40 +275,24 @@ class Trainer:
                 goals = T.cat([obs.goals, obs.ach_goals], dim=0).to(device=norm.device)
                 norm.add(goals)
 
-            elif name == "reward_normalizer" and include_reward:
+            elif name == "reward_normalizer":
                 dones = T.logical_or(obs.terminations, obs.truncations)
                 norm.add(obs.rewards, dones)
+
+        # Pass obs to Intrinsic Motivation if present
+        im = getattr(self.agent, 'intrinsic_motivation', None)
+        if im is not None:
+            im.add_to_normalizers(obs)
 
     def update_normalizers(self):
         """Updates the normalizers."""
         for _, norm in self._iter_normalizers():
             norm.update()
 
-    # def normalize_inputs(
-    #     self,
-    #     states: np.ndarray | T.Tensor,
-    #     goals: np.ndarray | T.Tensor | None = None,
-    #     ach_goals: np.ndarray | T.Tensor | None = None
-    # )->tuple[T.Tensor, T.Tensor | None, T.Tensor | None]:
-    #     """Normalizes the states and goals for the agent.
-
-    #     Args:
-    #         states (np.ndarray | T.Tensor): States to normalize.
-    #         goals (np.ndarray | T.Tensor | None): Goals to normalize.
-    #         ach_goals (np.ndarray | T.Tensor | None): Achieved goals to normalize.
-        
-    #     Returns:
-    #         tuple: Tuple of normalized states, goals, and achieved goals as Tensors.
-    #     """
-    #     if self.agent.state_normalizer:
-    #         states = self.agent.state_normalizer.normalize(states)
-    #     if hasattr(self.agent, 'goal_normalizer') and self.agent.goal_normalizer:
-    #         if goals is not None:
-    #             goals = self.agent.goal_normalizer.normalize(goals)
-    #         if ach_goals is not None:
-    #             ach_goals = self.agent.goal_normalizer.normalize(ach_goals)
-        
-    #     return states, goals, ach_goals
+        # Update Intrinsic Motivation normalizers if present
+        im = getattr(self.agent, 'intrinsic_motivation', None)
+        if im is not None:
+            im.update_normalizers()
 
     def normalize_observation(
         self, obs: Observation)->Observation:
@@ -343,7 +329,16 @@ class Trainer:
         ] + [
             getattr(getattr(self.agent, model, None), "lr_scheduler", None)
             for model in ("value", "critic", "critic_b")
+        ] + [
+            getattr(getattr(self.agent, "intrinsic_motivation", None), "reward_scheduler", None)
         ]
+        # If using CompositeIntrinsicMotivation object, grab reward schedulers from each component
+        # in the composite if any and update
+        components = getattr(getattr(self.agent, 'intrinsic_motivation', None), 'components', None)
+        if components is not None:
+            for c in components:
+                schedulers.append(getattr(c, 'reward_scheduler', None))
+
         for s in schedulers:
             if s is not None:
                 s.step(self.env.num_envs)
@@ -365,7 +360,13 @@ class Trainer:
         # Normalize observations and goals if normalizers
         obs_norm = self.normalize_observation(self._prev_obs)
         actions = self.get_action(obs_norm.states, obs_norm.goals, context='train' if training else 'test')
+        # Take action in environment and get new Observation
         observation = self.env.step(actions)
+        # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer
+        im = getattr(self.agent, 'intrinsic_motivation', None)
+        if im is not None:
+            intrinsic_rewards = im.compute_rollout_reward(self._prev_obs.states, observation.states, actions, env_indices = T.arange(self.env.num_envs, device=im.device))
+            observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
 
         dones = T.logical_or(observation.terminations, observation.truncations)
         valid_steps = ~self._prev_done
@@ -448,31 +449,36 @@ class Trainer:
         """
         learn_metrics = {}
         total_samples = self.schedule.updates_per_learn * self.schedule.batch_size
-        if self.buffer.is_ready(samples = total_samples):
-            samples = self.buffer.sample(samples = total_samples)
-            if self.schedule.updates_per_learn == 1:
+        if not self.buffer.is_ready(samples = total_samples):
+            return learn_metrics
+        
+        samples = self.buffer.sample(samples = total_samples)
+        if self.schedule.updates_per_learn == 1:
+            learn_metrics = self.agent.learn(
+                self._step,
+                samples,
+                learning_epochs=self.schedule.learning_epochs,
+                mini_batch_size=self.schedule.mini_batch_size
+            )
+            self._apply_per_update(samples, learn_metrics)
+
+        else:
+            for update in range(self.schedule.updates_per_learn):
+                lo_idx = update * self.schedule.batch_size
+                hi_idx = lo_idx + self.schedule.batch_size
+                sample = {k: (v[lo_idx:hi_idx] if v is not None else None) for k, v in samples.items()}
                 learn_metrics = self.agent.learn(
                     self._step,
-                    samples,
+                    sample,
                     learning_epochs=self.schedule.learning_epochs,
                     mini_batch_size=self.schedule.mini_batch_size
-                )
-            else:
-                for update in range(self.schedule.updates_per_learn):
-                    lo_idx = update * self.schedule.batch_size
-                    hi_idx = lo_idx + self.schedule.batch_size
-                    sample = {k: (v[lo_idx:hi_idx] if v is not None else None) for k, v in samples.items()}
-                    learn_metrics = self.agent.learn(
-                        self._step,
-                        sample,
-                        learning_epochs=self.schedule.learning_epochs,
-                        mini_batch_size=self.schedule.mini_batch_size
                     )
+                self._apply_per_update(samples, learn_metrics)
         return learn_metrics
 
     def train(self):
         """Trains Agent following the Schedule."""
-        self.initialize_run(context="train")
+        self._initialize_run(context="train")
         # Initialize Rich Console
         console = Console()
         start_time = time.time()

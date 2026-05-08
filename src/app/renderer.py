@@ -7,8 +7,6 @@ import torch as T
 import wandb
 from moviepy.editor import ImageSequenceClip
 
-
-from .rl_agents import OnPolicyAgent
 from .env_wrapper import EnvWrapper, IsaacSimWrapper, GymnasiumWrapper, EnvPoolWrapper
 from .rl_callbacks import WandbCallback
 from .logging_config import get_logger

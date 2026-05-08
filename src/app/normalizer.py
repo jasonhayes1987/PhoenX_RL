@@ -1,6 +1,6 @@
 import torch as T
 import numpy as np
-from typing import Optional
+# from typing import Optional
 from .torch_utils import get_device
 from .logging_config import get_logger
 
@@ -28,7 +28,7 @@ class BaseNormalizer:
         num_features: int,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
-        device: Optional[str | T.device] = None,
+        device: str | T.device | None = None,
         log_level: str = 'INFO',
         **kwargs
     ):
@@ -72,10 +72,9 @@ class BaseNormalizer:
         batch = new_data.to(self.device)
         n = batch.size(0)
         batch_mean = batch.mean(dim=0)
-        batch_var = batch.var(dim=0, unbiased=False)  # torch computes this stably
+        batch_var = batch.var(dim=0, unbiased=False)
         batch_M2 = batch_var * n
-        # self.local_sum += new_data.sum(dim=0).to(self.device)
-        # self.local_sum_sq += (new_data**2).sum(dim=0).to(self.device)
+
         if self.local_cnt.item() == 0:
             self.local_mean = batch_mean
             self.local_M2 = batch_M2
@@ -225,7 +224,7 @@ class RunningNorm(BaseNormalizer):
         num_features: int,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
-        device: Optional[str | T.device] = None,
+        device: str | T.device | None = None,
         log_level: str = 'INFO',
         **kwargs
     ):
@@ -308,7 +307,7 @@ class BatchNorm(BaseNormalizer):
         num_features: int,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
-        device: Optional[str | T.device] = None,
+        device: str | T.device | None = None,
         log_level: str = 'INFO',
         **kwargs
     ):
@@ -382,7 +381,7 @@ class RewardNorm(BaseNormalizer):
         gamma: float = 0.99,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
-        device: Optional[str | T.device] = None,
+        device: str | T.device | None = None,
         log_level: str = 'INFO',
         **kwargs
     ):
