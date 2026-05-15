@@ -28,7 +28,7 @@ Combination rules for CompositeIntrinsicMotivation:
 """
 
 from abc import abstractmethod
-from typing import Callable, List, Literal, Sequence
+from typing import Callable, List, Literal, Sequence, Any
 from pathlib import Path
 import json
 import logging
@@ -103,8 +103,6 @@ class IntrinsicMotivation(Model):
         self.obs_normalizer = obs_normalizer
         self.intrinsic_reward_normalizer = intrinsic_reward_normalizer
         self.log_level = log_level
-        # Gate tracking if adding extrinsic rewards to total reward
-        self._use_extrinsic = False
         # Flag to indicate if the intrinsic motivation is online (i.e. needs to be updated on each step)
         self.is_online = False
 
@@ -133,12 +131,19 @@ class IntrinsicMotivation(Model):
     def get_config(self) -> dict:
         """Serializable config (excluding tensor state)."""
         ...
+        
+    def use_extrinsic_reward(self, step: int) -> bool:
+        """
+        Return True if extrinsic reward should be used at the given step, False otherwise.
+        """
+        return step >= self.extrinsic_threshold
 
     def compute_learn_reward(
         self,
         states: T.Tensor,
         next_states: T.Tensor,
         actions: T.Tensor | None = None,
+        **kwargs: Any,
     ) -> T.Tensor:
         """
         Return learn reward of shape (batch,) — defaults to zero reward. Subclasses can override.
@@ -186,32 +191,44 @@ class IntrinsicMotivation(Model):
         """
         pass
 
-    def add_to_normalizers(self, obs: Observation) -> None:
-        """
-        Add relavent data to the normalizers.
+    # def add_to_normalizers(self, obs: Observation) -> None:
+    #     """
+    #     Add relavent data to the normalizers.
 
-        Args:
-            obs: Observation to feed.
-        """
-        if self.obs_normalizer is not None:
-            self.obs_normalizer.add(obs.states.to(device=self.obs_normalizer.device))
-        if self.intrinsic_reward_normalizer is not None:
-            dones = T.zeros_like(obs.intrinsic_rewards, dtype=T.bool)
-            self.intrinsic_reward_normalizer.add(obs.intrinsic_rewards, dones)
+    #     Args:
+    #         obs: Observation to feed.
+    #     """
+    #     if self.obs_normalizer is not None:
+    #         self.obs_normalizer.add(obs.states.to(device=self.obs_normalizer.device))
+    #     if self.intrinsic_reward_normalizer is not None:
+    #         dones = T.zeros_like(obs.intrinsic_rewards, dtype=T.bool)
+    #         self.intrinsic_reward_normalizer.add(obs.intrinsic_rewards, dones)
 
-    def update_normalizers(self) -> None:
-        if self.obs_normalizer is not None:
-            self.obs_normalizer.update()
-        if self.intrinsic_reward_normalizer is not None:
-            self.intrinsic_reward_normalizer.update()
+    # def update_normalizers(self) -> None:
+    #     if self.obs_normalizer is not None:
+    #         self.obs_normalizer.update()
+    #     if self.intrinsic_reward_normalizer is not None:
+    #         self.intrinsic_reward_normalizer.update()
 
-    def set_normalizers_mode(self, context: Literal['train', 'test']) -> None:
+    def set_normalizers_mode(self, context: Literal['train', 'eval']) -> None:
         for n in (self.obs_normalizer, self.intrinsic_reward_normalizer):
             if n is None:
                 continue
             n.train() if context == 'train' else n.eval()
 
-    def normalize_intrinsic_reward(self, intrinsic_reward: T.Tensor) -> T.Tensor:
+    def _feed_reward_normalizer(self, reward: T.Tensor) -> None:
+        """
+        Feed reward to reward normalizer and update if present.
+
+        Args:
+            reward: Tensor to feed.
+        """
+        if self.intrinsic_reward_normalizer is not None:
+            dones = T.zeros(reward.shape, dtype=T.bool, device=self.device)
+            self.intrinsic_reward_normalizer.add(reward, dones)
+            self.intrinsic_reward_normalizer.update()
+
+    def _normalize_reward(self, intrinsic_reward: T.Tensor) -> T.Tensor:
         """
         Normalize intrinsic reward through intrinsic_reward_normalizer if present, else identity.
 
@@ -224,6 +241,17 @@ class IntrinsicMotivation(Model):
         if self.intrinsic_reward_normalizer is not None:
             return self.intrinsic_reward_normalizer.normalize(intrinsic_reward)
         return intrinsic_reward
+
+    def _feed_obs_normalizer(self, obs: T.Tensor) -> None:
+        """
+        Feed obs to observation normalizer and update if present.
+
+        Args:
+            obs: Tensor to feed.
+        """
+        if self.obs_normalizer is not None:
+            self.obs_normalizer.add(obs.to(device=self.obs_normalizer.device))
+            self.obs_normalizer.update()
 
     def _normalize_obs(self, x: T.Tensor) -> T.Tensor:
         """
@@ -266,7 +294,18 @@ class IntrinsicMotivation(Model):
                 str(model_dir / 'intrinsic_reward_normalizer_state.pt'))
 
     @classmethod
-    def load(cls, folder, env: EnvWrapper | None = None) -> 'IntrinsicMotivation':
+    def create_instance(cls, im_type: str, **kwargs) -> 'IntrinsicMotivation':
+        if im_type == 'ICM':
+            return ICM(**kwargs)
+        elif im_type == 'RND':
+            return RND(**kwargs)
+        elif im_type == 'EpisodicNovelty':
+            return EpisodicNovelty(**kwargs)
+        else:
+            raise ValueError(f"Unknown intrinsic motivation type: {im_type}")
+
+    @classmethod
+    def load(cls, folder: str | Path, env: EnvWrapper | None = None) -> 'IntrinsicMotivation':
         """Dispatches to the correct subclass based on the saved 'type' field."""
         model_dir = Path(folder) / 'intrinsic_motivation'
         config_path = model_dir / 'config.json'
@@ -376,7 +415,11 @@ class ICM(IntrinsicMotivation):
                     'units', int(np.prod(self.action_dim)))
             else:
                 out_units = output_info.get('params', {}).get(
-                    'units', int(np.prod(self.obs_dim)))
+                    'units',
+                    self.encoder['encoder_dense_output'].out_features
+                    if self._use_encoder
+                    else int(np.prod(self.obs_dim))
+                )
             module[f"{name}_{output_info['type']}_output"] = T.nn.LazyLinear(out_units)
 
             module.to(self.device)
@@ -431,6 +474,7 @@ class ICM(IntrinsicMotivation):
         states: T.Tensor,
         next_states: T.Tensor,
         actions: T.Tensor | None = None,
+        **kwargs: Any,
     ) -> T.Tensor:
         """
         Compute learn reward for a batch of states, next states, and actions.
@@ -446,13 +490,24 @@ class ICM(IntrinsicMotivation):
         with T.no_grad():
             _, pred_ns, encoded_ns = self._full_forward(states, next_states, actions)
             err = (pred_ns - encoded_ns).pow(2).sum(dim=-1)
+
+            # Feed error to reward normalizer, update, and normalize error
+            self._feed_reward_normalizer(err)
+            err = self._normalize_reward(err)
+
+            # Return scaled intrinsic reward
             return 0.5 * self._scaled_reward_weight() * err
 
     def train(self, states, next_states, actions=None) -> T.Tensor:
+        # Set mode of models and normalizers to train
         if self._use_encoder:
             self.encoder.train()
         self.inverse_model.train()
         self.forward_model.train()
+        self.set_normalizers_mode('train')
+
+        # Feed states to observation normalizer, and update
+        self._feed_obs_normalizer(states)
 
         self.optimizer.zero_grad()
         pred_a, pred_ns, encoded_ns = self._full_forward(states, next_states, actions)
@@ -467,10 +522,12 @@ class ICM(IntrinsicMotivation):
         loss.backward()
         self.optimizer.step()
 
+        # Set mode of models and normalizers to eval
         if self._use_encoder:
             self.encoder.eval()
         self.inverse_model.eval()
         self.forward_model.eval()
+        self.set_normalizers_mode('eval')
         return loss
 
     def get_config(self) -> dict:
@@ -487,10 +544,7 @@ class ICM(IntrinsicMotivation):
                                if self.obs_normalizer else None),
             'intrinsic_reward_normalizer': (
                 self.intrinsic_reward_normalizer.get_config()
-                if self.intrinsic_reward_normalizer else None),
-            'log_level': logging.getLevelName(
-                self.logger.getEffectiveLevel()).lower(),
-            'device': self.device.type,
+                if self.intrinsic_reward_normalizer else None)
         }
 
     @classmethod
@@ -644,6 +698,7 @@ class RND(IntrinsicMotivation):
         states: T.Tensor,
         next_states: T.Tensor,
         actions: T.Tensor | None = None,
+        **kwargs: Any,
     ) -> T.Tensor:
         """
         Compute learn reward for a batch of states, next states, and actions.
@@ -659,17 +714,38 @@ class RND(IntrinsicMotivation):
         with T.no_grad():
             t_out, p_out = self._embed(next_states)
             err = (p_out - t_out).pow(2).sum(dim=-1)
+
+            # Feed error to reward normalizer, update, and normalize error
+            if self.intrinsic_reward_normalizer is not None:
+                dones = T.zeros(err.shape, dtype=T.bool, device=self.device)
+                self.intrinsic_reward_normalizer.add(err, dones)
+                self.intrinsic_reward_normalizer.update()
+                err = self.intrinsic_reward_normalizer.normalize(err)
+            
+            # Return scaled intrinsic reward
             return self._scaled_reward_weight() * err
 
     def train(self, states, next_states, actions=None) -> T.Tensor:
+        # Set mode of models and normalizers to train
         self.predictor.train()
+        self.set_normalizers_mode('train')
+
+        # Feed states to observation normalizer, and update
+        if self.obs_normalizer is not None:
+            self.obs_normalizer.add(states)
+            self.obs_normalizer.update()
+
         self.optimizer.zero_grad()
         t_out, p_out = self._embed(next_states)
         # The loss is exactly the intrinsic-reward formula (averaged)
         loss = (p_out - t_out.detach()).pow(2).sum(dim=-1).mean()
         loss.backward()
         self.optimizer.step()
+
+        # Set mode of models and normalizers to eval
         self.predictor.eval()
+        self.set_normalizers_mode('eval')
+
         return loss
 
     # ----------------------------- save / load
@@ -686,10 +762,7 @@ class RND(IntrinsicMotivation):
                                if self.obs_normalizer else None),
             'intrinsic_reward_normalizer': (
                 self.intrinsic_reward_normalizer.get_config()
-                if self.intrinsic_reward_normalizer else None),
-            'log_level': logging.getLevelName(
-                self.logger.getEffectiveLevel()).lower(),
-            'device': self.device.type,
+                if self.intrinsic_reward_normalizer else None)
         }
 
     @classmethod
@@ -967,10 +1040,7 @@ class EpisodicNovelty(IntrinsicMotivation):
                                if self.obs_normalizer else None),
             'intrinsic_reward_normalizer': (
                 self.intrinsic_reward_normalizer.get_config()
-                if self.intrinsic_reward_normalizer else None),
-            'log_level': logging.getLevelName(
-                self.logger.getEffectiveLevel()).lower(),
-            'device': self.device.type,
+                if self.intrinsic_reward_normalizer else None)
         }
 
     @classmethod
@@ -1273,16 +1343,13 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
     def get_config(self) -> dict:
         return {
             'env': self.env.to_json(),
+            'components': [c.get_config() for c in self.components],
             'combination_rule': self.combination_rule,
             'combination_kwargs': self.combination_kwargs,
             'reward_weight': self.reward_weight,
             'reward_scheduler': (self.reward_scheduler.get_config()
                                  if self.reward_scheduler else None),
-            'extrinsic_threshold': self.extrinsic_threshold,
-            'log_level': logging.getLevelName(
-                self.logger.getEffectiveLevel()).lower(),
-            'device': self.device.type,
-            'component_types': [c.__class__.__name__ for c in self.components],
+            'extrinsic_threshold': self.extrinsic_threshold
         }
 
     @classmethod

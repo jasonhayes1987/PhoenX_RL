@@ -19,7 +19,8 @@ from .encoder import CustomJSONEncoder, serialize_env_spec
 from umap import UMAP
 import plotly.express as px
 
-from .icm import ICM
+# from .icm import ICM
+from .intrinsic_motivation import IntrinsicMotivation
 from .rl_callbacks import WandbCallback, Callback
 from .rl_callbacks import load as callback_load
 from .models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, ContinuousCritic, DiscreteCritic, ActorModel
@@ -59,9 +60,11 @@ class Agent(ABC):
                  save_dir: str = "models/",
                  device: Optional[str | T.device] = None,
                  log_level: str = 'INFO',
-                 **kwargs):
-
-        self.logger = get_logger(self.__class__.__name__, level=log_level.upper())
+                 name: str | None = None,
+                 **kwargs
+    ):
+        self.name = name if name else self.__class__.__name__
+        self.logger = get_logger(self.name, level=log_level.upper())
         self.kwargs = kwargs
         try:
             self.save_dir = self._setup_save_dir(save_dir)
@@ -181,6 +184,7 @@ class Agent(ABC):
             "type": self.__class__.__name__,
             "config":{
                 "save_dir": self.save_dir,
+                "name": self.name,
             }
         }
 
@@ -259,23 +263,6 @@ class Reinforce(Agent):
             kwargs: Additional keyword arguments.
         """
         try:
-            # super().__init__(
-            #     policy,
-            #     value,
-            #     discount,
-            #     state_normalizer,
-            #     None,
-            #     advantage_normalizer = advantage_normalizer,
-            #     reward_normalizer = reward_normalizer,
-            #     entropy_coefficient = entropy_coefficient,
-            #     entropy_schedule = entropy_schedule,
-            #     auto_entropy_tuning = auto_entropy_tuning,
-            #     entropy_lr = entropy_lr,
-            #     target_entropy_scale = target_entropy_scale,
-            #     save_dir = save_dir,
-            #     device=device,
-            #     **kwargs
-            # )
             super().__init__(save_dir, device, **kwargs)
             self.policy = policy
             self.value = value
@@ -997,21 +984,16 @@ class PPO(Agent):
         value_grad_clip: float = float('inf'),
         value_coef: float = 0.5,
         reward_clip: float = float('inf'),
-        curiosity: ICM|None = None,
+        intrinsic_motivation: IntrinsicMotivation|None = None,
         bootstrap_truncations: bool=True,
         save_dir: str = 'models',
-        device: str|T.device|None = None,
-        **kwargs
-    ):
+        device: str | T.device | None = None,
+        **kwargs: Any
+    ) -> None:
         """
         Initialize the PPO agent.
-
         Args:
             policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
-            value: (ValueModel): The value model used for state-value prediction.
-            discount: (float): Discount factor for future rewards.
-            gae_coefficient: (float): GAE smoothing coefficient.
-            state_normalizer: (BaseNormalizer): Normalizer for state inputs.
             goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
             advantage_normalizer: (BaseNormalizer): Normalizer for advantages.
             reward_normalizer: (RewardNorm): Normalizer for rewards.
@@ -1030,7 +1012,7 @@ class PPO(Agent):
             value_grad_clip: (float): Maximum norm for value model gradients.
             value_coef: (float): value to weight the value loss by.
             reward_clip: (float): Maximum absolute value for reward clipping.
-            curiosity: (ICM): Intrinsic Curiosity Module for curiosity-driven learning.
+            intrinsic_motivation: (IntrinsicMotivation): Intrinsic Motivation Module for curiosity-driven learning.
             bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
             save_dir: (str): Directory to save models and configurations.
             device: (str): Device for computations ('cpu' or 'cuda').
@@ -1085,7 +1067,7 @@ class PPO(Agent):
             self.value_grad_clip = value_grad_clip
             self.value_coef = value_coef
             self.reward_clip = reward_clip
-            self.curiosity = curiosity
+            self.intrinsic_motivation = intrinsic_motivation
             self.bootstrap_truncations = bootstrap_truncations
         except Exception as e:
             self.logger.error(f"Error in PPO.__init__: {e}", exc_info=True)
@@ -1208,7 +1190,7 @@ class PPO(Agent):
         # truncations_flat = truncations.reshape(total_samples, -1)
 
         # Use intrinsic rewards if ICM
-        if self.curiosity:
+        if self.intrinsic_motivation:
             curiosity_loss = self.curiosity.train(states_flat, next_states_flat, actions_flat)
             intrinsic_reward = self.curiosity.compute_intrinsic_reward(states_flat, next_states_flat, actions_flat)
             intrinsic_reward = intrinsic_reward.reshape(num_steps, num_envs)
@@ -1548,19 +1530,19 @@ class DDPG(Agent):
         discount: float=0.99,
         tau: float=0.001,
         action_epsilon: float = 0.2,
-        state_normalizer: BaseNormalizer|None = None,
-        goal_normalizer: BaseNormalizer|None = None,
-        reward_normalizer: RewardNorm|None = None,
-        noise: Noise|None = None,
-        noise_schedule: ScheduleWrapper|None = None,
+        state_normalizer: BaseNormalizer | None = None,
+        goal_normalizer: BaseNormalizer | None = None,
+        reward_normalizer: RewardNorm | None = None,
+        noise: Noise | None = None,
+        noise_schedule: ScheduleWrapper | None = None,
         noise_clip: float = 0.5,
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
         N: int=1, # N-steps
-        curiosity: ICM|None = None,
+        intrinsic_motivation: IntrinsicMotivation | None = None,
         save_dir: str = "models",
-        device: str|T.device|None = None,
-        **kwargs
+        device: str | T.device | None = None,
+        **kwargs: Any,
     ):
         try:
             super().__init__(save_dir, device, **kwargs)
@@ -1574,7 +1556,7 @@ class DDPG(Agent):
             self.policy_grad_clip = policy_grad_clip
             self.critic_grad_clip = critic_grad_clip
             self.N = N
-            self.curiosity = curiosity
+            self.intrinsic_motivation = intrinsic_motivation
             self.target_policy = self.policy.clone(device=self.policy.device)
             self.target_critic = self.critic.clone(device=self.critic.device)
             self.action_epsilon = action_epsilon
@@ -1661,6 +1643,7 @@ class DDPG(Agent):
         states = sample["states"]
         actions = sample["actions"]
         rewards = sample["rewards"]
+        im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]
         terminations = sample["terminations"]
         truncations = sample["truncations"]
@@ -1689,38 +1672,33 @@ class DDPG(Agent):
         if self.reward_normalizer:
             rewards = self.reward_normalizer.normalize(rewards)
 
+        # Get batch_size and n-step trajectory length
+        batch_size, n_step_length = rewards.shape
+
         # Train ICM if curiosity and update _use_extrinsic flag
-        if self.curiosity:
+        if self.intrinsic_motivation:
             # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-            dones_reshaped = dones.view(self.batch_size * self.N)
-            mask = (dones_reshaped == 0)
-            states_reshaped = states.view(self.batch_size * self.N, -1)
-            next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
-            actions_reshaped = actions.view(self.batch_size * self.N, -1)
-            # Replace next state with state value where done = True b/c next state value could be reset observation
-            # returned by environment (IsaacSim)
-            next_states_reshaped = T.where(mask.unsqueeze(1), next_states_reshaped, states_reshaped)
-            curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
-            if step > self.curiosity.extrinsic_threshold:
-                self.curiosity._use_extrinsic = True
+            states_flat = states.reshape(-1, states.shape[-1])
+            next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+            actions_flat = actions.reshape(-1, actions.shape[-1])
+            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+            # Compute intrinsic reward
+            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+                states_flat,
+                next_states_flat,
+                actions_flat
+            )
+            im_learn_rewards = im_learn_rewards.reshape(batch_size, n_step_length)
+            # Add intrinsic learn rewards to intrinsic rollout rewards
+            im_rewards = im_learn_rewards + im_rollout_rewards
+            # Add extrinsic reward if past step threshold
+            if self.intrinsic_motivation.use_extrinsic_reward(step):
+                rewards += im_rewards
             else:
-                self.curiosity._use_extrinsic = False
+                rewards = im_rewards
 
         # Get target values
         with T.no_grad():
-            # Compute intrinsic reward if using ICM
-            if self.curiosity:
-                intrinsic_reward = self.curiosity.compute_intrinsic_reward(
-                    states_reshaped,
-                    next_states_reshaped,
-                    actions_reshaped
-                )
-                intrinsic_reward = intrinsic_reward.view(self.batch_size, self.N)
-                if self.curiosity._use_extrinsic:
-                    rewards += intrinsic_reward
-                else:
-                    rewards = intrinsic_reward
-
             targets = compute_n_step_return(
                 rewards,
                 self.discount,
@@ -1744,7 +1722,7 @@ class DDPG(Agent):
 
             # Apply HER-specific clamping if needed
             if self._use_her:
-                if self.curiosity and not self.curiosity._use_extrinsic:
+                if self.intrinsic_motivation and not self.intrinsic_motivation._use_extrinsic:
                     pass
                 else:
                     targets = T.clamp(targets, min=-1/(1-self.discount))
@@ -1855,13 +1833,12 @@ class DDPG(Agent):
             'critic_learning_rate': critic_learning_rate
         })
 
-        if self.curiosity:
+        if self.intrinsic_motivation:
             learn_metrics.update({
-                "curiosity_loss": curiosity_loss,
-                "intrinsic_reward": intrinsic_reward.mean().item(),
-                "use_extrinsic": self.curiosity._use_extrinsic,
-                "reward_weight": self.curiosity.reward_weight * self.curiosity.reward_scheduler.get_factor() \
-                    if self.curiosity.reward_scheduler else self.curiosity.reward_weight
+                "curiosity_loss": im_loss,
+                "intrinsic_reward": im_rewards.mean().item(),
+                "reward_weight": self.intrinsic_motivation.reward_weight * self.intrinsic_motivation.reward_scheduler.get_factor() \
+                    if self.intrinsic_motivation.reward_scheduler else self.intrinsic_motivation.reward_weight
             })
         
         if self.noise_schedule:
@@ -1883,7 +1860,7 @@ class DDPG(Agent):
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
             "N": self.N,
-            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
             "action_epsilon": self.action_epsilon,
             "noise": self.noise.get_config() if self.noise is not None else None,
             "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
@@ -1900,8 +1877,8 @@ class DDPG(Agent):
             json.dump(config, f)
         self.policy.save(self.save_dir)
         self.critic.save(self.save_dir)
-        if self.curiosity:
-            self.curiosity.save(self.save_dir)
+        if self.intrinsic_motivation:
+            self.intrinsic_motivation.save(self.save_dir)
         if self.state_normalizer:
             self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
         if self.goal_normalizer:
@@ -1917,7 +1894,7 @@ class DDPG(Agent):
         policy = ActorModel.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
         critic = ContinuousCritic.load(Path(config_dir) / 'critic', load_weights, env=env_wrapper)
         noise = Noise.create_instance(config["noise"]["type"], **config["noise"]["config"])
-        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
+        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env_wrapper) if config["intrinsic_motivation"] else None
         state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
         reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
@@ -1937,7 +1914,7 @@ class DDPG(Agent):
             policy_grad_clip=config['policy_grad_clip'],
             critic_grad_clip=config['critic_grad_clip'],
             N = config['N'],
-            curiosity=curiosity,
+            intrinsic_motivation=intrinsic_motivation,
             save_dir=config["save_dir"],
             device=config["device"]
         )
@@ -1969,7 +1946,7 @@ class TD3(Agent):
         critic_grad_clip: float = float('inf'),
         policy_update_delay: int = 2,
         N: int=1, # N-steps
-        curiosity: ICM|None = None,
+        intrinsic_motivation: IntrinsicMotivation|None = None,
         save_dir: str = "models",
         device: str|T.device|None = None,
         **kwargs
@@ -1986,7 +1963,7 @@ class TD3(Agent):
             self.policy_grad_clip = policy_grad_clip
             self.critic_grad_clip = critic_grad_clip
             self.N = N
-            self.curiosity = curiosity
+            self.intrinsic_motivation = intrinsic_motivation
             self.critic_b = critic_b
             # clone second critic (do not copy weights) if critic_b None
             if not critic_b:
@@ -2110,7 +2087,7 @@ class TD3(Agent):
             rewards = self.reward_normalizer.normalize(rewards)
 
         # Train ICM if curiosity and update _use_extrinsic flag
-        if self.curiosity:
+        if self.intrinsic_motivation:
             # Reshape arrays to (batch_size * N, -1) to train on all steps in N
             dones_reshaped = dones.view(self.batch_size * self.N)
             mask = (dones_reshaped == 0)
@@ -2445,7 +2422,7 @@ class SAC(Agent):
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
         N: int=1,
-        curiosity: ICM|None = None,
+        intrinsic_motivation: IntrinsicMotivation|None = None,
         save_dir: str = "models",
         device: str|T.device|None = None,
         **kwargs
@@ -2462,7 +2439,7 @@ class SAC(Agent):
             self.policy_grad_clip = policy_grad_clip
             self.critic_grad_clip = critic_grad_clip
             self.N = N
-            self.curiosity = curiosity
+            self.intrinsic_motivation = intrinsic_motivation
             self.critic_b = critic_b
             # clone second critic (do not copy weights) if critic_model_b None
             if not critic_b:
@@ -2582,7 +2559,7 @@ class SAC(Agent):
             rewards = self.reward_normalizer.normalize(rewards)
 
         # Train ICM if curiosity and update _use_extrinsic flag
-        if self.curiosity:
+        if self.intrinsic_motivation:
             # Reshape arrays to (batch_size * N, -1) to train on all steps in N
             dones_reshaped = dones.view(self.batch_size * self.N)
             mask = (dones_reshaped == 0)

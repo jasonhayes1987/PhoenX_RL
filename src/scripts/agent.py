@@ -14,6 +14,9 @@ from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPo
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
 from app.trainer import TrainingSchedule, Trainer
+from app.intrinsic_motivation import IntrinsicMotivation
+from app.normalizer import create_normalizer
+from app.schedulers import ScheduleWrapper
 
 
 def load_config(config_file: str | Path) -> dict:
@@ -49,6 +52,25 @@ def create_env(config: dict) -> EnvWrapper:
         return EnvPoolWrapper(**env_config)
     raise ValueError(f"Invalid environment type: {env_type}")
 
+def create_intrinsic_motivation(config: dict, env: EnvWrapper) -> IntrinsicMotivation | None:
+    im_config = config.get('intrinsic_motivation', None)
+    if im_config is None:
+        return None
+
+    im_type = im_config['type']
+    im_kwargs = im_config['config']
+    if im_kwargs.get('obs_normalizer', None):
+        num_features = infer_dim(env, config['env']['config']['obs_key'])
+        im_kwargs['obs_normalizer']['config'].update({'num_features': num_features})
+    im_kwargs.update({
+        'env': env,
+        'reward_scheduler': ScheduleWrapper(**im_kwargs['reward_scheduler']) if im_kwargs.get('reward_scheduler', None) else None,
+        'obs_normalizer': create_normalizer(im_kwargs['obs_normalizer'] if im_kwargs.get('obs_normalizer', None) else None),
+        'intrinsic_reward_normalizer': create_normalizer(im_kwargs['intrinsic_reward_normalizer'] if im_kwargs.get('intrinsic_reward_normalizer', None) else None),
+    })
+    return IntrinsicMotivation.create_instance(im_type, **im_kwargs)
+
+
 
 def build_callbacks(config: dict) -> list | None:
     callbacks = config.get("callbacks")
@@ -58,16 +80,11 @@ def build_callbacks(config: dict) -> list | None:
 
 
 def build_renderer(config: dict) -> Renderer | None:
-    renderer_config = config.get("renderer")
+    renderer_config = config.get("renderer", None)
     if renderer_config is None:
         return None
 
-    if "config" in renderer_config:
-        renderer_kwargs = dict(renderer_config["config"])
-    else:
-        renderer_kwargs = dict(renderer_config)
-
-    renderer_kwargs.setdefault("save_dir", config["save_dir"])
+    renderer_kwargs = dict(renderer_config)
     return Renderer(**renderer_kwargs)
 
 
@@ -123,6 +140,7 @@ def build_trainer_from_config(config: dict):
             renderer=renderer,
             callbacks=callbacks,
             log_level=config.get('log_level', 'INFO'),
+            save_dir=config.get('save_dir', 'models/'),
         )
 
 def build_trainer_from_config_path(config_path: str | Path):

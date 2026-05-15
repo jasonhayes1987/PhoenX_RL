@@ -66,6 +66,7 @@ class Trainer:
         renderer:Renderer|None = None,
         callbacks:list[Callback]|None = None,
         log_level: str = 'INFO',
+        save_dir: str = 'models/',
     ):
         
         self.agent = agent
@@ -74,6 +75,12 @@ class Trainer:
         self.schedule = schedule
         self.renderer = renderer
         self.callbacks = callbacks
+        self.save_dir = save_dir
+
+        # Set Agent and Renderer save dir
+        self.agent.save_dir = self.save_dir
+        if self.renderer is not None:
+            self.renderer.save_dir = self.save_dir
 
         # Initialize internal attributes
         self.logger = get_logger(self.__class__.__name__, level=log_level.upper())
@@ -255,10 +262,10 @@ class Trainer:
         for _, norm in self._iter_normalizers():
             norm.train() if context == "train" else norm.eval()
         
-        # Set Intrinsic Motivation normalizers if present
-        im = getattr(self.agent, 'intrinsic_motivation', None)
-        if im is not None:
-            im.set_normalizers_mode(context)
+        # # Set Intrinsic Motivation normalizers if present
+        # im = getattr(self.agent, 'intrinsic_motivation', None)
+        # if im is not None:
+        #     im.set_normalizers_mode(context)
 
     def add_to_normalizers(self, obs: Observation):
         """
@@ -279,20 +286,20 @@ class Trainer:
                 dones = T.logical_or(obs.terminations, obs.truncations)
                 norm.add(obs.rewards, dones)
 
-        # Pass obs to Intrinsic Motivation if present
-        im = getattr(self.agent, 'intrinsic_motivation', None)
-        if im is not None:
-            im.add_to_normalizers(obs)
+        # # Pass obs to Intrinsic Motivation if present
+        # im = getattr(self.agent, 'intrinsic_motivation', None)
+        # if im is not None:
+        #     im.add_to_normalizers(obs)
 
     def update_normalizers(self):
         """Updates the normalizers."""
         for _, norm in self._iter_normalizers():
             norm.update()
 
-        # Update Intrinsic Motivation normalizers if present
-        im = getattr(self.agent, 'intrinsic_motivation', None)
-        if im is not None:
-            im.update_normalizers()
+        # # Update Intrinsic Motivation normalizers if present
+        # im = getattr(self.agent, 'intrinsic_motivation', None)
+        # if im is not None:
+        #     im.update_normalizers()
 
     def normalize_observation(
         self, obs: Observation)->Observation:
@@ -381,7 +388,8 @@ class Trainer:
 
         # Add step metrics to step log
         step_log.update({
-            'step_reward': observation.rewards[valid_steps].mean().item()
+            'step_reward': observation.rewards[valid_steps].mean().item(),
+            'step_intrinsic_reward': observation.intrinsic_rewards[valid_steps].mean().item()
         })
         
         # Check if any env is done
