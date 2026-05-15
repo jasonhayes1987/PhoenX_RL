@@ -16,7 +16,6 @@ from .logging_config import get_logger
 class Renderer:
     """
     Handles all rendering, video creation, and video logging.
-    Completely independent of training loop.
     """
     render_freq: int = 0
     save_dir: str = "models/"

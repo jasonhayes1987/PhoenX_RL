@@ -30,9 +30,11 @@ class BaseNormalizer:
         epsilon: float = 1e-6,
         device: str | T.device | None = None,
         log_level: str = 'INFO',
+        name: str | None = None,
         **kwargs
     ):
-        self.logger = get_logger(self.__class__.__name__, level=log_level.upper())
+        self.name = name if name else self.__class__.__name__
+        self.logger = get_logger(self.name, level=log_level.upper())
         self.kwargs = kwargs
         self.device = get_device(device)
         self.num_features = num_features
@@ -168,6 +170,7 @@ class BaseNormalizer:
                 'epsilon':self.epsilon.item(),
                 'clip_value':self.clip_value.item(),
                 'device':self.device.type,
+                'name':self.name,
             },
         }
 
@@ -226,9 +229,10 @@ class RunningNorm(BaseNormalizer):
         epsilon: float = 1e-6,
         device: str | T.device | None = None,
         log_level: str = 'INFO',
+        name: str | None = None,
         **kwargs
     ):
-        super().__init__(num_features, clip_value, epsilon, device, log_level, **kwargs)
+        super().__init__(num_features, clip_value, epsilon, device, log_level, name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
@@ -309,9 +313,10 @@ class BatchNorm(BaseNormalizer):
         epsilon: float = 1e-6,
         device: str | T.device | None = None,
         log_level: str = 'INFO',
+        name: str | None = None,
         **kwargs
     ):
-        super().__init__(num_features, clip_value, epsilon, device, log_level, **kwargs)
+        super().__init__(num_features, clip_value, epsilon, device, log_level, name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
@@ -383,9 +388,10 @@ class RewardNorm(BaseNormalizer):
         epsilon: float = 1e-6,
         device: str | T.device | None = None,
         log_level: str = 'INFO',
+        name: str | None = None,
         **kwargs
     ):
-        super().__init__(1, clip_value, epsilon, device, log_level, **kwargs)
+        super().__init__(1, clip_value, epsilon, device, log_level, name, **kwargs)
         self.gamma = gamma
         # Set internal attrs
         self.num_envs = None
