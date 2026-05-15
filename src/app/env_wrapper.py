@@ -12,7 +12,7 @@ sys.path.append(ISAACLAB_TASKS_PATH)
 
 import json
 from dataclasses import dataclass
-from typing import Optional, Dict, List
+from typing import TYPE_CHECKING, Optional, Dict, List
 from abc import ABC, abstractmethod
 from collections import deque
 import numpy as np
@@ -28,7 +28,8 @@ import envpool
 
 from .torch_utils import get_device
 from .utils import to_torch, to_numpy
-from .intrinsic_motivation import IntrinsicMotivation
+if TYPE_CHECKING:
+    from .intrinsic_motivation import IntrinsicMotivation
 
 
 @dataclass
@@ -261,7 +262,7 @@ class VectorNStepReward(VectorWrapper):
         self._env_idx = T.arange(self.num_envs, device=self.device)
         self._env_idx_nx1 = self._env_idx.unsqueeze(1).expand(self.num_envs, self.n)
 
-    def set_intrinsic_motivation(self, intrinsic_motivation: IntrinsicMotivation) -> None:
+    def set_intrinsic_motivation(self, intrinsic_motivation: "IntrinsicMotivation") -> None:
         self.intrinsic_motivation = intrinsic_motivation
     
     def reset(self, **kwargs):

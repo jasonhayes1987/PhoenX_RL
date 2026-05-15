@@ -12,7 +12,7 @@ def _set_level(level: str | int) -> int:
     return getattr(logging, str(level).upper(), logging.INFO)
 
 
-def configure_logging(level: str = "INFO") -> logging.Logger:
+def configure_logging(level: str = "INFO", log_dir: str | Path | None = None) -> logging.Logger:
     global _LOGGING_CONFIGURED
 
     app_logger = logging.getLogger(_APP_LOGGER_NAME)
@@ -30,7 +30,14 @@ def configure_logging(level: str = "INFO") -> logging.Logger:
     # console_handler.setLevel(logging.NOTSET)
     # console_handler.setFormatter(formatter)
 
-    log_path = Path(__file__).resolve().parents[1] / "app.log"
+    # Configure logging path
+    if log_dir is not None:
+        log_path = Path(log_dir) / "app.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        log_path = Path(__file__).resolve().parents[1] / "app.log"
+
+    # Configure handler
     file_handler = RotatingFileHandler(
         log_path,
         mode="w",

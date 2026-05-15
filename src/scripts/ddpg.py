@@ -3,9 +3,9 @@ from app.env_wrapper import EnvWrapper
 import gymnasium as gym
 from app.models import DiscreteCritic, ContinuousCritic, ActorModel
 from app.normalizer import create_normalizer
-from scripts.agent import infer_dim
+from scripts.agent import infer_dim, create_intrinsic_motivation
 from app.schedulers import ScheduleWrapper
-from app.icm import ICM
+# from app.icm import ICM
 from app.noise import Noise
 
 
@@ -61,15 +61,23 @@ def build(config: dict, env: EnvWrapper):
     else:
         reward_normalizer = None
 
-    # create curiosity object if present in config
-    if config.get('curiosity', None):
-        config['curiosity'].update({
-            'env': env,
-            'reward_scheduler': ScheduleWrapper(**config['reward_scheduler']) if config.get('reward_scheduler', None) else None
-        })
-        curiosity = ICM(**config['curiosity'])
-    else:
-        curiosity = None
+    # create intrinsic motivation object if present in config
+    # if config.get('intrinsic_motivation', None):
+    #     im_type = config['intrinsic_motivation']['type']
+    #     im_config = config['intrinsic_motivation']['config']
+    #     if im_config.get('obs_normalizer', None):
+    #         num_features = infer_dim(env, config['env']['config']['obs_key'])
+    #         im_config['obs_normalizer']['config'].update({'num_features': num_features})
+    #     im_config.update({
+    #         'env': env,
+    #         'reward_scheduler': ScheduleWrapper(**im_config['reward_scheduler']) if im_config.get('reward_scheduler', None) else None,
+    #         'obs_normalizer': create_normalizer(im_config['obs_normalizer'] if im_config.get('obs_normalizer', None) else None),
+    #         'intrinsic_reward_normalizer': create_normalizer(im_config['intrinsic_reward_normalizer'] if im_config.get('intrinsic_reward_normalizer', None) else None),
+    #     })
+    #     intrinsic_motivation = IntrinsicMotivation.create_instance(im_type, **im_config)
+    # else:
+    #     intrinsic_motivation = None
+    intrinsic_motivation = create_intrinsic_motivation(config, env)
 
     ddpg_config = config['agent']['config']
     ddpg_config.update({
@@ -80,6 +88,6 @@ def build(config: dict, env: EnvWrapper):
         'reward_normalizer': reward_normalizer,
         'noise': noise,
         'noise_schedule': noise_schedule,
-        'curiosity': curiosity
+        'intrinsic_motivation': intrinsic_motivation
     })
     return DDPG(**ddpg_config)

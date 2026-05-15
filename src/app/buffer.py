@@ -318,16 +318,15 @@ class ReplayBuffer(Buffer):
         # self.counter = 0
         self.gen = np.random.default_rng()
 
-    def record(self, cur_observation: Observation, intrinsic_rewards: T.Tensor | None = None) -> None:
+    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
         """
         Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
-            intrinsic_rewards: T.Tensor | None: The intrinsic rewards of the current state.
         """
         if cur_observation.n_step_trajectory is not None:
-            self.add(**cur_observation.n_step_trajectory, intrinsic_rewards=intrinsic_rewards)
+            self.add(**cur_observation.n_step_trajectory)
 
     def add(
         self,
@@ -532,9 +531,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             # Z = sum_r (r+1)^(-alpha) — computed alongside segments.
             self._rank_Z = T.tensor(0.0, dtype=T.float32, device=self.device)
  
-    def record(self, cur_observation: Observation, intrinsic_rewards: T.Tensor | None = None) -> None:
+    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
         if cur_observation.n_step_trajectory is not None:
-            self.add(**cur_observation.n_step_trajectory, intrinsic_rewards=intrinsic_rewards)
+            self.add(**cur_observation.n_step_trajectory)
         else:
             raise ValueError(
                 "n_step_trajectory is None. PrioritizedReplayBuffer requires the "
@@ -814,7 +813,7 @@ class RolloutBuffer(Buffer):
             self.state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.next_state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
 
-    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor, intrinsic_rewards: T.Tensor | None = None) -> None:
+    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor) -> None:
         """
         Record a transition into the buffer.
 
@@ -823,7 +822,6 @@ class RolloutBuffer(Buffer):
             prev_observation: Observation: The observation of the previous state.
             actions: T.Tensor: The actions taken.
             prev_dones: T.Tensor: The previous dones of the environments.
-            intrinsic_rewards: T.Tensor | None: The intrinsic rewards of the current state.
         """
         self.add(
             states=prev_observation.states,
@@ -832,7 +830,7 @@ class RolloutBuffer(Buffer):
             next_states=cur_observation.states,
             terminations=cur_observation.terminations,
             truncations=cur_observation.truncations,
-            intrinsic_rewards=intrinsic_rewards,
+            intrinsic_rewards=cur_observation.intrinsic_rewards,
             state_achieved_goals=prev_observation.ach_goals if prev_observation.ach_goals is not None else None,
             next_state_achieved_goals=cur_observation.ach_goals if cur_observation.ach_goals is not None else None,
             desired_goals=prev_observation.goals if prev_observation.goals is not None else None,
