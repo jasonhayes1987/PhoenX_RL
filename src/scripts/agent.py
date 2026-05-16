@@ -1,21 +1,21 @@
 import os
 import sys
 from pathlib import Path
-from typing import Any
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import gymnasium as gym
 import numpy as np
 import yaml
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+from app.models import StochasticContinuousPolicy, StochasticDiscretePolicy, ActorModel, ValueModel, DiscreteCritic, ContinuousCritic
 from app.buffer import Buffer
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
 from app.trainer import TrainingSchedule, Trainer
 from app.intrinsic_motivation import IntrinsicMotivation
-from app.normalizer import create_normalizer
+from app.normalizer import create_normalizer as normalizer_factory, RunningNorm, BatchNorm, RewardNorm
 from app.schedulers import ScheduleWrapper
 
 
@@ -52,24 +52,82 @@ def create_env(config: dict) -> EnvWrapper:
         return EnvPoolWrapper(**env_config)
     raise ValueError(f"Invalid environment type: {env_type}")
 
-def create_intrinsic_motivation(config: dict, env: EnvWrapper) -> IntrinsicMotivation | None:
-    im_config = config.get('intrinsic_motivation', None)
-    if im_config is None:
-        return None
 
-    im_type = im_config['type']
-    im_kwargs = im_config['config']
-    if im_kwargs.get('obs_normalizer', None):
-        num_features = infer_dim(env, config['env']['config']['obs_key'])
-        im_kwargs['obs_normalizer']['config'].update({'num_features': num_features})
-    im_kwargs.update({
+def create_actor(config: dict, env: EnvWrapper) -> ActorModel:
+    """Create an actor from a config.
+    
+    Args:
+        config (dict): The config to create the actor from.
+        env (EnvWrapper): The environment to create the actor for.
+        
+    Returns:
+        ActorModel: The created actor.
+    """
+    config['env'] = env
+    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
+    return ActorModel(**config)
+
+
+def create_critic(config: dict, env: EnvWrapper) -> DiscreteCritic | ContinuousCritic:
+    """Create a critic from a config.
+    
+    Args:
+        config (dict): The config to create the critic from.
+        env (EnvWrapper): The environment to create the critic for.
+        
+    Returns:
+        DiscreteCritic | ContinuousCritic: The created critic.
+    """
+    config['env'] = env
+    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
+    if isinstance(env.single_action_space, gym.spaces.Discrete):
+        return DiscreteCritic(**config)
+    elif isinstance(env.single_action_space, gym.spaces.Box):
+        return ContinuousCritic(**config)
+    else:
+        raise ValueError(f"Invalid action space: {env.single_action_space}")
+
+
+def create_normalizer(config: dict, env: EnvWrapper, key: str | None = None) -> RunningNorm | BatchNorm | RewardNorm:
+    """Create a normalizer from a config.
+
+    Args:
+        config (dict): The config to create the normalizer from.
+        env (EnvWrapper): The environment to create the normalizer for.
+        key (str | None): If env observation space is a dict, the key to create the normalizer for.
+
+    Returns:
+        RunningNorm | BatchNorm | RewardNorm: The created normalizer.
+    """
+    if config['type'] != 'RewardNorm':
+        num_features = infer_dim(env, key)
+        config['config'].update({'num_features': num_features})
+    return normalizer_factory(config)
+    
+
+def create_intrinsic_motivation(config: dict, env: EnvWrapper, key: str | None = None) -> IntrinsicMotivation:
+    """Create an intrinsic motivation from a config.
+
+    Args:
+        config (dict): The config to create the intrinsic motivation from.
+        env (EnvWrapper): The environment to create the intrinsic motivation for.
+        key (str | None): If using an observation normalizer and the env observation space is a dict, the key to create the normalizer for.
+
+    Returns:
+        IntrinsicMotivation: The created intrinsic motivation.
+    """
+    im_type = config['type']
+    im_config = config['config']
+    if im_config.get('obs_normalizer', None):
+        num_features = infer_dim(env, key)
+        im_config['obs_normalizer']['config'].update({'num_features': num_features})
+    im_config.update({
         'env': env,
-        'reward_scheduler': ScheduleWrapper(**im_kwargs['reward_scheduler']) if im_kwargs.get('reward_scheduler', None) else None,
-        'obs_normalizer': create_normalizer(im_kwargs['obs_normalizer'] if im_kwargs.get('obs_normalizer', None) else None),
-        'intrinsic_reward_normalizer': create_normalizer(im_kwargs['intrinsic_reward_normalizer'] if im_kwargs.get('intrinsic_reward_normalizer', None) else None),
+        'reward_scheduler': ScheduleWrapper(**im_config['reward_scheduler']) if im_config.get('reward_scheduler', None) else None,
+        'obs_normalizer': create_normalizer(im_config['obs_normalizer'], env) if im_config.get('obs_normalizer', None) else None,
+        'intrinsic_reward_normalizer': create_normalizer(im_config['intrinsic_reward_normalizer'], env) if im_config.get('intrinsic_reward_normalizer', None) else None,
     })
-    return IntrinsicMotivation.create_instance(im_type, **im_kwargs)
-
+    return IntrinsicMotivation.create_instance(im_type, **im_config)
 
 
 def build_callbacks(config: dict) -> list | None:
@@ -104,7 +162,8 @@ def build_schedule(config: dict):
         raise ValueError("Config is missing the required 'schedule' section.")
 
     return TrainingSchedule(**schedule_spec)
-    
+
+
 def build_agent(config: dict, env: EnvWrapper):
     agent_type = config["agent"]["type"]
     if agent_type == "ActorCritic":
@@ -142,6 +201,7 @@ def build_trainer_from_config(config: dict):
             log_level=config.get('log_level', 'INFO'),
             save_dir=config.get('save_dir', 'models/'),
         )
+
 
 def build_trainer_from_config_path(config_path: str | Path):
     config = load_config(config_path)
