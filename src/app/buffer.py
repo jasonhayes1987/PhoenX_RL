@@ -611,6 +611,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             indices, probs, weights = self._sample_proportional(samples, size)
         else:
             indices, probs, weights = self._sample_rank(samples, size)
+
+        # Clamp indices to current buffer size to ensure not sampling outside bounds
+        indices = indices.clamp(max=size - 1)
  
         sample = {
             "states": self.states[indices].clone(),

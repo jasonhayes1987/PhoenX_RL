@@ -1,7 +1,7 @@
 #TD3 tuned for LunarLanderContinuous-v3
 
 device: &device cuda
-save_dir: &save_dir ./Trained_Models/LunarLanderContinuous-v3/TD3/
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3/TD3/
 log_level: INFO
 
 schedule:
@@ -17,14 +17,150 @@ schedule:
 agent:
   type: TD3
   config:
+    name: TD3
+    policy:
+      layer_config:
+        - type: dense
+          params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+        - type: dense
+          params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+      output_config:
+        - type: dense
+          params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
+      optimizer_params: {type: Adam, params: {lr: &policy_lr 1.4e-4}}
+      # lr_scheduler:
+      #   schedule_type: "cosine"
+      #   steps: *stop_units
+      #   start_value: *policy_lr
+      #   end_value: 1.0e-4
+      device: *device
+    critic:
+      layer_config:
+        - type: dense
+          params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+      merged_config:
+        - type: dense
+          params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+      output_config:
+        - type: dense
+          params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
+      optimizer_params: {type: Adam, params: {lr: &critic_lr 1.4e-3}}
+      # lr_scheduler:
+      #   schedule_type: "cosine"
+      #   steps: *stop_units
+      #   start_value: *critic_lr
+      #   end_value: 1.0e-4
+      device: *device
     discount: 0.99
     tau: 0.05
     action_epsilon: 0.0
+    state_normalizer:
+      type: RunningNorm
+      config:
+        name: DDPG.StateNormalizer
+        clip_value: 10.0
+        device: *device
+        log_level: DEBUG
+        # kwargs
+        _diag_freq: 1000
+    reward_normalizer:
+      type: RewardNorm
+      config:
+        name: DDPG.RewardNormalizer
+        gamma: 0.99
+        clip_value: 10.0
+        device: *device
+        log_level: DEBUG
+        # kwargs
+        _diag_freq: 1000
+    noise:
+      type: NormalNoise
+      config:
+        stddev: &noise_stddev 0.2
+    # noise_schedule:
+    #   schedule_type: linear
+    #   steps: *stop_units
+    #   start_value: *noise_stddev
+    #   end_value: 0.1
+    target_noise:
+      type: NormalNoise
+      config:
+        stddev: &target_noise_stddev 0.1
+    # target_noise_schedule:
+    #   schedule_type: linear
+    #   steps: &stop_units
+    #   start_value: *target_noise_stddev
+    #   end_value: 0.05
     noise_clip: 0.3
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
     policy_update_delay: 2
     N: &n 3
+    intrinsic_motivation:
+      type: ICM
+      config:
+        model_configs: {
+          'encoder': {
+              'layer_config': [
+                  {'type': 'dense', 'params': {units: 64, 'kernel': 'ones', 'kernel params':{}}},
+                  {'type': 'relu'},
+              ],
+              'output_layer': [
+                  {'type': 'dense', 'params': {units: 256, 'kernel': 'ones', 'kernel params':{}}}
+              ]
+          },
+          'inverse_model': {
+              'layer_config': [
+                  {'type': 'dense', 'params': {units: 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+                  {'type': 'relu'},
+              ],
+              'output_layer': [
+                  {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+              ]
+          },
+          'forward_model': {
+              'layer_config': [
+                  {'type': 'dense', 'params': {units: 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+                  {'type': 'relu'},
+              ],
+              'output_layer': [
+                  {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+              ]
+          }
+        }
+        optimizer_params: {type: Adam, params: {lr: 0.001}}
+        reward_weight: &im_reward_weight 0.1
+        reward_scheduler:
+          schedule_type: linear
+          steps: *stop_units
+          start_value: *im_reward_weight
+          end_value: 0.0
+        beta: 0.2
+        extrinsic_threshold: 20000
+        obs_normalizer:
+          type: RunningNorm
+          config:
+            name: ICM.StateNormalizer
+            clip_value: 10.0
+            device: *device
+            log_level: DEBUG
+            # kwargs
+            _diag_freq: 1000
+        intrinsic_reward_normalizer:
+          type: RewardNorm
+          config:
+            name: ICM.RewardNormalizer
+            gamma: 0.99
+            clip_value: 10.0
+            device: *device
+            log_level: DEBUG
+            # kwargs
+            _diag_freq: 1000
+        device: *device
     log_level: DEBUG
     _diag_freq: 1000
 
@@ -40,67 +176,6 @@ env:
     wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *ach_goal_key}}]
     render_mode: null
     seed: *seed
-
-models:
-  policy:
-    layer_config:
-      - type: dense
-        params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
-      - type: relu
-      - type: dense
-        params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
-      - type: relu
-    output_config:
-      - type: dense
-        params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-    optimizer_params: {type: Adam, params: {lr: &policy_lr 1.4e-4}}
-    device: *device
-
-  critic:
-    layer_config:
-      - type: dense
-        params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
-      - type: relu
-    merged_config:
-      - type: dense
-        params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
-      - type: relu
-    output_config:
-      - type: dense
-        params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-    optimizer_params: {type: Adam, params: {lr: &critic_lr 1.4e-3}}
-    device: *device
-
-# policy_lr_schedule:
-#   schedule_type: "cosine"
-#   steps: &stop_units
-#   start_value: *policy_lr
-#   end_value: 1.0e-4
-
-# critic_lr_schedule:
-#   schedule_type: "cosine"
-#   steps: &stop_units
-#   start_value: *critic_lr
-#   end_value: 1.0e-4
-
-normalizers:
-  state:
-    type: RunningNorm
-    config:
-      clip_value: 10.0
-      device: *device
-      log_level: DEBUG
-      # kwargs
-      _diag_freq: 10000
-  reward:
-    type: RewardNorm
-    config:
-      gamma: 0.99
-      clip_value: 10.0
-      device: *device
-      log_level: DEBUG
-      # kwargs
-      _diag_freq: 10000
 
 buffer:
   type: PrioritizedReplayBuffer
@@ -122,65 +197,6 @@ buffer:
 #     buffer_size: 1000000
 #     N: *n
 #     device: *device
-
-noise:
-  type: NormalNoise
-  config:
-    stddev: &noise_stddev 0.2
-
-# noise_schedule:
-#   schedule_type: linear
-#   steps: &stop_units
-#   start_value: *noise_stddev
-#   end_value: 0.1
-
-target_noise:
-  type: NormalNoise
-  config:
-    stddev: &target_noise_stddev 0.1
-
-# target_noise_schedule:
-#   schedule_type: linear
-#   steps: &stop_units
-#   start_value: *target_noise_stddev
-#   end_value: 0.05
-
-# curiosity:
-#   model_configs: {
-#     # 'encoder': {
-#     #     'layer_config': [
-#     #         {'type': 'dense', 'params': {'units': 64, 'kernel': 'ones', 'kernel params':{}}},
-#     #         {'type': 'relu'},
-#     #     ],
-#     #     'output_layer': [
-#     #         {'type': 'dense', 'params': {'units': 256, 'kernel': 'ones', 'kernel params':{}}}
-#     #     ]
-#     # },
-#     'inverse_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
-#         ]
-#     },
-#     'forward_model': {
-#         'layer_config': [
-#             {'type': 'dense', 'params': {'units': 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
-#             {'type': 'relu'},
-#         ],
-#         'output_layer': [
-#             {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
-#         ]
-#     }
-#   }
-  # optimizer_params: {type: Adam, params: {lr: 0.001}}
-  # reward_weight: 0.01
-  # reward_scheduler: {type: linear, params: {start_factor: 1.0, end_factor: 0.1, total_iters: 25000}}
-  # beta: 0.2
-  # extrinsic_threshold: 0
-  # device: *device
 
 renderer:
   render_freq: 500 # episodes

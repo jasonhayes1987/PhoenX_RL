@@ -1,4 +1,5 @@
 import json
+from math import e
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import numpy as np
@@ -204,6 +205,7 @@ def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
             grad_sq = p.grad.detach().pow(2).sum()
             total_sq = grad_sq if total_sq is None else total_sq + grad_sq
     return float(T.sqrt(total_sq)) if total_sq is not None else 0.0
+
 
 def load_agent(config_dir:str | Path, load_weights: bool = True):
     """

@@ -1,114 +1,66 @@
+from scripts.agent import create_intrinsic_motivation, create_normalizer, create_actor, create_critic
 from app.rl_agents import TD3
 from app.env_wrapper import EnvWrapper
-import gymnasium as gym
-from app.models import DiscreteCritic, ContinuousCritic, ActorModel
-from app.normalizer import create_normalizer
-from scripts.agent import infer_dim
 from app.schedulers import ScheduleWrapper
-from app.icm import ICM
 from app.noise import Noise
 
 
 def build(config: dict, env: EnvWrapper):
     # build policy
-    policy_config = config['models']['policy']
-    policy_config['env'] = env
-    policy_config['lr_scheduler'] = ScheduleWrapper(**config['policy_lr_schedule']) if config.get('policy_lr_schedule', None) else None
-    policy = ActorModel(**policy_config)
+    config['agent']['config']['policy'] = create_actor(config['agent']['config']['policy'], env)
 
     # build critic model
-    critic_config = config['models']['critic']
-    critic_config['env'] = env
-    critic_config['lr_scheduler'] = ScheduleWrapper(**config['critic_lr_schedule']) if config.get('critic_lr_schedule', None) else None
-    if isinstance(env.single_action_space, gym.spaces.Discrete):
-        critic = DiscreteCritic(**critic_config)
-    elif isinstance(env.single_action_space, gym.spaces.Box):
-        critic = ContinuousCritic(**critic_config)
-    else:
-        raise ValueError(f"Invalid action space: {env.single_action_space}")
+    config['agent']['config']['critic'] = create_critic(config['agent']['config']['critic'], env)
 
     # build critic_b model if present in config
-    critic_b_config = config['models']['critic_b'] if config.get('models', {}).get('critic_b', None) else None
-    if critic_b_config:
-        critic_b_config['env'] = env
-        critic_b_config['lr_scheduler'] = ScheduleWrapper(**config['critic_b_lr_schedule']) if config.get('critic_b_lr_schedule', None) else None
-        if isinstance(env.single_action_space, gym.spaces.Discrete):
-            critic_b = DiscreteCritic(**critic_b_config)
-        elif isinstance(env.single_action_space, gym.spaces.Box):
-            critic_b = ContinuousCritic(**critic_b_config)
-        else:
-            raise ValueError(f"Invalid action space: {env.single_action_space}")
-    else:
-        critic_b = None
+    config['agent']['config']['critic_b'] = create_critic(config['agent']['config']['critic_b'], env) if config['agent']['config'].get('critic_b', None) else None
 
     # create noise object if present in config
-    if config.get('noise', None):
-        noise = Noise.create_instance(config['noise']['type'], **config['noise']['config']) if config.get('noise', None) else None
+    if config['agent']['config'].get('noise', None):
+        config['agent']['config']['noise'] = Noise.create_instance(config['agent']['config']['noise']['type'], **config['agent']['config']['noise']['config']) if config['agent']['config'].get('noise', None) else None
     else:
-        noise = None
+        config['agent']['config']['noise'] = None
     
     # create noise scheduler object if present in config
-    if config.get('noise_schedule', None):
-        noise_schedule = ScheduleWrapper(**config['noise_schedule']) if config.get('noise_schedule', None) else None
+    if config['agent']['config'].get('noise_schedule', None):
+        config['agent']['config']['noise_schedule'] = ScheduleWrapper(**config['agent']['config']['noise_schedule']) if config['agent']['config'].get('noise_schedule', None) else None
     else:
-        noise_schedule = None
+        config['agent']['config']['noise_schedule'] = None
 
     # create target noise object if present in config
-    if config.get('target_noise', None):
-        target_noise = Noise.create_instance(config['target_noise']['type'], **config['target_noise']['config']) if config.get('target_noise', None) else None
+    if config['agent']['config'].get('target_noise', None):
+        config['agent']['config']['target_noise'] = Noise.create_instance(config['agent']['config']['target_noise']['type'], **config['agent']['config']['target_noise']['config']) if config['agent']['config'].get('target_noise', None) else None
     else:
-        target_noise = None
+        config['agent']['config']['target_noise'] = None
 
     # create target noise scheduler object if present in config
-    if config.get('target_noise_schedule', None):
-        target_noise_schedule = ScheduleWrapper(**config['target_noise_schedule']) if config.get('target_noise_schedule', None) else None
+    if config['agent']['config'].get('target_noise_schedule', None):
+        config['agent']['config']['target_noise_schedule'] = ScheduleWrapper(**config['agent']['config']['target_noise_schedule']) if config['agent']['config'].get('target_noise_schedule', None) else None
     else:
-        target_noise_schedule = None
+        config['agent']['config']['target_noise_schedule'] = None
 
     # create state normalizer object if present in config
-    if config.get('normalizers', {}).get('state', None):
-        num_features = infer_dim(env, config['env']['config']['obs_key'])
-        config['normalizers']['state']['config'].update({'num_features': num_features})
-        state_normalizer = create_normalizer(config['normalizers']['state'])
+    if config['agent']['config'].get('state_normalizer', None):
+        config['agent']['config']['state_normalizer'] = create_normalizer(config['agent']['config']['state_normalizer'], env, config['env']['config']['obs_key'])
     else:
-        state_normalizer = None
+        config['agent']['config']['state_normalizer'] = None
 
     # create goal normalizer object if present in config
-    if config.get('normalizers', {}).get('goal', None):
-        num_features = infer_dim(env, config['env']['config']['goal_key'])
-        config['normalizers']['goal']['config'].update({'num_features': num_features})
-        goal_normalizer = create_normalizer(config['normalizers']['goal'])
+    if config['agent']['config'].get('goal_normalizer', None):
+        config['agent']['config']['goal_normalizer'] = create_normalizer(config['agent']['config']['goal_normalizer'], env, config['env']['config']['goal_key'])
     else:
-        goal_normalizer = None
+        config['agent']['config']['goal_normalizer'] = None
 
     # create reward normalizer object if present in config
-    if config.get('normalizers', {}).get('reward', None):
-        reward_normalizer = create_normalizer(config['normalizers']['reward'])
+    if config['agent']['config'].get('reward_normalizer', None):
+        config['agent']['config']['reward_normalizer'] = create_normalizer(config['agent']['config']['reward_normalizer'], env)
     else:
-        reward_normalizer = None
+        config['agent']['config']['reward_normalizer'] = None
 
     # create curiosity object if present in config
-    if config.get('curiosity', None):
-        config['curiosity'].update({
-            'env': env,
-            'reward_scheduler': ScheduleWrapper(**config['reward_scheduler']) if config.get('reward_scheduler', None) else None
-        })
-        curiosity = ICM(**config['curiosity'])
+    if config['agent']['config'].get('intrinsic_motivation', None):
+        config['agent']['config']['intrinsic_motivation'] = create_intrinsic_motivation(config['agent']['config']['intrinsic_motivation'], env, config['env']['config']['obs_key'])
     else:
-        curiosity = None
+        config['agent']['config']['intrinsic_motivation'] = None
 
-    td3_config = config['agent']['config']
-    td3_config.update({
-        'policy': policy,
-        'critic': critic,
-        'critic_b': critic_b,
-        'state_normalizer': state_normalizer,
-        'goal_normalizer': goal_normalizer,
-        'reward_normalizer': reward_normalizer,
-        'noise': noise,
-        'noise_schedule': noise_schedule,
-        'target_noise': target_noise,
-        'target_noise_schedule': target_noise_schedule,
-        'curiosity': curiosity
-    })
-    return TD3(**td3_config)
+    return TD3(**config['agent']['config'])
