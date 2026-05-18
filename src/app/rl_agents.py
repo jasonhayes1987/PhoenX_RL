@@ -1630,7 +1630,6 @@ class DDPG(Agent):
         soft_update(self.critic, self.target_critic, self.tau)
 
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
-        
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -1675,7 +1674,7 @@ class DDPG(Agent):
         # Get batch_size and n-step trajectory length
         batch_size, n_step_length = rewards.shape
 
-        # Train ICM if curiosity and update _use_extrinsic flag
+        # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
             # Reshape arrays to (batch_size * N, -1) to train on all steps in N
             states_flat = states.reshape(-1, states.shape[-1])
@@ -1784,12 +1783,15 @@ class DDPG(Agent):
         # Log diag data
         if should_log_diag:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
                 summarize_tensor(actions, "actions"),
                 summarize_tensor(rewards, "rewards"),
+                summarize_tensor(im_rollout_rewards, "intrinsic rollout rewards"),
+                summarize_tensor(im_learn_rewards, "intrinsic learn rewards"),
+                summarize_tensor(im_rewards, "intrinsic rewards"),
                 summarize_tensor(next_states, "next_states"),
                 summarize_tensor(goals, "goals"),
                 summarize_tensor(next_ach_goals, "next_ach_goals"),
@@ -1822,12 +1824,12 @@ class DDPG(Agent):
         
         learn_metrics.update({
             "policy_loss": actor_loss.item(),
-            "value_loss": critic_loss.item(),
+            "critic_loss": critic_loss.item(),
             "td_errors": error.detach().flatten(),
             "critic_error": error.mean().item(),
-            "actor_predictions": pred_actions.mean().item(),
+            "policy_predictions": pred_actions.mean().item(),
             "critic_predictions": critic_values.mean().item(),
-            "target_actor_predictions": target_actions.mean().item(),
+            "target_policy_predictions": target_actions.mean().item(),
             "target_critic_predictions": targets.mean().item(),
             'policy_learning_rate': policy_learning_rate,
             'critic_learning_rate': critic_learning_rate
@@ -1835,7 +1837,8 @@ class DDPG(Agent):
 
         if self.intrinsic_motivation:
             learn_metrics.update({
-                "curiosity_loss": im_loss,
+                "intrinsic_loss": im_loss,
+                "learn_intrinsic_reward": im_learn_rewards.mean().item(),
                 "intrinsic_reward": im_rewards.mean().item(),
                 "reward_weight": self.intrinsic_motivation.reward_weight * self.intrinsic_motivation.reward_scheduler.get_factor() \
                     if self.intrinsic_motivation.reward_scheduler else self.intrinsic_motivation.reward_weight
@@ -2058,6 +2061,7 @@ class TD3(Agent):
         states = sample["states"]
         actions = sample["actions"]
         rewards = sample["rewards"]
+        im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]
         terminations = sample["terminations"]
         truncations = sample["truncations"]
@@ -2086,38 +2090,33 @@ class TD3(Agent):
         if self.reward_normalizer:
             rewards = self.reward_normalizer.normalize(rewards)
 
-        # Train ICM if curiosity and update _use_extrinsic flag
+        # Get batch_size and n-step trajectory length
+        batch_size, n_step_length = rewards.shape
+
+        # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
             # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-            dones_reshaped = dones.view(self.batch_size * self.N)
-            mask = (dones_reshaped == 0)
-            states_reshaped = states.view(self.batch_size * self.N, -1)
-            next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
-            actions_reshaped = actions.view(self.batch_size * self.N, -1)
-            # Replace next state with state value where done = True b/c next state value could be reset observation
-            # returned by environment (IsaacSim)
-            next_states_reshaped = T.where(mask.unsqueeze(1), next_states_reshaped, states_reshaped)
-            curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
-            if step > self.curiosity.extrinsic_threshold:
-                self.curiosity._use_extrinsic = True
+            states_flat = states.reshape(-1, states.shape[-1])
+            next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+            actions_flat = actions.reshape(-1, actions.shape[-1])
+            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+            # Compute intrinsic reward
+            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+                states_flat,
+                next_states_flat,
+                actions_flat
+            )
+            im_learn_rewards = im_learn_rewards.reshape(batch_size, n_step_length)
+            # Add intrinsic learn rewards to intrinsic rollout rewards
+            im_rewards = im_learn_rewards + im_rollout_rewards
+            # Add extrinsic reward if past step threshold
+            if self.intrinsic_motivation.use_extrinsic_reward(step):
+                rewards += im_rewards
             else:
-                self.curiosity._use_extrinsic = False
+                rewards = im_rewards
 
         # Get target values
         with T.no_grad():
-            # Compute intrinsic reward if using ICM
-            if self.curiosity:
-                intrinsic_reward = self.curiosity.compute_intrinsic_reward(
-                    states_reshaped,
-                    next_states_reshaped,
-                    actions_reshaped
-                )
-                intrinsic_reward = intrinsic_reward.view(self.batch_size, self.N)
-                if self.curiosity._use_extrinsic:
-                    rewards += intrinsic_reward
-                else:
-                    rewards = intrinsic_reward
-
             targets = compute_n_step_return(
                 rewards,
                 self.discount,
@@ -2243,12 +2242,15 @@ class TD3(Agent):
         # Log diag data
         if should_log_diag:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
                 summarize_tensor(actions, "actions"),
                 summarize_tensor(rewards, "rewards"),
+                summarize_tensor(im_rollout_rewards, "intrinsic rollout rewards"),
+                summarize_tensor(im_learn_rewards, "intrinsic learn rewards"),
+                summarize_tensor(im_rewards, "intrinsic rewards"),
                 summarize_tensor(next_states, "next_states"),
                 summarize_tensor(goals, "goals"),
                 summarize_tensor(next_ach_goals, "next_ach_goals"),
@@ -2289,25 +2291,25 @@ class TD3(Agent):
         # Add metrics to step_logs
         learn_metrics.update({
             "policy_loss": actor_loss.item(),
-            "value_loss": critic_loss.item(),
+            "critic_loss": critic_loss.item(),
             "td_errors": error.detach().flatten(),
             "critic_error": error.mean().item(),
-            "actor_predictions": pred_actions.mean().item(),
+            "policy_predictions": pred_actions.mean().item(),
             "critic_predictions": critic_values.mean().item(),
-            "target_actor_predictions": target_actions.mean().item(),
+            "target_policy_predictions": target_actions.mean().item(),
             "target_critic_predictions": targets.mean().item(),
             'policy_learning_rate': policy_learning_rate,
             'critic_learning_rate': critic_learning_rate,
             'critic_b_learning_rate': critic_b_learning_rate,
         })
 
-        if self.curiosity:
+        if self.intrinsic_motivation:
             learn_metrics.update({
-                "curiosity_loss": curiosity_loss.item(),
-                "intrinsic_reward": intrinsic_reward.mean().item(),
-                "use_extrinsic": self.curiosity._use_extrinsic,
-                "reward_weight": self.curiosity.reward_weight * self.curiosity.reward_scheduler.get_factor() \
-                    if self.curiosity.reward_scheduler else self.curiosity.reward_weight
+                "intrinsic_loss": im_loss,
+                "learn_intrinsic_reward": im_learn_rewards.mean().item(),
+                "intrinsic_reward": im_rewards.mean().item(),
+                "reward_weight": self.intrinsic_motivation.reward_weight * self.intrinsic_motivation.reward_scheduler.get_factor() \
+                    if self.intrinsic_motivation.reward_scheduler else self.intrinsic_motivation.reward_weight
             })
 
         if self.noise_schedule:
@@ -2321,6 +2323,7 @@ class TD3(Agent):
         config["config"].update({
             "policy": self.policy.get_config(),
             "critic": self.critic.get_config(),
+            "critic_b": self.critic_b.get_config(),
             "discount": self.discount,
             "tau": self.tau,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
@@ -2329,7 +2332,7 @@ class TD3(Agent):
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
             "N": self.N,
-            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
             "action_epsilon": self.action_epsilon,
             "critic_b": self.critic_b.get_config(),
             "noise": self.noise.get_config() if self.noise is not None else None,
@@ -2348,10 +2351,10 @@ class TD3(Agent):
         with open(os.path.join(self.save_dir, "config.json"), "w", encoding="utf-8") as f:
             json.dump(config, f)
         self.policy.save(self.save_dir)
-        self.critic.save(self.save_dir, 'critic_a')
+        self.critic.save(self.save_dir, 'critic')
         self.critic_b.save(self.save_dir, 'critic_b')
-        if self.curiosity:
-            self.curiosity.save(self.save_dir)
+        if self.intrinsic_motivation:
+            self.intrinsic_motivation.save(self.save_dir)
         if self.state_normalizer:
             self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
         if self.goal_normalizer:
@@ -2365,10 +2368,10 @@ class TD3(Agent):
         config = json.load(open(Path(config_dir) / 'config.json'))
         env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
         policy = ActorModel.load(config_dir, 'policy', load_weights, env=env_wrapper)
-        critic_a = ContinuousCritic.load(config_dir, 'critic_a', load_weights, env=env_wrapper)
+        critic = ContinuousCritic.load(config_dir, 'critic', load_weights, env=env_wrapper)
         critic_b = ContinuousCritic.load(config_dir, 'critic_b', load_weights, env=env_wrapper)
-        # load curiosity
-        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
+        # load intrinsic motivation
+        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env_wrapper) if config["intrinsic_motivation"] else None
         # load state normalizer
         state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
@@ -2395,7 +2398,7 @@ class TD3(Agent):
             critic_grad_clip=config["critic_grad_clip"],
             policy_update_delay=config["policy_update_delay"],
             N=config["N"],
-            curiosity=curiosity,
+            intrinsic_motivation=intrinsic_motivation,
             save_dir=config["save_dir"],
             device=config["device"],
         )
@@ -2416,6 +2419,7 @@ class SAC(Agent):
         goal_normalizer: BaseNormalizer|None = None,
         reward_normalizer: RewardNorm|None = None,
         entropy_coefficient: float=0.2, # Auto set to 1.0 if auto-tuning
+        entropy_schedule: ScheduleWrapper|None = None,
         auto_entropy_tuning: bool=True,
         entropy_lr: float=3e-4, # Only used if auto entropy = True
         target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
@@ -2447,6 +2451,7 @@ class SAC(Agent):
             self.target_critic = self.critic.clone(device=self.critic.device)
             self.target_critic_b = self.critic_b.clone(device=self.critic_b.device)
             self.entropy_coefficient = entropy_coefficient
+            self.entropy_schedule = entropy_schedule
             self.auto_entropy_tuning = auto_entropy_tuning
             self.entropy_lr = entropy_lr
             self.target_entropy_scale = target_entropy_scale
@@ -2517,7 +2522,6 @@ class SAC(Agent):
         soft_update(self.critic_b, self.target_critic_b, self.tau)
 
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
-
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -2530,6 +2534,7 @@ class SAC(Agent):
         states = sample["states"]
         actions = sample["actions"]
         rewards = sample["rewards"]
+        im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]
         terminations = sample["terminations"]
         truncations = sample["truncations"]
@@ -2547,6 +2552,14 @@ class SAC(Agent):
             probs = None
             indices = None
 
+        # Get entropy coefficient
+        if self.auto_entropy_tuning:
+            entropy_coefficient = self.log_alpha.exp()
+        else:
+            entropy_coefficient = self.entropy_coefficient
+            if self.entropy_schedule:
+                entropy_coefficient *= self.entropy_schedule.get_factor()
+
         # Normalize states/goals/rewards
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
@@ -2558,42 +2571,35 @@ class SAC(Agent):
         if self.reward_normalizer:
             rewards = self.reward_normalizer.normalize(rewards)
 
-        # Train ICM if curiosity and update _use_extrinsic flag
+        # Get batch_size and n-step trajectory length
+        batch_size, n_step_length = rewards.shape
+
+        # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
             # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-            dones_reshaped = dones.view(self.batch_size * self.N)
-            mask = (dones_reshaped == 0)
-            states_reshaped = states.view(self.batch_size * self.N, -1)
-            next_states_reshaped = next_states.view(self.batch_size * self.N, -1)
-            actions_reshaped = actions.view(self.batch_size * self.N, -1)
-            # Replace next state with state value where done = True b/c next state value could be reset observation
-            # returned by environment (IsaacSim)
-            next_states_reshaped = T.where(mask.unsqueeze(1), next_states_reshaped, states_reshaped)
-            curiosity_loss = self.curiosity.train(states_reshaped, next_states_reshaped, actions_reshaped)
-            if step > self.curiosity.extrinsic_threshold:
-                self.curiosity._use_extrinsic = True
+            states_flat = states.reshape(-1, states.shape[-1])
+            next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+            actions_flat = actions.reshape(-1, actions.shape[-1])
+            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+            # Compute intrinsic reward
+            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+                states_flat,
+                next_states_flat,
+                actions_flat
+            )
+            im_learn_rewards = im_learn_rewards.reshape(batch_size, n_step_length)
+            # Add intrinsic learn rewards to intrinsic rollout rewards
+            im_rewards = im_learn_rewards + im_rollout_rewards
+            # Add extrinsic reward if past step threshold
+            if self.intrinsic_motivation.use_extrinsic_reward(step):
+                rewards += im_rewards
             else:
-                self.curiosity._use_extrinsic = False
-
-        if self.auto_entropy_tuning:
-            cur_entropy_coef = self.log_alpha.exp()
+                rewards = im_rewards
         else:
-            cur_entropy_coef = self.entropy_coefficient
+            im_learn_rewards = T.zeros_like(rewards)
+            im_rewards = T.zeros_like(rewards)
 
         with T.no_grad():
-            # Compute intrinsic reward if using ICM
-            if self.curiosity:
-                intrinsic_reward = self.curiosity.compute_intrinsic_reward(
-                    states_reshaped,
-                    next_states_reshaped,
-                    actions_reshaped
-                )
-                intrinsic_reward = intrinsic_reward.view(self.batch_size, self.N)
-                if self.curiosity._use_extrinsic:
-                    rewards += intrinsic_reward
-                else:
-                    rewards = intrinsic_reward
-
             q_targets = compute_n_step_return(
                 rewards,
                 self.discount,
@@ -2620,7 +2626,7 @@ class SAC(Agent):
                     target_actions,
                     goals[:,-1,:] if goals is not None else None
                     ).squeeze()
-                target_values = T.minimum(target_values_1, target_values_2) - cur_entropy_coef * log_probs
+                target_values = T.minimum(target_values_1, target_values_2) - entropy_coefficient * log_probs
 
             else: # Discrete critic target values
                 target_actions = dist.sample().float()
@@ -2633,7 +2639,7 @@ class SAC(Agent):
                     next_states[:,-1,:],
                     goals[:,-1,:] if goals is not None else None
                 )
-                target_values = (dist.probs * (T.minimum(target_values_1, target_values_2) - cur_entropy_coef * log_probs)).sum(-1)
+                target_values = (dist.probs * (T.minimum(target_values_1, target_values_2) - entropy_coefficient * log_probs)).sum(-1)
 
             no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
             gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
@@ -2700,7 +2706,7 @@ class SAC(Agent):
             q1 = self.critic(states[:,0,:], new_actions, goals[:,0,:] if goals is not None else None).squeeze()
             q2 = self.critic_b(states[:,0,:], new_actions, goals[:,0,:] if goals is not None else None).squeeze()
             min_q = T.minimum(q1, q2)
-            actor_loss = cur_entropy_coef * log_probs - min_q
+            actor_loss = entropy_coefficient * log_probs - min_q
 
         else: # Discrete policy update
             new_actions = dist.sample().float()
@@ -2708,7 +2714,7 @@ class SAC(Agent):
             q1 = self.critic(states[:,0,:], goals[:,0,:] if goals is not None else None)
             q2 = self.critic_b(states[:,0,:], goals[:,0,:] if goals is not None else None)
             min_q = T.minimum(q1, q2)
-            actor_loss = (dist.probs * (cur_entropy_coef * log_probs - min_q)).sum(-1)
+            actor_loss = (dist.probs * (entropy_coefficient * log_probs - min_q)).sum(-1)
 
 
         if weights is not None:
@@ -2738,12 +2744,15 @@ class SAC(Agent):
         # Log diag data
         if should_log_diag:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
                 summarize_tensor(actions, "actions"),
                 summarize_tensor(rewards, "rewards"),
+                summarize_tensor(im_rollout_rewards, "intrinsic rollout rewards"),
+                summarize_tensor(im_learn_rewards, "intrinsic learn rewards"),
+                summarize_tensor(im_rewards, "intrinsic rewards"),
                 summarize_tensor(next_states, "next_states"),
                 summarize_tensor(goals, "goals"),
                 summarize_tensor(next_ach_goals, "next_ach_goals"),
@@ -2784,26 +2793,27 @@ class SAC(Agent):
         critic_b_learning_rate = self.critic_b.optimizer.param_groups[0]['lr']                                                     ###
 
         learn_metrics.update({
-            "actor_loss": actor_loss.item(),
+            "policy_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
             "td_errors": error.detach().flatten(),
             "td_error": error.mean().item(),
-            "actor_predictions": new_actions.mean().item(),
+            "policy_predictions": new_actions.mean().item(),
             "critic_predictions": min_q.mean().item(),
             "target_critic_predictions": target_values.mean().item(),
-            "entropy_coefficient": cur_entropy_coef,
+            "entropy_coefficient": entropy_coefficient,
             "entropy": float(entropy.mean().item()),
             'policy_learning_rate': policy_learning_rate,
             'critic_learning_rate': critic_learning_rate,
             'critic_b_learning_rate': critic_b_learning_rate,
         })
-        if self.curiosity:
+        
+        if self.intrinsic_motivation:
             learn_metrics.update({
-                "curiosity_loss": curiosity_loss.item(),
-                "intrinsic_reward": intrinsic_reward.mean().item(),
-                "use_extrinsic": self.curiosity._use_extrinsic,
-                "reward_weight": self.curiosity.reward_weight * self.curiosity.reward_scheduler.get_factor() \
-                    if self.curiosity.reward_scheduler else self.curiosity.reward_weight
+                "intrinsic_loss": im_loss,
+                "learn_intrinsic_reward": im_learn_rewards.mean().item(),
+                "intrinsic_reward": im_rewards.mean().item(),
+                "reward_weight": self.intrinsic_motivation.reward_weight * self.intrinsic_motivation.reward_scheduler.get_factor() \
+                    if self.intrinsic_motivation.reward_scheduler else self.intrinsic_motivation.reward_weight
             })
 
         return learn_metrics
@@ -2823,9 +2833,10 @@ class SAC(Agent):
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
             "N": self.N,
-            "curiosity": self.curiosity.get_config() if self.curiosity is not None else None,
+            "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
             "critic_b": self.critic_b.get_config(),
             "entropy_coefficient": self.entropy_coefficient,
+            "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
             "auto_entropy_tuning": self.auto_entropy_tuning,
             "entropy_lr": self.entropy_lr,
             "target_entropy_scale": self.target_entropy_scale,
@@ -2839,10 +2850,10 @@ class SAC(Agent):
         with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
         self.policy.save(self.save_dir)
-        self.critic.save(self.save_dir, 'critic_a')
+        self.critic.save(self.save_dir, 'critic')
         self.critic_b.save(self.save_dir, 'critic_b')
-        if self.curiosity:
-            self.curiosity.save(self.save_dir)
+        if self.intrinsic_motivation:
+            self.intrinsic_motivation.save(self.save_dir)
         if self.state_normalizer:
             self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
         if self.goal_normalizer:
@@ -2858,15 +2869,15 @@ class SAC(Agent):
         distribution = config['policy_model']['distribution']
         if distribution == 'categorical':
             policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
-            critic_a = DiscreteCritic.load(config_dir, 'critic_a', load_weights, env=env_wrapper)
+            critic = DiscreteCritic.load(config_dir, 'critic', load_weights, env=env_wrapper)
             critic_b = DiscreteCritic.load(config_dir, 'critic_b', load_weights, env=env_wrapper)
         elif distribution in ['beta', 'normal']:
             policy = StochasticContinuousPolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
-            critic_a = ContinuousCritic.load(config_dir, 'critic_a', load_weights, env=env_wrapper)
+            critic = ContinuousCritic.load(config_dir, 'critic', load_weights, env=env_wrapper)
             critic_b = ContinuousCritic.load(config_dir, 'critic_b', load_weights, env=env_wrapper)
         else:
             raise ValueError(f"Invalid distribution: {distribution}")
-        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
+        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env_wrapper) if config["intrinsic_motivation"] else None
         state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
         goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
         reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
@@ -2881,13 +2892,14 @@ class SAC(Agent):
             goal_normalizer=goal_normalizer,
             reward_normalizer=reward_normalizer,
             entropy_coefficient=config["entropy_coefficient"],
+            entropy_schedule = ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
             auto_entropy_tuning=config["auto_entropy_tuning"],
             entropy_lr=config["entropy_lr"],
             target_entropy_scale=config["target_entropy_scale"],
             policy_grad_clip=config["policy_grad_clip"],
             critic_grad_clip=config["critic_grad_clip"],
             N = config['N'],
-            curiosity=curiosity,
+            intrinsic_motivation=intrinsic_motivation,
             save_dir=config["save_dir"],
             device=config["device"]
         )
