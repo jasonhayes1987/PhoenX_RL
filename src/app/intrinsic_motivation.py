@@ -70,10 +70,8 @@ class IntrinsicMotivation(Model):
         extrinsic_threshold  : agent step below which extrinsic reward is
                                suppressed (intrinsic-only warmup)
         _use_extrinsic       : flag the agent flips based on the threshold
-        scale_to_extrinsic   : flag to scale the intrinsic reward to the extrinsic reward
 
     Optional self-managed normalizers (RND uses both; ICM typically uses neither):
-        obs_normalizer                 : RunningNorm over states
         intrinsic_reward_normalizer    : RewardNorm over intrinsic rewards
     """
 
@@ -84,9 +82,7 @@ class IntrinsicMotivation(Model):
         reward_weight: float = 1.0,
         reward_scheduler: ScheduleWrapper | None = None,
         extrinsic_threshold: int = 0,
-        scale_to_extrinsic: bool = True,
-        obs_normalizer: BaseNormalizer | None = None,
-        intrinsic_reward_normalizer: RewardNorm | None = None,
+        reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
@@ -102,9 +98,7 @@ class IntrinsicMotivation(Model):
         self.reward_weight = reward_weight
         self.reward_scheduler = reward_scheduler
         self.extrinsic_threshold = extrinsic_threshold
-        self.scale_to_extrinsic = scale_to_extrinsic
-        self.obs_normalizer = obs_normalizer
-        self.intrinsic_reward_normalizer = intrinsic_reward_normalizer
+        self.reward_normalizer = reward_normalizer
         self.log_level = log_level
         # Flag to indicate if the intrinsic motivation is online (i.e. needs to be updated on each step)
         self.is_online = False
@@ -214,7 +208,7 @@ class IntrinsicMotivation(Model):
     #         self.intrinsic_reward_normalizer.update()
 
     def set_normalizers_mode(self, context: Literal['train', 'eval']) -> None:
-        for n in (self.obs_normalizer, self.intrinsic_reward_normalizer):
+        for n in (self.reward_normalizer):
             if n is None:
                 continue
             n.train() if context == 'train' else n.eval()
@@ -226,14 +220,14 @@ class IntrinsicMotivation(Model):
         Args:
             reward: Tensor to feed.
         """
-        if self.intrinsic_reward_normalizer is not None:
+        if self.reward_normalizer is not None:
             dones = T.zeros(reward.shape, dtype=T.bool, device=self.device)
-            self.intrinsic_reward_normalizer.add(reward, dones)
-            self.intrinsic_reward_normalizer.update()
+            self.reward_normalizer.add(reward, dones)
+            self.reward_normalizer.update()
 
     def _normalize_reward(self, intrinsic_reward: T.Tensor) -> T.Tensor:
         """
-        Normalize intrinsic reward through intrinsic_reward_normalizer if present, else identity.
+        Normalize intrinsic reward through the reward_normalizer if present, else identity.
 
         Args:
             intrinsic_reward: Tensor to normalize.
@@ -241,34 +235,9 @@ class IntrinsicMotivation(Model):
         Returns:
             Normalized tensor or original tensor if no normalizer is present.
         """
-        if self.intrinsic_reward_normalizer is not None:
-            return self.intrinsic_reward_normalizer.normalize(intrinsic_reward)
+        if self.reward_normalizer is not None:
+            return self.reward_normalizer.normalize(intrinsic_reward)
         return intrinsic_reward
-
-    def _feed_obs_normalizer(self, obs: T.Tensor) -> None:
-        """
-        Feed obs to observation normalizer and update if present.
-
-        Args:
-            obs: Tensor to feed.
-        """
-        if self.obs_normalizer is not None:
-            self.obs_normalizer.add(obs.to(device=self.obs_normalizer.device))
-            self.obs_normalizer.update()
-
-    def _normalize_obs(self, x: T.Tensor) -> T.Tensor:
-        """
-        Normalize obs through obs_normalizer if present, else identity.
-
-        Args:
-            x: Tensor to normalize.
-
-        Returns:
-            Normalized tensor.
-        """
-        if self.obs_normalizer is None:
-            return x
-        return self.obs_normalizer.normalize(x.to(device=self.obs_normalizer.device))
 
     def _scaled_reward_weight(self) -> float:
         w = self.reward_weight
@@ -290,11 +259,9 @@ class IntrinsicMotivation(Model):
         config['type'] = self.__class__.__name__
         with open(model_dir / 'config.json', 'w', encoding='utf-8') as f:
             json.dump(config, f)
-        if self.obs_normalizer is not None:
-            self.obs_normalizer.save(str(model_dir / 'obs_normalizer_state.pt'))
-        if self.intrinsic_reward_normalizer is not None:
-            self.intrinsic_reward_normalizer.save(
-                str(model_dir / 'intrinsic_reward_normalizer_state.pt'))
+        if self.reward_normalizer is not None:
+            self.reward_normalizer.save(
+                str(model_dir / 'reward_normalizer_state.pt'))
 
     @classmethod
     def create_instance(cls, im_type: str, **kwargs) -> 'IntrinsicMotivation':
@@ -355,9 +322,7 @@ class ICM(IntrinsicMotivation):
         reward_scheduler: ScheduleWrapper | None = None,
         beta: float = 0.2,
         extrinsic_threshold: int = 0,
-        scale_to_extrinsic: bool = True,
-        obs_normalizer: BaseNormalizer | None = None,
-        intrinsic_reward_normalizer: RewardNorm | None = None,
+        reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
@@ -368,9 +333,7 @@ class ICM(IntrinsicMotivation):
                 reward_weight=reward_weight,
                 reward_scheduler=reward_scheduler,
                 extrinsic_threshold=extrinsic_threshold,
-                scale_to_extrinsic=scale_to_extrinsic,
-                obs_normalizer=obs_normalizer,
-                intrinsic_reward_normalizer=intrinsic_reward_normalizer,
+                reward_normalizer=reward_normalizer,
                 log_level=log_level,
                 device=device,
             )
@@ -453,15 +416,14 @@ class ICM(IntrinsicMotivation):
             self._forward_submodel(T.cat([s, ns], dim=-1), self.inverse_model)
             self._forward_submodel(T.cat([s, a_in], dim=-1), self.forward_model)
 
-    def encode(self, state: T.Tensor) -> T.Tensor:
-        state = self._normalize_obs(state.to(self.device))
+    def _embed(self, state: T.Tensor) -> T.Tensor:
         if self._use_encoder:
             return self._forward_submodel(state, self.encoder)
         return state
 
     def _full_forward(self, states, next_states, actions):
-        encoded_s = self.encode(states)
-        encoded_ns = self.encode(next_states)
+        encoded_s = self._embed(states)
+        encoded_ns = self._embed(next_states)
         pred_a = self._forward_submodel(
             T.cat([encoded_s, encoded_ns], dim=-1), self.inverse_model)
         if self._is_discrete:
@@ -511,9 +473,6 @@ class ICM(IntrinsicMotivation):
         self.forward_model.train()
         self.set_normalizers_mode('train')
 
-        # Feed states to observation normalizer, and update
-        self._feed_obs_normalizer(states)
-
         self.optimizer.zero_grad()
         pred_a, pred_ns, encoded_ns = self._full_forward(states, next_states, actions)
 
@@ -545,32 +504,25 @@ class ICM(IntrinsicMotivation):
                                  if self.reward_scheduler else None),
             'beta': self.beta,
             'extrinsic_threshold': self.extrinsic_threshold,
-            'scale_to_extrinsic': self.scale_to_extrinsic,
-            'obs_normalizer': (self.obs_normalizer.get_config()
-                               if self.obs_normalizer else None),
-            'intrinsic_reward_normalizer': (
-                self.intrinsic_reward_normalizer.get_config()
-                if self.intrinsic_reward_normalizer else None)
+            'reward_normalizer': (
+                self.reward_normalizer.get_config()
+                if self.reward_normalizer else None)
         }
 
     @classmethod
     def _load_impl(cls, folder, config, env):
-        from .normalizer import RunningNorm, RewardNorm
+        from .normalizer import RewardNorm
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
 
         sched = (ScheduleWrapper(**config['im_reward_scheduler'])
                  if config.get('im_reward_scheduler') else None)
 
-        obs_norm = None
-        if config.get('obs_normalizer'):
-            obs_norm = RunningNorm.load(config['obs_normalizer']['config'],
-                                        str(model_dir / 'obs_normalizer_state.pt'))
         ir_norm = None
-        if config.get('intrinsic_reward_normalizer'):
+        if config.get('reward_normalizer'):
             ir_norm = RewardNorm.load(
-                config['intrinsic_reward_normalizer']['config'],
-                str(model_dir / 'intrinsic_reward_normalizer_state.pt'))
+                config['reward_normalizer']['config'],
+                str(model_dir / 'reward_normalizer_state.pt'))
 
         model = cls(
             env=env_wrapper,
@@ -580,11 +532,9 @@ class ICM(IntrinsicMotivation):
             reward_scheduler=sched,
             beta=config['beta'],
             extrinsic_threshold=config['extrinsic_threshold'],
-            scale_to_extrinsic=config['scale_to_extrinsic'],
-            obs_normalizer=obs_norm,
-            intrinsic_reward_normalizer=ir_norm,
-            log_level=config['log_level'],
-            device=config['device'],
+            reward_normalizer=ir_norm,
+            log_level=config.get('log_level', 'INFO'),
+            device=config.get('device', None),
         )
         model.load_state_dict(T.load(model_dir / 'pytorch_model.pt'))
         return model
@@ -624,9 +574,7 @@ class RND(IntrinsicMotivation):
         reward_weight: float = 1.0,
         reward_scheduler: ScheduleWrapper | None = None,
         extrinsic_threshold: int = 0,
-        scale_to_extrinsic: bool = True,
-        obs_normalizer: BaseNormalizer | None = None,
-        intrinsic_reward_normalizer: RewardNorm | None = None,
+        reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
@@ -637,9 +585,7 @@ class RND(IntrinsicMotivation):
                 reward_weight=reward_weight,
                 reward_scheduler=reward_scheduler,
                 extrinsic_threshold=extrinsic_threshold,
-                scale_to_extrinsic=scale_to_extrinsic,
-                obs_normalizer=obs_normalizer,
-                intrinsic_reward_normalizer=intrinsic_reward_normalizer,
+                reward_normalizer=reward_normalizer,
                 log_level=log_level,
                 device=device,
             )
@@ -696,7 +642,6 @@ class RND(IntrinsicMotivation):
 
     def _embed(self, x: T.Tensor):
         """Return (target_embedding, predictor_embedding) for a state batch."""
-        x = self._normalize_obs(x.to(self.device))
         with T.no_grad():
             t_out = self._forward_submodel(x, self.target)
         p_out = self._forward_submodel(x, self.predictor)
@@ -725,11 +670,11 @@ class RND(IntrinsicMotivation):
             err = (p_out - t_out).pow(2).sum(dim=-1)
 
             # Feed error to reward normalizer, update, and normalize error
-            if self.intrinsic_reward_normalizer is not None:
+            if self.reward_normalizer is not None:
                 dones = T.zeros(err.shape, dtype=T.bool, device=self.device)
-                self.intrinsic_reward_normalizer.add(err, dones)
-                self.intrinsic_reward_normalizer.update()
-                err = self.intrinsic_reward_normalizer.normalize(err)
+                self.reward_normalizer.add(err, dones)
+                self.reward_normalizer.update()
+                err = self.reward_normalizer.normalize(err)
             
             # Return scaled intrinsic reward
             return self._scaled_reward_weight() * err
@@ -738,11 +683,6 @@ class RND(IntrinsicMotivation):
         # Set mode of models and normalizers to train
         self.predictor.train()
         self.set_normalizers_mode('train')
-
-        # Feed states to observation normalizer, and update
-        if self.obs_normalizer is not None:
-            self.obs_normalizer.add(states)
-            self.obs_normalizer.update()
 
         self.optimizer.zero_grad()
         t_out, p_out = self._embed(next_states)
@@ -767,32 +707,25 @@ class RND(IntrinsicMotivation):
             'reward_scheduler': (self.reward_scheduler.get_config()
                                  if self.reward_scheduler else None),
             'extrinsic_threshold': self.extrinsic_threshold,
-            'scale_to_extrinsic': self.scale_to_extrinsic,
-            'obs_normalizer': (self.obs_normalizer.get_config()
-                               if self.obs_normalizer else None),
-            'intrinsic_reward_normalizer': (
-                self.intrinsic_reward_normalizer.get_config()
-                if self.intrinsic_reward_normalizer else None)
+            'reward_normalizer': (
+                self.reward_normalizer.get_config()
+                if self.reward_normalizer else None)
         }
 
     @classmethod
     def _load_impl(cls, folder, config, env):
-        from .normalizer import RunningNorm, RewardNorm
+        from .normalizer import RewardNorm
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
 
         sched = (ScheduleWrapper(**config['im_reward_scheduler'])
                  if config.get('im_reward_scheduler') else None)
 
-        obs_norm = None
-        if config.get('obs_normalizer'):
-            obs_norm = RunningNorm.load(config['obs_normalizer']['config'],
-                                        str(model_dir / 'obs_normalizer_state.pt'))
         ir_norm = None
-        if config.get('intrinsic_reward_normalizer'):
+        if config.get('reward_normalizer'):
             ir_norm = RewardNorm.load(
-                config['intrinsic_reward_normalizer']['config'],
-                str(model_dir / 'intrinsic_reward_normalizer_state.pt'))
+                config['reward_normalizer']['config'],
+                str(model_dir / 'reward_normalizer_state.pt'))
 
         model = cls(
             env=env_wrapper,
@@ -801,11 +734,9 @@ class RND(IntrinsicMotivation):
             reward_weight=config['reward_weight'],
             reward_scheduler=sched,
             extrinsic_threshold=config['extrinsic_threshold'],
-            scale_to_extrinsic=config['scale_to_extrinsic'],
-            obs_normalizer=obs_norm,
-            intrinsic_reward_normalizer=ir_norm,
-            log_level=config['log_level'],
-            device=config['device'],
+            reward_normalizer=ir_norm,
+            log_level=config.get('log_level', 'INFO'),
+            device=config.get('device', None),
         )
         model.load_state_dict(T.load(model_dir / 'pytorch_model.pt'))
         return model
@@ -848,9 +779,7 @@ class EpisodicNovelty(IntrinsicMotivation):
         reward_weight: float = 1.0,
         reward_scheduler: ScheduleWrapper | None = None,
         extrinsic_threshold: int = 0,
-        scale_to_extrinsic: bool = True,
-        obs_normalizer: BaseNormalizer | None = None,
-        intrinsic_reward_normalizer: RewardNorm | None = None,
+        reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
@@ -861,9 +790,7 @@ class EpisodicNovelty(IntrinsicMotivation):
                 reward_weight=reward_weight,
                 reward_scheduler=reward_scheduler,
                 extrinsic_threshold=extrinsic_threshold,
-                scale_to_extrinsic=scale_to_extrinsic,
-                obs_normalizer=obs_normalizer,
-                intrinsic_reward_normalizer=intrinsic_reward_normalizer,
+                reward_normalizer=reward_normalizer,
                 log_level=log_level,
                 device=device,
             )
@@ -935,7 +862,6 @@ class EpisodicNovelty(IntrinsicMotivation):
             self._forward_submodel(T.cat([phi, phi], dim=-1), self.inverse_model)
 
     def _embed(self, x: T.Tensor) -> T.Tensor:
-        x = self._normalize_obs(x.to(self.device))
         return self._forward_submodel(x, self.encoder)
 
     def _knn_bonus(self, embeddings: T.Tensor, env_indices: T.Tensor) -> T.Tensor:
@@ -1005,6 +931,14 @@ class EpisodicNovelty(IntrinsicMotivation):
                 env_indices = T.arange(next_states.shape[0], dtype=T.long)
             embeddings = self._embed(next_states)
             bonus = self._knn_bonus(embeddings, env_indices)
+            
+            # Feed error to reward normalizer, update, and normalize error
+            if self.reward_normalizer is not None:
+                dones = T.zeros(bonus.shape, dtype=T.bool, device=self.device)
+                self.reward_normalizer.add(bonus, dones)
+                self.reward_normalizer.update()
+                bonus = self.reward_normalizer.normalize(bonus)
+            
             self._append_to_memory(embeddings, env_indices)
             return self._scaled_reward_weight() * bonus
 
@@ -1049,32 +983,25 @@ class EpisodicNovelty(IntrinsicMotivation):
             'reward_scheduler': (self.reward_scheduler.get_config()
                                  if self.reward_scheduler else None),
             'extrinsic_threshold': self.extrinsic_threshold,
-            'scale_to_extrinsic': self.scale_to_extrinsic,
-            'obs_normalizer': (self.obs_normalizer.get_config()
-                               if self.obs_normalizer else None),
-            'intrinsic_reward_normalizer': (
-                self.intrinsic_reward_normalizer.get_config()
-                if self.intrinsic_reward_normalizer else None)
+            'reward_normalizer': (
+                self.reward_normalizer.get_config()
+                if self.reward_normalizer else None)
         }
 
     @classmethod
     def _load_impl(cls, folder, config, env):
-        from .normalizer import RunningNorm, RewardNorm
+        from .normalizer import RewardNorm
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
 
         sched = (ScheduleWrapper(**config['im_reward_scheduler'])
                  if config.get('reward_scheduler') else None)
 
-        obs_norm = None
-        if config.get('obs_normalizer'):
-            obs_norm = RunningNorm.load(config['obs_normalizer']['config'],
-                                        str(model_dir / 'obs_normalizer_state.pt'))
         ir_norm = None
-        if config.get('intrinsic_reward_normalizer'):
+        if config.get('reward_normalizer'):
             ir_norm = RewardNorm.load(
-                config['intrinsic_reward_normalizer']['config'],
-                str(model_dir / 'intrinsic_reward_normalizer_state.pt'))
+                config['reward_normalizer']['config'],
+                str(model_dir / 'reward_normalizer_state.pt'))
 
         model = cls(
             env=env_wrapper,
@@ -1089,11 +1016,9 @@ class EpisodicNovelty(IntrinsicMotivation):
             reward_weight=config['reward_weight'],
             reward_scheduler=sched,
             extrinsic_threshold=config['extrinsic_threshold'],
-            scale_to_extrinsic=config['scale_to_extrinsic'],
-            obs_normalizer=obs_norm,
-            intrinsic_reward_normalizer=ir_norm,
-            log_level=config['log_level'],
-            device=config['device'],
+            reward_normalizer=ir_norm,
+            log_level=config.get('log_level', 'INFO'),
+            device=config.get('device', None),
         )
         model.load_state_dict(T.load(model_dir / 'pytorch_model.pt'))
         return model
@@ -1180,8 +1105,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
                 reward_weight=reward_weight,
                 reward_scheduler=reward_scheduler,
                 extrinsic_threshold=extrinsic_threshold,
-                obs_normalizer=None,
-                intrinsic_reward_normalizer=None,
+                reward_normalizer=None,
                 log_level=log_level,
                 device=device,
             )
@@ -1320,14 +1244,6 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         for c in self.components:
             c.on_episode_end(env_indices)
 
-    def add_to_normalizers(self, **kwargs) -> None:
-        for c in self.components:
-            c.add_to_normalizers(**kwargs)
-
-    def update_normalizers(self) -> None:
-        for c in self.components:
-            c.update_normalizers()
-
     def set_normalizers_mode(self, context: Literal['train', 'test']) -> None:
         for c in self.components:
             c.set_normalizers_mode(context)
@@ -1389,33 +1305,6 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             reward_weight=config['reward_weight'],
             reward_scheduler=sched,
             extrinsic_threshold=config['extrinsic_threshold'],
-            log_level=config['log_level'],
-            device=config['device'],
+            log_level=config.get('log_level', 'INFO'),
+            device=config.get('device', None),
         )
-
-
-def scale_intrinsic_to_extrinsic_reward(
-    intrinsic_reward: T.Tensor,
-    extrinsic_reward: T.Tensor,
-    extrinsic_normalizer: RewardNorm | None = None,
-    intrinsic_normalizer: RewardNorm | None = None
-) -> T.Tensor:
-    """
-    Scale the intrinsic reward to the extrinsic reward.
-    
-    Args:
-        intrinsic_reward: Tensor of intrinsic rewards [batch_size, num_envs].
-        extrinsic_reward: Tensor of extrinsic rewards [batch_size, num_envs].
-        extrinsic_normalizer: RewardNorm of extrinsic rewards.
-        intrinsic_normalizer: RewardNorm of intrinsic rewards.
-    """
-    if extrinsic_normalizer is not None:
-        extrinsic_std = extrinsic_normalizer.running_std.clamp(min=1e-6)
-    else:
-        extrinsic_std = extrinsic_reward.std().clamp(min=1e-6)
-
-    if intrinsic_normalizer is not None:
-        intrinsic_std = 1.0 # Intrinsic reward is already normalized
-    else:
-        intrinsic_std = intrinsic_reward.std().clamp(min=1e-6) # Normalize intrinsic reward
-    return intrinsic_reward * (extrinsic_std / intrinsic_std)
