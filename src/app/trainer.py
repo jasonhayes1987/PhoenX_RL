@@ -372,7 +372,9 @@ class Trainer:
         # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer
         im = getattr(self.agent, 'intrinsic_motivation', None)
         if im is not None:
-            intrinsic_rewards = im.compute_rollout_reward(self._prev_obs.states, observation.states, actions, env_indices = T.arange(self.env.num_envs, device=im.device))
+            # Pass normalized states to IM if present
+            next_obs_norm = self.normalize_observation(observation)
+            intrinsic_rewards = im.compute_rollout_reward(obs_norm.states, next_obs_norm.states, actions, env_indices = T.arange(self.env.num_envs, device=im.device))
             # observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
         else:
             intrinsic_rewards = T.zeros_like(observation.rewards)
