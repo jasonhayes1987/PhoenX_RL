@@ -17,6 +17,7 @@ from app.trainer import TrainingSchedule, Trainer
 from app.intrinsic_motivation import IntrinsicMotivation
 from app.normalizer import create_normalizer as normalizer_factory, RunningNorm, BatchNorm, RewardNorm
 from app.schedulers import ScheduleWrapper
+from app.torch_utils import set_seed
 
 
 def load_config(config_file: str | Path) -> dict:
@@ -51,6 +52,27 @@ def create_env(config: dict) -> EnvWrapper:
     if env_type == "envpool":
         return EnvPoolWrapper(**env_config)
     raise ValueError(f"Invalid environment type: {env_type}")
+
+
+def create_policy(config: dict, env: EnvWrapper) -> StochasticContinuousPolicy | StochasticDiscretePolicy:
+    """Create a policy from a config.
+    
+    Args:
+        config (dict): The config to create the policy from.
+        env (EnvWrapper): The environment to create the policy for.
+        
+    Returns:
+        StochasticContinuousPolicy | StochasticDiscretePolicy: The created policy.
+    """
+    config['env'] = env
+    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
+    if config['distribution'] in ['categorical']:
+        config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
+        return StochasticDiscretePolicy(**config)
+    elif config['distribution'] in ['beta', 'kumaraswamy', 'normal']:
+        return StochasticContinuousPolicy(**config)
+    else:
+        raise ValueError(f"Invalid distribution: {config['distribution']}")
 
 
 def create_actor(config: dict, env: EnvWrapper) -> ActorModel:
@@ -184,6 +206,10 @@ def build_agent(config: dict, env: EnvWrapper):
 
 
 def build_trainer_from_config(config: dict):
+    seed = config.get('schedule', {}).get('seed', None)
+    if seed is not None:
+        set_seed(seed)
+
     env = create_env(config)
     agent = build_agent(config, env)
     buffer = build_buffer(config, env)

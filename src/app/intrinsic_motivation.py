@@ -70,6 +70,7 @@ class IntrinsicMotivation(Model):
         extrinsic_threshold  : agent step below which extrinsic reward is
                                suppressed (intrinsic-only warmup)
         _use_extrinsic       : flag the agent flips based on the threshold
+        scale_to_extrinsic   : flag to scale the intrinsic reward to the extrinsic reward
 
     Optional self-managed normalizers (RND uses both; ICM typically uses neither):
         obs_normalizer                 : RunningNorm over states
@@ -83,6 +84,7 @@ class IntrinsicMotivation(Model):
         reward_weight: float = 1.0,
         reward_scheduler: ScheduleWrapper | None = None,
         extrinsic_threshold: int = 0,
+        scale_to_extrinsic: bool = True,
         obs_normalizer: BaseNormalizer | None = None,
         intrinsic_reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
@@ -100,6 +102,7 @@ class IntrinsicMotivation(Model):
         self.reward_weight = reward_weight
         self.reward_scheduler = reward_scheduler
         self.extrinsic_threshold = extrinsic_threshold
+        self.scale_to_extrinsic = scale_to_extrinsic
         self.obs_normalizer = obs_normalizer
         self.intrinsic_reward_normalizer = intrinsic_reward_normalizer
         self.log_level = log_level
@@ -352,6 +355,7 @@ class ICM(IntrinsicMotivation):
         reward_scheduler: ScheduleWrapper | None = None,
         beta: float = 0.2,
         extrinsic_threshold: int = 0,
+        scale_to_extrinsic: bool = True,
         obs_normalizer: BaseNormalizer | None = None,
         intrinsic_reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
@@ -364,6 +368,7 @@ class ICM(IntrinsicMotivation):
                 reward_weight=reward_weight,
                 reward_scheduler=reward_scheduler,
                 extrinsic_threshold=extrinsic_threshold,
+                scale_to_extrinsic=scale_to_extrinsic,
                 obs_normalizer=obs_normalizer,
                 intrinsic_reward_normalizer=intrinsic_reward_normalizer,
                 log_level=log_level,
@@ -540,6 +545,7 @@ class ICM(IntrinsicMotivation):
                                  if self.reward_scheduler else None),
             'beta': self.beta,
             'extrinsic_threshold': self.extrinsic_threshold,
+            'scale_to_extrinsic': self.scale_to_extrinsic,
             'obs_normalizer': (self.obs_normalizer.get_config()
                                if self.obs_normalizer else None),
             'intrinsic_reward_normalizer': (
@@ -574,6 +580,7 @@ class ICM(IntrinsicMotivation):
             reward_scheduler=sched,
             beta=config['beta'],
             extrinsic_threshold=config['extrinsic_threshold'],
+            scale_to_extrinsic=config['scale_to_extrinsic'],
             obs_normalizer=obs_norm,
             intrinsic_reward_normalizer=ir_norm,
             log_level=config['log_level'],
@@ -617,6 +624,7 @@ class RND(IntrinsicMotivation):
         reward_weight: float = 1.0,
         reward_scheduler: ScheduleWrapper | None = None,
         extrinsic_threshold: int = 0,
+        scale_to_extrinsic: bool = True,
         obs_normalizer: BaseNormalizer | None = None,
         intrinsic_reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
@@ -629,6 +637,7 @@ class RND(IntrinsicMotivation):
                 reward_weight=reward_weight,
                 reward_scheduler=reward_scheduler,
                 extrinsic_threshold=extrinsic_threshold,
+                scale_to_extrinsic=scale_to_extrinsic,
                 obs_normalizer=obs_normalizer,
                 intrinsic_reward_normalizer=intrinsic_reward_normalizer,
                 log_level=log_level,
@@ -758,6 +767,7 @@ class RND(IntrinsicMotivation):
             'reward_scheduler': (self.reward_scheduler.get_config()
                                  if self.reward_scheduler else None),
             'extrinsic_threshold': self.extrinsic_threshold,
+            'scale_to_extrinsic': self.scale_to_extrinsic,
             'obs_normalizer': (self.obs_normalizer.get_config()
                                if self.obs_normalizer else None),
             'intrinsic_reward_normalizer': (
@@ -791,6 +801,7 @@ class RND(IntrinsicMotivation):
             reward_weight=config['reward_weight'],
             reward_scheduler=sched,
             extrinsic_threshold=config['extrinsic_threshold'],
+            scale_to_extrinsic=config['scale_to_extrinsic'],
             obs_normalizer=obs_norm,
             intrinsic_reward_normalizer=ir_norm,
             log_level=config['log_level'],
@@ -837,6 +848,7 @@ class EpisodicNovelty(IntrinsicMotivation):
         reward_weight: float = 1.0,
         reward_scheduler: ScheduleWrapper | None = None,
         extrinsic_threshold: int = 0,
+        scale_to_extrinsic: bool = True,
         obs_normalizer: BaseNormalizer | None = None,
         intrinsic_reward_normalizer: RewardNorm | None = None,
         log_level: str = 'info',
@@ -849,6 +861,7 @@ class EpisodicNovelty(IntrinsicMotivation):
                 reward_weight=reward_weight,
                 reward_scheduler=reward_scheduler,
                 extrinsic_threshold=extrinsic_threshold,
+                scale_to_extrinsic=scale_to_extrinsic,
                 obs_normalizer=obs_normalizer,
                 intrinsic_reward_normalizer=intrinsic_reward_normalizer,
                 log_level=log_level,
@@ -1036,6 +1049,7 @@ class EpisodicNovelty(IntrinsicMotivation):
             'reward_scheduler': (self.reward_scheduler.get_config()
                                  if self.reward_scheduler else None),
             'extrinsic_threshold': self.extrinsic_threshold,
+            'scale_to_extrinsic': self.scale_to_extrinsic,
             'obs_normalizer': (self.obs_normalizer.get_config()
                                if self.obs_normalizer else None),
             'intrinsic_reward_normalizer': (
@@ -1075,6 +1089,7 @@ class EpisodicNovelty(IntrinsicMotivation):
             reward_weight=config['reward_weight'],
             reward_scheduler=sched,
             extrinsic_threshold=config['extrinsic_threshold'],
+            scale_to_extrinsic=config['scale_to_extrinsic'],
             obs_normalizer=obs_norm,
             intrinsic_reward_normalizer=ir_norm,
             log_level=config['log_level'],
@@ -1377,3 +1392,30 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             log_level=config['log_level'],
             device=config['device'],
         )
+
+
+def scale_intrinsic_to_extrinsic_reward(
+    intrinsic_reward: T.Tensor,
+    extrinsic_reward: T.Tensor,
+    extrinsic_normalizer: RewardNorm | None = None,
+    intrinsic_normalizer: RewardNorm | None = None
+) -> T.Tensor:
+    """
+    Scale the intrinsic reward to the extrinsic reward.
+    
+    Args:
+        intrinsic_reward: Tensor of intrinsic rewards [batch_size, num_envs].
+        extrinsic_reward: Tensor of extrinsic rewards [batch_size, num_envs].
+        extrinsic_normalizer: RewardNorm of extrinsic rewards.
+        intrinsic_normalizer: RewardNorm of intrinsic rewards.
+    """
+    if extrinsic_normalizer is not None:
+        extrinsic_std = extrinsic_normalizer.running_std.clamp(min=1e-6)
+    else:
+        extrinsic_std = extrinsic_reward.std().clamp(min=1e-6)
+
+    if intrinsic_normalizer is not None:
+        intrinsic_std = 1.0 # Intrinsic reward is already normalized
+    else:
+        intrinsic_std = intrinsic_reward.std().clamp(min=1e-6) # Normalize intrinsic reward
+    return intrinsic_reward * (extrinsic_std / intrinsic_std)

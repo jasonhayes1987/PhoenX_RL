@@ -188,8 +188,10 @@ buffer:
 #     N: *n
 #     device: *device
 
+
 renderer:
   render_freq: 500 # episodes
+
 
 callbacks:
   - type: "WandbCallback"

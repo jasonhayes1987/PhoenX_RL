@@ -373,7 +373,10 @@ class Trainer:
         im = getattr(self.agent, 'intrinsic_motivation', None)
         if im is not None:
             intrinsic_rewards = im.compute_rollout_reward(self._prev_obs.states, observation.states, actions, env_indices = T.arange(self.env.num_envs, device=im.device))
-            observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
+            # observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
+        else:
+            intrinsic_rewards = T.zeros_like(observation.rewards)
+        observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
 
         dones = T.logical_or(observation.terminations, observation.truncations)
         valid_steps = ~self._prev_done
@@ -389,7 +392,7 @@ class Trainer:
         # Add step metrics to step log
         step_log.update({
             'step_reward': observation.rewards[valid_steps].mean().item(),
-            'step_intrinsic_reward': observation.intrinsic_rewards[valid_steps].mean().item()
+            'step_intrinsic_reward': observation.intrinsic_rewards[valid_steps].mean().item() if self.agent.intrinsic_motivation else 0.0
         })
         
         # Check if any env is done
@@ -481,7 +484,7 @@ class Trainer:
                     learning_epochs=self.schedule.learning_epochs,
                     mini_batch_size=self.schedule.mini_batch_size
                     )
-                self._apply_per_update(samples, learn_metrics)
+                self._apply_per_update(sample, learn_metrics)
         return learn_metrics
 
     def train(self):
