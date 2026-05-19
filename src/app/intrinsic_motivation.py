@@ -208,7 +208,7 @@ class IntrinsicMotivation(Model):
     #         self.intrinsic_reward_normalizer.update()
 
     def set_normalizers_mode(self, context: Literal['train', 'eval']) -> None:
-        for n in (self.reward_normalizer):
+        for n in [self.reward_normalizer]:
             if n is None:
                 continue
             n.train() if context == 'train' else n.eval()

@@ -140,14 +140,10 @@ def create_intrinsic_motivation(config: dict, env: EnvWrapper, key: str | None =
     """
     im_type = config['type']
     im_config = config['config']
-    if im_config.get('obs_normalizer', None):
-        num_features = infer_dim(env, key)
-        im_config['obs_normalizer']['config'].update({'num_features': num_features})
     im_config.update({
         'env': env,
         'reward_scheduler': ScheduleWrapper(**im_config['reward_scheduler']) if im_config.get('reward_scheduler', None) else None,
-        'obs_normalizer': create_normalizer(im_config['obs_normalizer'], env) if im_config.get('obs_normalizer', None) else None,
-        'intrinsic_reward_normalizer': create_normalizer(im_config['intrinsic_reward_normalizer'], env) if im_config.get('intrinsic_reward_normalizer', None) else None,
+        'reward_normalizer': create_normalizer(im_config['reward_normalizer'], env) if im_config.get('reward_normalizer', None) else None,
     })
     return IntrinsicMotivation.create_instance(im_type, **im_config)
 
