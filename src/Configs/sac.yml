@@ -68,16 +68,16 @@ agent:
         log_level: DEBUG
         # kwargs
         _diag_freq: 1000
-    # reward_normalizer:
-    #   type: RewardNorm
-    #   config:
-    #     name: SAC.RewardNormalizer
-    #     gamma: 0.99
-    #     clip_value: 10.0
-    #     device: *device
-    #     log_level: DEBUG
-    #     # kwargs
-    #     _diag_freq: 1000
+    reward_normalizer:
+      type: RewardNorm
+      config:
+        name: SAC.RewardNormalizer
+        gamma: 0.99
+        clip_value: 10.0
+        device: *device
+        log_level: DEBUG
+        # kwargs
+        _diag_freq: 1000
     # entropy_coefficient: &entropy_coefficient 0.01
     # entropy_schedule:
     #   schedule_type: "cosine"
@@ -131,16 +131,7 @@ agent:
     #       end_value: 0.0
     #     beta: 0.2
     #     extrinsic_threshold: 20000
-    #     obs_normalizer:
-    #       type: RunningNorm
-    #       config:
-    #         name: ICM.StateNormalizer
-    #         clip_value: 10.0
-    #         device: *device
-    #         log_level: DEBUG
-    #         # kwargs
-    #         _diag_freq: 1000
-    #     intrinsic_reward_normalizer:
+    #     reward_normalizer:
     #       type: RewardNorm
     #       config:
     #         name: ICM.RewardNormalizer
