@@ -9,7 +9,7 @@ schedule:
   stop_units: &stop_units 1000000
   learn_every_unit: timestep
   learn_every: 64
-  updates_per_learn: 1
+  updates_per_learn: 64
   batch_size: 256
   warmup_steps: 10000
   seed: &seed 42
@@ -137,6 +137,54 @@ agent:
     #         name: ICM.RewardNormalizer
     #         gamma: 0.99
     #         clip_value: 10.0
+    #         device: *device
+    #         log_level: DEBUG
+    #         # kwargs
+    #         _diag_freq: 1000
+        # device: *device
+    # intrinsic_motivation:
+    #   type: RND
+    #   config:
+    #     model_configs: {
+    #       target: {
+    #         layer_config: [
+    #           {type: dense, params: {units: 256, kernel: default, kernel_params: {}}},
+    #           {type: relu},
+    #           {type: dense, params: {units: 256, kernel: default, kernel_params: {}}},
+    #           {type: relu},
+    #         ],
+    #         output_layer: [
+    #           {type: dense, params: {units: 512, kernel: default, kernel_params: {}}},
+    #         ]
+    #       },
+    #       predictor: {
+    #         layer_config: [
+    #           {type: dense, params: {units: 256, kernel: default, kernel_params: {}}},
+    #           {type: relu},
+    #           {type: dense, params: {units: 256, kernel: default, kernel_params: {}}},
+    #           {type: relu},
+    #           {type: dense, params: {units: 256, kernel: default, kernel_params: {}}},
+    #           {type: relu},
+    #         ],
+    #         output_layer: [
+    #           {type: dense, params: {units: 512, kernel: default, kernel_params: {}}},
+    #         ]
+    #       }
+    #     }
+    #     optimizer_params: {type: Adam, params: {lr: 1.0e-4}}
+    #     reward_weight: &im_reward_weight 0.2
+    #     reward_scheduler:
+    #       schedule_type: linear
+    #       steps: *stop_units
+    #       start_value: *im_reward_weight
+    #       end_value: 0.0
+    #     extrinsic_threshold: 20000
+    #     reward_normalizer:
+    #       type: RewardNorm
+    #       config:
+    #         name: ICM.RewardNormalizer
+    #         gamma: 0.99
+    #         clip_value: 5.0
     #         device: *device
     #         log_level: DEBUG
     #         # kwargs

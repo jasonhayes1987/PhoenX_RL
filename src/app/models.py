@@ -4,13 +4,14 @@
 from abc import abstractmethod
 import json
 import os
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Iterator
 from pathlib import Path
 
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
 import torch as T
 import torch.nn as nn
+from torch.nn.parameter import Parameter
 from torch import optim
 import torch.nn.functional as F
 from torch.distributions import Distribution, TransformedDistribution, Independent, Categorical, Beta, Normal, Kumaraswamy
@@ -143,7 +144,7 @@ class Model(nn.Module):
         self._init_weights(layer_config, module_dict)
 
         # Now that parameters exist, create the optimizer
-        self.optimizer = self._init_optimizer()
+        self.optimizer = self._init_optimizer(module_dict.parameters())
         
         # If lr scheduler, bind the optimizer to it
         if self.lr_scheduler is not None:
@@ -259,24 +260,29 @@ class Model(nn.Module):
             if hasattr(layer, 'bias'):
                 nn.init.zeros_(layer.bias)
 
-    def _init_optimizer(self):
+    def _init_optimizer(self, parameters: Iterator[Parameter] | None = None):
         """
         Initialize the optimizer for the model.
+
+        Args:
+            parameters (Iterator[Parameter] | None): Iterator over the parameters to optimize. If None, uses all parameters.
 
         Returns:
             torch.optim.Optimizer: Configured optimizer.
         """
+        if parameters is None:
+            parameters = self.parameters()
         original_optimizer_type = self.optimizer_params['type']
         optimizer_type = str(original_optimizer_type).lower()
         optimizer_params = self.optimizer_params['params']
         if optimizer_type == 'adam':
-            return optim.Adam(self.parameters(), **optimizer_params)
+            return optim.Adam(parameters, **optimizer_params)
         elif optimizer_type == 'sgd':
-            return optim.SGD(self.parameters(), **optimizer_params)
+            return optim.SGD(parameters, **optimizer_params)
         elif optimizer_type == 'rmsprop':
-            return optim.RMSprop(self.parameters(), **optimizer_params)
+            return optim.RMSprop(parameters, **optimizer_params)
         elif optimizer_type == 'adagrad':
-            return optim.Adagrad(self.parameters(), **optimizer_params)
+            return optim.Adagrad(parameters, **optimizer_params)
         else:
             raise NotImplementedError(f"Unsupported optimizer type: {original_optimizer_type}")
     
