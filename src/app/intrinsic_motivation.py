@@ -608,10 +608,7 @@ class RND(IntrinsicMotivation):
                 p.requires_grad = False
 
             # Optimizer covers only predictor params
-            self.optimizer = T.optim.Adam(
-                self.predictor.parameters(),
-                **(self.optimizer_params or {}),
-            )
+            self.optimizer = self._init_optimizer(self.predictor.parameters())
             self.to(self.device)
 
         except Exception as e:
@@ -634,7 +631,7 @@ class RND(IntrinsicMotivation):
             setattr(self, name, module)
             self.add_module(name, module)
 
-        # Materialize LazyLinear shapes
+        # Infer LazyLinear shapes
         with T.no_grad():
             dummy = T.ones((32, *self.obs_dim), device=self.device, dtype=T.float)
             self._forward_submodel(dummy, self.target)

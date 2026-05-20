@@ -2533,7 +2533,7 @@ class SAC(Agent):
         # Unpack trajectory
         states = sample["states"]
         actions = sample["actions"]
-        rewards = sample["rewards"]
+        extrinsic_rewards = sample["rewards"]
         im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]
         terminations = sample["terminations"]
@@ -2569,10 +2569,10 @@ class SAC(Agent):
             next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
             goals = self.goal_normalizer.normalize(goals)
         if self.reward_normalizer:
-            rewards = self.reward_normalizer.normalize(rewards)
+            extrinsic_rewards = self.reward_normalizer.normalize(extrinsic_rewards)
 
         # Get batch_size and n-step trajectory length
-        batch_size, n_step_length = rewards.shape
+        batch_size, n_step_length = extrinsic_rewards.shape
 
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
@@ -2592,10 +2592,11 @@ class SAC(Agent):
             im_rewards = im_learn_rewards + im_rollout_rewards
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
-                rewards += im_rewards
+                rewards = extrinsic_rewards + im_rewards
             else:
                 rewards = im_rewards
         else:
+            rewards = extrinsic_rewards
             im_learn_rewards = T.zeros_like(rewards)
             im_rewards = T.zeros_like(rewards)
 
@@ -2793,6 +2794,7 @@ class SAC(Agent):
         critic_b_learning_rate = self.critic_b.optimizer.param_groups[0]['lr']                                                     ###
 
         learn_metrics.update({
+            "extrinsic_rewards": extrinsic_rewards.mean().item(),
             "policy_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
             "td_errors": error.detach().flatten(),
