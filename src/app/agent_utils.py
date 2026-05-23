@@ -169,7 +169,7 @@ def setup_auto_entropy(policy, *, target_entropy_scale=0.98,
                       lr=3e-4, device=None):
     """Build target_entropy / log_alpha / optimizer for auto-tuned entropy."""
     if policy.distribution in ("normal", "beta", "kumaraswamy"):
-        target_entropy = -float(policy.num_actions)
+        target_entropy = target_entropy_scale * -float(policy.num_actions)
     else:  # discrete
         target_entropy = target_entropy_scale * T.log(
             T.tensor(policy.num_actions, dtype=T.float32, device=device)

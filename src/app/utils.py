@@ -3,7 +3,6 @@ import logging
 import os
 import torch as T
 import numpy as np
-from moviepy.editor import ImageSequenceClip
 # from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from gymnasium.envs.registration import EnvSpec
 
@@ -29,40 +28,41 @@ def flatten_dict(d: dict, parent_key: str = '', sep: str = '_') -> dict:
             items.append((new_key, v))
     return dict(items)
 
-def render_video(frames: list, episode: int, save_dir: str, context: str = None) -> None:
-    """
-    Render a video from a list of frames and save it to a file.
+# def render_video(frames: list, episode: int, save_dir: str, context: str = None) -> None:
+#     """
+#     Render a video from a list of frames and save it to a file.
 
-    Args:
-        frames (list): List of frames to render.
-        episode (int): Episode number for naming the output file.
-        save_dir (str): Directory to save the rendered video.
-        context (str): Context for the video (e.g., 'train', 'test').
+#     Args:
+#         frames (list): List of frames to render.
+#         episode (int): Episode number for naming the output file.
+#         save_dir (str): Directory to save the rendered video.
+#         context (str): Context for the video (e.g., 'train', 'test').
 
-    Returns:
-        None
-    """
-    print('rendering episode...')
-    if not isinstance(frames, np.ndarray):
-        frames = np.array(frames)
-    if context == 'train':
-        video_path = os.path.join(save_dir, f"renders/train/episode_{episode}.mp4")
-    elif context == 'test':
-        print('context set to test')
-        video_path = os.path.join(save_dir, f"renders/test/episode_{episode}.mp4")
-        print(f'video path:{video_path}')
-    else:
-        video_path = os.path.join(save_dir, f"renders/episode_{episode}.mp4")
+#     Returns:
+#         None
+#     """
+#     from moviepy.editor import ImageSequenceClip
+#     print('rendering episode...')
+#     if not isinstance(frames, np.ndarray):
+#         frames = np.array(frames)
+#     if context == 'train':
+#         video_path = os.path.join(save_dir, f"renders/train/episode_{episode}.mp4")
+#     elif context == 'test':
+#         print('context set to test')
+#         video_path = os.path.join(save_dir, f"renders/test/episode_{episode}.mp4")
+#         print(f'video path:{video_path}')
+#     else:
+#         video_path = os.path.join(save_dir, f"renders/episode_{episode}.mp4")
 
-    # Ensure the directory exists
-    directory = os.path.dirname(video_path)
-    if not os.path.exists(directory):
-        os.makedirs(directory, exist_ok=True)
+#     # Ensure the directory exists
+#     directory = os.path.dirname(video_path)
+#     if not os.path.exists(directory):
+#         os.makedirs(directory, exist_ok=True)
 
-    fps = 30
-    clip = ImageSequenceClip(list(frames), fps=fps)
-    clip.write_videofile(video_path, codec='libx264')
-    print('episode rendered')
+#     fps = 30
+#     clip = ImageSequenceClip(list(frames), fps=fps)
+#     clip.write_videofile(video_path, codec='libx264')
+#     print('episode rendered')
 
 # def build_env_wrapper_obj(config: dict) -> EnvWrapper:
 #     """

@@ -56,6 +56,20 @@ class TrainingSchedule:
         }[self.learn_every_unit]
         return progress >= last_learn_at + self.learn_every
 
+    def get_config(self) -> dict:
+        return {
+            "stop_unit": self.stop_unit,
+            "stop_units": self.stop_units,
+            "learn_every_unit": self.learn_every_unit,
+            "learn_every": self.learn_every,
+            "updates_per_learn": self.updates_per_learn,
+            "batch_size": self.batch_size,
+            "mini_batch_size": self.mini_batch_size,
+            "learning_epochs": self.learning_epochs,
+            "warmup_steps": self.warmup_steps,
+            "seed": self.seed,
+        }
+
 class Trainer:
     def __init__(
         self,
@@ -104,7 +118,7 @@ class Trainer:
         try:
             if self.callbacks:
                 for callback in self.callbacks:
-                    callback._config(self.agent)
+                    callback._config(self.get_config())
                     if isinstance(callback, WandbCallback):
                         self._wandb = True
 
@@ -157,9 +171,9 @@ class Trainer:
 
         # Set callbacks
         if self.callbacks:
-            self._initialize_callbacks()
-            config = self.agent.get_config()
-            config.update({'num_envs': self.env.num_envs, 'seed': seed})
+            # self._initialize_callbacks()
+            config = self.get_config()
+            # config.update({'num_envs': self.env.num_envs, 'seed': seed})
             config.update(kwargs)
 
             models = [model for model in [getattr(self.agent, "policy", None),
@@ -225,8 +239,8 @@ class Trainer:
             td_errors.detach().flatten().to(self.buffer.device),
         )
 
-        if self._wandb:
-            learn_metrics.update(self._collect_per_metrics(sample, indices))
+        # if self._wandb:
+        learn_metrics.update(self._collect_per_metrics(sample, indices))
 
     def _collect_per_metrics(self, sample: dict, indices: T.Tensor) -> dict:
         # pb = self.buffer  # PrioritizedReplayBuffer
@@ -577,516 +591,13 @@ class Trainer:
 
         self.env.close()
 
-# class OnPolicyTrainer(Trainer):
-#     def __init__(
-#         self,
-#         agent: Agent,
-#         env: EnvWrapper,
-#         buffer: RolloutBuffer|TrajectoryBuffer,
-#         schedule: TrainingSchedule,
-#         renderer: Renderer | None = None,
-#         callbacks: list[Callback] | None = None,
-#         log_level: str = 'INFO',
-#     ):
-#         super().__init__(agent, env, buffer, schedule, renderer, callbacks, log_level)
-        # self._learn_counter = 0
-
-    # def should_learn(self)->bool:
-    #     """Checks if the agent should learn based on the schedule."""
-    #     if self.schedule.learn_unit not in ['timestep', 'trajectory']:
-    #         raise ValueError(f"Invalid learn unit: {self.schedule.learn_unit}")
-    #     elif self.schedule.learn_unit == 'timestep':
-    #         self._learn_counter += self.env.num_envs
-    #         if self._learn_counter >= self.schedule.learn_units:
-    #             self._learn_counter = 0
-    #             return True
-    #     else: # self.schedule.learn_unit == 'trajectory'
-    #         if self._completed_episodes.sum() >= self.schedule.learn_units * (self._learn_counter + 1):
-    #             self._learn_counter += 1
-    #             return True
-    #     return False
-
-    # def learn(self)->dict:
-    #     """Calls Agent.learn() passing samples from the buffer.
-    #     Will also pass batch_size and learning_epochs from the schedule if they are set.
-        
-    #     Returns:
-    #         dict: A dictionary containing the learn metrics.
-    #     """
-    #     learn_metrics = {}
-    #     if self.buffer.is_ready():
-    #         learn_metrics = self.agent.learn(
-    #             self._step, self.buffer.sample(),
-    #             batch_size=self.schedule.batch_size,
-    #             learning_epochs=self.schedule.learning_epochs
-    #         )
-    #     return learn_metrics
-
-    # def get_action(
-    #     self,
-    #     states: np.ndarray | T.Tensor,
-    #     goals: np.ndarray | T.Tensor | None = None,
-    #     context: str = 'train'
-    # ) -> T.Tensor:
-    #     """
-    #     Select an action based on the current policy.
-    #     Returns actions that are already scaled to the environment's action space.
-
-    #     Args:
-    #         states: np.ndarray | T.Tensor: The current states.
-    #         goals: np.ndarray | T.Tensor | None: The current goals.
-    #         context: str: The context of the action (train, test).
-        
-    #     Returns:
-    #         T.Tensor: actions.
-    #     """
-
-    #     return self.agent.act(states, goals, context=context)
-
-        # if context == 'test':
-        #     with T.no_grad():
-        #         dist = self.agent.policy(states, goals)
-        # else:
-        #     dist = self.agent.policy(states, goals)
-        
-        # if context == 'train':
-        #     actions = dist.sample()
-        # elif context == 'test':
-        #     actions = self.agent.policy.get_mean_actions(dist)
-        # else:
-        #     raise ValueError(f"Invalid context: {context}")
-
-        # return actions
-
-    # def step(self, training: bool = True):
-    #     """
-    #     Performs a single step of training/testing.
-        
-    #     Args:
-    #     training: bool: Whether the step is for training or testing.
-        
-    #     Returns:
-    #     dict: A dictionary containing the step metrics.
-    #     """
-    #     # print(f'###STEP {self._step}###')
-    #     step_log = {}
-    #     episode_logs = []
-
-    #     # Normalize observations and goals if normalizers
-    #     obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._prev_obs.states, self._prev_obs.goals, self._prev_obs.ach_goals)
-    #     actions = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
-    #     observation = self.env.step(actions)
-
-    #     dones = T.logical_or(observation.terminations, observation.truncations)
-    #     valid_steps = ~self._prev_done
-       
-        
-    #     # Add normalized transitions to the buffer
-    #     self.buffer.record(observation, self._prev_obs, actions, self._prev_done)
-    #     # self.buffer.add(
-    #     #     states=self._cur_obs.states,
-    #     #     actions=actions,
-    #     #     rewards=observation.rewards,
-    #     #     next_states=observation.states,
-    #     #     terminations=observation.terminations,
-    #     #     truncations=observation.truncations,
-    #     #     state_achieved_goals=self._cur_obs.ach_goals if self._cur_obs.ach_goals is not None else None,
-    #     #     next_state_achieved_goals=observation.ach_goals if observation.ach_goals is not None else None,
-    #     #     desired_goals=self._cur_obs.goals if self._cur_obs.goals is not None else None,
-    #     #     first_steps=self._prev_done,
-    #     # )
-
-    #     # Increment episode steps and rewards
-    #     self._episode_steps[valid_steps] += 1
-    #     self._episode_scores[valid_steps] += observation.rewards[valid_steps].flatten()
-
-    #     # Add step metrics to step log
-    #     step_log.update({
-    #         'step_reward': observation.rewards[valid_steps].mean().item()
-    #     })
-        
-    #     # Check if any env is done
-    #     done_episodes = T.logical_or(observation.terminations, observation.truncations).nonzero(as_tuple=False).flatten()
-
-    #     for i in done_episodes:
-    #         self._completed_episodes[i] += 1
-    #         self._score_history.append(float(self._episode_scores[i].item()))
-    #         avg_reward = sum(self._score_history) / len(self._score_history)
-    #         # check if best reward
-    #         episode_log = {
-    #             'env': i,
-    #             'episode': int(self._completed_episodes.sum()),
-    #             'episode_steps': int(self._episode_steps[i].item()),
-    #             'episode_reward': round(float(self._episode_scores[i]), 2),
-    #             'avg_reward': round(float(avg_reward), 2)
-    #         }
-    #         if training:
-    #             # Check if best reward
-    #             if avg_reward > self._best_reward:
-    #                 self._best_reward = avg_reward
-    #                 self.agent.save()
-    #         episode_logs.append(episode_log)
-
-    #     # set _cur_obs to observation
-    #     self._prev_done = dones.clone()
-    #     self._prev_obs = observation
-
-    #     return{
-    #     'step_log': step_log,
-    #     'episode_logs': episode_logs,
-    # }
-
-    # def train(self):
-    #     """Trains On-Policy Agent following the Schedule."""
-    #     self.initialize_run(context="train")
-    #     # Set internal learn counter for timestep based learning
-
-    #     # Initialize Rich Console
-    #     console = Console()
-    #     start_time = time.time()
-
-    #     with Live(console=console, refresh_per_second=8, transient=True) as live:
-    #         while not self.schedule.is_done(step=self._step, episodes=self._completed_episodes.sum().item()):
-
-    #             step_result =self.step(training=True)
-    #             self._step += self.env.num_envs
-    #             self.add_to_normalizers()
-    #             self.update_schedulers()
-
-    #             if self.schedule.should_learn(
-    #                 step=self._step,
-    #                 episodes=self._completed_episodes.sum().item(),
-    #                 last_learn_at=self._last_learn
-    #             ):
-    #                 learn_metrics = self.learn()
-    #                 step_result['step_log'].update(learn_metrics)
-
-    #                 # Update normalizers
-    #                 self.update_normalizers()
-
-    #                 # Set learn gate
-    #                 self._last_learn = {
-    #                     "timestep": self._step,
-    #                     "episode": self._completed_episodes.sum().item(),
-    #                 }[self.schedule.learn_every_unit]
-
-    #             if self.callbacks:
-    #                 for callback in self.callbacks:
-    #                     callback.on_train_step_end(self._step, step_result['step_log'])
-
-    #             # Calculate metrics for dashboard
-    #             elapsed = time.time() - start_time
-    #             completed_episodes = self._completed_episodes.sum().item()
-    #             episodes_per_sec = completed_episodes / elapsed if elapsed > 0 else 0.0
-    #             avg_reward = sum(self._score_history) / len(self._score_history) if self._score_history else 0.0
-
-    #             # Build table and update
-    #             table = Table(
-    #                 title="Live Training Dashboard",
-    #                 expand=True,
-    #                 highlight=True,
-    #                 border_style="bold blue"
-    #             )
-    #             table.add_column("Steps", justify="right", style="cyan")
-    #             table.add_column("Episodes", justify="right", style="green")
-    #             table.add_column("Avg Reward", justify="right", style="magenta")
-    #             table.add_column("Episodes/sec", justify="right", style="yellow")
-    #             table.add_column("Elapsed", justify="right", style="dim")
-    #             table.add_row(
-    #                 f"{self._step:,}",
-    #                 f"{completed_episodes:,}",
-    #                 f"{avg_reward:.2f}",
-    #                 f"{episodes_per_sec:.2f}",
-    #                 str(timedelta(seconds=int(elapsed)))
-    #             )
-    #             live.update(table)
-
-    #             for episode_log in step_result['episode_logs']:
-    #                 # Reset episode score and step count to 0
-    #                 self._episode_scores[episode_log['env']] = 0
-    #                 self._episode_steps[episode_log['env']] = 0
-    #                 if self.renderer and self.renderer.should_render(episode_log['episode']):
-    #                     # Set normalizers to eval mode
-    #                     self.set_normalizers(context="test")
-    #                     self.renderer.render_episode(self, episode_log['episode'], self._step, context='train', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
-    #                     # Set normalizers to train mode
-    #                     self.set_normalizers(context="train")
-    #                 if self.callbacks:
-    #                     for callback in self.callbacks:
-    #                         callback.on_train_epoch_end(self._step, episode_log)
-
-    #     if self.callbacks:
-    #         for episode_log in step_result['episode_logs']:
-    #             for callback in self.callbacks:
-    #                 callback.on_train_end(episode_log)
-
-    #     self.env.close()
-
-# class OffPolicyTrainer(Trainer):
-#     def __init__(
-#         self,
-#         agent: Agent,
-#         env: EnvWrapper,
-#         buffer: ReplayBuffer|PrioritizedReplayBuffer,
-#         schedule: TrainingSchedule,
-#         renderer: Renderer | None = None,
-#         callbacks: list[Callback] | None = None,
-#         log_level: str = 'INFO',
-#     ):
-#         super().__init__(agent, env, buffer, schedule, renderer, callbacks, log_level)
-        # self._learn_counter = 0
-
-    # def reset_noise(self):
-    #     """
-    #     Resets any noise objects with a reset function on the agent
-    #     """
-    #     if hasattr(self.agent, 'noise'):
-    #         if hasattr(self.agent.noise, 'reset'):
-    #             self.agent.noise.reset()
-    #     if hasattr(self.agent, 'target_noise'):
-    #         if hasattr(self.agent.target_noise, 'reset'):
-    #             self.agent.target_noise.reset()
-
-    # def learn(self)->dict:
-    #     """
-    #     Calls Agent.learn() schedule.update times, passing samples from the buffer.
-        
-    #     Returns:
-    #         dict: A dictionary containing the learn metrics.
-    #     """
-    #     learn_metrics = {}
-    #     total_samples = self.schedule.updates_per_learn * self.schedule.batch_size
-    #     if self.buffer.is_ready(samples = total_samples):
-    #         samples = self.buffer.sample(samples = total_samples)
-    #         if self.schedule.updates_per_learn == 1:
-    #             learn_metrics = self.agent.learn(self._step, samples)
-    #         else:
-    #             for update in range(self.schedule.updates_per_learn):
-    #                 lo_idx = update * self.schedule.batch_size
-    #                 hi_idx = lo_idx + self.schedule.batch_size
-    #                 sample = {k: (v[lo_idx:hi_idx] if v is not None else None) for k, v in samples.items()}
-    #                 learn_metrics = self.agent.learn(self._step, sample)
-    #     return learn_metrics
-
-    # def get_action(self,
-    #     states: np.ndarray|T.Tensor,
-    #     goals: np.ndarray|T.Tensor|None=None,
-    #     context: str = 'train'
-    # )->T.Tensor:
-    #     """
-    #     Select an action based on the current policy.
-
-    #     Args:
-    #         states: np.ndarray | T.Tensor: The current states.
-    #         goals: np.ndarray | T.Tensor | None: The current goals.
-    #         context: str: The context of the action (train, test).
-        
-    #     Returns:
-    #         T.Tensor: actions.
-    #     """
-
-    #     return self.agent.act(states, goals, context=context, step=self._step)
-        # # raw_actions = None
-        
-        # # If training
-        # if context == 'train':
-        #     # If warmup, sample random action from action space
-        #     if (self._step is not None) and (self._step <= self.agent.warmup):
-        #         return self.env.action_space.sample()
-        #     # if random number is less than epsilon, sample random action
-        #     if np.random.random() < self.agent.action_epsilon:
-        #         return self.env.action_space.sample()
-        #     # otherwise, sample action from policy
-        #     else:
-        #         noise = self.agent.noise(self.env.action_space.shape)
-        #         # Apply noise clipping if needed
-        #         if self.agent.noise_clip > 0:
-        #             noise = noise.clamp(-self.agent.noise_clip, self.agent.noise_clip)
-        #         # Apply noise schedule if needed
-        #         if self.agent.noise_schedule:
-        #             noise *= self.agent.noise_schedule.get_factor()
-                
-        #         with T.no_grad():
-        #             _, actions = self.agent.policy(states, goals)
-                
-        #         # Convert the action space bounds to a tensor on the same device
-        #         action_space_high = T.tensor(self.env.action_space.high, dtype=T.float32, device=self.agent.policy.device)
-        #         action_space_low = T.tensor(self.env.action_space.low, dtype=T.float32, device=self.agent.policy.device)
-        #         actions = (actions + noise).clip(action_space_low, action_space_high)
-
-        #         return actions.detach()
-
-        # else: # context == 'test'
-        #     with T.no_grad():
-        #         _, actions = self.agent.target_policy(states, goals)
-        #     return actions.detach()
-
-        # else: # learn
-        #     raw_actions, squashed_actions = self.agent.policy(states, goals)
-        #     return squashed_actions, raw_actions
-
-    # def step(self, training: bool = True):
-    #     """
-    #     Performs a single step of training/testing.
-
-    #     Args:
-    #     training: bool: Whether the step is for training or testing.
-
-    #     Returns:
-    #     dict: A dictionary containing the step metrics.
-    #     """
-    #     step_log = {}
-    #     episode_logs = []
-
-    #     # Normalize observations and goals if normalizers
-    #     obs_norm, goals_norm, ach_goals_norm = self.normalize_inputs(self._prev_obs.states, self._prev_obs.goals, self._prev_obs.ach_goals)
-
-    #     actions = self.get_action(obs_norm, goals_norm, context='train' if training else 'test')
-    #     observation = self.env.step(actions)
-
-    #     # if observation.n_step_trajectory is not None:
-    #     #     self.buffer.add(**observation.n_step_trajectory)
-    #     self.buffer.record(observation, self._prev_obs, actions, self._prev_done)
-    #     # else:
-    #     #     raise ValueError("n-step trajectory is None. Must use VectorNStepReward wrapper when using OffPolicyTrainer.")
-    #     # else:
-    #     #     # Add single transitions to the buffer
-    #     #     self.buffer.add(
-    #     #         states=self._cur_obs.states,#[valid],
-    #     #         actions=actions,#[valid],
-    #     #         rewards=observation.rewards,#[valid],
-    #     #         next_states=observation.states,#[valid],
-    #     #         terminations=observation.terminations,#[valid],
-    #     #         truncations=observation.truncations,#[valid],
-    #     #         state_achieved_goals=self._cur_obs.ach_goals,#[valid],
-    #     #         next_state_achieved_goals=observation.ach_goals,#[valid],
-    #     #         desired_goals=self._cur_obs.goals#[valid],
-    #     #     )
-
-    #     # Increment episode step and rewards
-    #     self._episode_steps += 1
-    #     self._episode_scores += observation.rewards.flatten()
-    #     # Add step metrics to step log
-    #     step_log.update({
-    #         'step_reward': observation.rewards.mean().item()
-    #     })
-
-    #     # Check if any env is done
-    #     done_episodes = T.logical_or(observation.terminations, observation.truncations).nonzero(as_tuple=False).flatten()
-
-    #     for i in done_episodes:
-    #         self._completed_episodes[i] += 1
-    #         self._score_history.append(float(self._episode_scores[i].item()))
-    #         avg_reward = sum(self._score_history) / len(self._score_history)
-    #         # check if best reward
-    #         episode_log = {
-    #             'env': i,
-    #             'episode': int(self._completed_episodes.sum()),
-    #             'episode_steps': int(self._episode_steps[i].item()),
-    #             'episode_reward': round(float(self._episode_scores[i]), 2),
-    #             'avg_reward': round(float(avg_reward), 2)
-    #         }
-    #         if training:
-    #             # Check if best reward
-    #             if avg_reward > self._best_reward:
-    #                 self._best_reward = avg_reward
-    #                 self.agent.save()
-    #         episode_logs.append(episode_log)
-
-    #     # set _cur_obs to observation
-    #     self._prev_obs = observation
-    #     # self._prev_done = T.logical_or(observation.terminations, observation.truncations)
-
-    #     return{
-    #     'step_log': step_log,
-    #     'episode_logs': episode_logs,
-    #     }
-
-    # def train(self):
-    #     """Trains On-Policy Agent following the Schedule."""
-    #     self.initialize_run(context="train")
-    #     # Set internal learn counter for timestep based learning
-
-    #     # Initialize Rich Console
-    #     console = Console()
-    #     start_time = time.time()
-
-    #     with Live(console=console, refresh_per_second=8, transient=True) as live:
-    #         while not self.schedule.is_done(step=self._step, episodes=self._completed_episodes.sum().item()):
-                
-    #             step_result = self.step(training=True)
-    #             self._step += self.env.num_envs
-    #             self.add_to_normalizers()
-    #             self.update_schedulers()
-
-    #             if self.schedule.should_learn(
-    #                 step=self._step,
-    #                 episodes=self._completed_episodes.sum().item(),
-    #                 last_learn_at=self._last_learn
-    #             ):
-    #                 learn_metrics = self.learn()
-    #                 step_result['step_log'].update(learn_metrics)
-
-    #                 # Update target networks
-    #                 self.agent.soft_update_targets()
-
-    #                 # Update normalizers
-    #                 self.update_normalizers()
-
-    #                 # Set learn gate
-    #                 self._last_learn = {
-    #                     "timestep": self._step,
-    #                     "episode": self._completed_episodes.sum().item(),
-    #                 }[self.schedule.learn_every_unit]
-
-    #             if self.callbacks:
-    #                 for callback in self.callbacks:
-    #                     callback.on_train_step_end(self._step, step_result['step_log'])
-
-    #             # Calculate metrics for dashboard
-    #             elapsed = time.time() - start_time
-    #             completed_episodes = self._completed_episodes.sum().item()
-    #             episodes_per_sec = completed_episodes / elapsed if elapsed > 0 else 0.0
-    #             avg_reward = sum(self._score_history) / len(self._score_history) if self._score_history else 0.0
-
-    #             # Build table and update
-    #             table = Table(
-    #                 title="Live Training Dashboard",
-    #                 expand=True,
-    #                 highlight=True,
-    #                 border_style="bold blue"
-    #             )
-    #             table.add_column("Steps", justify="right", style="cyan")
-    #             table.add_column("Episodes", justify="right", style="green")
-    #             table.add_column("Avg Reward", justify="right", style="magenta")
-    #             table.add_column("Episodes/sec", justify="right", style="yellow")
-    #             table.add_column("Elapsed", justify="right", style="dim")
-    #             table.add_row(
-    #                 f"{self._step:,}",
-    #                 f"{completed_episodes:,}",
-    #                 f"{avg_reward:.2f}",
-    #                 f"{episodes_per_sec:.2f}",
-    #                 str(timedelta(seconds=int(elapsed)))
-    #             )
-    #             live.update(table)
-
-    #             for episode_log in step_result['episode_logs']:
-    #                 # Reset episode score and step count to 0
-    #                 self._episode_scores[episode_log['env']] = 0
-    #                 self._episode_steps[episode_log['env']] = 0
-    #                 if self.renderer and self.renderer.should_render(episode_log['episode']):
-    #                     # Set normalizers to eval mode
-    #                     self.set_normalizers(context="test")
-    #                     self.renderer.render_episode(self, episode_log['episode'], self._step, context='train', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
-    #                     # Set normalizers to train mode
-    #                     self.set_normalizers(context="train")
-    #                 if self.callbacks:
-    #                     for callback in self.callbacks:
-    #                         callback.on_train_epoch_end(self._step, episode_log)
-
-    #     if self.callbacks:
-    #         for episode_log in step_result['episode_logs']:
-    #             for callback in self.callbacks:
-    #                 callback.on_train_end(episode_log)
-
-    #     self.env.close()
+    def get_config(self) -> dict:
+        return {
+            'agent': self.agent.get_config(),
+            'env': self.env.config,
+            'buffer': self.buffer.get_config(),
+            'schedule': self.schedule.get_config(),
+            'renderer': self.renderer.get_config() if self.renderer else None,
+            'callbacks': [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
+            'save_dir': self.save_dir,
+        }

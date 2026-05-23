@@ -54,7 +54,7 @@ ipywidgets = "^8.1.0"
 decorator = "==4.0.2"
 expecttest = "^0.3.0"
 optree = ">=0.9.1"
-wandb = "^0.16.4"
+wandb = "^0.27.0"
 gymnasium = {extras = ["mujoco", "atari", "box2d", "classic-control", "toy-text", "other"], version = "==1.2.0"}
 envpool = ">=1.0.1"
 

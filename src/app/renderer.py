@@ -5,7 +5,6 @@ import logging
 import numpy as np
 import torch as T
 import wandb
-from moviepy.editor import ImageSequenceClip
 
 from .env_wrapper import EnvWrapper, IsaacSimWrapper, GymnasiumWrapper, EnvPoolWrapper
 from .rl_callbacks import WandbCallback
@@ -93,7 +92,8 @@ class Renderer:
         render_env.close()
 
     def _save_video(self, frames: list, episode: int, context: str):
-        """Moved from utils.py — now inside Renderer."""
+        """Save a video to the save_dir."""
+        import imageio.v2 as imageio
 
         if not isinstance(frames, np.ndarray):
             frames = np.array(frames)
@@ -103,8 +103,13 @@ class Renderer:
         os.makedirs(video_dir, exist_ok=True)
         video_path = os.path.join(video_dir, f"episode_{episode}.mp4")
 
-        clip = ImageSequenceClip(list(frames), fps=self.fps)
-        clip.write_videofile(video_path, codec=self.codec, verbose=False, logger=None)
+        imageio.mimwrite(
+            video_path,
+            frames,
+            fps=self.fps,
+            codec=self.codec,
+            macro_block_size=1,
+        )
         self.logger.info(f"✅ Episode {episode} rendered → {video_path}")
 
     def should_render(self, episode: int) -> bool:
@@ -112,3 +117,11 @@ class Renderer:
         if self.render_freq <= 0:
             return False
         return episode % self.render_freq == 0
+
+    def get_config(self) -> dict:
+        return {
+            "render_freq": self.render_freq,
+            "save_dir": self.save_dir,
+            "fps": self.fps,
+            "codec": self.codec,
+        }

@@ -143,13 +143,6 @@ class Model(nn.Module):
         # Initialize weights after lazy modules are materialized
         self._init_weights(layer_config, module_dict)
 
-        # Now that parameters exist, create the optimizer
-        self.optimizer = self._init_optimizer(module_dict.parameters())
-        
-        # If lr scheduler, bind the optimizer to it
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.attach_optimizer(self.optimizer)
-
     def _build_layer(self, layer_type, params):
         """
         Build a specific layer based on its type and parameters.
@@ -493,6 +486,13 @@ class StochasticDiscretePolicy(Model):
         # initialize params
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
+        
+        # Now that parameters exist, create the optimizer
+        self.optimizer = self._init_optimizer(self.parameters())
+        
+        # If lr scheduler, bind the optimizer to it
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
         """
@@ -659,6 +659,13 @@ class StochasticContinuousPolicy(Model):
         # initialize params
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
+
+        # Now that parameters exist, create the optimizer
+        self.optimizer = self._init_optimizer(self.parameters())
+        
+        # If lr scheduler, bind the optimizer to it
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
         """
@@ -844,6 +851,13 @@ class ValueModel(Model):
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
 
+        # Now that parameters exist, create the optimizer
+        self.optimizer = self._init_optimizer(self.parameters())
+        
+        # If lr scheduler, bind the optimizer to it
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.attach_optimizer(self.optimizer)
+
     def forward(self, x, goal=None):
         """
         Perform a forward pass through the model.
@@ -982,6 +996,13 @@ class ActorModel(Model):
         # initialize params
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
+
+        # Now that parameters exist, create the optimizer
+        self.optimizer = self._init_optimizer(self.parameters())
+        
+        # If lr scheduler, bind the optimizer to it
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
         x = self._preprocess_state(x)
@@ -1151,6 +1172,13 @@ class ContinuousCritic(BaseCritic):
         self._init_model(self.merged_layers, self.merged_config)
         self._init_model(self.output_layer, self.output_config)
 
+        # Now that parameters exist, create the optimizer
+        self.optimizer = self._init_optimizer(self.parameters())
+        
+        # If lr scheduler, bind the optimizer to it
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.attach_optimizer(self.optimizer)
+
     def forward(self, state, action, goal=None):
          # Preprocess state to ensure correct formatting
         state = self._preprocess_state(state)
@@ -1283,6 +1311,13 @@ class DiscreteCritic(BaseCritic):
         # initialize params
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
+
+        # Now that parameters exist, create the optimizer
+        self.optimizer = self._init_optimizer(self.parameters())
+        
+        # If lr scheduler, bind the optimizer to it
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, state, goal=None):
          # Preprocess state to ensure correct formatting
