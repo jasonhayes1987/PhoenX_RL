@@ -515,8 +515,7 @@ class ICM(IntrinsicMotivation):
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
 
-        sched = (ScheduleWrapper(**config['im_reward_scheduler'])
-                 if config.get('im_reward_scheduler') else None)
+        sched = ScheduleWrapper(**config['reward_scheduler']) if config.get('reward_scheduler') else None
 
         ir_norm = None
         if config.get('reward_normalizer'):
@@ -715,8 +714,7 @@ class RND(IntrinsicMotivation):
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
 
-        sched = (ScheduleWrapper(**config['im_reward_scheduler'])
-                 if config.get('im_reward_scheduler') else None)
+        sched = ScheduleWrapper(**config['reward_scheduler']) if config.get('reward_scheduler') else None
 
         ir_norm = None
         if config.get('reward_normalizer'):
@@ -991,8 +989,7 @@ class EpisodicNovelty(IntrinsicMotivation):
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
 
-        sched = (ScheduleWrapper(**config['im_reward_scheduler'])
-                 if config.get('reward_scheduler') else None)
+        sched = ScheduleWrapper(**config['reward_scheduler']) if config.get('reward_scheduler') else None
 
         ir_norm = None
         if config.get('reward_normalizer'):
@@ -1245,9 +1242,9 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         for c in self.components:
             c.set_normalizers_mode(context)
 
-    @property
-    def is_online(self) -> bool:
-        return any(c.is_online for c in self.components)
+    # @property
+    # def is_online(self) -> bool:
+    #     return any(c.is_online for c in self.components)
 
     def save(self, folder) -> None:
         comp_root = Path(folder) / 'intrinsic_motivation'

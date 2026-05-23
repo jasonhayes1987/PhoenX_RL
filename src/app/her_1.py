@@ -67,7 +67,7 @@ On-policy with TrajectoryBuffer (PPO/A2C):
     buffer = TrajectoryBuffer(env, buffer_size=2048, relabeler=relabeler)
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -146,12 +146,12 @@ class HindsightRelabeler:
         strategy: str = "future",
         num_goals: int = 4,
         output_format: str = "n_step",
-        N: Optional[int] = None,
+        N: int | None = None,
         gamma: float = 0.99,
-        device: Optional[Union[str, T.device]] = None,
+        device: str | T.device | None = None,
         relabel_terminations: bool = False,
         future_lo: str = "inclusive",
-        goal_pool: Optional[AchievedGoalPool] = None,
+        goal_pool: AchievedGoalPool | None = None,
     ):
         # --- Validate config -------------------------------------------------
         if strategy not in self._VALID_STRATEGIES:
@@ -235,7 +235,7 @@ class HindsightRelabeler:
         self,
         episode: Dict[str, T.Tensor],
         T_ep: int,
-    ) -> Optional[Dict[str, T.Tensor]]:
+    ) -> Dict[str, T.Tensor] | None:
         """Per-step goal sampling → padded (M, N, *feat) windows dict."""
         starts, new_goals = self._sample_per_step_goals(episode, T_ep)
         if starts.numel() == 0:
@@ -521,7 +521,7 @@ class HindsightRelabeler:
         )
 
     @staticmethod
-    def _resolve_distance_threshold(env: EnvWrapper) -> Optional[float]:
+    def _resolve_distance_threshold(env: EnvWrapper) -> float | None:
         """Best-effort lookup of env.distance_threshold (only used by relabel_terminations=True)."""
         try:
             base = env.get_base_env() if hasattr(env, "get_base_env") else None

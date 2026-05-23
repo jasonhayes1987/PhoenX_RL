@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
-os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
-import ray
+# os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+# import ray
 import json
 from typing import Optional
 import numpy as np
@@ -90,7 +90,7 @@ class WandbCallback(Callback):
         # self.chkpt_freq = chkpt_freq
         # self._sweep = _sweep
         self.save_dir = None
-        self.model_type = None
+        # self.model_type = None
         self.initialized = False
 
     def _ensure_wandb_login(self) -> None:
@@ -110,6 +110,9 @@ class WandbCallback(Callback):
             raise ValueError("WANDB_API_KEY not found. Please set the WANDB_API_KEY environment variable or create a wandb_api_key file in the app directory.")
 
     def initialize_run(self, logs: dict, models: list[T.nn.Module] = None, run_number: Optional[int] = None, run_name_prefix:Optional[str] = None, tags: list[str]=[], job_type: str="train"):
+        # Set save dir
+        self.save_dir = logs['save_dir']
+        
         # Only get a new run number if we're initializing and none was provided
         if run_number is None:
             run_number = wandb_support.get_next_run_number(self.project_name)
@@ -117,7 +120,7 @@ class WandbCallback(Callback):
         run = wandb.init(
             project=self.project_name,
             name=f"{run_name_prefix}-{run_number}",
-            tags=tags.append(self.model_type),
+            tags=tags.append(logs['agent']['type']),
             group=f"group-{run_number}",
             job_type=job_type,
             config=logs,
@@ -182,10 +185,10 @@ class WandbCallback(Callback):
             logs = {}
         wandb.log(logs, step=step)
 
-    def _config(self, agent):
-        """Configures callback internal state for wandb integration."""
-        self.model_type = type(agent).__name__
-        self.save_dir = agent.save_dir
+    # def _config(self, agent):
+    #     """Configures callback internal state for wandb integration."""
+    #     self.model_type = type(agent).__name__
+    #     self.save_dir = agent.save_dir
 
     def get_config(self):
         return {
@@ -197,8 +200,13 @@ class WandbCallback(Callback):
             }
         }
 
-    def save(self, folder: str = "wandb_config.json"):
+    def save(self, folder: str | Path | None = None):
         """Save model."""
+        if folder is None:
+            folder = Path(self.save_dir) / "wandb_config.json"
+        else:
+            folder = Path(folder) / "wandb_config.json"
+        os.makedirs(folder.parent, exist_ok=True)
         wandb_config = self.get_config()
         with open(folder, "w", encoding="utf-8") as f:
             json.dump(wandb_config, f)
