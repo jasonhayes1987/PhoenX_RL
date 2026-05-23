@@ -2557,6 +2557,7 @@ class SAC(Agent):
             entropy_coefficient = self.log_alpha.exp()
         else:
             entropy_coefficient = self.entropy_coefficient
+            # Apply scheduling to entropy coefficient
             if self.entropy_schedule:
                 entropy_coefficient *= self.entropy_schedule.get_factor()
 
@@ -2735,7 +2736,7 @@ class SAC(Agent):
             entropy = -(dist.probs * log_probs).sum(dim=-1)
         if self.auto_entropy_tuning:
             self.entropy_optimizer.zero_grad()
-            alpha_loss = -(self.log_alpha * (-entropy + self.target_entropy).detach()).mean()
+            alpha_loss = -(self.log_alpha * (-entropy.mean() + self.target_entropy).detach())
             alpha_loss.backward()
             self.entropy_optimizer.step()
 

@@ -1,7 +1,7 @@
 # SAC config template
 
 device: &device cuda
-save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3/SAC/
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLanderContinuous-v3_d/SAC/
 log_level: INFO
 
 schedule:
@@ -9,9 +9,9 @@ schedule:
   stop_units: &stop_units 1000000
   learn_every_unit: timestep
   learn_every: 64
-  updates_per_learn: 64
+  updates_per_learn: 1
   batch_size: 256
-  warmup_steps: 10000
+  warmup_steps: 20000
   seed: &seed 42
 
 agent:
@@ -30,11 +30,11 @@ agent:
         - type: dense
           params: {kernel: default, kernel_params: {}}
       optimizer_params: {type: Adam, params: {lr: &policy_lr 0.00073}}
-      # lr_scheduler:
-      #   schedule_type: "linear"
-      #   steps: *stop_units
-      #   start_value: *policy_lr
-      #   end_value: 0.0
+      lr_scheduler:
+        schedule_type: "linear"
+        steps: *stop_units
+        start_value: *policy_lr
+        end_value: 0.0
       distribution: normal
       # temperature: &temperature 1.0 # Categorical dist only
       device: *device
@@ -51,11 +51,11 @@ agent:
         - type: dense
           params: {kernel: default, kernel_params: {}}
       optimizer_params: {type: Adam, params: {lr: &critic_lr 0.00073}}
-      # lr_scheduler:
-      #   schedule_type: "linear"
-      #   steps: *stop_units
-      #   start_value: *critic_lr
-      #   end_value: 0.0
+      lr_scheduler:
+        schedule_type: "linear"
+        steps: *stop_units
+        start_value: *critic_lr
+        end_value: 0.0
       device: *device
     discount: 0.99
     tau: 0.01
@@ -68,28 +68,28 @@ agent:
         log_level: DEBUG
         # kwargs
         _diag_freq: 1000
-    reward_normalizer:
-      type: RewardNorm
-      config:
-        name: SAC.RewardNormalizer
-        gamma: 0.99
-        clip_value: 10.0
-        device: *device
-        log_level: DEBUG
-        # kwargs
-        _diag_freq: 1000
-    # entropy_coefficient: &entropy_coefficient 0.01
+    # reward_normalizer:
+    #   type: RewardNorm
+    #   config:
+    #     name: SAC.RewardNormalizer
+    #     gamma: 0.99
+    #     clip_value: 5.0
+    #     device: *device
+    #     log_level: DEBUG
+    #     # kwargs
+    #     _diag_freq: 1000
+    # entropy_coefficient: &entropy_coefficient 0.00
     # entropy_schedule:
     #   schedule_type: "cosine"
     #   steps: *stop_units
     #   start_value: *entropy_coefficient
-    #   end_value: 0.001
+    #   end_value: 0.01
     auto_entropy_tuning: true
-    entropy_lr: 0.0003
+    entropy_lr: 0.0001
     target_entropy_scale: 1.0
-    policy_grad_clip: 40.0
-    critic_grad_clip: 40.0
-    N: &n 3
+    policy_grad_clip: 10.0
+    critic_grad_clip: 10.0
+    N: &n 1
     # intrinsic_motivation:
     #   type: ICM
     #   config:
@@ -141,7 +141,7 @@ agent:
     #         log_level: DEBUG
     #         # kwargs
     #         _diag_freq: 1000
-        # device: *device
+    #     device: *device
     # intrinsic_motivation:
     #   type: RND
     #   config:
@@ -172,7 +172,7 @@ agent:
     #       }
     #     }
     #     optimizer_params: {type: Adam, params: {lr: 1.0e-4}}
-    #     reward_weight: &im_reward_weight 0.2
+    #     reward_weight: &im_reward_weight 1.0
     #     reward_scheduler:
     #       schedule_type: linear
     #       steps: *stop_units
@@ -194,7 +194,7 @@ agent:
     _diag_freq: 1000
 
 env:
-  type: envpool
+  type: gymnasium
   config:
     cfg: LunarLanderContinuous-v3
     num_envs: 64
@@ -205,26 +205,26 @@ env:
     render_mode: null
     seed: *seed
 
-buffer:
-  type: PrioritizedReplayBuffer
-  config:
-    buffer_size: 100000
-    alpha: 0.6
-    beta_start: 0.4
-    beta_iter: 100000
-    beta_update_freq: 10
-    priority: proportional
-    epsilon: 1.0e-6
-    sort_freq: 1000
-    N: *n
-    device: *device
-
 # buffer:
-#   type: ReplayBuffer
+#   type: PrioritizedReplayBuffer
 #   config:
-#     buffer_size: 1000000
+#     buffer_size: 100000
+#     alpha: 0.6
+#     beta_start: 0.4
+#     beta_iter: 100000
+#     beta_update_freq: 10
+#     priority: proportional
+#     epsilon: 1.0e-4
+#     sort_freq: 1000
 #     N: *n
 #     device: *device
+
+buffer:
+  type: ReplayBuffer
+  config:
+    buffer_size: 1000000
+    N: *n
+    device: *device
 
 renderer:
   render_freq: 500
