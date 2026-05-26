@@ -209,6 +209,7 @@ class Trainer:
         self._last_learn = 0
 
     def _find_nstep_wrapper(self, env: EnvWrapper) -> VectorNStepReward | None:
+        """Finds the VectorNStepReward wrapper in the environment chain."""
         while env is not None:
             if isinstance(env, VectorNStepReward):
                 return env
@@ -380,15 +381,19 @@ class Trainer:
 
         # Normalize observations and goals if normalizers
         obs_norm = self.normalize_observation(self._prev_obs)
-        actions = self.get_action(obs_norm.states, obs_norm.goals, context='train' if training else 'test')
+        action = self.get_action(obs_norm.states, obs_norm.goals, context='train' if training else 'test')
+        # If using n-step, feed VectorNStepReward wrapper Action data
+        nstep_wrapper = self._find_nstep_wrapper(self.env)
+        if nstep_wrapper is not None:
+            nstep_wrapper.set_action(action)
         # Take action in environment and get new Observation
-        observation = self.env.step(actions)
+        observation = self.env.step(action.actions)
         # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer
         im = getattr(self.agent, 'intrinsic_motivation', None)
         if im is not None:
             # Pass normalized states to IM if present
             next_obs_norm = self.normalize_observation(observation)
-            intrinsic_rewards = im.compute_rollout_reward(obs_norm.states, next_obs_norm.states, actions, env_indices = T.arange(self.env.num_envs, device=im.device))
+            intrinsic_rewards = im.compute_rollout_reward(obs_norm.states, next_obs_norm.states, action.actions, env_indices = T.arange(self.env.num_envs, device=im.device))
             # observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
         else:
             intrinsic_rewards = T.zeros_like(observation.rewards)
@@ -399,7 +404,7 @@ class Trainer:
        
         
         # Add transitions to the buffer (non-normalized)
-        self.buffer.record(observation, prev_observation = self._prev_obs, actions = actions, prev_dones = self._prev_done)
+        self.buffer.record(observation, prev_observation = self._prev_obs, actions = action, prev_dones = self._prev_done)
 
         # Increment episode steps and rewards
         self._episode_steps[valid_steps] += 1

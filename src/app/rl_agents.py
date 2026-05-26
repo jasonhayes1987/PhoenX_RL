@@ -32,7 +32,7 @@ from .noise import Noise, NormalNoise, UniformNoise
 import wandb
 from . import wandb_support
 from .torch_utils import set_seed, get_device, move_to_device, VarianceScaling_
-from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, Action
 # from utils import render_video, build_env_wrapper_obj, check_for_inf_or_NaN
 from .utils import *
 
@@ -2483,7 +2483,7 @@ class SAC(Agent):
         context: str = 'train',
         step: int | None = None,
         warmup: int | None = None
-    ) -> T.Tensor | np.ndarray:
+    ) -> Action:
         """
         Select an action based on the current policy.
 
@@ -2495,27 +2495,31 @@ class SAC(Agent):
             warmup: int | None: The warmup steps.
 
         Returns:
-            T.Tensor | np.ndarray: actions.
+            Action: actions.
         """
 
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
-                return self.policy.env.action_space.sample()
+                actions = self.policy.env.action_space.sample()
+                log_probs = T.log(T.ones_like(actions) * (1/self.policy.num_actions))
             # otherwise, sample action from policy
-            with T.no_grad():
-                dist = self.policy(states, goals)
-                actions = dist.sample()
+            else:
+                with T.no_grad():
+                    dist = self.policy(states, goals)
+                    actions = dist.sample()
+                    log_probs = dist.log_prob(actions)
 
         elif context == 'test':
             with T.no_grad():
                 dist = self.policy(states, goals)
                 actions = self.policy.get_mean_actions(dist)
+                log_probs = dist.log_prob(actions)
 
         else:
             raise ValueError(f"Invalid context: {context}")
 
-        return actions
+        return Action(actions, log_probs=log_probs)
 
     def soft_update_targets(self):
         soft_update(self.critic, self.target_critic, self.tau)
@@ -2533,6 +2537,7 @@ class SAC(Agent):
         # Unpack trajectory
         states = sample["states"]
         actions = sample["actions"]
+        buf_log_probs = sample["log_probs"]
         extrinsic_rewards = sample["rewards"]
         im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]

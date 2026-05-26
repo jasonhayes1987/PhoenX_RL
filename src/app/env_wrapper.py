@@ -44,6 +44,12 @@ class Observation:
     n_step_trajectory: dict | None = None
     infos: dict | None = None
 
+@dataclass
+class Action:
+    actions: T.Tensor
+    raw_actions: T.Tensor | None = None
+    log_probs: T.Tensor | None = None
+
 class NStepReward(gym.Wrapper):
     def __init__(self, env, n, discount=0.99):
         """Initialize the wrapper with the environment and number of steps to track.
@@ -246,6 +252,8 @@ class VectorNStepReward(VectorWrapper):
         # Buffer storage (shape/dtype inferred from the first real step)
         self._buf_states = None
         self._buf_actions = None
+        self._buf_raw_actions = None
+        self._buf_log_probs = None
         self._buf_rewards = None
         self._buf_intrinsic_rewards = None
         self._buf_next_states = None
@@ -261,6 +269,14 @@ class VectorNStepReward(VectorWrapper):
         self._t_idx = T.arange(self.n, device=self.device)
         self._env_idx = T.arange(self.num_envs, device=self.device)
         self._env_idx_nx1 = self._env_idx.unsqueeze(1).expand(self.num_envs, self.n)
+
+    def set_action(self, action: Action) -> None:
+        """Sets the action data for the current step.
+
+        Args:
+            action: The action to set.
+        """
+        self.current_action = action
 
     def set_intrinsic_motivation(self, intrinsic_motivation: "IntrinsicMotivation") -> None:
         self.intrinsic_motivation = intrinsic_motivation
@@ -284,6 +300,8 @@ class VectorNStepReward(VectorWrapper):
 
         # Ensure tensors
         actions = T.as_tensor(actions, device=self.device)
+        raw_actions = T.as_tensor(self.current_action.raw_actions, device=self.device) if self.current_action.raw_actions is not None else T.zeros_like(actions)
+        log_probs = T.as_tensor(self.current_action.log_probs, device=self.device) if self.current_action.log_probs is not None else T.zeros_like(self.num_envs)
         rewards = T.as_tensor(rewards, device=self.device)
         terminations = T.as_tensor(terminations, device=self.device)
         truncations = T.as_tensor(truncations, device=self.device)
@@ -314,6 +332,8 @@ class VectorNStepReward(VectorWrapper):
             self._buf_states = self._alloc_like(state_b)
             self._buf_next_states = self._alloc_like(next_state_b)
             self._buf_actions = self._alloc_like(actions)
+            self._buf_raw_actions = self._alloc_like(actions)
+            self._buf_log_probs = self._alloc_like(log_probs)
             self._buf_rewards = self._alloc_like(rewards)
             self._buf_intrinsic_rewards = self._alloc_like(intrinsic_rewards)
             self._buf_terminations = T.zeros((self.num_envs, self.n), dtype=terminations.dtype, device=self.device)
@@ -331,6 +351,8 @@ class VectorNStepReward(VectorWrapper):
         self._buf_states[env_idx, write_pos] = state_b
         self._buf_next_states[env_idx, write_pos] = next_state_b
         self._buf_actions[env_idx, write_pos] = actions
+        self._buf_raw_actions[env_idx, write_pos] = raw_actions
+        self._buf_log_probs[env_idx, write_pos] = log_probs
         self._buf_rewards[env_idx, write_pos] = rewards
         self._buf_intrinsic_rewards[env_idx, write_pos] = intrinsic_rewards
         self._buf_terminations[env_idx, write_pos] = terminations
@@ -349,7 +371,7 @@ class VectorNStepReward(VectorWrapper):
         infos['n-step trajectory'] = trajectory
 
         # Clear on done
-        self.head = T.where(dones, T.zeros_like(self.head),   self.head)
+        self.head = T.where(dones, T.zeros_like(self.head), self.head)
         self.length = T.where(dones, T.zeros_like(self.length), self.length)
 
         self.prev_done = dones
@@ -392,6 +414,8 @@ class VectorNStepReward(VectorWrapper):
         states_all = self._buf_states[env_idx, gather_idx]
         next_states_all = self._buf_next_states[env_idx, gather_idx]
         actions_all = self._buf_actions[env_idx, gather_idx]
+        raw_actions_all = self._buf_raw_actions[env_idx, gather_idx]
+        log_probs_all = self._buf_log_probs[env_idx, gather_idx]
 
         # Zero-padded: gather first, then mask out invalid positions
         rewards_all = self._buf_rewards[env_idx, gather_idx]
@@ -418,10 +442,12 @@ class VectorNStepReward(VectorWrapper):
             'states': states_all[valid],
             'actions': actions_all[valid],
             'rewards': rewards_all[valid],
-            'intrinsic_rewards': intrinsic_rewards_all[valid],
             'next_states': next_states_all[valid],
             'terminations': terminations_all[valid],
             'truncations': truncations_all[valid],
+            'raw_actions': raw_actions_all[valid],
+            'log_probs': log_probs_all[valid],
+            'intrinsic_rewards': intrinsic_rewards_all[valid],
             'trajectory_lengths': length[valid],
         }
         if self.goal_key:

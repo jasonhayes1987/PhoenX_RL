@@ -60,11 +60,11 @@ class Renderer:
             # obs, goals, _ = trainer.extract_states_goals(states)
             obs_norm = trainer.normalize_observation(observation)
 
-            actions = trainer.get_action(obs_norm.states, obs_norm.goals, context="test")
+            action = trainer.get_action(obs_norm.states, obs_norm.goals, context="test")
             # actions = env.format_actions(actions)
 
             # Step the render env
-            next_observation = render_env.step(actions)
+            next_observation = render_env.step(action.actions)
 
             # episode_reward += rewards[0].item() if isinstance(rewards, (T.Tensor, np.ndarray)) else rewards[0]
             episode_reward += float(next_observation.rewards[0])
