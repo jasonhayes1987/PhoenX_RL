@@ -2566,26 +2566,33 @@ class SAC(Agent):
             if self.entropy_schedule:
                 entropy_coefficient *= self.entropy_schedule.get_factor()
 
-        # Normalize states/goals/rewards
-        if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
-            next_states = self.state_normalizer.normalize(next_states)
-        if self.goal_normalizer:
-            ach_goals = self.goal_normalizer.normalize(ach_goals)
-            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
-            goals = self.goal_normalizer.normalize(goals)
-        if self.reward_normalizer:
-            extrinsic_rewards = self.reward_normalizer.normalize(extrinsic_rewards)
-
         # Get batch_size and n-step trajectory length
         batch_size, n_step_length = extrinsic_rewards.shape
 
+        # Reshape arrays to (batch_size * N, -1) to train on all steps in N
+        states_flat = states.reshape(-1, states.shape[-1])
+        next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+        actions_flat = actions.reshape(-1, actions.shape[-1])
+        extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
+        if goals is not None:
+            goals_flat = goals.reshape(-1, goals.shape[-1])
+            ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
+            next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
+        
+        # Normalize states/goals/rewards
+        if self.state_normalizer:
+            states_flat = self.state_normalizer.normalize(states_flat)
+            next_states_flat = self.state_normalizer.normalize(next_states_flat)
+        if self.goal_normalizer:
+            ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
+            next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
+            goals_flat = self.goal_normalizer.normalize(goals_flat)
+        if self.reward_normalizer:
+            extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
+        
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
-            # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-            states_flat = states.reshape(-1, states.shape[-1])
-            next_states_flat = next_states.reshape(-1, next_states.shape[-1])
-            actions_flat = actions.reshape(-1, actions.shape[-1])
+            
             im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
@@ -2598,11 +2605,11 @@ class SAC(Agent):
             im_rewards = im_learn_rewards + im_rollout_rewards
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
-                rewards = extrinsic_rewards + im_rewards
+                rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
             else:
                 rewards = im_rewards
         else:
-            rewards = extrinsic_rewards
+            rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
             im_learn_rewards = T.zeros_like(rewards)
             im_rewards = T.zeros_like(rewards)
 
@@ -2613,40 +2620,54 @@ class SAC(Agent):
                 device=self.target_critic.device
             ).squeeze()
 
+            # Get current values of sampled states and log probs of taking the sampled actions
+            # Continuous critic target values
+            if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+                q_cur_1 = self.critic(
+                    states_flat,
+                    actions_flat,
+                    goals_flat if goals is not None else None
+                    ).squeeze()
+                q_cur_2 = self.critic_b(
+                    states_flat,
+                    actions_flat,
+                    goals_flat if goals is not None else None
+                    ).squeeze()
+
             ## Critic Update ##
-            dist = self.policy(
-                next_states[:,-1,:],
-                goals[:,-1,:] if goals is not None else None
+            next_dist = self.policy(
+                next_states_flat,
+                goals_flat if goals is not None else None
             )
 
             # Continuous critic target values
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                target_actions = dist.sample()
-                log_probs = dist.log_prob(target_actions)
-                target_values_1 = self.target_critic(
-                    next_states[:,-1,:],
+                target_actions = next_dist.sample()
+                next_log_probs = next_dist.log_prob(target_actions)
+                q_next_1 = self.target_critic(
+                    next_states_flat,
                     target_actions,
-                    goals[:,-1,:] if goals is not None else None
+                    goals_flat if goals is not None else None
                     ).squeeze()
-                target_values_2 = self.target_critic_b(
-                    next_states[:,-1,:],
+                q_next_2 = self.target_critic_b(
+                    next_states_flat,
                     target_actions,
-                    goals[:,-1,:] if goals is not None else None
+                    goals_flat if goals is not None else None
                     ).squeeze()
-                target_values = T.minimum(target_values_1, target_values_2) - entropy_coefficient * log_probs
+                target_values = (T.minimum(q_next_1, q_next_2) - entropy_coefficient * next_log_probs).reshape(batch_size, n_step_length, 1)
 
             else: # Discrete critic target values
-                target_actions = dist.sample().float()
-                log_probs = dist.logits
-                target_values_1 = self.target_critic(
-                    next_states[:,-1,:],
-                    goals[:,-1,:] if goals is not None else None
+                target_actions = next_dist.sample().float()
+                next_log_probs = next_dist.logits
+                q_next_1 = self.target_critic(
+                    next_states_flat,
+                    goals_flat if goals is not None else None
                 )
-                target_values_2 = self.target_critic_b(
-                    next_states[:,-1,:],
-                    goals[:,-1,:] if goals is not None else None
+                q_next_2 = self.target_critic_b(
+                    next_states_flat,
+                    goals_flat if goals is not None else None
                 )
-                target_values = (dist.probs * (T.minimum(target_values_1, target_values_2) - entropy_coefficient * log_probs)).sum(-1)
+                target_values = (dist.probs * (T.minimum(q_next_1, q_next_2) - entropy_coefficient * next_log_probs)).sum(-1).reshape(batch_size, n_step_length, 1)
 
             no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
             gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
