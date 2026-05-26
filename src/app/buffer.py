@@ -2,7 +2,7 @@ from abc import abstractmethod
 import torch as T
 import numpy as np
 import gymnasium as gym
-from .env_wrapper import Observation, EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from .env_wrapper import Observation, Action, EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 # from .utils import build_env_wrapper_obj
 from .torch_utils import get_device
 from typing import Optional, Tuple, List, Any, Dict
@@ -304,6 +304,8 @@ class ReplayBuffer(Buffer):
         
         self.states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
+        self.raw_actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
+        self.log_probs = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.intrinsic_rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.next_states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
@@ -327,6 +329,8 @@ class ReplayBuffer(Buffer):
         """
         if cur_observation.n_step_trajectory is not None:
             self.add(**cur_observation.n_step_trajectory)
+        else:
+            raise ValueError("n_step_trajectory is None. ReplayBuffer requires the VectorNStepReward wrapper to populate it.")
 
     def add(
         self,
@@ -336,6 +340,8 @@ class ReplayBuffer(Buffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
+        raw_actions: T.Tensor | None = None,
+        log_probs: T.Tensor | None = None,
         intrinsic_rewards: T.Tensor | None = None,
         state_achieved_goals: T.Tensor | None = None,
         next_state_achieved_goals: T.Tensor | None = None,
@@ -393,6 +399,15 @@ class ReplayBuffer(Buffer):
         self.truncations[indices] = truncations.detach().to(device=self.device, dtype=T.bool)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
 
+        if raw_actions is not None:
+            if raw_actions.ndim == 1:
+                raw_actions = raw_actions.unsqueeze(-1)
+            self.raw_actions[indices] = raw_actions.detach().to(device=self.device, dtype=self.action_type)
+        if log_probs is not None:
+            if log_probs.ndim == 1:
+                log_probs = log_probs.unsqueeze(-1)
+            self.log_probs[indices] = log_probs.detach().to(device=self.device, dtype=T.float32)
+
         if intrinsic_rewards is not None:
             if intrinsic_rewards.ndim == 1:
                 intrinsic_rewards = intrinsic_rewards.unsqueeze(-1)
@@ -429,6 +444,8 @@ class ReplayBuffer(Buffer):
             "terminations": self.terminations[indices].clone(),
             "truncations": self.truncations[indices].clone(),
             "trajectory_lengths": self.trajectory_lengths[indices].clone(),
+            "raw_actions": self.raw_actions[indices].clone(),
+            "log_probs": self.log_probs[indices].clone(),
         }
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             sample.update({
@@ -457,6 +474,8 @@ class ReplayBuffer(Buffer):
         self.terminations.zero_()
         self.truncations.zero_()
         self.trajectory_lengths.zero_()
+        self.raw_actions.zero_()
+        self.log_probs.zero_()
         self.counter = 0
         
         if self.env.goal_key is not None and self.goal_space_shape is not None:
@@ -548,6 +567,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
+        raw_actions: T.Tensor | None = None,
+        log_probs: T.Tensor | None = None,
         intrinsic_rewards: T.Tensor | None = None,
         state_achieved_goals: T.Tensor | None = None,
         next_state_achieved_goals: T.Tensor | None = None,
@@ -573,6 +594,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             next_states=next_states,
             terminations=terminations,
             truncations=truncations,
+            raw_actions=raw_actions,
+            log_probs=log_probs,
             intrinsic_rewards=intrinsic_rewards,
             state_achieved_goals=state_achieved_goals,
             next_state_achieved_goals=next_state_achieved_goals,
@@ -624,6 +647,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             "terminations": self.terminations[indices].clone(),
             "truncations": self.truncations[indices].clone(),
             "trajectory_lengths": self.trajectory_lengths[indices].clone(),
+            "raw_actions": self.raw_actions[indices].clone(),
+            "log_probs": self.log_probs[indices].clone(),
             "weights": weights,
             "probs": probs,
             "indices": indices,
@@ -803,6 +828,8 @@ class RolloutBuffer(Buffer):
         #Instantiate buffers
         self.states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.actions = T.zeros((buffer_size, env.num_envs, *self.action_space_shape), dtype=self.action_type, device=self.device)
+        self.raw_actions = T.zeros((buffer_size, env.num_envs, *self.action_space_shape), dtype=self.action_type, device=self.device)
+        self.log_probs = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
         self.rewards = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
         self.intrinsic_rewards = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
         self.next_states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
@@ -816,23 +843,25 @@ class RolloutBuffer(Buffer):
             self.state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.next_state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
 
-    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor) -> None:
+    def record(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
         """
         Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
             prev_observation: Observation: The observation of the previous state.
-            actions: T.Tensor: The actions taken.
+            actions: Action: The actions taken.
             prev_dones: T.Tensor: The previous dones of the environments.
         """
         self.add(
             states=prev_observation.states,
-            actions=actions,
+            actions=actions.actions,
             rewards=cur_observation.rewards,
             next_states=cur_observation.states,
             terminations=cur_observation.terminations,
             truncations=cur_observation.truncations,
+            raw_actions=actions.raw_actions,
+            log_probs=actions.log_probs,
             intrinsic_rewards=cur_observation.intrinsic_rewards,
             state_achieved_goals=prev_observation.ach_goals if prev_observation.ach_goals is not None else None,
             next_state_achieved_goals=cur_observation.ach_goals if cur_observation.ach_goals is not None else None,
@@ -848,6 +877,8 @@ class RolloutBuffer(Buffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
+        raw_actions: T.Tensor | None = None,
+        log_probs: T.Tensor | None = None,
         intrinsic_rewards: T.Tensor | None = None,
         state_achieved_goals: T.Tensor|None = None,
         next_state_achieved_goals: T.Tensor|None = None,
@@ -881,6 +912,12 @@ class RolloutBuffer(Buffer):
         self.terminations[idx, env_ids] = terminations.to(device=self.device, dtype=T.bool)
         self.truncations[idx, env_ids] = truncations.to(device=self.device, dtype=T.bool)
         self.first_steps[idx, env_ids] = first_steps
+
+        if raw_actions is not None:
+            self.raw_actions[idx, env_ids] = raw_actions.to(device=self.device, dtype=self.action_type)
+        if log_probs is not None:
+            self.log_probs[idx, env_ids] = log_probs.to(device=self.device, dtype=T.float32)
+
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.state_achieved_goals[idx, env_ids] = state_achieved_goals.to(device=self.device, dtype=T.float32)
             self.next_state_achieved_goals[idx, env_ids] = next_state_achieved_goals.to(device=self.device, dtype=T.float32)
@@ -909,6 +946,8 @@ class RolloutBuffer(Buffer):
             "next_states": self.next_states[:idx].clone(),
             "terminations": self.terminations[:idx].clone(),
             "truncations": self.truncations[:idx].clone(),
+            "raw_actions": self.raw_actions[:idx].clone(),
+            "log_probs": self.log_probs[:idx].clone(),
             "first_steps": first_steps,
             "valid_indices": valid_indices,
         }
@@ -958,25 +997,26 @@ class TrajectoryBuffer(RolloutBuffer):
         super().__init__(env, buffer_size, device)
         self.completed_trajectories: List[Dict[str, T.Tensor]] = []
 
-    def record(self, cur_observation: Observation, prev_observation: Observation, actions: T.Tensor, prev_dones: T.Tensor, intrinsic_rewards: T.Tensor | None = None) -> None:
+    def record(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
         """
         Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
             prev_observation: Observation: The observation of the previous state.
-            actions: T.Tensor: The actions taken.
+            actions: Action: The actions taken.
             prev_dones: T.Tensor: The previous dones of the environments.
-            intrinsic_rewards: T.Tensor | None: The intrinsic rewards of the current state.
         """
         self.add(
             states=prev_observation.states,
-            actions=actions,
+            actions=actions.actions,
             rewards=cur_observation.rewards,
             next_states=cur_observation.states,
             terminations=cur_observation.terminations,
             truncations=cur_observation.truncations,
-            intrinsic_rewards=intrinsic_rewards,
+            raw_actions=actions.raw_actions,
+            log_probs=actions.log_probs,
+            intrinsic_rewards=cur_observation.intrinsic_rewards,
             state_achieved_goals=prev_observation.ach_goals if prev_observation.ach_goals is not None else None,
             next_state_achieved_goals=cur_observation.ach_goals if cur_observation.ach_goals is not None else None,
             desired_goals=prev_observation.goals if prev_observation.goals is not None else None,
@@ -991,6 +1031,8 @@ class TrajectoryBuffer(RolloutBuffer):
         next_states: T.Tensor,
         terminations: T.Tensor,
         truncations: T.Tensor,
+        raw_actions: T.Tensor | None = None,
+        log_probs: T.Tensor | None = None,
         intrinsic_rewards: T.Tensor | None = None,
         state_achieved_goals: T.Tensor|None = None,
         next_state_achieved_goals: T.Tensor|None = None,
@@ -1004,6 +1046,8 @@ class TrajectoryBuffer(RolloutBuffer):
             next_states,
             terminations,
             truncations,
+            raw_actions,
+            log_probs,
             intrinsic_rewards,
             state_achieved_goals,
             next_state_achieved_goals,
@@ -1033,6 +1077,8 @@ class TrajectoryBuffer(RolloutBuffer):
                 "next_states": self.next_states[:idx, i][valid_steps].clone(),
                 "terminations": self.terminations[:idx, i][valid_steps].clone(),
                 "truncations": self.truncations[:idx, i][valid_steps].clone(),
+                "raw_actions": self.raw_actions[:idx, i][valid_steps].clone(),
+                "log_probs": self.log_probs[:idx, i][valid_steps].clone(),
             }
             if self.env.goal_key is not None and self.goal_space_shape is not None:
                 trajectory.update({

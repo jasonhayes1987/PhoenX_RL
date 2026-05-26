@@ -983,10 +983,11 @@ class ActorModel(Model):
         # Set lower/upper bounds of action space to Tensors
         self.act_space_low = T.tensor(self.act_space.low, dtype=T.float32, device=self.device)
         self.act_space_high = T.tensor(self.act_space.high, dtype=T.float32, device=self.device)
+        self.num_actions = self.act_space.shape[-1]
 
         # Create the output layer
         self.output_layer = nn.ModuleDict({
-            'actor_mu': nn.LazyLinear(self.act_space.shape[-1]),
+            'actor_mu': nn.LazyLinear(self.num_actions),
             'actor_pi': nn.Tanh()
         })
 
