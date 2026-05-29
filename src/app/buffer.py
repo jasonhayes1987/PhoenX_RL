@@ -404,9 +404,10 @@ class ReplayBuffer(Buffer):
                 raw_actions = raw_actions.unsqueeze(-1)
             self.raw_actions[indices] = raw_actions.detach().to(device=self.device, dtype=self.action_type)
         if log_probs is not None:
-            if log_probs.ndim == 1:
-                log_probs = log_probs.unsqueeze(-1)
-            self.log_probs[indices] = log_probs.detach().to(device=self.device, dtype=T.float32)
+            log_probs = log_probs.detach().to(device=self.device, dtype=T.float32)
+            if log_probs.ndim == 3 and log_probs.shape[-1] == 1:
+                log_probs = log_probs.squeeze(-1)
+            self.log_probs[indices] = log_probs
 
         if intrinsic_rewards is not None:
             if intrinsic_rewards.ndim == 1:

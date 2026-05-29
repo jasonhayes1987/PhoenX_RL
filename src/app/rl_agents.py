@@ -2502,7 +2502,10 @@ class SAC(Agent):
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
                 actions = self.policy.env.action_space.sample()
+                actions = T.tensor(actions, device=self.device)
                 log_probs = T.log(T.ones_like(actions) * (1/self.policy.num_actions))
+                if log_probs.ndim > 1:
+                    log_probs = log_probs.sum(-1)
             # otherwise, sample action from policy
             else:
                 with T.no_grad():
@@ -2600,9 +2603,8 @@ class SAC(Agent):
                 next_states_flat,
                 actions_flat
             )
-            im_learn_rewards = im_learn_rewards.reshape(batch_size, n_step_length)
             # Add intrinsic learn rewards to intrinsic rollout rewards
-            im_rewards = im_learn_rewards + im_rollout_rewards
+            im_rewards = im_learn_rewards.reshape(batch_size, n_step_length) + im_rollout_rewards
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
                 rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
@@ -2614,25 +2616,47 @@ class SAC(Agent):
             im_rewards = T.zeros_like(rewards)
 
         with T.no_grad():
-            q_targets = compute_n_step_return(
-                rewards,
-                self.discount,
-                device=self.target_critic.device
-            ).squeeze()
+            # q_targets = compute_n_step_return(
+            #     rewards,
+            #     self.discount,
+            #     device=self.target_critic.device
+            # ).squeeze()
+
+            # Get current policy for sampled states
+            cur_dist = self.policy(
+                states_flat,
+                goals_flat if goals is not None else None
+            )
 
             # Get current values of sampled states and log probs of taking the sampled actions
-            # Continuous critic target values
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                q_cur_1 = self.critic(
-                    states_flat,
-                    actions_flat,
-                    goals_flat if goals is not None else None
-                    ).squeeze()
-                q_cur_2 = self.critic_b(
-                    states_flat,
-                    actions_flat,
-                    goals_flat if goals is not None else None
-                    ).squeeze()
+                cur_log_probs = cur_dist.log_prob(actions_flat).reshape(batch_size, n_step_length)
+                q_cur = T.minimum(
+                    self.critic(
+                        states_flat,
+                        actions_flat,
+                        goals_flat if goals is not None else None
+                        ),
+                    self.critic_b(
+                        states_flat,
+                        actions_flat,
+                        goals_flat if goals is not None else None
+                        )
+                ).reshape(batch_size, n_step_length)
+
+            else: # Discrete action space
+                cur_log_probs = cur_dist.logits.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
+                q_cur_all = T.minimum(
+                    self.critic(
+                        states_flat,
+                        goals_flat if goals is not None else None
+                        ),
+                    self.critic_b(
+                        states_flat,
+                        goals_flat if goals is not None else None
+                        )
+                )
+                q_cur = q_cur_all.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
 
             ## Critic Update ##
             next_dist = self.policy(
@@ -2644,41 +2668,70 @@ class SAC(Agent):
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
                 target_actions = next_dist.sample()
                 next_log_probs = next_dist.log_prob(target_actions)
-                q_next_1 = self.target_critic(
-                    next_states_flat,
-                    target_actions,
-                    goals_flat if goals is not None else None
-                    ).squeeze()
-                q_next_2 = self.target_critic_b(
-                    next_states_flat,
-                    target_actions,
-                    goals_flat if goals is not None else None
-                    ).squeeze()
-                target_values = (T.minimum(q_next_1, q_next_2) - entropy_coefficient * next_log_probs).reshape(batch_size, n_step_length, 1)
+                q_next = T.minimum(
+                    self.target_critic(
+                        next_states_flat,
+                        target_actions,
+                        goals_flat if goals is not None else None
+                        ),
+                    self.target_critic_b(
+                        next_states_flat,
+                        target_actions,
+                        goals_flat if goals is not None else None
+                        )
+                ).squeeze(-1)
+                target_q = (q_next - entropy_coefficient * next_log_probs).reshape(batch_size, n_step_length)
 
             else: # Discrete critic target values
                 target_actions = next_dist.sample().float()
                 next_log_probs = next_dist.logits
-                q_next_1 = self.target_critic(
-                    next_states_flat,
-                    goals_flat if goals is not None else None
+                q_next = T.minimum(
+                    self.target_critic(
+                        next_states_flat,
+                        goals_flat if goals is not None else None
+                    ),
+                    self.target_critic_b(
+                        next_states_flat,
+                        goals_flat if goals is not None else None
+                    )
                 )
-                q_next_2 = self.target_critic_b(
-                    next_states_flat,
-                    goals_flat if goals is not None else None
-                )
-                target_values = (dist.probs * (T.minimum(q_next_1, q_next_2) - entropy_coefficient * next_log_probs)).sum(-1).reshape(batch_size, n_step_length, 1)
+                target_q = (next_dist.probs * (q_next - entropy_coefficient * next_log_probs)).sum(-1).reshape(batch_size, n_step_length)
 
-            no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
-            gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
-            q_targets += no_dones_mask * gamma_pow * target_values
+            # Compute TD errors across n-step window
+            td_errors = rewards + self.discount * (1 - terminations.float()) * target_q.detach() - q_cur.detach()
+
+            # Compute IS ratios
+            is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), max=1.0)
+            # Mask IS ratios from terminated_state +1 : N
+            mask = T.ones(batch_size, n_step_length, device=self.device)
+            dones = T.logical_or(terminations, truncations)
+            for k in range(1, n_step_length):
+                mask[:, k] = mask[:, k-1] * (1 - dones[:, k-1].float())
+            is_ratio = is_ratio * mask
+
+            # Compute q retrace
+            cum_c = T.ones(batch_size, device=self.device)
+            retrace_sum = T.zeros(batch_size, device=self.device)
+
+            for k in range(n_step_length):
+                gamma = self.discount ** k
+                retrace_sum += gamma * cum_c * td_errors[:, k]
+                # Update cumulative weight IS ratio
+                if k < n_step_length - 1:
+                    cum_c = cum_c * is_ratio[:, k+1]
+
+            q_retrace = q_cur[:, 0] + retrace_sum
+            
+            # no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
+            # gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
+            # q_targets += no_dones_mask * gamma_pow * target_values
 
             # Apply HER-specific clamping if needed
-            if self._use_her:
-                if self.curiosity and not self.curiosity._use_extrinsic:
-                    pass
-                else:
-                    q_targets = T.clamp(q_targets, min=-1/(1-self.discount))
+            # if self._use_her:
+            #     if self.curiosity and not self.curiosity._use_extrinsic:
+            #         pass
+            #     else:
+            #         q_targets = T.clamp(q_targets, min=-1/(1-self.discount))
 
         # Continuous critic predictions
         if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
@@ -2705,8 +2758,10 @@ class SAC(Agent):
             q2_preds = q2.gather(1, buffer_actions).squeeze(1)
 
         # Calculate errors
-        q1_loss = (q1_preds - q_targets.detach()).pow(2)
-        q2_loss = (q2_preds - q_targets.detach()).pow(2)
+        q1_loss = (q1_preds - q_retrace.detach()).pow(2)
+        q2_loss = (q2_preds - q_retrace.detach()).pow(2)
+        # Get min error across losses (used to update priorities)
+        errors = (T.minimum(q1_preds, q2_preds) - q_retrace).detach().flatten()
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
             q1_loss = weights.to(self.critic.device) * q1_loss
@@ -2766,13 +2821,10 @@ class SAC(Agent):
             alpha_loss.backward()
             self.entropy_optimizer.step()
 
-        # Calculate Error to update priorities and for logging
-        error = q_targets - T.minimum(q1_preds, q2_preds)
-
         # Log diag data
         if should_log_diag:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
@@ -2787,10 +2839,7 @@ class SAC(Agent):
                 summarize_tensor(terminations, "terminations"),
                 summarize_tensor(truncations, "truncations"),
                 summarize_tensor(target_actions, "target actions"),
-                summarize_tensor(target_values_1, "target critic values A"),
-                summarize_tensor(target_values_2, "target critic values B"),
-                summarize_tensor(target_values, "target critic values"),
-                summarize_tensor(q_targets, "targets"),
+                summarize_tensor(target_q, "target critic values"),
                 summarize_tensor(q1_preds, "critic predictions A"),
                 summarize_tensor(q2_preds, "critic predictions B"),
                 summarize_tensor(q1_loss, "critic errors A"),
@@ -2824,11 +2873,11 @@ class SAC(Agent):
             "extrinsic_rewards": extrinsic_rewards.mean().item(),
             "policy_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
-            "td_errors": error.detach().flatten(),
-            "td_error": error.mean().item(),
+            "td_errors": errors,
+            "td_error": td_errors.mean().item(),
             "policy_predictions": new_actions.mean().item(),
             "critic_predictions": min_q.mean().item(),
-            "target_critic_predictions": target_values.mean().item(),
+            "target_critic_predictions": target_q.mean().item(),
             "entropy_coefficient": entropy_coefficient,
             "entropy": float(entropy.mean().item()),
             'policy_learning_rate': policy_learning_rate,
