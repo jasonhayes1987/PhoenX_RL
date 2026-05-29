@@ -61,7 +61,10 @@ class Renderer:
             obs_norm = trainer.normalize_observation(observation)
 
             action = trainer.get_action(obs_norm.states, obs_norm.goals, context="test")
-            # actions = env.format_actions(actions)
+            # If env using VectorNStepReward wrapper, send action to wrapper
+            nstep_wrapper = render_env._find_nstep_wrapper()
+            if nstep_wrapper is not None:
+                nstep_wrapper.set_action(action)
 
             # Step the render env
             next_observation = render_env.step(action.actions)

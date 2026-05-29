@@ -208,12 +208,12 @@ class Trainer:
         self._score_history = deque(maxlen=100)
         self._last_learn = 0
 
-    def _find_nstep_wrapper(self, env: EnvWrapper) -> VectorNStepReward | None:
-        """Finds the VectorNStepReward wrapper in the environment chain."""
-        while env is not None:
-            if isinstance(env, VectorNStepReward):
-                return env
-            env = getattr(env, 'env', None)
+    # def _find_nstep_wrapper(self, env: EnvWrapper) -> VectorNStepReward | None:
+    #     """Finds the VectorNStepReward wrapper in the environment chain."""
+    #     while env is not None:
+    #         if isinstance(env, VectorNStepReward):
+    #             return env
+    #         env = getattr(env, 'env', None)
 
     def _iter_normalizers(self):
         """Yields (name, normalizer) for every normalizer the agent actually has."""
@@ -383,7 +383,7 @@ class Trainer:
         obs_norm = self.normalize_observation(self._prev_obs)
         action = self.get_action(obs_norm.states, obs_norm.goals, context='train' if training else 'test')
         # If using n-step, feed VectorNStepReward wrapper Action data
-        nstep_wrapper = self._find_nstep_wrapper(self.env)
+        nstep_wrapper = self.env._find_nstep_wrapper()
         if nstep_wrapper is not None:
             nstep_wrapper.set_action(action)
         # Take action in environment and get new Observation
