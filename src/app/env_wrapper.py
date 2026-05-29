@@ -264,6 +264,7 @@ class VectorNStepReward(VectorWrapper):
         self._buf_desired_goals = None
 
         self.current_states = None
+        self.current_action = None
 
         # Helper index tensors
         self._t_idx = T.arange(self.n, device=self.device)
@@ -737,6 +738,14 @@ class EnvWrapper:
             ach_goals = T.tensor(ach_goals, dtype=T.float32, device=device)
         
         return obs, goals, ach_goals
+
+    def _find_nstep_wrapper(self) -> VectorNStepReward | None:
+        """Finds the VectorNStepReward wrapper in the environment chain."""
+        env = self
+        while env is not None:
+            if isinstance(env, VectorNStepReward):
+                return env
+            env = getattr(env, 'env', None)
 
     @property
     def config(self):
