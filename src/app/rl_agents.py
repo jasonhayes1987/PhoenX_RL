@@ -2501,13 +2501,15 @@ class SAC(Agent):
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
-                actions = self.policy.env.action_space.sample()
-                actions = T.tensor(actions, device=self.device)
-                log_probs = T.log(T.ones_like(actions) * (1/self.policy.num_actions))
-                if log_probs.ndim > 1:
-                    log_probs = log_probs.sum(-1)
-            # otherwise, sample action from policy
-            else:
+                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                space = self.policy.env.action_space
+                if hasattr(space, "low"): # Continuous
+                    log_probs = (-T.log(self.policy.act_space_high - self.policy.act_space_low).sum(-1)) \
+                        * T.ones(actions.shape[0], device=self.device)
+                else: # Discrete
+                    log_probs = T.full((actions.shape[0],), -T.log(space.n), device=self.device)
+            
+            else: # Sample action from policy
                 with T.no_grad():
                     dist = self.policy(states, goals)
                     actions = dist.sample()
@@ -2702,11 +2704,12 @@ class SAC(Agent):
 
             # Compute IS ratios
             is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), max=1.0)
-            # Mask IS ratios from terminated_state +1 : N
+            # Mask invalid steps and IS ratios from terminated_state +1 : N
+            valid = (T.arange(n_step_length, device=self.device)[None, :] < trajectory_lengths[:, None]).float()
             mask = T.ones(batch_size, n_step_length, device=self.device)
             dones = T.logical_or(terminations, truncations)
             for k in range(1, n_step_length):
-                mask[:, k] = mask[:, k-1] * (1 - dones[:, k-1].float())
+                mask[:, k] = mask[:, k-1] * (1 - dones[:, k-1].float()) * valid[:, k]
             is_ratio = is_ratio * mask
 
             # Compute q retrace
@@ -2733,27 +2736,32 @@ class SAC(Agent):
             #     else:
             #         q_targets = T.clamp(q_targets, min=-1/(1-self.discount))
 
+        # Reshape flat states, goals, actions to [batch_size, n-step, feature_dim]
+        states_reshaped = states_flat.reshape(batch_size, n_step_length, -1)
+        actions_reshaped = actions_flat.reshape(batch_size, n_step_length, -1)
+        goals_reshaped = goals_flat.reshape(batch_size, n_step_length, -1) if goals is not None else None
+        
         # Continuous critic predictions
         if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
             q1_preds = self.critic(
-                states[:,0,:],
-                actions[:,0,:],
-                goals[:,0,:] if goals is not None else None).squeeze()
+                states_reshaped[:,0,:],
+                actions_reshaped[:,0,:],
+                goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
             q2_preds = self.critic_b(
-                states[:,0,:],
-                actions[:,0,:],
-                goals[:,0,:] if goals is not None else None).squeeze()
+                states_reshaped[:,0,:],
+                actions_reshaped[:,0,:],
+                goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
 
         else: # Discrete critic predictions
             q1 = self.critic(
-                states[:,0,:],
-                goals[:,0,:] if goals is not None else None
+                states_reshaped[:,0,:],
+                goals_reshaped[:,0,:] if goals_reshaped is not None else None
             )
             q2 = self.critic_b(
-                states[:,0,:],
-                goals[:,0,:] if goals is not None else None
+                states_reshaped[:,0,:],
+                goals_reshaped[:,0,:] if goals_reshaped is not None else None
             )
-            buffer_actions = actions[:,0,:].squeeze(-1).long().unsqueeze(1)
+            buffer_actions = actions_reshaped[:,0,:].squeeze(-1).long().unsqueeze(1)
             q1_preds = q1.gather(1, buffer_actions).squeeze(1)
             q2_preds = q2.gather(1, buffer_actions).squeeze(1)
 
@@ -2779,23 +2787,23 @@ class SAC(Agent):
 
         ## Update Policy ##
         dist = self.policy(
-            states[:,0,:],
-            goals[:,0,:] if goals is not None else None
+            states_reshaped[:,0,:],
+            goals_reshaped[:,0,:] if goals_reshaped is not None else None
         )
         # Continuous policy update
         if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
             new_actions = dist.rsample()
             log_probs = dist.log_prob(new_actions)
-            q1 = self.critic(states[:,0,:], new_actions, goals[:,0,:] if goals is not None else None).squeeze()
-            q2 = self.critic_b(states[:,0,:], new_actions, goals[:,0,:] if goals is not None else None).squeeze()
+            q1 = self.critic(states_reshaped[:,0,:], new_actions, goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
+            q2 = self.critic_b(states_reshaped[:,0,:], new_actions, goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
             min_q = T.minimum(q1, q2)
             actor_loss = entropy_coefficient * log_probs - min_q
 
         else: # Discrete policy update
             new_actions = dist.sample().float()
             log_probs = dist.logits
-            q1 = self.critic(states[:,0,:], goals[:,0,:] if goals is not None else None)
-            q2 = self.critic_b(states[:,0,:], goals[:,0,:] if goals is not None else None)
+            q1 = self.critic(states_reshaped[:,0,:], goals_reshaped[:,0,:] if goals_reshaped is not None else None)
+            q2 = self.critic_b(states_reshaped[:,0,:], goals_reshaped[:,0,:] if goals_reshaped is not None else None)
             min_q = T.minimum(q1, q2)
             actor_loss = (dist.probs * (entropy_coefficient * log_probs - min_q)).sum(-1)
 
@@ -2827,14 +2835,14 @@ class SAC(Agent):
                 "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
-                summarize_tensor(states, "states"),
-                summarize_tensor(actions, "actions"),
+                summarize_tensor(states_reshaped, "states"),
+                summarize_tensor(actions_reshaped, "actions"),
                 summarize_tensor(rewards, "rewards"),
                 summarize_tensor(im_rollout_rewards, "intrinsic rollout rewards"),
                 summarize_tensor(im_learn_rewards, "intrinsic learn rewards"),
                 summarize_tensor(im_rewards, "intrinsic rewards"),
                 summarize_tensor(next_states, "next_states"),
-                summarize_tensor(goals, "goals"),
+                summarize_tensor(goals_reshaped, "goals"),
                 summarize_tensor(next_ach_goals, "next_ach_goals"),
                 summarize_tensor(terminations, "terminations"),
                 summarize_tensor(truncations, "truncations"),
