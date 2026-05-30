@@ -89,7 +89,7 @@ agent:
     target_entropy_scale: 1.0
     policy_grad_clip: 10.0
     critic_grad_clip: 10.0
-    N: &n 1
+    N: &n 5
     # intrinsic_motivation:
     #   type: ICM
     #   config:
