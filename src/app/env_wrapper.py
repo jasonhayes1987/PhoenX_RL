@@ -11,6 +11,7 @@ sys.path.append(ISAACLAB_PATH)
 sys.path.append(ISAACLAB_TASKS_PATH)
 
 import json
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Dict, List
 from abc import ABC, abstractmethod
@@ -19,7 +20,9 @@ import numpy as np
 import torch as T
 
 import gymnasium as gym
-import gymnasium_robotics
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', message=".*Overriding environment.*already in registry.*")
+    import gymnasium_robotics
 from gymnasium.envs.registration import EnvSpec, WrapperSpec
 import gymnasium.wrappers as gym_wrappers
 import gymnasium.wrappers.vector as gym_vector_wrappers
@@ -27,6 +30,7 @@ from gymnasium.vector import VectorEnv, SyncVectorEnv, VectorWrapper, utils
 import envpool
 
 from .torch_utils import get_device
+from .logging_config import get_logger
 from .utils import to_torch, to_numpy
 if TYPE_CHECKING:
     from .intrinsic_motivation import IntrinsicMotivation
@@ -231,14 +235,28 @@ class VectorNStepReward(VectorWrapper):
         n: int,
         obs_key: str | None = None,
         goal_key: str | None = None,
-        ach_goal_key: str | None = None
+        ach_goal_key: str | None = None,
+        log_level: str = 'INFO',
+        name: str | None = None,
+        **kwargs
     ):
         super().__init__(env)
+        self.name = name if name else self.__class__.__name__
+        self.logger = get_logger(self.name, level=log_level.upper())
+        self.kwargs = kwargs
         self.n = n
         self.obs_key = obs_key
         self.goal_key = goal_key
         self.ach_goal_key = ach_goal_key
         self.device = get_device()
+
+        # Set internal attributes
+        self._step = 0
+        self._diag_freq = None
+        self._log_diag = False
+        if self.kwargs is not None:
+            for key, value in self.kwargs.items():
+                setattr(self, key, value)
 
         # Instantiate internal reference to Agent Intrinsic Motivation object
         # Set via set_intrinsic_motivation call in Trainer._initialize_run
@@ -271,6 +289,9 @@ class VectorNStepReward(VectorWrapper):
         self._env_idx = T.arange(self.num_envs, device=self.device)
         self._env_idx_nx1 = self._env_idx.unsqueeze(1).expand(self.num_envs, self.n)
 
+        # N-step diags
+        self._nstep_diag_buffer = deque(maxlen=1024)
+
     def set_action(self, action: Action) -> None:
         """Sets the action data for the current step.
 
@@ -297,6 +318,7 @@ class VectorNStepReward(VectorWrapper):
         return T.zeros((self.num_envs, self.n, *tail), dtype=sample.dtype, device=self.device)
 
     def step(self, actions: T.Tensor):
+        self._step += 1
         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
 
         # Ensure tensors
@@ -377,6 +399,13 @@ class VectorNStepReward(VectorWrapper):
 
         self.prev_done = dones
         self.current_states = next_states
+
+        # Log diag values if diag
+        if self._diag_freq is not None:
+            self._log_diag = (self._step % self._diag_freq == 0)
+        else:
+            self._log_diag = False
+
         return next_states, rewards, terminations, truncations, infos
 
     def _build_trajectories(self):
@@ -455,7 +484,36 @@ class VectorNStepReward(VectorWrapper):
             trajectory['state_achieved_goals'] = state_ach_goals_all[valid]
             trajectory['next_state_achieved_goals'] = next_state_ach_goals_all[valid]
             trajectory['desired_goals'] = desired_goals_all[valid]
+
+        # Collect n-step boundary diagnostics
+        if self._nstep_diag_buffer is not None:
+            valid_lengths = length[valid].tolist()
+            had_term = (terminations_all[valid] | truncations_all[valid]).any(dim=1)
+            for i, L in enumerate(valid_lengths):
+                self._nstep_diag_buffer.append((int(L), bool(had_term[i])))
+        
         return trajectory
+
+    def get_nstep_diagnostics(self) -> dict:
+        """Return and clear accumulated n-step window statistics."""
+        if not self._nstep_diag_buffer:
+            return {}
+
+        lengths = []
+        short_after_term = 0
+        total = len(self._nstep_diag_buffer)
+
+        for length, had_term in self._nstep_diag_buffer:
+            lengths.append(length)
+            if had_term and length < self.n:
+                short_after_term += 1
+
+        self._nstep_diag_buffer.clear()
+
+        return {
+            "nstep/avg_trajectory_length": float(sum(lengths) / len(lengths)) if lengths else 0.0,
+            "nstep/pct_short_windows_after_term": (short_after_term / total) if total > 0 else 0.0,
+        }
 
 class OneHotObservationWrapper(gym.ObservationWrapper):
     def __init__(self, env):

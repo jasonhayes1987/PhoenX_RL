@@ -33,8 +33,8 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from app.env_wrapper import GymnasiumWrapper  # noqa: E402
-from app.intrinsic_motivation import (  # noqa: E402
+from app.env_wrapper import GymnasiumWrapper
+from app.intrinsic_motivation import (
     ICM,
     RND,
     CompositeIntrinsicMotivation,
@@ -48,8 +48,8 @@ from app.intrinsic_motivation import (  # noqa: E402
     ngu_combination,
     register_intrinsic_motivation,
 )
-from app.normalizer import RewardNorm  # noqa: E402
-from app.schedulers import ScheduleWrapper  # noqa: E402
+from app.normalizer import RewardNorm
+from app.schedulers import ScheduleWrapper
 
 DEVICE = "cpu"
 NUM_ENVS = 2

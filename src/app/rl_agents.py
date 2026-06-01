@@ -41,15 +41,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Distribution, Categorical, Beta, Normal, kl_divergence
 from torch.profiler import profile
-import gymnasium as gym
-import gymnasium_robotics
+# import gymnasium as gym
+# import gymnasium_robotics
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
 
 from isaaclab.app import AppLauncher
 
 
-from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, grad_norm_from_optimizer, setup_auto_entropy, soft_update
+from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, compute_q_retrace, grad_norm_from_optimizer, setup_auto_entropy, soft_update
 
 
 ## Base Agent Class ##
@@ -75,6 +75,7 @@ class Agent(ABC):
 
             self._diag_freq = None
             self._learn_count = 0
+            self._nstep_retrace_stats = deque(maxlen=2048)
 
             if self.kwargs is not None:
                 for key, value in self.kwargs.items():
@@ -178,6 +179,28 @@ class Agent(ABC):
             clone = cloned_agent
 
         return clone
+
+    def get_nstep_diagnostics(self) -> dict:
+        """Return and clear accumulated n-step + retrace boundary diagnostics."""
+        if not self._nstep_retrace_stats:
+            return {}
+
+        final_cum_c = []
+        max_leakage = []
+
+        for stats in self._nstep_retrace_stats:
+            final_cum_c.extend(stats.get("done_window_final_cum_c", []))
+            max_leakage.extend(stats.get("done_window_max_leakage", []))
+
+        self._nstep_retrace_stats.clear()
+
+        out = {}
+        if final_cum_c:
+            out["nstep/avg_final_cum_c_on_done_windows"] = float(sum(final_cum_c) / len(final_cum_c))
+        if max_leakage:
+            out["nstep/max_leakage_in_mask_after_done"] = float(max(max_leakage))
+
+        return out
 
     def get_config(self):
         return {
@@ -2699,35 +2722,25 @@ class SAC(Agent):
                 )
                 target_q = (next_dist.probs * (q_next - entropy_coefficient * next_log_probs)).sum(-1).reshape(batch_size, n_step_length)
 
-            # Compute TD errors across n-step window
-            td_errors = rewards + self.discount * (1 - terminations.float()) * target_q.detach() - q_cur.detach()
-
-            # Compute IS ratios
-            is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), max=1.0)
-            # Mask invalid steps and IS ratios from terminated_state +1 : N
-            valid = (T.arange(n_step_length, device=self.device)[None, :] < trajectory_lengths[:, None]).float()
-            mask = T.ones(batch_size, n_step_length, device=self.device)
-            dones = T.logical_or(terminations, truncations)
-            for k in range(1, n_step_length):
-                mask[:, k] = mask[:, k-1] * (1 - dones[:, k-1].float()) * valid[:, k]
-            is_ratio = is_ratio * mask
-
-            # Compute q retrace
-            cum_c = T.ones(batch_size, device=self.device)
-            retrace_sum = T.zeros(batch_size, device=self.device)
-
-            for k in range(n_step_length):
-                gamma = self.discount ** k
-                retrace_sum += gamma * cum_c * td_errors[:, k]
-                # Update cumulative weight IS ratio
-                if k < n_step_length - 1:
-                    cum_c = cum_c * is_ratio[:, k+1]
-
-            q_retrace = q_cur[:, 0] + retrace_sum
             
-            # no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
-            # gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
-            # q_targets += no_dones_mask * gamma_pow * target_values
+            q_retrace, q_metrics = compute_q_retrace(
+                rewards,
+                terminations,
+                truncations,
+                trajectory_lengths,
+                q_cur,
+                target_q,
+                cur_log_probs,
+                buf_log_probs,
+                self.discount,
+                device=self.device
+            )
+            # Collect retrace boundary diagnostics
+            if q_metrics.get("done_window_final_cum_c") or q_metrics.get("done_window_max_leakage"):
+                self._nstep_retrace_stats.append({
+                    "done_window_final_cum_c": q_metrics["done_window_final_cum_c"],
+                    "done_window_max_leakage": q_metrics["done_window_max_leakage"],
+                })
 
             # Apply HER-specific clamping if needed
             # if self._use_her:
@@ -2832,7 +2845,7 @@ class SAC(Agent):
         # Log diag data
         if should_log_diag:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states_reshaped, "states"),
@@ -2848,6 +2861,11 @@ class SAC(Agent):
                 summarize_tensor(truncations, "truncations"),
                 summarize_tensor(target_actions, "target actions"),
                 summarize_tensor(target_q, "target critic values"),
+                summarize_tensor(q_retrace, "q retrace"),
+                summarize_tensor(q_metrics["td_errors"], "td errors"),
+                summarize_tensor(q_metrics["mask"], "mask"),
+                summarize_tensor(q_metrics["is_ratio"], "is ratio"),
+                summarize_tensor(q_metrics["cum_c"], "cum c"),
                 summarize_tensor(q1_preds, "critic predictions A"),
                 summarize_tensor(q2_preds, "critic predictions B"),
                 summarize_tensor(q1_loss, "critic errors A"),
@@ -2860,6 +2878,29 @@ class SAC(Agent):
                 summarize_tensor(actor_loss, "actor loss"),
                 summarize_tensor(critic_loss, "critic loss"),
             )
+
+            mask = q_metrics["mask"]
+            cum_c_final = q_metrics["cum_c"]
+            td = q_metrics["td_errors"]
+            # Only look at rows that actually had a termination or truncation
+            has_done = (terminations | truncations).any(dim=1)
+            if has_done.any():
+                for i in range(batch_size):
+                    if has_done[i]:
+                        L = int(trajectory_lengths[i].item())
+                        done_pos = (terminations[i, :L] | truncations[i, :L]).nonzero(as_tuple=True)[0]
+                        self.logger.debug(
+                            "[RETRACE-DIAG] learn_count=%d "
+                            "row=%d L=%d done_at=%s "
+                            "final_cum_c=%.4f "
+                            "mask_tail=%s",
+                            step,
+                            i,
+                            L,
+                            done_pos.tolist(),
+                            cum_c_final[i].item(),
+                            mask[i, done_pos[-1]+1:L].tolist() if done_pos.numel() > 0 else 'N/A',
+                        )
 
             self.logger.debug(
                 "ac_grads step=%d learn_count=%d critic_a_grad_norm=%.6f critic_b_grad_norm=%.6f policy_grad_norm=%.6f "
@@ -2882,7 +2923,7 @@ class SAC(Agent):
             "policy_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
             "td_errors": errors,
-            "td_error": td_errors.mean().item(),
+            "td_error": q_metrics["td_errors"].mean().item(),
             "policy_predictions": new_actions.mean().item(),
             "critic_predictions": min_q.mean().item(),
             "target_critic_predictions": target_q.mean().item(),

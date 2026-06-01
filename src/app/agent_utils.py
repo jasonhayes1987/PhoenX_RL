@@ -165,6 +165,93 @@ def compute_advantages_and_returns(
     returns = advantages + values
     return advantages, returns, td_errors
 
+def compute_q_retrace(
+    rewards: T.Tensor,
+    terminations: T.Tensor,
+    truncations: T.Tensor,
+    trajectory_lengths: T.Tensor,
+    q_cur: T.Tensor,
+    target_q: T.Tensor,
+    cur_log_probs: T.Tensor,
+    buf_log_probs: T.Tensor,
+    discount: float,
+    *,
+    device: T.device | str | None = None
+) -> tuple[T.Tensor, dict[str, T.Tensor]]:
+    """
+    Computes target Q values as sum of weighted TD errors using importance sampling ratios across the n-step window.
+
+    Args:
+        rewards: Tensor of rewards [batch_size, n_step_length].
+        terminations: Tensor of termination flags [batch_size, n_step_length].
+        truncations: Tensor of truncation flags [batch_size, n_step_length].
+        trajectory_lengths: Tensor of trajectory lengths [batch_size].
+        q_cur: Tensor of current Q values [batch_size, n_step_length].
+        target_q: Tensor of target Q values [batch_size, n_step_length].
+        cur_log_probs: Tensor of current log probabilities [batch_size, n_step_length].
+        buf_log_probs: Tensor of log probabilities of the buffer [batch_size, n_step_length].
+        discount: Discount factor.
+        device: Device for tensor operations.
+
+    Returns:
+        Tensor of Q values [batch_size].
+        Dictionary of metrics [td_errors, mask, is_ratio, cum_c].
+    """
+    device = get_device(device)
+    batch_size, n_step_length = rewards.shape
+    # Compute TD errors across n-step window
+    td_errors = rewards + discount * (1 - terminations.float()) * target_q.detach() - q_cur.detach()
+
+    # Compute IS ratios
+    is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), max=1.0)
+    # Mask invalid steps and IS ratios from terminated_state +1 : N
+    valid = (T.arange(n_step_length, device=device)[None, :] < trajectory_lengths[:, None]).float()
+    mask = T.ones(batch_size, n_step_length, device=device)
+    dones = T.logical_or(terminations, truncations)
+    for k in range(1, n_step_length):
+        mask[:, k] = mask[:, k-1] * (1 - dones[:, k-1].float()) * valid[:, k]
+    is_ratio = is_ratio * mask
+
+    # Compute q retrace
+    cum_c = T.ones(batch_size, device=device)
+    retrace_sum = T.zeros(batch_size, device=device)
+
+    for k in range(n_step_length):
+        gamma = discount ** k
+        retrace_sum += gamma * cum_c * td_errors[:, k]
+        # Update cumulative weight IS ratio
+        if k < n_step_length - 1:
+            cum_c = cum_c * is_ratio[:, k+1]
+
+    q_retrace = q_cur[:, 0] + retrace_sum
+
+    # Compute boundary leakage diagnostics
+    done_window_final_cum_c = []
+    done_window_max_leakage = []
+    has_done = (terminations | truncations).any(dim=1)
+    if has_done.any():
+        for i in range(batch_size):
+            if has_done[i]:
+                L = int(trajectory_lengths[i].item())
+                if L > 0:
+                    done_mask = (terminations[i, :L] | truncations[i, :L])
+                    if done_mask.any():
+                        first_done = int(done_mask.nonzero(as_tuple=True)[0][0])
+                        done_window_final_cum_c.append(float(cum_c[i].item()))
+                        if first_done + 1 < L:
+                            leakage = mask[i, first_done + 1 : L].max().item()
+                            done_window_max_leakage.append(leakage)
+    metrics = {
+        "td_errors": td_errors,
+        "mask": mask,
+        "is_ratio": is_ratio,
+        "cum_c": cum_c,
+        "done_window_final_cum_c": done_window_final_cum_c,
+        "done_window_max_leakage": done_window_max_leakage,
+    }
+    
+    return q_retrace, metrics
+
 def setup_auto_entropy(policy, *, target_entropy_scale=0.98,
                       lr=3e-4, device=None):
     """Build target_entropy / log_alpha / optimizer for auto-tuned entropy."""
