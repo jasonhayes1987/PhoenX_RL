@@ -533,6 +533,16 @@ class Trainer:
 
                     learn_metrics = self.learn()
                     step_result['step_log'].update(learn_metrics)
+                    # Merge n-step boundary diagnostics
+                    nstep_diag = {}
+                    if hasattr(self.agent, "get_nstep_diagnostics"):
+                        nstep_diag = self.agent.get_nstep_diagnostics() or {}
+                    nstep_wrapper = self.env._find_nstep_wrapper()
+                    if nstep_wrapper and hasattr(nstep_wrapper, "get_nstep_diagnostics"):
+                        wrapper_stats = nstep_wrapper.get_nstep_diagnostics() or {}
+                        nstep_diag.update(wrapper_stats)
+                    if nstep_diag:
+                        step_result['step_log'].update(nstep_diag)  
 
                     # Update target networks
                     if isinstance(self.agent, HasTargetNetworks):
