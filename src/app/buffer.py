@@ -2,142 +2,14 @@ from abc import abstractmethod
 import torch as T
 import numpy as np
 import gymnasium as gym
-from .env_wrapper import Observation, Action, EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
-# from .utils import build_env_wrapper_obj
-from .torch_utils import get_device
 from typing import Optional, Tuple, List, Any, Dict
 from collections import defaultdict
 import math
 
+from .env_wrapper import Observation, Action, EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
+from .her import HindsightRelabeler, AchievedGoalPool
+from .torch_utils import get_device
 
-# class SumTree:
-#     """
-#     A binary sum tree for efficient sampling based on priorities.
-#     """
-#     def __init__(self, capacity: int, device: T.device):
-#         self.capacity = capacity
-#         self.device = get_device(device)
-#         # Initialize the tree with zeros
-#         self.tree = T.zeros(2 * capacity - 1, dtype=T.float32, device=self.device)
-#         self.next_idx = 0
-#         # self.size = 0
-#         self.max_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
-#         # Add tracking for debugging
-#         self.debug_last_large_priority = None
-#         self.debug_last_large_priority_idx = None
-    
-#     # def update(self, data_indices, priorities):
-#     #     # Cap priorities to prevent extreme values
-#     #     priorities = T.clamp(priorities, min=1e-6)
-
-#     #     # Track maximum priority
-#     #     if priorities.numel() > 0:
-#     #         self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
-
-#     #     # Compute tree indices once
-#     #     tree_indices = data_indices + self.capacity - 1
-
-#     #     # Update leaf nodes in one operation
-#     #     self.tree[tree_indices] = priorities
-
-#     #     # Update parent nodes for each leaf individually - less vectorized but correct
-#     #     for idx in tree_indices:
-#     #         idx_item = idx.item()
-#     #         parent = (idx_item - 1) // 2
-
-#     #         # Traverse up to the root
-#     #         while parent >= 0:
-#     #             # Get children of this parent
-#     #             left = 2 * parent + 1
-#     #             right = 2 * parent + 2
-
-#     #             # Update the parent (handle case where right child might not exist)
-#     #             if right < self.tree.size(0):
-#     #                 self.tree[parent] = self.tree[left] + self.tree[right]
-#     #             else:
-#     #                 self.tree[parent] = self.tree[left]
-
-#     #             # Move to next parent up the tree
-#     #             parent = (parent - 1) // 2
-
-#     def update(self, data_indices, priorities):
-#         # Cap priorities to prevent extreme values
-#         priorities = T.clamp(priorities, min=1e-6)
-
-#         # Track maximum priority
-#         if priorities.numel() > 0:
-#             self.max_priority = T.max(T.cat([self.max_priority.unsqueeze(0), T.max(priorities).unsqueeze(0)]))
-
-#         # Compute tree indices once
-#         indices = data_indices + self.capacity - 1
-
-#         # Update leaf nodes in one operation
-#         self.tree[indices] = priorities
-
-#         # Vectorized propagation: process level-by-level up the tree
-#         while True:
-#             parents = (indices - 1) // 2
-#             unique_parents, _ = T.unique(parents, return_inverse=True)  # Get unique to avoid redundant updates
-#             if unique_parents.min() >= 0:  # Continue until we reach the root
-#                 left_children = 2 * unique_parents + 1
-#                 right_children = 2 * unique_parents + 2
-#                 has_right = right_children < self.tree.size(0)
-                
-#                 # Sum children for each unique parent
-#                 sums = self.tree[left_children].clone()  # Start with left
-#                 sums[has_right] += self.tree[right_children[has_right]]  # Add right if exists
-                
-#                 self.tree[unique_parents] = sums
-#                 indices = unique_parents  # Move up to parents for next level
-#             else:
-#                 break
-
-#     @T.jit.script
-#     def _traverse_tree(p_values: T.Tensor, tree: T.Tensor, capacity: int) -> T.Tensor:
-#         batch_size = p_values.size(0)
-#         indices = T.zeros(batch_size, dtype=T.long, device=p_values.device)
-        
-#         for i in range(batch_size):
-#             idx = 0  # Start at root
-#             p = p_values[i]
-            
-#             # Binary search through the tree
-#             for _ in range(int(T.log2(T.tensor(capacity)).ceil().item())):
-#                 left = 2 * idx + 1
-#                 if left >= tree.size(0):
-#                     break
-                    
-#                 left_val = tree[left]
-#                 if p <= left_val:
-#                     idx = left
-#                 else:
-#                     p = p - left_val
-#                     idx = left + 1
-                    
-#                 if idx >= capacity - 1:  # Reached leaf nodes
-#                     break
-                    
-#             indices[i] = idx
-        
-#         return indices
-
-#     def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
-#         """Optimized sampling with JIT acceleration"""
-#         indices = self._traverse_tree(p_values, self.tree, self.capacity)
-        
-#         # Ensure leaf node validity and get priorities
-#         indices = T.clamp(indices, 0, self.tree.size(0) - 1)
-#         priorities = self.tree[indices]
-        
-#         # Convert to data indices
-#         data_indices = T.clamp(indices - (self.capacity - 1), 0, self.capacity - 1)
-        
-#         return data_indices, priorities
-    
-#     @property
-#     def total_priority(self) -> float:
-#         """Return the total priority (value at root)."""
-#         return self.tree[0].item() if self.tree.size(0) > 0 else 0.0
 
 class SumTree:
     """
@@ -224,10 +96,16 @@ class Buffer:
         self,
         env: EnvWrapper,
         buffer_size: int,
+        hindsight: HindsightRelabeler | None = None,
         device: Optional[str] = None
     ):
         self.env = env
         self.buffer_size = buffer_size
+        self.hindsight = hindsight
+        if self.hindsight is not None:
+            # Initialize episode trajectory buffers for each environment to
+            # rebuild the trajectories with hindsight relabeling.
+            self._ep_buffers = [defaultdict(list) for _ in range(env.num_envs)]
         self.device = get_device(device)
 
         # Set observation, goal, and action space shapes
@@ -270,6 +148,7 @@ class Buffer:
             'config': {
                 "env": self.env.to_json(),
                 "buffer_size": self.buffer_size,
+                "hindsight": self.hindsight.get_config() if self.hindsight is not None else None,
                 "device": self.device.type
             }
         }
@@ -296,11 +175,20 @@ class ReplayBuffer(Buffer):
         env: EnvWrapper,
         buffer_size: int = 100000,
         N: int = 1,
+        hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None,
     ):
-        super().__init__(env, buffer_size, device)
+        super().__init__(env, buffer_size, hindsight, device)
         self.N = N  # N-step hyperparameter
         self.counter = 0
+
+        # If using hindsigh relabeling, check to make sure output format is n_step
+        # and N values matches Buffer N value
+        if self.hindsight is not None:
+            if self.hindsight.output_format != "n_step":
+                raise ValueError("ReplayBuffer requires hindsight relabeling output_format = 'n_step'")
+            
+
         
         self.states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
         self.actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
