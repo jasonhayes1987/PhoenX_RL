@@ -390,7 +390,7 @@ class VectorNStepReward(VectorWrapper):
         self.length = T.where(active, T.clamp(self.length + 1, max=self.n), self.length)
 
         # Build the batched trajectory (valid envs only)
-        trajectory = self._build_trajectories()
+        trajectory = self._build_trajectories(dones=dones)
         infos['n-step trajectory'] = trajectory
 
         # Clear on done
@@ -408,7 +408,7 @@ class VectorNStepReward(VectorWrapper):
 
         return next_states, rewards, terminations, truncations, infos
 
-    def _build_trajectories(self):
+    def _build_trajectories(self, dones: T.Tensor | None = None):
         """
         Produces tensors of shape (num_valid_envs, n, *) where num_valid_envs is the
         number of envs with length > 0.
@@ -484,6 +484,65 @@ class VectorNStepReward(VectorWrapper):
             trajectory['state_achieved_goals'] = state_ach_goals_all[valid]
             trajectory['next_state_achieved_goals'] = next_state_ach_goals_all[valid]
             trajectory['desired_goals'] = desired_goals_all[valid]
+
+        if dones is not None and bool(dones.any()):
+            # Fields that use "repeat" padding past the valid length.
+            rep_fields = {
+                'states': states_all,
+                'next_states': next_states_all,
+                'actions': actions_all,
+                'raw_actions': raw_actions_all,
+                'log_probs': log_probs_all,
+            }
+            # Fields that use zero padding past the valid length.
+            zero_fields = {
+                'rewards': rewards_all,
+                'terminations': terminations_all,
+                'truncations': truncations_all,
+                'intrinsic_rewards': intrinsic_rewards_all,
+            }
+            if self.goal_key:
+                rep_fields['state_achieved_goals'] = state_ach_goals_all
+                rep_fields['next_state_achieved_goals'] = next_state_ach_goals_all
+                rep_fields['desired_goals'] = desired_goals_all
+
+            # Flush tails if there is a terminal state so each step in the n-step trajectory
+            # becomes an anchor of its own n-step window
+            tail_rows: dict[str, list[T.Tensor]] = {
+                k: [] for k in (*rep_fields, *zero_fields)
+            }
+            tail_lengths: list[int] = []
+            t = self._t_idx  # arange(n)
+            for e in dones.nonzero(as_tuple=True)[0].tolist():
+                L = int(length[e].item())
+                # j = 1 .. L-1 peels off the oldest entry each time.
+                for j in range(1, L):
+                    new_len = L - j
+                    # Shift left by j; clamp keeps us in-bounds (the clamped
+                    # tail lands on already-padded slots for repeat fields).
+                    idx = T.clamp(t + j, max=n - 1)
+                    new_valid = t < new_len  # bool [n]
+                    for key, arr in rep_fields.items():
+                        tail_rows[key].append(arr[e, idx])
+                    for key, arr in zero_fields.items():
+                        row = arr[e, idx].clone()
+                        # Re-zero padding: required when L == n, where the
+                        # clamped indices would otherwise repeat a real entry
+                        # (e.g. the terminal reward/flag) into padding slots.
+                        row[~new_valid] = 0
+                        tail_rows[key].append(row)
+                    tail_lengths.append(new_len)
+            if tail_lengths:
+                for key in tail_rows:
+                    stacked = T.stack(tail_rows[key], dim=0)  # [num_tail, n, ...]
+                    trajectory[key] = T.cat([trajectory[key], stacked], dim=0)
+                trajectory['trajectory_lengths'] = T.cat(
+                    [
+                        trajectory['trajectory_lengths'],
+                        T.tensor(tail_lengths, dtype=length.dtype, device=self.device),
+                    ],
+                    dim=0,
+                )
 
         # Collect n-step boundary diagnostics
         if self._nstep_diag_buffer is not None:
