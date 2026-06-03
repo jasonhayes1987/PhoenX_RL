@@ -407,6 +407,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         epsilon: float = 1e-6,
         sort_freq: int = 1000,
         N: int = 1,
+        hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None,
     ):
         if priority not in ("proportional", "rank"):
@@ -414,7 +415,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
                 f"Invalid priority type: {priority!r} (must be 'proportional' or 'rank')"
             )
  
-        super().__init__(env, buffer_size, N, device)
+        super().__init__(env, buffer_size, N, hindsight, device)
  
         self.alpha = alpha
         self.beta_start = beta_start
