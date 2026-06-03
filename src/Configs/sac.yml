@@ -89,7 +89,7 @@ agent:
     target_entropy_scale: 1.0
     policy_grad_clip: 10.0
     critic_grad_clip: 10.0
-    N: &n 5
+    N: &n 1
     # intrinsic_motivation:
     #   type: ICM
     #   config:
@@ -205,26 +205,26 @@ env:
     render_mode: null
     seed: *seed
 
-# buffer:
-#   type: PrioritizedReplayBuffer
-#   config:
-#     buffer_size: 100000
-#     alpha: 0.6
-#     beta_start: 0.4
-#     beta_iter: 100000
-#     beta_update_freq: 10
-#     priority: proportional
-#     epsilon: 1.0e-4
-#     sort_freq: 1000
-#     N: *n
-#     device: *device
-
 buffer:
-  type: ReplayBuffer
+  type: PrioritizedReplayBuffer
   config:
-    buffer_size: 1000000
+    buffer_size: 100000
+    alpha: 0.6
+    beta_start: 0.4
+    beta_iter: 100000
+    beta_update_freq: 10
+    priority: proportional
+    epsilon: 1.0e-4
+    sort_freq: 1000
     N: *n
     device: *device
+
+# buffer:
+#   type: ReplayBuffer
+#   config:
+#     buffer_size: 1000000
+#     N: *n
+#     device: *device
 
 renderer:
   render_freq: 500
