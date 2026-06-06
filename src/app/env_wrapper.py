@@ -254,6 +254,7 @@ class VectorNStepReward(VectorWrapper):
         self._step = 0
         self._diag_freq = None
         self._log_diag = False
+        self._nstep_diag_buffer = deque(maxlen=1024)
         if self.kwargs is not None:
             for key, value in self.kwargs.items():
                 setattr(self, key, value)
@@ -288,9 +289,6 @@ class VectorNStepReward(VectorWrapper):
         self._t_idx = T.arange(self.n, device=self.device)
         self._env_idx = T.arange(self.num_envs, device=self.device)
         self._env_idx_nx1 = self._env_idx.unsqueeze(1).expand(self.num_envs, self.n)
-
-        # N-step diags
-        self._nstep_diag_buffer = deque(maxlen=1024)
 
     def set_action(self, action: Action) -> None:
         """Sets the action data for the current step.
