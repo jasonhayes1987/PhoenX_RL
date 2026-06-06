@@ -27,6 +27,7 @@ All tests are fast, deterministic, CPU-only, and use only live API classes.
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -133,13 +134,72 @@ def _reference_compute_q_retrace(
 
     q_retrace = q_cur[:, 0] + retrace_sum
 
+    # 4. Boundary-leakage diagnostics (mirror of the production implementation).
+    #    These are the values the diagnostics-aware tests assert on, so the
+    #    reference must reproduce them exactly.
+    done_window_final_cum_c: list[float] = []
+    done_window_max_leakage: list[float] = []
+    has_done = (terminations | truncations).any(dim=1)
+    if has_done.any():
+        for i in range(batch_size):
+            if has_done[i]:
+                L = int(trajectory_lengths[i].item())
+                if L > 0:
+                    done_mask = (terminations[i, :L] | truncations[i, :L])
+                    if done_mask.any():
+                        first_done = int(done_mask.nonzero(as_tuple=True)[0][0])
+                        done_window_final_cum_c.append(float(cum_c[i].item()))
+                        if first_done + 1 < L:
+                            leakage = mask[i, first_done + 1 : L].max().item()
+                            done_window_max_leakage.append(leakage)
+
     metrics = {
         "td_errors": td_errors,
         "mask": mask,
         "is_ratio": is_ratio,
         "cum_c": cum_c,
+        "done_window_final_cum_c": done_window_final_cum_c,
+        "done_window_max_leakage": done_window_max_leakage,
     }
     return q_retrace, metrics
+
+
+# -----------------------------------------------------------------------------
+# Metric comparison helpers
+# -----------------------------------------------------------------------------
+# compute_q_retrace returns a metrics dict mixing tensor-valued entries
+# (td_errors, mask, is_ratio, cum_c) with list-valued boundary diagnostics
+# (done_window_final_cum_c, done_window_max_leakage). These helpers compare /
+# validate both kinds so the tests assert on the *correct* metrics rather than
+# blindly calling tensor ops on lists.
+# -----------------------------------------------------------------------------
+
+def _assert_metrics_match(m: dict, m_ref: dict, atol: float = 1e-6) -> None:
+    """Assert two metrics dicts are equal across all (shared) keys, handling
+    both tensor-valued and list-valued entries."""
+    assert set(m.keys()) >= set(m_ref.keys()), (
+        f"Production metrics missing keys present in reference: "
+        f"{set(m_ref.keys()) - set(m.keys())}"
+    )
+    for k, ref_val in m_ref.items():
+        val = m[k]
+        if isinstance(ref_val, T.Tensor):
+            assert T.allclose(val, ref_val, atol=atol), f"tensor metric '{k}' mismatch"
+        else:
+            # list-valued diagnostic: compare element-wise as floats
+            assert len(val) == len(ref_val), f"list metric '{k}' length mismatch"
+            for a, b in zip(val, ref_val):
+                assert abs(float(a) - float(b)) <= atol, f"list metric '{k}' value mismatch"
+
+
+def _assert_metric_value_finite(value) -> None:
+    """Assert a single metric value is finite, whether it is a tensor or a
+    (possibly empty) list of scalars."""
+    if isinstance(value, T.Tensor):
+        assert T.isfinite(value).all()
+    else:
+        for x in value:
+            assert math.isfinite(float(x))
 
 
 # -----------------------------------------------------------------------------
@@ -278,8 +338,7 @@ class TestComputeQRetrace:
         q_ref, m_ref = _reference_compute_q_retrace(**batch)
 
         assert T.allclose(q, q_ref, atol=1e-6)
-        for k in m:
-            assert T.allclose(m[k], m_ref[k], atol=1e-6)
+        _assert_metrics_match(m, m_ref, atol=1e-6)
 
     def test_termination_stops_bootstrap_and_accumulation(self):
         """Explicit numerical verification for the tiny termination-at-k1 case.
@@ -317,8 +376,7 @@ class TestComputeQRetrace:
         q_ref, m_ref = _reference_compute_q_retrace(**batch)
 
         assert T.allclose(q, q_ref, atol=1e-5)
-        for k in m:
-            assert T.allclose(m[k], m_ref[k], atol=1e-5)
+        _assert_metrics_match(m, m_ref, atol=1e-5)
 
     def test_n_equals_1_reduces_to_simple_one_step_target(self):
         """When every trajectory has length 1 the retrace target must be
@@ -362,7 +420,7 @@ class TestComputeQRetrace:
         q, m = compute_q_retrace(**batch)
         assert T.isfinite(q).all()
         for v in m.values():
-            assert T.isfinite(v).all()
+            _assert_metric_value_finite(v)
 
     def test_trajectory_length_zero_batch_is_handled(self):
         """Edge case that can appear transiently: a sample with trajectory_length=0.
@@ -979,3 +1037,261 @@ class TestFullStackN5LunarLanderBoundaries:
     # termination placement and trajectory_lengths") is already exercised by the
     # tests above.  Any HER-specific or heavy-IM-specific n-step bugs would be
     # caught by higher-level training smoke tests or dedicated HER test files.
+
+
+# =============================================================================
+# Independent ground-truth emission tests for VectorNStepReward
+# -----------------------------------------------------------------------------
+# The integration tests above validate that compute_q_retrace *consumes* the
+# emitted data self-consistently. Their reference, however, is derived FROM the
+# wrapper's own output, so a bug in the wrapper's emission (wrong temporal
+# order, off-by-one in the circular buffer, cross-episode leakage, broken
+# tail-flush) would NOT be caught — the wrong data would simply be compared
+# against itself.
+#
+# The tests below close that gap. They maintain an entirely separate, naive,
+# plain-Python record of the *true* environment transitions and assert that
+# every window the wrapper emits matches that record exactly:
+#   - temporal ordering of states / next_states / rewards
+#   - termination / truncation placement within the window
+#   - trajectory_lengths (capped at n)
+#   - zero-padding past the valid length (rewards / terminations / truncations)
+#   - no cross-episode leakage (episode record cleared on done)
+#   - tail-flush sub-windows on terminal steps
+#
+# The emitted row order is deterministic and is reproduced exactly by the
+# reference:
+#   1. main windows, one per env with length>0, in ascending env index
+#   2. tail sub-windows, per done env (ascending), for j = 1 .. L-1
+# =============================================================================
+
+def _to_numpy(x):
+    """Device/type-agnostic conversion to a numpy array.
+
+    VectorNStepReward.step returns rewards/terminations/truncations as torch
+    tensors on self.device (which may be CUDA even in these CPU-oriented tests,
+    since the get_device patch only affects allocation during __init__).
+    """
+    if isinstance(x, T.Tensor):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
+
+
+def _build_expected_emitted_windows(episodes, dones, n):
+    """Reconstruct, from a naive per-env transition record, the exact list of
+    windows VectorNStepReward should emit on this step (in emission order).
+
+    Each returned window is a list of transition dicts with keys
+    state / reward / next_state / term / trunc.
+    """
+    num_envs = len(episodes)
+    expected = []
+    # 1. Main windows (ascending env index, only envs with a non-empty episode)
+    mains = {}
+    for e in range(num_envs):
+        L = min(len(episodes[e]), n)
+        if L > 0:
+            main = episodes[e][-L:]
+            mains[e] = main
+            expected.append(main)
+    # 2. Tail-flush sub-windows for every env that is done this step
+    for e in range(num_envs):
+        if dones[e] and e in mains:
+            main = mains[e]
+            for j in range(1, len(main)):
+                expected.append(main[j:])
+    return expected
+
+
+def _assert_emitted_matches_expected(traj, expected, n):
+    """Assert that an emitted n-step trajectory dict matches the expected list
+    of windows exactly (row order, ordering within rows, lengths, padding)."""
+    if not expected:
+        assert traj is None or int(len(traj.get("trajectory_lengths", []))) == 0, \
+            "Wrapper emitted a window when none was expected (phantom/empty step)"
+        return
+
+    n_rows = 0 if traj is None else int(len(traj["trajectory_lengths"]))
+    assert traj is not None and n_rows == len(expected), \
+        f"Expected {len(expected)} emitted window(s), got {n_rows}"
+
+    for r, win in enumerate(expected):
+        Lw = len(win)
+        assert int(traj["trajectory_lengths"][r]) == Lw, \
+            f"row {r}: trajectory_length {int(traj['trajectory_lengths'][r])} != {Lw}"
+
+        for k in range(Lw):
+            assert np.allclose(
+                traj["states"][r, k].cpu().numpy(), win[k]["state"], atol=1e-5
+            ), f"row {r} step {k}: state mismatch (temporal ordering / leakage)"
+            assert np.allclose(
+                traj["next_states"][r, k].cpu().numpy(), win[k]["next_state"], atol=1e-5
+            ), f"row {r} step {k}: next_state mismatch"
+            assert abs(float(traj["rewards"][r, k]) - win[k]["reward"]) < 1e-5, \
+                f"row {r} step {k}: reward mismatch"
+            assert bool(traj["terminations"][r, k]) == win[k]["term"], \
+                f"row {r} step {k}: termination flag misplaced"
+            assert bool(traj["truncations"][r, k]) == win[k]["trunc"], \
+                f"row {r} step {k}: truncation flag misplaced"
+
+        # zero-padding past the valid length
+        for k in range(Lw, n):
+            assert abs(float(traj["rewards"][r, k])) < 1e-8, \
+                f"row {r} pad {k}: reward not zero-padded"
+            assert not bool(traj["terminations"][r, k]), \
+                f"row {r} pad {k}: termination not zero-padded"
+            assert not bool(traj["truncations"][r, k]), \
+                f"row {r} pad {k}: truncation not zero-padded"
+
+
+class TestVectorNStepRewardEmissionGroundTruth:
+    """Independent ground-truth validation of VectorNStepReward emission.
+
+    Maintains a naive, obviously-correct record of the true transitions and
+    asserts every emitted window matches it exactly. This is the layer that can
+    actually catch the class of subtle n-step / boundary bugs that produced the
+    N=5 regression (and which the self-consistent integration tests cannot see).
+    """
+
+    def test_emission_matches_naive_reference_single_env(self):
+        """num_envs == 1: the simplest, most readable case. Emitted row order is
+        trivially [main, tail_1, ..., tail_{L-1}]."""
+        n = 4
+        env = _create_real_nstep_wrapped_env(n=n, num_envs=1, seed=7)
+        try:
+            states, _ = env.reset()
+            cur_state = _to_numpy(states)[0].copy()
+            episode = []          # true transitions since last reset
+            prev_done = False
+            saw_termination = False
+            saw_tail_flush = False
+
+            for _step in range(600):
+                a_np = np.array([env.single_action_space.sample()])
+                a_t = T.as_tensor(a_np, device="cpu")
+                logp = T.zeros(1, device="cpu", dtype=T.float32)
+                env.set_action(_TestAction(actions=a_t, raw_actions=None, log_probs=logp))
+
+                next_states, rewards, terms, truncs, infos = env.step(a_np)
+                next_states = _to_numpy(next_states)
+                rewards = _to_numpy(rewards).astype(np.float64)
+                term = bool(_to_numpy(terms)[0])
+                trunc = bool(_to_numpy(truncs)[0])
+                done = term or trunc
+
+                # Update naive reference (mirror wrapper's `active = ~prev_done`)
+                if not prev_done:
+                    episode.append({
+                        "state": cur_state.copy(),
+                        "reward": float(rewards[0]),
+                        "next_state": next_states[0].copy(),
+                        "term": term,
+                        "trunc": trunc,
+                    })
+
+                expected = _build_expected_emitted_windows([episode], [done], n)
+                traj = infos.get("n-step trajectory")
+                _assert_emitted_matches_expected(traj, expected, n)
+
+                if expected:
+                    if len(expected) > 1:
+                        saw_tail_flush = True
+                    if done:
+                        saw_termination = True
+
+                prev_done = done
+                cur_state = next_states[0].copy()
+                if done:
+                    episode = []
+
+            assert saw_termination, "No terminations occurred — boundaries were never exercised"
+            assert saw_tail_flush, "No tail-flush sub-windows were produced/observed"
+
+        finally:
+            try:
+                env.env.close()
+            except Exception:
+                pass
+
+    def test_emission_matches_naive_reference_multi_env(self):
+        """num_envs > 1: staggered terminations across parallel envs. This
+        exercises the harder paths the single-env case cannot:
+          - the valid-env boolean mask selecting/ordering main rows
+          - multiple done envs in the SAME step contributing tail rows
+          - tail-row ordering (ascending env index, then j = 1 .. L-1)
+          - per-env circular buffers staying independent (no cross-env bleed)
+        """
+        n = 4
+        num_envs = 3
+        env = _create_real_nstep_wrapped_env(n=n, num_envs=num_envs, seed=11)
+        try:
+            states, _ = env.reset()
+            cur_state = _to_numpy(states).copy()                  # [num_envs, obs]
+            episodes = [[] for _ in range(num_envs)]               # per-env transitions
+            prev_done = [False] * num_envs
+            saw_termination = False
+            saw_tail_flush = False
+            saw_multi_main_rows = False
+            saw_multi_done_same_step = False
+
+            for _step in range(1500):
+                a_np = np.array([env.single_action_space.sample() for _ in range(num_envs)])
+                a_t = T.as_tensor(a_np, device="cpu")
+                logp = T.zeros(num_envs, device="cpu", dtype=T.float32)
+                env.set_action(_TestAction(actions=a_t, raw_actions=None, log_probs=logp))
+
+                next_states, rewards, terms, truncs, infos = env.step(a_np)
+                next_states = _to_numpy(next_states)
+                rewards = _to_numpy(rewards).astype(np.float64)
+                terms = _to_numpy(terms).astype(bool)
+                truncs = _to_numpy(truncs).astype(bool)
+                dones = [bool(terms[e] or truncs[e]) for e in range(num_envs)]
+
+                # Update naive per-env reference (mirror per-env `active = ~prev_done`)
+                for e in range(num_envs):
+                    if not prev_done[e]:
+                        episodes[e].append({
+                            "state": cur_state[e].copy(),
+                            "reward": float(rewards[e]),
+                            "next_state": next_states[e].copy(),
+                            "term": bool(terms[e]),
+                            "trunc": bool(truncs[e]),
+                        })
+
+                expected = _build_expected_emitted_windows(episodes, dones, n)
+                traj = infos.get("n-step trajectory")
+                _assert_emitted_matches_expected(traj, expected, n)
+
+                # Coverage bookkeeping
+                num_main = sum(1 for e in range(num_envs) if min(len(episodes[e]), n) > 0)
+                if num_main > 1:
+                    saw_multi_main_rows = True
+                num_done = sum(1 for d in dones if d)
+                if num_done >= 1:
+                    saw_termination = True
+                if num_done >= 2:
+                    saw_multi_done_same_step = True
+                if expected and len(expected) > num_main:
+                    saw_tail_flush = True
+
+                # Advance per-env bookkeeping
+                for e in range(num_envs):
+                    prev_done[e] = dones[e]
+                    cur_state[e] = next_states[e].copy()
+                    if dones[e]:
+                        episodes[e] = []
+
+            assert saw_termination, "No terminations occurred — boundaries were never exercised"
+            assert saw_tail_flush, "No tail-flush sub-windows were produced/observed"
+            assert saw_multi_main_rows, "Never saw >1 valid main row — multi-env ordering not exercised"
+            # Staggered terminations are the whole point; with 3 envs over 1500
+            # CartPole steps this is effectively guaranteed, but we assert it so a
+            # regression that serializes episodes would surface.
+            assert saw_multi_done_same_step, \
+                "Never saw two envs done on the same step — multi-done tail ordering not exercised"
+
+        finally:
+            try:
+                env.env.close()
+            except Exception:
+                pass
