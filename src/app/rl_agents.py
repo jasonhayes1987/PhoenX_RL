@@ -1561,6 +1561,7 @@ class DDPG(Agent):
         noise_clip: float = 0.5,
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
+        critic_huber_delta: float = 1.0,
         N: int=1, # N-steps
         intrinsic_motivation: IntrinsicMotivation | None = None,
         save_dir: str = "models",
@@ -1578,6 +1579,8 @@ class DDPG(Agent):
             self.reward_normalizer = reward_normalizer
             self.policy_grad_clip = policy_grad_clip
             self.critic_grad_clip = critic_grad_clip
+            self.critic_huber_delta = critic_huber_delta
+            self.critic_loss_fn = T.nn.HuberLoss(reduction='none', delta=critic_huber_delta)
             self.N = N
             self.intrinsic_motivation = intrinsic_motivation
             self.target_policy = self.policy.clone(device=self.policy.device)
@@ -1756,14 +1759,15 @@ class DDPG(Agent):
             goals[:,0,:] if goals is not None else None
         ).squeeze()
 
-        # Calculate TD errors
+        # Calculate TD errors (kept as raw signed differences for PER priorities and logging)
         error = targets - predictions
-        
-        # Apply importance sampling weights if using prioritized replay
+
+        # Per-sample Huber loss; apply IS weights before averaging if using PER
+        per_sample_loss = self.critic_loss_fn(predictions, targets)
         if weights is not None:
-            critic_loss = (weights.to(self.critic.device) * error.pow(2)).mean()
+            critic_loss = (weights.to(self.critic.device) * per_sample_loss).mean()
         else:
-            critic_loss = error.pow(2).mean()
+            critic_loss = per_sample_loss.mean()
 
         # Update critic
         self.critic.optimizer.zero_grad()
@@ -1885,6 +1889,7 @@ class DDPG(Agent):
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
+            "critic_huber_delta": self.critic_huber_delta,
             "N": self.N,
             "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
             "action_epsilon": self.action_epsilon,
@@ -1939,6 +1944,7 @@ class DDPG(Agent):
             noise_clip=config["noise_clip"],
             policy_grad_clip=config['policy_grad_clip'],
             critic_grad_clip=config['critic_grad_clip'],
+            critic_huber_delta=config.get("critic_huber_delta", 1.0),
             N = config['N'],
             intrinsic_motivation=intrinsic_motivation,
             save_dir=config["save_dir"],
@@ -1970,6 +1976,7 @@ class TD3(Agent):
         noise_clip: float = 0.5,
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
+        critic_huber_delta: float = 1.0,
         policy_update_delay: int = 2,
         N: int=1, # N-steps
         intrinsic_motivation: IntrinsicMotivation|None = None,
@@ -1988,6 +1995,8 @@ class TD3(Agent):
             self.reward_normalizer = reward_normalizer
             self.policy_grad_clip = policy_grad_clip
             self.critic_grad_clip = critic_grad_clip
+            self.critic_huber_delta = critic_huber_delta
+            self.critic_loss_fn = T.nn.HuberLoss(reduction='none', delta=critic_huber_delta)
             self.N = N
             self.intrinsic_motivation = intrinsic_motivation
             self.critic_b = critic_b
@@ -2201,20 +2210,22 @@ class TD3(Agent):
             goals[:,0,:] if goals is not None else None
         ).squeeze()
 
-        # Calculate TD errors (use average of both critic networks for PER)
+        # Calculate TD errors (kept as raw signed differences for PER priorities and logging)
         error_a = targets - predictions_a
         error_b = targets - predictions_b
         # error = (error_a.abs() + error_b.abs()) / 2  # Average of absolute errors for priorities
         error = T.minimum(error_a, error_b)
 
-        # Apply importance sampling weights if using prioritized replay
+        # Per-sample Huber loss; apply IS weights before averaging if using PER
+        per_sample_loss_a = self.critic_loss_fn(predictions_a, targets)
+        per_sample_loss_b = self.critic_loss_fn(predictions_b, targets)
         if weights is not None:
-            critic_loss_a = (weights.to(self.critic.device) * error_a.pow(2)).mean()
-            critic_loss_b = (weights.to(self.critic_b.device) * error_b.pow(2)).mean()
+            critic_loss_a = (weights.to(self.critic.device) * per_sample_loss_a).mean()
+            critic_loss_b = (weights.to(self.critic_b.device) * per_sample_loss_b).mean()
             critic_loss = critic_loss_a + critic_loss_b
         else:
-            critic_loss_a = error_a.pow(2).mean()
-            critic_loss_b = error_b.pow(2).mean()
+            critic_loss_a = per_sample_loss_a.mean()
+            critic_loss_b = per_sample_loss_b.mean()
             critic_loss = critic_loss_a + critic_loss_b
 
         # Update critics
@@ -2354,6 +2365,7 @@ class TD3(Agent):
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
+            "critic_huber_delta": self.critic_huber_delta,
             "N": self.N,
             "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
             "action_epsilon": self.action_epsilon,
@@ -2419,6 +2431,7 @@ class TD3(Agent):
             noise_clip=config["noise_clip"],
             policy_grad_clip=config["policy_grad_clip"],
             critic_grad_clip=config["critic_grad_clip"],
+            critic_huber_delta=config.get("critic_huber_delta", 1.0),
             policy_update_delay=config["policy_update_delay"],
             N=config["N"],
             intrinsic_motivation=intrinsic_motivation,
@@ -2448,6 +2461,7 @@ class SAC(Agent):
         target_entropy_scale: float=0.98, # Only used if auto entropy = True and discrete action space
         policy_grad_clip: float = float('inf'),
         critic_grad_clip: float = float('inf'),
+        critic_huber_delta: float = 1.0,
         N: int=1,
         intrinsic_motivation: IntrinsicMotivation|None = None,
         save_dir: str = "models",
@@ -2465,6 +2479,8 @@ class SAC(Agent):
             self.reward_normalizer = reward_normalizer
             self.policy_grad_clip = policy_grad_clip
             self.critic_grad_clip = critic_grad_clip
+            self.critic_huber_delta = critic_huber_delta
+            self.critic_loss_fn = T.nn.HuberLoss(reduction='none', delta=critic_huber_delta)
             self.N = N
             self.intrinsic_motivation = intrinsic_motivation
             self.critic_b = critic_b
@@ -2778,10 +2794,10 @@ class SAC(Agent):
             q1_preds = q1.gather(1, buffer_actions).squeeze(1)
             q2_preds = q2.gather(1, buffer_actions).squeeze(1)
 
-        # Calculate errors
-        q1_loss = (q1_preds - q_retrace.detach()).pow(2)
-        q2_loss = (q2_preds - q_retrace.detach()).pow(2)
-        # Get min error across losses (used to update priorities)
+        # Per-sample Huber loss for each critic
+        q1_loss = self.critic_loss_fn(q1_preds, q_retrace.detach())
+        q2_loss = self.critic_loss_fn(q2_preds, q_retrace.detach())
+        # Get min raw TD error (used to update PER priorities — kept as signed difference, not Huber-transformed)
         errors = (T.minimum(q1_preds, q2_preds) - q_retrace).detach().flatten()
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
@@ -2821,8 +2837,8 @@ class SAC(Agent):
             actor_loss = (dist.probs * (entropy_coefficient * log_probs - min_q)).sum(-1)
 
 
-        if weights is not None:
-            actor_loss = weights.to(self.policy.device) * actor_loss
+        # if weights is not None:
+        #     actor_loss = weights.to(self.policy.device) * actor_loss
 
         actor_loss = actor_loss.mean()
 
@@ -2959,6 +2975,7 @@ class SAC(Agent):
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
+            "critic_huber_delta": self.critic_huber_delta,
             "N": self.N,
             "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
             "critic_b": self.critic_b.get_config(),
@@ -3025,6 +3042,7 @@ class SAC(Agent):
             target_entropy_scale=config["target_entropy_scale"],
             policy_grad_clip=config["policy_grad_clip"],
             critic_grad_clip=config["critic_grad_clip"],
+            critic_huber_delta=config.get("critic_huber_delta", 1.0),
             N = config['N'],
             intrinsic_motivation=intrinsic_motivation,
             save_dir=config["save_dir"],
