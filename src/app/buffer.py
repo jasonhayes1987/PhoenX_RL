@@ -179,6 +179,9 @@ class ReplayBuffer(Buffer):
         device: str | T.device | None = None,
     ):
         super().__init__(env, buffer_size, hindsight, device)
+        # Check to make sure environment is using VectorNStepReward Wrapper
+        if env._find_nstep_wrapper() is None:
+            raise ValueError("ReplayBuffer requires the VectorNStepReward wrapper to be used in the environment")
         self.N = N  # N-step hyperparameter
         self.counter = 0
 
@@ -218,7 +221,7 @@ class ReplayBuffer(Buffer):
         if cur_observation.n_step_trajectory is not None:
             self.add(**cur_observation.n_step_trajectory)
         else:
-            raise ValueError("n_step_trajectory is None. ReplayBuffer requires the VectorNStepReward wrapper to populate it.")
+            pass
 
     def add(
         self,
@@ -441,13 +444,16 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self._rank_Z = T.tensor(0.0, dtype=T.float32, device=self.device)
  
     def record(self, cur_observation: Observation, **kwargs: Any) -> None:
+        """
+        Record a transition into the buffer.
+
+        Args:
+            cur_observation: Observation: The observation of the current state.
+        """
         if cur_observation.n_step_trajectory is not None:
             self.add(**cur_observation.n_step_trajectory)
         else:
-            raise ValueError(
-                "n_step_trajectory is None. PrioritizedReplayBuffer requires the "
-                "VectorNStepReward wrapper to populate it."
-            )
+            pass
  
     def add(
         self,
