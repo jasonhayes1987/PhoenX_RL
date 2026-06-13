@@ -203,7 +203,7 @@ def compute_q_retrace(
     td_errors = rewards + discount * (1 - terminations.float()) * target_q.detach() - q_cur.detach()
 
     # Compute IS ratios
-    is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), max=1.0)
+    is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), min=0.5, max=1.0)
     # Mask invalid steps and IS ratios from terminated_state +1 : N
     valid = (T.arange(n_step_length, device=device)[None, :] < trajectory_lengths[:, None]).float()
     mask = T.ones(batch_size, n_step_length, device=device)
