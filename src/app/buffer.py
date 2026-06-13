@@ -291,7 +291,7 @@ class ReplayBuffer(Buffer):
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
 
         if raw_actions is not None:
-            if raw_actions.ndim == 1:
+            if raw_actions.ndim == 2:
                 raw_actions = raw_actions.unsqueeze(-1)
             self.raw_actions[indices] = raw_actions.detach().to(device=self.device, dtype=self.action_type)
         if log_probs is not None:

@@ -2541,12 +2541,13 @@ class SAC(Agent):
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
                 actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
-                space = self.policy.env.action_space
-                if hasattr(space, "low"): # Continuous
+
+                if isinstance(self.policy, StochasticContinuousPolicy): # Continuous
                     log_probs = (-T.log(self.policy.act_space_high - self.policy.act_space_low).sum(-1)) \
                         * T.ones(actions.shape[0], device=self.device)
                 else: # Discrete
-                    log_probs = T.full((actions.shape[0],), -T.log(space.n), device=self.device)
+                    num_actions = T.as_tensor(self.policy.num_actions, device=self.device)
+                    log_probs = T.full((actions.shape[0],), -T.log(num_actions), device=self.device)
             
             else: # Sample action from policy
                 with T.no_grad():
@@ -2673,12 +2674,12 @@ class SAC(Agent):
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
                 cur_log_probs = cur_dist.log_prob(actions_flat).reshape(batch_size, n_step_length)
                 q_cur = T.minimum(
-                    self.critic(
+                    self.target_critic(
                         states_flat,
                         actions_flat,
                         goals_flat if goals is not None else None
                         ),
-                    self.critic_b(
+                    self.target_critic_b(
                         states_flat,
                         actions_flat,
                         goals_flat if goals is not None else None
@@ -2688,11 +2689,11 @@ class SAC(Agent):
             else: # Discrete action space
                 cur_log_probs = cur_dist.logits.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
                 q_cur_all = T.minimum(
-                    self.critic(
+                    self.target_critic(
                         states_flat,
                         goals_flat if goals is not None else None
                         ),
-                    self.critic_b(
+                    self.target_critic_b(
                         states_flat,
                         goals_flat if goals is not None else None
                         )
