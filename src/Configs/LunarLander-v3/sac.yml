@@ -9,28 +9,66 @@ schedule:
   stop_units: &stop_units 1000000
   learn_every_unit: timestep
   learn_every: 64
-  updates_per_learn: 5
-  batch_size: 256
+  updates_per_learn: 1
+  batch_size: 2048
   warmup_steps: 5000
   seed: &seed 42
 
 agent:
   type: SAC
   config:
+    name: SAC
+    policy:
+      layer_config:
+        - type: dense
+          params: {units: 256, kernel: default, kernel_params: {}}
+        - type: relu
+        - type: dense
+          params: {units: 256, kernel: default, kernel_params: {}}
+        - type: relu
+      output_config:
+        - type: dense
+          params: {kernel: default, kernel_params: {}}
+      optimizer_params: {type: Adam, params: {lr: &policy_lr 0.0003}}
+      distribution: categorical
+      temperature: &temperature 1.0
+      device: *device
+    critic:
+      layer_config:
+        - type: dense
+          params: {units: 256, kernel: default, kernel_params: {}}
+        - type: relu
+        - type: dense
+          params: {units: 256, kernel: default, kernel_params: {}}
+        - type: relu
+      output_config:
+        - type: dense
+          params: {kernel: default, kernel_params: {}}
+      optimizer_params: {type: Adam, params: {lr: &critic_lr 0.0003}}
+      device: *device
     discount: 0.99
-    tau: 0.005
+    tau: 0.01
+    state_normalizer:
+      type: RunningNorm
+      config:
+        name: SAC.StateNormalizer
+        clip_value: 10.0
+        device: *device
+        log_level: DEBUG
+        _diag_freq: 10000
     entropy_coefficient: 0.01
     auto_entropy_tuning: true
     entropy_lr: 0.0003
     target_entropy_scale: 0.2
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
+    critic_huber_delta: 1.0
     N: &n 5
     log_level: DEBUG
     _diag_freq: 1000
 
 env:
-  type: envpool
+  type: gymnasium
   config:
     cfg: LunarLander-v3
     num_envs: 64
@@ -41,87 +79,6 @@ env:
     render_mode: null
     seed: *seed
 
-models:
-  policy:
-    layer_config:
-      - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
-      - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
-    output_config:
-      - type: dense
-        params: {kernel: default, kernel_params: {}}
-    optimizer_params: {type: Adam, params: {lr: &policy_lr 0.0003}}
-    distribution: categorical
-    temperature: &temperature 1.0
-    device: *device
-
-  critic:
-    layer_config:
-      - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
-      - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
-    output_config:
-      - type: dense
-        params: {kernel: default, kernel_params: {}}
-    optimizer_params: {type: Adam, params: {lr: &critic_lr 0.0003}}
-    device: *device
-
-  critic_b:
-    layer_config:
-      - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
-      - type: dense
-        params: {units: 256, kernel: default, kernel_params: {}}
-      - type: relu
-    output_config:
-      - type: dense
-        params: {kernel: default, kernel_params: {}}
-    optimizer_params: {type: Adam, params: {lr: &critic_b_lr 0.0003}}
-    device: *device
-
-# policy_lr_schedule:
-#   schedule_type: "linear"
-#   steps: *stop_units
-#   start_value: *policy_lr
-#   end_value: 0.0
-
-# critic_lr_schedule:
-#   schedule_type: "linear"
-#   steps: *stop_units
-#   start_value: *critic_lr
-#   end_value: 0.0
-
-# critic_b_lr_schedule:
-#   schedule_type: "linear"
-#   steps: *stop_units
-#   start_value: *critic_b_lr
-#   end_value: 0.0
-
-normalizers:
-  state:
-    type: RunningNorm
-    config:
-      clip_value: 10.0
-      device: *device
-      log_level: DEBUG
-      _diag_freq: 10000
-  # reward:
-  #   type: RewardNorm
-  #   config:
-  #     gamma: 0.99
-  #     clip_value: 10.0
-  #     device: *device
-  #     log_level: DEBUG
-  #     # kwargs
-  #     _diag_freq: 10240
-
 buffer:
   type: PrioritizedReplayBuffer
   config:
@@ -130,7 +87,7 @@ buffer:
     beta_start: 0.4
     beta_iter: 100000
     beta_update_freq: 10
-    priority: proportional
+    priority: rank
     epsilon: 1.0e-6
     sort_freq: 1000
     N: *n
@@ -139,7 +96,7 @@ buffer:
 # buffer:
 #   type: ReplayBuffer
 #   config:
-#     buffer_size: 100000
+#     buffer_size: 1000000
 #     N: *n
 #     device: *device
 
