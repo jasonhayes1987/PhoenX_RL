@@ -1605,7 +1605,7 @@ class DDPG(Agent):
         context: str = 'train',
         step: int | None = None,
         warmup: int | None = None
-    ) -> T.Tensor | np.ndarray:
+    ) -> Action:
         """
         Select an action based on the current policy.
 
@@ -1617,17 +1617,19 @@ class DDPG(Agent):
             warmup: int | None: The warmup steps.
         
         Returns:
-            T.Tensor | np.ndarray: actions.
+            Action: actions.
         """
         
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
-                return self.policy.env.action_space.sample()
+                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                raw_actions = actions
             # if random number is less than epsilon, sample random action
             if np.random.random() < self.action_epsilon:
-                return self.policy.env.action_space.sample()
+                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                raw_actions = actions
             # otherwise, sample action from policy
             else:
                 noise = self.noise(self.policy.env.action_space.shape)
@@ -1639,17 +1641,16 @@ class DDPG(Agent):
                     noise *= self.noise_schedule.get_factor()
                 
                 with T.no_grad():
-                    _, actions = self.policy(states, goals)
+                    raw_actions, actions = self.policy(states, goals)
                 
                 # Convert the action space bounds to a tensor on the same device
                 actions = (actions + noise).clip(self.policy.act_space_low, self.policy.act_space_high)
 
-                return actions.detach()
-
         else: # context == 'test'
             with T.no_grad():
-                _, actions = self.target_policy(states, goals)
-            return actions.detach()
+                raw_actions, actions = self.target_policy(states, goals)
+        
+        return Action(actions, raw_actions=raw_actions)
 
     def soft_update_targets(self):
         soft_update(self.policy, self.target_policy, self.tau)
@@ -1667,7 +1668,8 @@ class DDPG(Agent):
         # Unpack trajectory
         states = sample["states"]
         actions = sample["actions"]
-        rewards = sample["rewards"]
+        raw_actions = sample["raw_actions"]
+        extrinsic_rewards = sample["rewards"]
         im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]
         terminations = sample["terminations"]
@@ -1686,26 +1688,33 @@ class DDPG(Agent):
             probs = None
             indices = None
 
+        # Get batch_size and n-step trajectory length
+        batch_size, n_step_length = extrinsic_rewards.shape
+
+        # Reshape arrays to (batch_size * N, -1) to train on all steps in N
+        states_flat = states.reshape(-1, states.shape[-1])
+        next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+        actions_flat = actions.reshape(-1, actions.shape[-1])
+        extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
+        if goals is not None:
+            goals_flat = goals.reshape(-1, goals.shape[-1])
+            ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
+            next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
+
         # Normalize states/goals/rewards
         if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
-            next_states = self.state_normalizer.normalize(next_states)
+            states_flat = self.state_normalizer.normalize(states_flat)
+            next_states_flat = self.state_normalizer.normalize(next_states_flat)
         if self.goal_normalizer:
-            ach_goals = self.goal_normalizer.normalize(ach_goals)
-            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
-            goals = self.goal_normalizer.normalize(goals)
+            ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
+            next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
+            goals_flat = self.goal_normalizer.normalize(goals_flat)
         if self.reward_normalizer:
-            rewards = self.reward_normalizer.normalize(rewards)
-
-        # Get batch_size and n-step trajectory length
-        batch_size, n_step_length = rewards.shape
+            extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
 
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
-            # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-            states_flat = states.reshape(-1, states.shape[-1])
-            next_states_flat = next_states.reshape(-1, next_states.shape[-1])
-            actions_flat = actions.reshape(-1, actions.shape[-1])
+            
             im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
@@ -1713,19 +1722,22 @@ class DDPG(Agent):
                 next_states_flat,
                 actions_flat
             )
-            im_learn_rewards = im_learn_rewards.reshape(batch_size, n_step_length)
             # Add intrinsic learn rewards to intrinsic rollout rewards
-            im_rewards = im_learn_rewards + im_rollout_rewards
+            im_rewards = im_learn_rewards.reshape(batch_size, n_step_length) + im_rollout_rewards
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
-                rewards += im_rewards
+                extrinsic_rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
             else:
-                rewards = im_rewards
+                extrinsic_rewards = im_rewards
+        else:
+            extrinsic_rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
+            im_learn_rewards = T.zeros_like(extrinsic_rewards)
+            im_rewards = T.zeros_like(extrinsic_rewards)
 
         # Get target values
         with T.no_grad():
             targets = compute_n_step_return(
-                rewards,
+                extrinsic_rewards,
                 self.discount,
                 device=self.target_critic.device
             ).squeeze()
@@ -1815,7 +1827,7 @@ class DDPG(Agent):
                 self._learn_count,
                 summarize_tensor(states, "states"),
                 summarize_tensor(actions, "actions"),
-                summarize_tensor(rewards, "rewards"),
+                summarize_tensor(extrinsic_rewards, "rewards"),
                 summarize_tensor(im_rollout_rewards, "intrinsic rollout rewards"),
                 summarize_tensor(im_learn_rewards, "intrinsic learn rewards"),
                 summarize_tensor(im_rewards, "intrinsic rewards"),
@@ -1850,10 +1862,11 @@ class DDPG(Agent):
         critic_learning_rate = self.critic.optimizer.param_groups[0]['lr']
         
         learn_metrics.update({
+            "extrinsic_rewards": extrinsic_rewards.mean().item(),
             "policy_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
             "td_errors": error.detach().flatten(),
-            "critic_error": error.mean().item(),
+            "td_error": error.mean().item(),
             "policy_predictions": pred_actions.mean().item(),
             "critic_predictions": critic_values.mean().item(),
             "target_policy_predictions": target_actions.mean().item(),
@@ -2029,7 +2042,7 @@ class TD3(Agent):
         context: str = 'train',
         step: int | None = None,
         warmup: int | None = None
-    ) -> T.Tensor | np.ndarray:
+    ) -> Action:
         """
         Select an action based on the current policy.
 
@@ -2041,17 +2054,19 @@ class TD3(Agent):
             warmup: int | None: The warmup steps.
         
         Returns:
-            T.Tensor | np.ndarray: actions.
+            Action: actions.
         """
         
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
-                return self.policy.env.action_space.sample()
+                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                raw_actions = actions
             # if random number is less than epsilon, sample random action
             if np.random.random() < self.action_epsilon:
-                return self.policy.env.action_space.sample()
+                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                raw_actions = actions
             # otherwise, sample action from policy
             else:
                 noise = self.noise(self.policy.env.action_space.shape)
@@ -2063,17 +2078,16 @@ class TD3(Agent):
                     noise *= self.noise_schedule.get_factor()
                 
                 with T.no_grad():
-                    _, actions = self.policy(states, goals)
+                    raw_actions, actions = self.policy(states, goals)
                 
                 # Convert the action space bounds to a tensor on the same device
                 actions = (actions + noise).clip(self.policy.act_space_low, self.policy.act_space_high)
 
-                return actions.detach()
-
         else: # context == 'test'
             with T.no_grad():
-                _, actions = self.target_policy(states, goals)
-            return actions.detach()
+                raw_actions, actions = self.target_policy(states, goals)
+
+        return Action(actions, raw_actions=raw_actions)
 
     def soft_update_targets(self):
         soft_update(self.policy, self.target_policy, self.tau)
@@ -2092,7 +2106,8 @@ class TD3(Agent):
         # Unpack trajectory
         states = sample["states"]
         actions = sample["actions"]
-        rewards = sample["rewards"]
+        raw_actions = sample["raw_actions"]
+        extrinsic_rewards = sample["rewards"]
         im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]
         terminations = sample["terminations"]
@@ -2111,26 +2126,33 @@ class TD3(Agent):
             probs = None
             indices = None
 
+        # Get batch_size and n-step trajectory length
+        batch_size, n_step_length = extrinsic_rewards.shape
+
+        # Reshape arrays to (batch_size * N, -1) to train on all steps in N
+        states_flat = states.reshape(-1, states.shape[-1])
+        next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+        actions_flat = actions.reshape(-1, actions.shape[-1])
+        extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
+        if goals is not None:
+            goals_flat = goals.reshape(-1, goals.shape[-1])
+            ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
+            next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
+
         # Normalize states/goals/rewards
         if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
-            next_states = self.state_normalizer.normalize(next_states)
+            states_flat = self.state_normalizer.normalize(states_flat)
+            next_states_flat = self.state_normalizer.normalize(next_states_flat)
         if self.goal_normalizer:
-            ach_goals = self.goal_normalizer.normalize(ach_goals)
-            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
-            goals = self.goal_normalizer.normalize(goals)
+            ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
+            next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
+            goals_flat = self.goal_normalizer.normalize(goals_flat)
         if self.reward_normalizer:
-            rewards = self.reward_normalizer.normalize(rewards)
-
-        # Get batch_size and n-step trajectory length
-        batch_size, n_step_length = rewards.shape
+            extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
 
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
-            # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-            states_flat = states.reshape(-1, states.shape[-1])
-            next_states_flat = next_states.reshape(-1, next_states.shape[-1])
-            actions_flat = actions.reshape(-1, actions.shape[-1])
+            
             im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
@@ -2138,19 +2160,22 @@ class TD3(Agent):
                 next_states_flat,
                 actions_flat
             )
-            im_learn_rewards = im_learn_rewards.reshape(batch_size, n_step_length)
             # Add intrinsic learn rewards to intrinsic rollout rewards
-            im_rewards = im_learn_rewards + im_rollout_rewards
+            im_rewards = im_learn_rewards.reshape(batch_size, n_step_length) + im_rollout_rewards
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
-                rewards += im_rewards
+                rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
             else:
                 rewards = im_rewards
+        else:
+            rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
+            im_learn_rewards = T.zeros_like(rewards)
+            im_rewards = T.zeros_like(rewards)
 
         # Get target values
         with T.no_grad():
             targets = compute_n_step_return(
-                rewards,
+                extrinsic_rewards,
                 self.discount,
                 device=self.target_critic.device
             ).squeeze()
@@ -2190,12 +2215,8 @@ class TD3(Agent):
             gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
             targets += no_dones_mask * gamma_pow * target_critic_values
             
-            # Apply HER-specific clamping if needed
-            if self._use_her:
-                if self.curiosity and not self.curiosity._use_extrinsic:
-                    pass
-                else:
-                    targets = T.clamp(targets, min=-1/(1-self.discount))
+            
+            targets = T.clamp(targets, min=-1/(1-self.discount))
 
         # Get current critic predictions
         predictions_a = self.critic(
@@ -2281,7 +2302,7 @@ class TD3(Agent):
                 self._learn_count,
                 summarize_tensor(states, "states"),
                 summarize_tensor(actions, "actions"),
-                summarize_tensor(rewards, "rewards"),
+                summarize_tensor(extrinsic_rewards, "rewards"),
                 summarize_tensor(im_rollout_rewards, "intrinsic rollout rewards"),
                 summarize_tensor(im_learn_rewards, "intrinsic learn rewards"),
                 summarize_tensor(im_rewards, "intrinsic rewards"),
@@ -2324,10 +2345,11 @@ class TD3(Agent):
 
         # Add metrics to step_logs
         learn_metrics.update({
+            "extrinsic_rewards": extrinsic_rewards.mean().item(),
             "policy_loss": actor_loss.item(),
             "critic_loss": critic_loss.item(),
             "td_errors": error.detach().flatten(),
-            "critic_error": error.mean().item(),
+            "td_error": error.mean().item(),
             "policy_predictions": pred_actions.mean().item(),
             "critic_predictions": critic_values.mean().item(),
             "target_policy_predictions": target_actions.mean().item(),
@@ -2759,12 +2781,8 @@ class SAC(Agent):
                     "done_window_max_leakage": q_metrics["done_window_max_leakage"],
                 })
 
-            # Apply HER-specific clamping if needed
-            # if self._use_her:
-            #     if self.curiosity and not self.curiosity._use_extrinsic:
-            #         pass
-            #     else:
-            #         q_targets = T.clamp(q_targets, min=-1/(1-self.discount))
+            # Set low bound of q-retrace to -1/1-self.discount
+            q_retrace = T.clamp(q_retrace, min=-1/(1-self.discount))
 
         # Reshape flat states, goals, actions to [batch_size, n-step, feature_dim]
         states_reshaped = states_flat.reshape(batch_size, n_step_length, -1)

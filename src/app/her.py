@@ -433,7 +433,7 @@ class HindsightRelabeler:
 
     def _build_relabeled_trajectories(
         self,
-        new_goals: T.Tensor,        # (K, *goal_dim)
+        new_goals: T.Tensor,
         episode: Dict[str, T.Tensor],
         T_ep: int,
     ) -> List[Dict[str, T.Tensor]]:
