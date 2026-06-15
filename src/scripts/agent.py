@@ -10,6 +10,7 @@ import yaml
 
 from app.models import StochasticContinuousPolicy, StochasticDiscretePolicy, ActorModel, ValueModel, DiscreteCritic, ContinuousCritic
 from app.buffer import Buffer
+from app.her import HindsightRelabeler
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
@@ -171,6 +172,12 @@ def build_buffer(config: dict, env: EnvWrapper) -> Buffer:
 
     buffer_kwargs = dict(buffer_spec.get("config", {}))
     buffer_kwargs["env"] = env
+    # Instantiate HindsightRelabeler if hindsight in config
+    hindsight_spec = buffer_kwargs.get("hindsight", None)
+    if hindsight_spec is not None:
+        hindsight_spec["env"] = env
+        buffer_kwargs["hindsight"] = HindsightRelabeler(**hindsight_spec)
+
     return Buffer.create_instance(buffer_spec["type"], **buffer_kwargs)
 
 

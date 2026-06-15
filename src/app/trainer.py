@@ -109,6 +109,7 @@ class Trainer:
         self._episode_scores = None
         self._score_history = None
         self._last_learn = None
+        self._success_tracker = None
 
     def _initialize_callbacks(self):
         """
@@ -207,6 +208,7 @@ class Trainer:
         self._prev_done = T.zeros(self.env.num_envs, dtype=T.bool, device=self.agent.device)
         self._score_history = deque(maxlen=100)
         self._last_learn = 0
+        self._success_tracker = deque(maxlen=100)
 
     # def _find_nstep_wrapper(self, env: EnvWrapper) -> VectorNStepReward | None:
     #     """Finds the VectorNStepReward wrapper in the environment chain."""
@@ -245,7 +247,7 @@ class Trainer:
 
     def _collect_per_metrics(self, sample: dict, indices: T.Tensor) -> dict:
         # pb = self.buffer  # PrioritizedReplayBuffer
-        actual_size = min(self.buffer.counter, self.buffer.buffer_size)
+        actual_size = min(self.buffer.samples_added, self.buffer.buffer_size)
         valid = T.arange(actual_size, device=self.buffer.device)
 
         if self.buffer.priority == "proportional":
@@ -423,7 +425,7 @@ class Trainer:
             self._completed_episodes[i] += 1
             self._score_history.append(float(self._episode_scores[i].item()))
             avg_reward = sum(self._score_history) / len(self._score_history)
-            # check if best reward
+            # Create episode log
             episode_log = {
                 'env': i,
                 'episode': int(self._completed_episodes.sum()),
@@ -431,6 +433,13 @@ class Trainer:
                 'episode_reward': round(float(self._episode_scores[i]), 2),
                 'avg_reward': round(float(avg_reward), 2)
             }
+            # If env goal-aware, add success metrics to episode log
+            if self.env.goal_key is not None:
+                goal_distance = T.norm(observation.ach_goals[i] - observation.goals[i], p=2, dim=-1)
+                self._success_tracker.append((goal_distance <= self.buffer.hindsight._distance_threshold).int())
+                success_rate = sum(self._success_tracker) / len(self._success_tracker)
+                episode_log['goal_distance'] = round(goal_distance.item(), 3)
+                episode_log['success_rate'] = round(success_rate.item(), 3)
             if training:
                 # Check if best reward
                 if avg_reward > self._best_reward:
@@ -472,6 +481,20 @@ class Trainer:
             warmup = self.schedule.warmup_steps
         )
 
+    @staticmethod
+    def _shuffle_sample(sample: dict) -> dict:
+        """Apply one consistent random permutation across every tensor in a
+        sampled batch.
+        """
+        ref = sample.get("states")
+        if ref is None:
+            return sample
+        perm = T.randperm(ref.shape[0], device=ref.device)
+        return {
+            k: (v[perm.to(v.device)] if isinstance(v, T.Tensor) else v)
+            for k, v in sample.items()
+        }
+
     def learn(self)->dict:
         """
         Calls Agent.learn() schedule.update times, passing samples from the buffer.
@@ -495,6 +518,7 @@ class Trainer:
             self._apply_per_update(samples, learn_metrics)
 
         else:
+            samples = self._shuffle_sample(samples)
             for update in range(self.schedule.updates_per_learn):
                 lo_idx = update * self.schedule.batch_size
                 hi_idx = lo_idx + self.schedule.batch_size

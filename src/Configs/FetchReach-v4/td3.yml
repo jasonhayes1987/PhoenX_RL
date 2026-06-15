@@ -1,4 +1,4 @@
-#TD3 config template
+# TD3 tuned for FetchReach-v4
 
 device: &device cuda
 save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/FetchReach-v4/TD3/
@@ -10,7 +10,7 @@ schedule:
   learn_every_unit: episode
   learn_every: 16
   updates_per_learn: 40
-  batch_size: 512
+  batch_size: 256
   warmup_steps: 1000
   seed: &seed 42
 
@@ -21,15 +21,15 @@ agent:
     policy:
       layer_config:
         - type: dense
-          params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
         - type: dense
-          params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
       output_config:
         - type: dense
           params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-      optimizer_params: {type: Adam, params: {lr: &policy_lr 3.0e-4}}
+      optimizer_params: {type: Adam, params: {lr: &policy_lr 1.0e-3}}
       # lr_scheduler:
       #   schedule_type: "cosine"
       #   steps: *stop_units
@@ -37,42 +37,32 @@ agent:
       #   end_value: 1.0e-4
       device: *device
     critic:
-      layer_config:
-        - type: dense
-          params: {units: 400, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
-        - type: relu
+      layer_config: []
       merged_config:
         - type: dense
-          params: {units: 300, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+        - type: dense
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
       output_config:
         - type: dense
           params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
-      optimizer_params: {type: Adam, params: {lr: &critic_lr 3.0e-3}}
+      optimizer_params: {type: Adam, params: {lr: &critic_lr 1.0e-3}}
       # lr_scheduler:
       #   schedule_type: "cosine"
       #   steps: *stop_units
       #   start_value: *critic_lr
       #   end_value: 1.0e-4
       device: *device
-    discount: 0.99
+    discount: 0.98
     tau: 0.05
     action_epsilon: 0.0
     state_normalizer:
       type: RunningNorm
       config:
         name: DDPG.StateNormalizer
-        clip_value: 10.0
-        device: *device
-        log_level: DEBUG
-        # kwargs
-        _diag_freq: 1000
-    reward_normalizer:
-      type: RewardNorm
-      config:
-        name: DDPG.RewardNormalizer
-        gamma: 0.99
-        clip_value: 10.0
+        clip_value: 5.0
         device: *device
         log_level: DEBUG
         # kwargs
@@ -80,22 +70,22 @@ agent:
     noise:
       type: NormalNoise
       config:
-        stddev: &noise_stddev 0.2
+        stddev: &noise_stddev 0.1
     # noise_schedule:
     #   schedule_type: linear
     #   steps: *stop_units
     #   start_value: *noise_stddev
-    #   end_value: 0.1
+    #   end_value: 0.05
     target_noise:
       type: NormalNoise
       config:
-        stddev: &target_noise_stddev 0.1
+        stddev: &target_noise_stddev 0.2
     # target_noise_schedule:
     #   schedule_type: linear
     #   steps: &stop_units
     #   start_value: *target_noise_stddev
-    #   end_value: 0.05
-    noise_clip: 0.3
+    #   end_value: 0.1
+    noise_clip: 0.5
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
     policy_update_delay: 2
@@ -192,7 +182,7 @@ buffer:
       num_goals: 4
       output_format: n_step
       N: *n
-      gamma: 0.99
+      gamma: 0.98
       device: *device
       relabel_terminations: false
       future_lo: inclusive
@@ -209,7 +199,7 @@ buffer:
 #       num_goals: 4
 #       output_format: n_step
 #       N: *n
-#       gamma: 0.99
+#       gamma: 0.98
 #       device: *device
 #       relabel_terminations: false
 #       future_lo: inclusive

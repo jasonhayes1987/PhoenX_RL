@@ -1,7 +1,7 @@
 # SAC tuned for LunarLander-v3
 
 device: &device cuda
-save_dir: &save_dir ./Trained_Models/LunarLander-v3/SAC/
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/LunarLander-v3/SAC/
 log_level: INFO
 
 schedule:
@@ -86,10 +86,8 @@ buffer:
     alpha: 0.6
     beta_start: 0.4
     beta_iter: 100000
-    beta_update_freq: 10
     priority: rank
     epsilon: 1.0e-6
-    sort_freq: 1000
     N: *n
     device: *device
 
@@ -98,6 +96,16 @@ buffer:
 #   config:
 #     buffer_size: 1000000
 #     N: *n
+#     hindsight:
+#       strategy: future
+#       num_goals: 4
+#       output_format: n_step
+#       N: *n
+#       gamma: 0.99
+#       device: *device
+#       relabel_terminations: false
+#       future_lo: inclusive
+#       goal_pool: null
 #     device: *device
 
 renderer:
