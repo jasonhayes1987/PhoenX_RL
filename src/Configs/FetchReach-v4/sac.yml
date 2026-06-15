@@ -1,0 +1,127 @@
+# SAC tuned for FetchReach-v4
+
+device: &device cuda
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/FetchReach-v4/SAC/
+log_level: INFO
+
+schedule:
+  stop_unit: timestep
+  stop_units: &stop_units 500000
+  learn_every_unit: episode
+  learn_every: 16
+  updates_per_learn: 40
+  batch_size: 512
+  warmup_steps: 1000
+  seed: &seed 42
+
+agent:
+  type: SAC
+  config:
+    name: SAC
+    policy:
+      layer_config:
+        - type: dense
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+        - type: dense
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+      output_config:
+        - type: dense
+          params: {kernel: uniform, kernel_params: {a: -3.0e-3, b: 3.0e-3}}
+      optimizer_params: {type: Adam, params: {lr: &policy_lr 0.0003}}
+      distribution: normal
+      device: *device
+    critic:
+      layer_config: []
+      merged_config:
+        - type: dense
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+        - type: dense
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
+      output_config:
+        - type: dense
+          params: {kernel: uniform, kernel_params: {a: -3.0e-3, b: 3.0e-3}}
+      optimizer_params: {type: Adam, params: {lr: &critic_lr 0.0003}}
+      device: *device
+    discount: 0.99
+    tau: 0.005
+    state_normalizer:
+      type: RunningNorm
+      config:
+        name: SAC.StateNormalizer
+        clip_value: 5.0
+        device: *device
+        log_level: DEBUG
+        _diag_freq: 10000
+    entropy_coefficient: 0.2
+    auto_entropy_tuning: false
+    # entropy_lr: 0.0001
+    # target_entropy_scale: 0.98
+    policy_grad_clip: 0.5
+    critic_grad_clip: 0.5
+    critic_huber_delta: 1.0
+    N: &n 3
+    log_level: DEBUG
+    _diag_freq: 1000
+
+env:
+  type: gymnasium
+  config:
+    cfg: FetchReach-v4
+    num_envs: 16
+    obs_key: &obs_key observation
+    goal_key: &goal_key desired_goal
+    ach_goal_key: &ach_goal_key achieved_goal
+    wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": *obs_key, "goal_key": *goal_key, "ach_goal_key": *ach_goal_key}}]
+    render_mode: null
+    seed: *seed
+
+buffer:
+  type: PrioritizedReplayBuffer
+  config:
+    buffer_size: 1000000
+    alpha: 0.6
+    beta_start: 0.4
+    beta_iter: 500000
+    priority: rank
+    epsilon: 1.0e-6
+    N: *n
+    hindsight:
+      strategy: future
+      num_goals: 4
+      output_format: n_step
+      N: *n
+      gamma: 0.99
+      device: *device
+      relabel_terminations: false
+      future_lo: inclusive
+      goal_pool: null
+    device: *device
+
+# buffer:
+#   type: ReplayBuffer
+#   config:
+#     buffer_size: 1000000
+#     N: *n
+#     hindsight:
+#       strategy: future
+#       num_goals: 4
+#       output_format: n_step
+#       N: *n
+#       gamma: 0.99
+#       device: *device
+#       relabel_terminations: false
+#       future_lo: inclusive
+#       goal_pool: null
+#     device: *device
+
+renderer:
+  render_freq: 500
+  save_dir: *save_dir
+
+callbacks:
+  - type: "WandbCallback"
+    config: {project_name: FetchReach-v4}

@@ -105,8 +105,9 @@ class Buffer:
         if self.hindsight is not None:
             # Initialize episode trajectory buffers for each environment to
             # rebuild the trajectories with hindsight relabeling.
-            self._ep_buffers = [defaultdict(list) for _ in range(env.num_envs)]
+            self._ep_buffers = [self._empty_ep_buffer() for _ in range(env.num_envs)]
         self.device = get_device(device)
+        self.env_steps = 0 # Tracks how many steps have been taken in the environment
 
         # Set observation, goal, and action space shapes
         if isinstance(self.env.single_observation_space, gym.spaces.Dict):
@@ -125,6 +126,15 @@ class Buffer:
         else: # Discrete
             self.action_type = T.long
             self.action_space_shape = (1,)
+
+    def _empty_ep_buffer(self) -> Dict[str, List[T.Tensor]]:
+        return {
+            "states": [], "actions": [], "raw_actions": [], "log_probs": [],
+            "rewards": [], "intrinsic_rewards": [],
+            "next_states": [], "terminations": [], "truncations": [],
+            "state_achieved_goals": [], "next_state_achieved_goals": [],
+            "desired_goals": [], "trajectory_lengths": [],
+        }
 
     @abstractmethod
     def add(self, states, actions, rewards, next_states, dones):
@@ -178,19 +188,22 @@ class ReplayBuffer(Buffer):
         hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None,
     ):
+        # If using hindsigh relabeling, check to make sure goal key is specified, output format is n_step
+        # and N values matches Buffer N value
+        if hindsight is not None:
+            if env.goal_key is None:
+                raise ValueError("ReplayBuffer requires goal key to be specified for hindsight relabeling")
+            if hindsight.output_format != "n_step":
+                raise ValueError("ReplayBuffer requires hindsight relabeling output_format = 'n_step'")
+            if hindsight.N != N:
+                raise ValueError("ReplayBuffer hindsight relabeling N value must match Buffer N value")
+        
         super().__init__(env, buffer_size, hindsight, device)
         # Check to make sure environment is using VectorNStepReward Wrapper
         if env._find_nstep_wrapper() is None:
             raise ValueError("ReplayBuffer requires the VectorNStepReward wrapper to be used in the environment")
         self.N = N  # N-step hyperparameter
-        self.counter = 0
-
-        # If using hindsigh relabeling, check to make sure output format is n_step
-        # and N values matches Buffer N value
-        if self.hindsight is not None:
-            if self.hindsight.output_format != "n_step":
-                raise ValueError("ReplayBuffer requires hindsight relabeling output_format = 'n_step'")
-            
+        self.samples_added = 0
 
         
         self.states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
@@ -208,20 +221,78 @@ class ReplayBuffer(Buffer):
             self.state_achieved_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.next_state_achieved_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
         
-        # self.counter = 0
         self.gen = np.random.default_rng()
 
-    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
+    def record(
+        self,
+        cur_observation: Observation,
+        prev_observation: Observation,
+        actions: Action,
+        prev_dones: T.Tensor,
+        ) -> None:
         """
         Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
+            prev_observation: Observation: The observation of the previous state.
+            actions: Action: The actions taken.
+            prev_dones: T.Tensor: The previous dones of the environments.
         """
+        self.env_steps += self.env.num_envs
         if cur_observation.n_step_trajectory is not None:
             self.add(**cur_observation.n_step_trajectory)
-        else:
-            pass
+        
+        if self.hindsight is None:
+            return
+
+        self._her_step(cur_observation, prev_observation, actions, prev_dones)
+
+    def _her_step(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
+        """
+        Adds trajectory data to the episodes buffers and adds relabeled completed trajectories to the buffer.
+        """
+        zero_ir = T.zeros((), dtype=T.float32, device=self.device)
+        for i in range(self.env.num_envs):
+            if prev_dones[i]:
+                ep_buf = self._ep_buffers[i]
+                if len(ep_buf["states"]) > 0:
+                    episode = {k: T.stack(v) for k, v in ep_buf.items() if all(x is not None for x in v)}
+
+                    # Add achieved goals to pool if strategy = 'random'
+                    if self.hindsight.goal_pool is not None:
+                        self.hindsight.goal_pool.add(episode["next_state_achieved_goals"])
+
+                    # Relabel completed episode
+                    relabeled_episode = self.hindsight.relabel_episode(episode)
+                    if relabeled_episode is not None:
+                        self.add(**relabeled_episode)
+                    # clear episode buffer
+                    self._ep_buffers[i] = self._empty_ep_buffer()
+                continue
+                
+            # Add current step data to episode buffer
+            ep_buf = self._ep_buffers[i]
+            ep_buf["states"].append(prev_observation.states[i].detach().clone())
+            ep_buf["actions"].append(actions.actions[i].detach().clone())
+            ep_buf["rewards"].append(cur_observation.rewards[i].detach().clone())
+            ir = (cur_observation.intrinsic_rewards[i].detach().clone()
+              if cur_observation.intrinsic_rewards is not None else zero_ir.clone())
+            ep_buf["intrinsic_rewards"].append(ir)
+            ep_buf["next_states"].append(cur_observation.states[i].detach().clone())
+            ep_buf["terminations"].append(cur_observation.terminations[i].detach().clone())
+            ep_buf["truncations"].append(cur_observation.truncations[i].detach().clone())
+            ep_buf["state_achieved_goals"].append(prev_observation.ach_goals[i].detach().clone())
+            ep_buf["next_state_achieved_goals"].append(cur_observation.ach_goals[i].detach().clone())
+            ep_buf["desired_goals"].append(prev_observation.goals[i].detach().clone())
+            ep_buf["trajectory_lengths"].append(cur_observation.n_step_trajectory["trajectory_lengths"][i].detach().clone())
+
+            # Add raw actions and log probs if present, else None
+            raw_actions = None if actions.raw_actions is None else actions.raw_actions[i].detach().clone()
+            log_probs = None if actions.log_probs is None else actions.log_probs[i].detach().clone()
+            ep_buf["raw_actions"].append(raw_actions)
+            ep_buf["log_probs"].append(log_probs)
+
 
     def add(
         self,
@@ -240,8 +311,8 @@ class ReplayBuffer(Buffer):
         trajectory_lengths: T.Tensor | None = None,
     ) -> None:
         batch_size = len(states)
-        start_idx = self.counter % self.buffer_size
-        end_idx = (self.counter + batch_size) % self.buffer_size
+        start_idx = self.samples_added % self.buffer_size
+        end_idx = (self.samples_added + batch_size) % self.buffer_size
 
         if end_idx > start_idx:
             indices = T.arange(start_idx, end_idx, device=self.device)
@@ -310,7 +381,7 @@ class ReplayBuffer(Buffer):
             self.next_state_achieved_goals[indices] = next_state_achieved_goals.detach().to(device=self.device, dtype=T.float32)
             self.desired_goals[indices] = desired_goals.detach().to(device=self.device, dtype=T.float32)
 
-        self.counter += batch_size
+        self.samples_added += batch_size
 
     def sample(self, samples: int) -> Dict[str, T.Tensor]:
         """Returns a dictionary of n-step sequences sampled from the buffer.
@@ -321,7 +392,7 @@ class ReplayBuffer(Buffer):
         Returns:
             Dict[str, T.Tensor]: A dictionary containing the sampled n-step sequences.
         """
-        size = min(self.counter, self.buffer_size)
+        size = min(self.samples_added, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
 
@@ -368,8 +439,9 @@ class ReplayBuffer(Buffer):
         self.trajectory_lengths.zero_()
         self.raw_actions.zero_()
         self.log_probs.zero_()
-        self.counter = 0
-        
+        self.samples_added = 0
+        self.env_steps = 0
+
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.desired_goals.zero_()
             self.state_achieved_goals.zero_()
@@ -379,7 +451,7 @@ class ReplayBuffer(Buffer):
         """
         Check if the buffer is ready to sample.
         """
-        return self.counter >= samples
+        return self.samples_added >= samples
     
     def get_config(self) -> Dict[str, Any]:
         config = super().get_config()
@@ -405,10 +477,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         alpha: float = 0.6,
         beta_start: float = 0.4,
         beta_iter: int = 100_000,
-        beta_update_freq: int = 10,
         priority: str = "proportional",
         epsilon: float = 1e-6,
-        sort_freq: int = 1000,
         N: int = 1,
         hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None,
@@ -423,12 +493,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.alpha = alpha
         self.beta_start = beta_start
         self.beta_iter = beta_iter
-        self.beta_update_freq = beta_update_freq
         self.priority = priority
         self.epsilon = epsilon
-        self.sort_freq = sort_freq
         self.beta = beta_start
-        self._gradient_steps = 0 # Tracks how many times sample() has been called for beta annealing
  
         if self.priority == "proportional":
             self.sum_tree = SumTree(buffer_size, self.device)
@@ -443,17 +510,30 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             # Z = sum_r (r+1)^(-alpha) — computed alongside segments.
             self._rank_Z = T.tensor(0.0, dtype=T.float32, device=self.device)
  
-    def record(self, cur_observation: Observation, **kwargs: Any) -> None:
+    def record(
+        self,
+        cur_observation: Observation,
+        prev_observation: Observation,
+        actions: Action,
+        prev_dones: T.Tensor,
+        ) -> None:
         """
         Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
+            prev_observation: Observation: The observation of the previous state.
+            actions: Action: The actions taken.
+            prev_dones: T.Tensor: The previous dones of the environments.
         """
+        self.env_steps += self.env.num_envs
         if cur_observation.n_step_trajectory is not None:
             self.add(**cur_observation.n_step_trajectory)
-        else:
-            pass
+        
+        if self.hindsight is None:
+            return
+        
+        self._her_step(cur_observation, prev_observation, actions, prev_dones)
  
     def add(
         self,
@@ -473,8 +553,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     ) -> None:
 
         batch_size = len(states)
-        start_idx = self.counter % self.buffer_size
-        end_idx = (self.counter + batch_size) % self.buffer_size
+        start_idx = self.samples_added % self.buffer_size
+        end_idx = (self.samples_added + batch_size) % self.buffer_size
         if end_idx > start_idx:
             indices = T.arange(start_idx, end_idx, device=self.device)
         else:
@@ -504,6 +584,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.sum_tree.update(indices, init_priorities)
         else:  # rank
             self.priorities[indices] = self.max_priority_rank.expand(batch_size)
+
+        # Update beta
+        self.update_beta()
  
     def sample(self, samples: int) -> Dict[str, T.Tensor]:
         """
@@ -517,11 +600,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             weights : importance-sampling weights, normalized so max == 1
             probs   : sampling probabilities (priority / total)
         """
-        self._gradient_steps += 1
-        if self._gradient_steps % self.beta_update_freq == 0:
-            self.update_beta()
- 
-        size = min(self.counter, self.buffer_size)
+        size = min(self.samples_added, self.buffer_size)
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
         samples = min(samples, size)
@@ -658,7 +737,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
  
     def update_beta(self) -> None:
         """Linearly anneal β from β_start toward 1.0 over beta_iter gradient steps."""
-        progress = min(self._gradient_steps / self.beta_iter, 1.0)
+        progress = min(self.env_steps / self.beta_iter, 1.0)
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
  
     def update_priorities(self, indices: T.Tensor, td_errors: T.Tensor) -> None:
@@ -701,10 +780,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             "alpha": self.alpha,
             "beta_start": self.beta_start,
             "beta_iter": self.beta_iter,
-            "beta_update_freq": self.beta_update_freq,
             "priority": self.priority,
             "epsilon": self.epsilon,
-            "sort_freq": self.sort_freq,
         })
         return config
 
@@ -716,9 +793,10 @@ class RolloutBuffer(Buffer):
         self,
         env: EnvWrapper,
         buffer_size: int,
+        hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None
     ):
-        super().__init__(env, buffer_size, device)
+        super().__init__(env, buffer_size, hindsight, device)
         self.cur_idx = T.zeros((env.num_envs,), dtype=T.long, device=self.device)
 
         #Instantiate buffers
@@ -888,10 +966,20 @@ class TrajectoryBuffer(RolloutBuffer):
         self,
         env: EnvWrapper,
         buffer_size: int,
+        hindsight: HindsightRelabeler | None = None,
         device: Optional[str] = None
     ):
-        super().__init__(env, buffer_size, device)
+        # Check hindisght if None to make sure correct
+        if hindsight is not None:
+            if env.goal_key is None:
+                raise ValueError("TrajectoryBuffer requires goal key to be specified for hindsight relabeling")
+            if hindsight.output_format != "flat":
+                raise ValueError("TrajectoryBuffer requires hindsight relabeling output_format = 'flat',"
+                                 f"got {hindsight.output_format}")
+
+        super().__init__(env, buffer_size, hindsight, device)
         self.completed_trajectories: List[Dict[str, T.Tensor]] = []
+
 
     def record(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
         """
@@ -991,6 +1079,12 @@ class TrajectoryBuffer(RolloutBuffer):
             self.completed_trajectories.append(trajectory)
             # Reset step counter for done env
             self.cur_idx[i] = 0
+
+            # Relabel trajectory if using hindsight
+            if self.hindsight is not None:
+                if self.hindsight.goal_pool is not None:
+                    self.hindsight.goal_pool.add(trajectory["next_state_achieved_goals"])
+                self.completed_trajectories.extend(self.hindsight.relabel_episode(trajectory))
 
     def sample(self, **kwargs: Any) -> List[Dict[str, T.Tensor]]:
         """Returns a list of completed trajectories."""

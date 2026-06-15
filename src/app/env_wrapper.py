@@ -322,8 +322,8 @@ class VectorNStepReward(VectorWrapper):
         # Ensure tensors
         actions = T.as_tensor(actions, device=self.device)
         raw_actions = T.as_tensor(self.current_action.raw_actions, device=self.device) if self.current_action.raw_actions is not None else T.zeros_like(actions)
-        log_probs = T.as_tensor(self.current_action.log_probs, device=self.device) if self.current_action.log_probs is not None else T.zeros_like(self.num_envs)
         rewards = T.as_tensor(rewards, device=self.device)
+        log_probs = T.as_tensor(self.current_action.log_probs, device=self.device) if self.current_action.log_probs is not None else T.zeros_like(rewards)
         terminations = T.as_tensor(terminations, device=self.device)
         truncations = T.as_tensor(truncations, device=self.device)
         dones = T.logical_or(terminations, truncations)
