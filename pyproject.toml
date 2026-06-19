@@ -2,10 +2,10 @@
 name = "phoenx_rl"
 version = "0.1.0"
 description = "PhoenX Reinforcement Learning framework with IsaacLab integration"
-authors = ["Your Name <your.email@example.com>"]
-license = "MIT"  # Matches your LICENSE file
+authors = "Jason Hayes"
+license = "MIT"
 readme = "README.md"
-repository = "https://github.com/yourusername/phoennx_rl"  # Optional: Add if you have a repo
+repository = "https://github.com/jasonhayes1987/PhoenX_RL"
 keywords = ["reinforcement-learning", "rl", "isaaclab", "gymnasium", "pytorch"]
 classifiers = [
     "Development Status :: 4 - Beta",
