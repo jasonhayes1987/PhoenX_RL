@@ -10,7 +10,7 @@ schedule:
   learn_every_unit: episode
   learn_every: 16
   updates_per_learn: 40
-  batch_size: 256
+  batch_size: 128
   warmup_steps: 1000
   seed: &seed 42
 
@@ -20,6 +20,9 @@ agent:
     name: TD3
     policy:
       layer_config:
+        - type: dense
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
         - type: dense
           params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
@@ -45,6 +48,9 @@ agent:
         - type: dense
           params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
+        - type: dense
+          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+        - type: relu
       output_config:
         - type: dense
           params: {kernel: uniform, kernel_params: {a: -0.003, b: 0.003}}
@@ -57,7 +63,7 @@ agent:
       device: *device
     discount: 0.98
     tau: 0.05
-    action_epsilon: 0.0
+    action_epsilon: 0.2
     state_normalizer:
       type: RunningNorm
       config:
@@ -79,12 +85,12 @@ agent:
     target_noise:
       type: NormalNoise
       config:
-        stddev: &target_noise_stddev 0.2
+        stddev: &target_noise_stddev 0.01
     # target_noise_schedule:
     #   schedule_type: linear
-    #   steps: &stop_units
+    #   steps: *stop_units
     #   start_value: *target_noise_stddev
-    #   end_value: 0.1
+    #   end_value: 0.01
     noise_clip: 0.5
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0

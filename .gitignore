@@ -180,3 +180,4 @@ node_modules/
 /blob-report/
 /playwright/.cache/
 *.npz
+src/app/wandb_api_key

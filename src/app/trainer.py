@@ -158,7 +158,7 @@ class Trainer:
         # Set VectorNStepReward wrapper Intrinsic Motivation pointer
         im = getattr(self.agent, 'intrinsic_motivation', None)
         if im is not None:
-            nstep_wrapper = self._find_nstep_wrapper(self.env)
+            nstep_wrapper = self.env._find_nstep_wrapper()
             if nstep_wrapper is not None:
                 nstep_wrapper.set_intrinsic_motivation(im)
 
