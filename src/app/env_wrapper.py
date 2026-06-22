@@ -862,6 +862,13 @@ class EnvWrapper:
                 return env
             env = getattr(env, 'env', None)
 
+    def get_base_env(self):
+        """Recursively unwrap an environment to get the base environment."""
+        env = self.env
+        while hasattr(env, 'env'):
+            env = env.env
+        return env
+
     @property
     def config(self):
         """
@@ -1147,7 +1154,7 @@ class GymnasiumWrapper(EnvWrapper):
         
         obs, goals, ach_goals = self.extract_states_goals(states)
 
-        obs = Observation(
+        observation = Observation(
             states=obs,
             goals=goals,
             ach_goals=ach_goals,
@@ -1155,8 +1162,8 @@ class GymnasiumWrapper(EnvWrapper):
         )
 
         if 'n-step trajectory' in infos:
-            obs.n_step_trajectory = infos.pop('n-step trajectory')
-        return obs
+            observation.n_step_trajectory = infos.pop('n-step trajectory')
+        return observation
 
     def step(self, action)->Observation:
         states, rewards, terminations, truncations, infos = self.env.step(action)
@@ -1164,7 +1171,7 @@ class GymnasiumWrapper(EnvWrapper):
         # Separate observations, goals, and achieved goals 
         obs, goals, ach_goals = self.extract_states_goals(states)
 
-        obs = Observation(
+        observation = Observation(
             states=obs,
             goals=goals,
             ach_goals=ach_goals,
@@ -1175,8 +1182,8 @@ class GymnasiumWrapper(EnvWrapper):
         )
 
         if 'n-step trajectory' in infos:
-            obs.n_step_trajectory = infos.pop('n-step trajectory')
-        return obs
+            observation.n_step_trajectory = infos.pop('n-step trajectory')
+        return observation
 
     def sample_observation(self):
         actions = self.action_space.sample()
@@ -1191,13 +1198,6 @@ class GymnasiumWrapper(EnvWrapper):
             return actions.reshape(num_envs, num_actions)
         if isinstance(self.action_space, gym.spaces.Discrete) or isinstance(self.action_space, gym.spaces.MultiDiscrete):
             return actions.ravel()
-        
-    def get_base_env(self):
-        """Recursively unwrap an environment to get the base environment."""
-        env = self.env.env
-        while hasattr(env, 'env'):
-            env = env.env
-        return env
     
     def close(self):
         """
@@ -1534,7 +1534,7 @@ class EnvPoolWrapper(EnvWrapper):
         
         obs, goals, ach_goals = self.extract_states_goals(states)
 
-        obs = Observation(
+        observation = Observation(
             states=obs,
             goals=goals,
             ach_goals=ach_goals,
@@ -1542,8 +1542,8 @@ class EnvPoolWrapper(EnvWrapper):
         )
 
         if 'n-step trajectory' in infos:
-            obs.n_step_trajectory = infos.pop('n-step trajectory')
-        return obs
+            observation.n_step_trajectory = infos.pop('n-step trajectory')
+        return observation
 
     def step(self, action)->Observation:
         states, rewards, terminations, truncations, infos = self.env.step(action)
@@ -1551,7 +1551,7 @@ class EnvPoolWrapper(EnvWrapper):
         # Separate observations, goals, and achieved goals 
         obs, goals, ach_goals = self.extract_states_goals(states)
 
-        obs = Observation(
+        observation = Observation(
             states=obs,
             goals=goals,
             ach_goals=ach_goals,
@@ -1562,8 +1562,8 @@ class EnvPoolWrapper(EnvWrapper):
         )
 
         if 'n-step trajectory' in infos:
-            obs.n_step_trajectory = infos.pop('n-step trajectory')
-        return obs
+            observation.n_step_trajectory = infos.pop('n-step trajectory')
+        return observation
 
     def sample_observation(self):
         actions = self.action_space.sample()
@@ -1584,13 +1584,6 @@ class EnvPoolWrapper(EnvWrapper):
             return actions.reshape(num_envs, num_actions)
         if isinstance(self.action_space, gym.spaces.Discrete) or isinstance(self.action_space, gym.spaces.MultiDiscrete):
             return actions.ravel()
-        
-    def get_base_env(self):
-        """Recursively unwrap an environment to get the base environment."""
-        env = self.env.env
-        while hasattr(env, 'env'):
-            env = env.env
-        return env
     
     def close(self):
         """
@@ -1699,6 +1692,54 @@ class EnvPoolWrapper(EnvWrapper):
         except Exception as e:
             raise ValueError(f"Environment wrapper error: {config}, {e}")
     
+class IsaacLabAdapter(VectorEnv):
+    """Adapts an Isaac Lab ``ManagerBasedRLEnv`` to the gymnasium ``VectorWrapper``
+    chain (e.g. :class:`VectorNStepReward`), which requires a ``VectorEnv``.
+
+    ``ManagerBasedRLEnv`` is vectorized but deliberately does *not* inherit from
+    ``gymnasium.vector.VectorEnv``. It does already expose ``num_envs`` and
+    goal-conditioned ``Dict`` observation spaces (one key per observation group),
+    so this adapter just forwards ``reset``/``step`` and the spaces.
+
+    It also supplies the goal reward used by Hindsight Experience Replay. Isaac
+    Lab manager-based envs compute rewards through their ``RewardManager`` and
+    expose no goal-conditioned reward function, so HER (which resolves
+    ``compute_reward`` via :meth:`EnvWrapper.get_base_env`) needs one here. The
+    online ``RewardManager`` term should match this sparse reward so collected
+    and relabeled transitions share the same scale.
+    """
+
+    def __init__(self, env, distance_threshold: float = 0.05):
+        self._env = env
+        self.num_envs = env.num_envs
+        self.single_observation_space = env.single_observation_space
+        self.single_action_space = env.single_action_space
+        self.observation_space = env.observation_space
+        self.action_space = env.action_space
+        self.distance_threshold = distance_threshold
+
+    def reset(self, *, seed=None, options=None):
+        return self._env.reset(seed=seed)
+
+    def step(self, actions):
+        return self._env.step(actions)
+
+    def compute_reward(self, achieved_goal, desired_goal, info=None):
+        """Sparse goal reward: 0 if within ``distance_threshold`` else -1 (batched)."""
+        d = np.linalg.norm(np.asarray(achieved_goal) - np.asarray(desired_goal), axis=-1)
+        return -(d > self.distance_threshold).astype(np.float32)
+
+    def render(self, **kwargs):
+        return self._env.render(**kwargs)
+
+    def close(self):
+        self._env.close()
+
+    @property
+    def spec(self):
+        return getattr(self._env, 'spec', None)
+
+
 class IsaacSimWrapper(EnvWrapper):
     def __init__(
         self,
@@ -1710,6 +1751,7 @@ class IsaacSimWrapper(EnvWrapper):
         wrappers:list[dict]|None=None,
         render_mode:str='headless',
         seed:int|None=None,
+        distance_threshold:float=0.05,
     ):
         """
         Wrapper for Isaac Sim environments.
@@ -1728,6 +1770,7 @@ class IsaacSimWrapper(EnvWrapper):
         # if seed is None:
         #     seed = np.random.randint(1000)
         # self.seed = seed
+        self.distance_threshold = distance_threshold
         # Initialize env
         self.env = self._initialize_env()
         
@@ -1757,7 +1800,7 @@ class IsaacSimWrapper(EnvWrapper):
                         "Install Isaac Lab / Isaac Sim Python packages, or ensure ISAACLAB_PATH is set "
                         "to IsaacLab's `source/` directory so `isaaclab` (or `omni.isaac.lab`) is on PYTHONPATH."
                     ) from e
-            app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0", enable_cameras=True)
+            app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0", enable_cameras=False)
             self.app = app_launcher.app
         
         try:
@@ -1773,13 +1816,16 @@ class IsaacSimWrapper(EnvWrapper):
                     "Expected `isaaclab.envs` or `omni.isaac.lab.envs` to be available."
                 ) from e
 
-        module_path, class_name = self.cfg.split(':')
+        module_path, class_name = self.env_id.split(':')
         cfg_class = getattr(importlib.import_module(module_path), class_name)
         cfg = cfg_class()
         cfg.scene.num_envs = self.num_envs
         cfg.sim.device = "cuda:0"
         cfg.seed = self.seed
         env = ManagerBasedRLEnv(cfg=cfg)
+        # Adapt to the gymnasium VectorWrapper chain (VectorNStepReward, etc.) and
+        # supply the goal reward HER recomputes during relabeling.
+        env = IsaacLabAdapter(env, distance_threshold=self.distance_threshold)
         if self.wrappers:
             for wrapper in self.wrappers:
                 if wrapper['type'] in WRAPPER_REGISTRY:
@@ -1832,7 +1878,7 @@ class IsaacSimWrapper(EnvWrapper):
         
         obs, goals, ach_goals = self.extract_states_goals(states)
 
-        obs = Observation(
+        observation = Observation(
             states=obs,
             goals=goals,
             ach_goals=ach_goals,
@@ -1840,8 +1886,8 @@ class IsaacSimWrapper(EnvWrapper):
         )
 
         if 'n-step trajectory' in infos:
-            obs.n_step_trajectory = infos.pop('n-step trajectory')
-        return obs
+            observation.n_step_trajectory = infos.pop('n-step trajectory')
+        return observation
 
     def close(self):
         self.env.close()
@@ -1853,7 +1899,7 @@ class IsaacSimWrapper(EnvWrapper):
         # Separate observations, goals, and achieved goals 
         obs, goals, ach_goals = self.extract_states_goals(states)
 
-        obs = Observation(
+        observation = Observation(
             states=obs,
             goals=goals,
             ach_goals=ach_goals,
@@ -1864,13 +1910,14 @@ class IsaacSimWrapper(EnvWrapper):
         )
 
         if 'n-step trajectory' in infos:
-            obs.n_step_trajectory = infos.pop('n-step trajectory')
-        return obs
+            observation.n_step_trajectory = infos.pop('n-step trajectory')
+        return observation
 
     @property
     def config(self):
         config = super().config
         config['type'] = "isaacsim"
+        config['config']['distance_threshold'] = self.distance_threshold
         return config
         # return {
         #     "type": "isaacsim",
