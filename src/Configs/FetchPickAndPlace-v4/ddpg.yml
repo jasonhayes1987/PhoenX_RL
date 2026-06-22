@@ -1,7 +1,7 @@
-# DDPG tuned for FetchReach-v4
+# DDPG tuned for FetchPickAndPlace-v4
 
 device: &device cuda
-save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/FetchReach-v4/DDPG/
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/FetchPickAndPlace-v4/DDPG/
 log_level: INFO
 
 schedule:
@@ -10,8 +10,8 @@ schedule:
   learn_every_unit: episode
   learn_every: 16
   updates_per_learn: 40
-  batch_size: 128
-  warmup_steps: 1000
+  batch_size: 512
+  warmup_steps: 20000
   seed: &seed 42
 
 agent:
@@ -72,72 +72,72 @@ agent:
         device: *device
         log_level: DEBUG
         # kwargs
-        _diag_freq: 1000
+        _diag_freq: 10000
     noise:
       type: NormalNoise
       config:
         stddev: &noise_stddev 0.1
-    # noise_schedule:
-    #   schedule_type: linear
-    #   steps: *stop_units
-    #   start_value: *noise_stddev
-    #   end_value: 0.1
+    noise_schedule:
+      schedule_type: linear
+      steps: *stop_units
+      start_value: *noise_stddev
+      end_value: 0.01
     noise_clip: 0.5
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
     N: &n 3
-    # intrinsic_motivation:
-    #   type: ICM
-    #   config:
-    #     model_configs: {
-    #       'encoder': {
-    #           'layer_config': [
-    #               {'type': 'dense', 'params': {units: 64, 'kernel': 'ones', 'kernel params':{}}},
-    #               {'type': 'relu'},
-    #           ],
-    #           'output_layer': [
-    #               {'type': 'dense', 'params': {units: 256, 'kernel': 'ones', 'kernel params':{}}}
-    #           ]
-    #       },
-    #       'inverse_model': {
-    #           'layer_config': [
-    #               {'type': 'dense', 'params': {units: 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
-    #               {'type': 'relu'},
-    #           ],
-    #           'output_layer': [
-    #               {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
-    #           ]
-    #       },
-    #       'forward_model': {
-    #           'layer_config': [
-    #               {'type': 'dense', 'params': {units: 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
-    #               {'type': 'relu'},
-    #           ],
-    #           'output_layer': [
-    #               {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
-    #           ]
-    #       }
-    #     }
-    #     optimizer_params: {type: Adam, params: {lr: 0.001}}
-    #     reward_weight: &im_reward_weight 0.1
-    #     reward_scheduler:
-    #       schedule_type: linear
-    #       steps: *stop_units
-    #       start_value: *im_reward_weight
-    #       end_value: 0.0
-    #     beta: 0.2
-    #     extrinsic_threshold: 20000
-    #     reward_normalizer:
-    #       type: RewardNorm
-    #       config:
-    #         name: ICM.RewardNormalizer
-    #         gamma: 0.99
-    #         clip_value: 10.0
-    #         device: *device
-    #         log_level: DEBUG
-    #         # kwargs
-    #         _diag_freq: 1000
-    #     device: *device
+    intrinsic_motivation:
+      type: ICM
+      config:
+        model_configs: {
+          'encoder': {
+              'layer_config': [
+                  {'type': 'dense', 'params': {units: 64, 'kernel': 'ones', 'kernel params':{}}},
+                  {'type': 'relu'},
+              ],
+              'output_layer': [
+                  {'type': 'dense', 'params': {units: 256, 'kernel': 'ones', 'kernel params':{}}}
+              ]
+          },
+          'inverse_model': {
+              'layer_config': [
+                  {'type': 'dense', 'params': {units: 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+                  {'type': 'relu'},
+              ],
+              'output_layer': [
+                  {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+              ]
+          },
+          'forward_model': {
+              'layer_config': [
+                  {'type': 'dense', 'params': {units: 64, kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}},
+                  {'type': 'relu'},
+              ],
+              'output_layer': [
+                  {'type': 'dense', 'params': {kernel: variance_scaling, 'kernel params':{scale: 1.0, mode: fan_in, distribution: uniform}}}
+              ]
+          }
+        }
+        optimizer_params: {type: Adam, params: {lr: 0.001}}
+        reward_weight: &im_reward_weight 0.1
+        reward_scheduler:
+          schedule_type: linear
+          steps: *stop_units
+          start_value: *im_reward_weight
+          end_value: 0.0
+        beta: 0.2
+        extrinsic_threshold: 20000
+        reward_normalizer:
+          type: RewardNorm
+          config:
+            name: ICM.RewardNormalizer
+            gamma: 0.99
+            clip_value: 10.0
+            device: *device
+            log_level: DEBUG
+            # kwargs
+            _diag_freq: 1000
+        device: *device
     log_level: DEBUG
     _diag_freq: 1000
 
@@ -145,7 +145,7 @@ env:
   type: gymnasium # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
-    cfg: FetchReach-v4
+    cfg: FetchPickAndPlace-v4
     num_envs: 16
     obs_key: &obs_key observation
     goal_key: &goal_key desired_goal
@@ -201,4 +201,4 @@ renderer:
 
 callbacks:
   - type: "WandbCallback"
-    config: {project_name: "FetchReach-v4"}
+    config: {project_name: "FetchPickAndPlace-v4"}

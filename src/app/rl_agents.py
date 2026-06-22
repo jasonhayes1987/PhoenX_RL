@@ -1675,8 +1675,8 @@ class DDPG(Agent):
         terminations = sample["terminations"]
         truncations = sample["truncations"]
         trajectory_lengths = sample["trajectory_lengths"]
-        ach_goals = sample["state_achieved_goals"]
-        next_ach_goals = sample["next_state_achieved_goals"]
+        # ach_goals = sample["state_achieved_goals"]
+        # next_ach_goals = sample["next_state_achieved_goals"]
         goals = sample["desired_goals"]
 
         if 'weights' in sample:
@@ -1698,19 +1698,30 @@ class DDPG(Agent):
         extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
         if goals is not None:
             goals_flat = goals.reshape(-1, goals.shape[-1])
-            ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
-            next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
+            # ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
+            # next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
 
         # Normalize states/goals/rewards
         if self.state_normalizer:
             states_flat = self.state_normalizer.normalize(states_flat)
             next_states_flat = self.state_normalizer.normalize(next_states_flat)
         if self.goal_normalizer:
-            ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
-            next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
+            # ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
+            # next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
             goals_flat = self.goal_normalizer.normalize(goals_flat)
         if self.reward_normalizer:
             extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
+
+        # Create normalized tensors reshaped to [batch_size, n_step_length]
+        states_norm = states_flat.reshape(batch_size, n_step_length, -1)
+        next_states_norm = next_states_flat.reshape(batch_size, n_step_length, -1)
+        extrinsic_rewards_norm = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
+        if goals is not None:
+            goals_norm = goals_flat.reshape(batch_size, n_step_length, -1)
+            # ach_goals_norm = ach_goals_flat.reshape(batch_size, n_step_length, -1)
+            # next_ach_goals_norm = next_ach_goals_flat.reshape(batch_size, n_step_length, -1)
+        else:
+            goals_norm = None
 
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
@@ -1726,49 +1737,44 @@ class DDPG(Agent):
             im_rewards = im_learn_rewards.reshape(batch_size, n_step_length) + im_rollout_rewards
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
-                extrinsic_rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
+                rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
             else:
-                extrinsic_rewards = im_rewards
+                rewards = im_rewards
         else:
-            extrinsic_rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
-            im_learn_rewards = T.zeros_like(extrinsic_rewards)
-            im_rewards = T.zeros_like(extrinsic_rewards)
+            rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
+            im_learn_rewards = T.zeros_like(rewards)
+            im_rewards = T.zeros_like(rewards)
 
         # Get target values
         with T.no_grad():
             targets = compute_n_step_return(
-                extrinsic_rewards,
+                rewards,
                 self.discount,
                 device=self.target_critic.device
             ).squeeze()
 
             _, target_actions = self.target_policy(
-                next_states[:,-1,:],
-                goals[:,-1,:] if goals is not None else None
+                next_states_norm[:,-1,:],
+                goals_norm[:,-1,:] if goals is not None else None
             )
 
             target_critic_values = self.target_critic(
-                next_states[:,-1,:],
+                next_states_norm[:,-1,:],
                 target_actions,
-                goals[:,-1,:] if goals is not None else None
+                goals_norm[:,-1,:] if goals is not None else None
             ).squeeze()
 
             no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
             gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
             targets += no_dones_mask * gamma_pow * target_critic_values
 
-            # Apply HER-specific clamping if needed
-            if self._use_her:
-                if self.intrinsic_motivation and not self.intrinsic_motivation._use_extrinsic:
-                    pass
-                else:
-                    targets = T.clamp(targets, min=-1/(1-self.discount))
+            targets = T.clamp(targets, min=-1/(1-self.discount))
 
         # Get current critic predictions
         predictions = self.critic(
-            states[:,0,:],
+            states_norm[:,0,:],
             actions[:,0,:],
-            goals[:,0,:] if goals is not None else None
+            goals_norm[:,0,:] if goals is not None else None
         ).squeeze()
 
         # Calculate TD errors (kept as raw signed differences for PER priorities and logging)
@@ -1791,15 +1797,15 @@ class DDPG(Agent):
 
         # Get actor's action predictions
         _, pred_actions = self.policy(
-            states[:,0,:],
-            goals[:,0,:] if goals is not None else None
+            states_norm[:,0,:],
+            goals_norm[:,0,:] if goals is not None else None
         )
         
         # Calculate actor loss based on critic
         critic_values = self.critic(
-            states[:,0,:],
+            states_norm[:,0,:],
             pred_actions,
-            goals[:,0,:] if goals is not None else None
+            goals_norm[:,0,:] if goals is not None else None
         )
 
         if weights is not None:
@@ -1822,7 +1828,7 @@ class DDPG(Agent):
         # Log diag data
         if should_log_diag:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
@@ -1833,7 +1839,6 @@ class DDPG(Agent):
                 summarize_tensor(im_rewards, "intrinsic rewards"),
                 summarize_tensor(next_states, "next_states"),
                 summarize_tensor(goals, "goals"),
-                summarize_tensor(next_ach_goals, "next_ach_goals"),
                 summarize_tensor(terminations, "terminations"),
                 summarize_tensor(truncations, "truncations"),
                 summarize_tensor(target_actions, "target actions"),
@@ -2113,8 +2118,8 @@ class TD3(Agent):
         terminations = sample["terminations"]
         truncations = sample["truncations"]
         trajectory_lengths = sample["trajectory_lengths"]
-        ach_goals = sample["state_achieved_goals"]
-        next_ach_goals = sample["next_state_achieved_goals"]
+        # ach_goals = sample["state_achieved_goals"]
+        # next_ach_goals = sample["next_state_achieved_goals"]
         goals = sample["desired_goals"]
 
         if 'weights' in sample:
@@ -2136,19 +2141,30 @@ class TD3(Agent):
         extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
         if goals is not None:
             goals_flat = goals.reshape(-1, goals.shape[-1])
-            ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
-            next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
+            # ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
+            # next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
 
         # Normalize states/goals/rewards
         if self.state_normalizer:
             states_flat = self.state_normalizer.normalize(states_flat)
             next_states_flat = self.state_normalizer.normalize(next_states_flat)
         if self.goal_normalizer:
-            ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
-            next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
+            # ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
+            # next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
             goals_flat = self.goal_normalizer.normalize(goals_flat)
         if self.reward_normalizer:
             extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
+
+        # Create normalized tensors reshaped to [batch_size, n_step_length]
+        states_norm = states_flat.reshape(batch_size, n_step_length, -1)
+        next_states_norm = next_states_flat.reshape(batch_size, n_step_length, -1)
+        extrinsic_rewards_norm = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
+        if goals is not None:
+            goals_norm = goals_flat.reshape(batch_size, n_step_length, -1)
+            # ach_goals_norm = ach_goals_flat.reshape(batch_size, n_step_length, -1)
+            # next_ach_goals_norm = next_ach_goals_flat.reshape(batch_size, n_step_length, -1)
+        else:
+            goals_norm = None
 
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
@@ -2175,14 +2191,14 @@ class TD3(Agent):
         # Get target values
         with T.no_grad():
             targets = compute_n_step_return(
-                extrinsic_rewards,
+                rewards,
                 self.discount,
                 device=self.target_critic.device
             ).squeeze()
 
             _, target_actions = self.target_policy(
-                next_states[:,-1,:],
-                goals[:,-1,:] if goals is not None else None,
+                next_states_norm[:,-1,:],
+                goals_norm[:,-1,:] if goals is not None else None,
             )
 
             noise = self.target_noise(target_actions.shape)
@@ -2199,15 +2215,15 @@ class TD3(Agent):
             target_actions = target_actions.clamp(self.policy.act_space_low, self.policy.act_space_high)
             
             target_critic_values_a = self.target_critic(
-                next_states[:,-1,:],
+                next_states_norm[:,-1,:],
                 target_actions,
-                goals[:,-1,:] if goals is not None else None
+                goals_norm[:,-1,:] if goals is not None else None
             ).squeeze()
             
             target_critic_values_b = self.target_critic_b(
-                next_states[:,-1,:],
+                next_states_norm[:,-1,:],
                 target_actions,
-                goals[:,-1,:] if goals is not None else None
+                goals_norm[:,-1,:] if goals is not None else None
             ).squeeze()
             
             target_critic_values = T.minimum(target_critic_values_a, target_critic_values_b)
@@ -2220,15 +2236,15 @@ class TD3(Agent):
 
         # Get current critic predictions
         predictions_a = self.critic(
-            states[:,0,:],
+            states_norm[:,0,:],
             actions[:,0,:],
-            goals[:,0,:] if goals is not None else None
+            goals_norm[:,0,:] if goals is not None else None
         ).squeeze()
 
         predictions_b = self.critic_b(
-            states[:,0,:],
+            states_norm[:,0,:],
             actions[:,0,:],
-            goals[:,0,:] if goals is not None else None
+            goals_norm[:,0,:] if goals is not None else None
         ).squeeze()
 
         # Calculate TD errors (kept as raw signed differences for PER priorities and logging)
@@ -2264,15 +2280,15 @@ class TD3(Agent):
         
         # Get actor's action predictions
         _, pred_actions = self.policy(
-            states[:,0,:],
-            goals[:,0,:] if goals is not None else None
+            states_norm[:,0,:],
+            goals_norm[:,0,:] if goals is not None else None
         )
         
         # Calculate actor loss based on critic
         critic_values = self.critic(
-            states[:,0,:],
+            states_norm[:,0,:],
             pred_actions,
-            goals[:,0,:] if goals is not None else None
+            goals_norm[:,0,:] if goals is not None else None
         )
         
         # Apply importance sampling weights if using prioritized replay
@@ -2297,7 +2313,7 @@ class TD3(Agent):
         # Log diag data
         if should_log_diag:
             self.logger.debug(
-                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
+                "ac_diag step=%d learn_count=%d %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s",
                 step,
                 self._learn_count,
                 summarize_tensor(states, "states"),
@@ -2308,7 +2324,6 @@ class TD3(Agent):
                 summarize_tensor(im_rewards, "intrinsic rewards"),
                 summarize_tensor(next_states, "next_states"),
                 summarize_tensor(goals, "goals"),
-                summarize_tensor(next_ach_goals, "next_ach_goals"),
                 summarize_tensor(terminations, "terminations"),
                 summarize_tensor(truncations, "truncations"),
                 summarize_tensor(target_actions, "target actions"),
@@ -3070,72 +3085,72 @@ class SAC(Agent):
 
         return agent
 
-class HER(Agent):
-    """Hindsight Experience Replay Agent wrapper."""
+# class HER(Agent):
+#     """Hindsight Experience Replay Agent wrapper."""
 
-    def __init__(
-        self,
-        agent: DDPG|TD3|SAC,
-        strategy: str = 'final',
-        tolerance: float = 0.5,
-        num_goals: int = 4,
-        save_dir: str = "models",
-    ):
-        """
-        Initializes the HER agent wrapper.
+#     def __init__(
+#         self,
+#         agent: DDPG|TD3|SAC,
+#         strategy: str = 'final',
+#         tolerance: float = 0.5,
+#         num_goals: int = 4,
+#         save_dir: str = "models",
+#     ):
+#         """
+#         Initializes the HER agent wrapper.
         
-        Args:
-            agent (Agent): The underlying agent (e.g., DDPG, TD3) to wrap with HER.
-            strategy (str): HER strategy for goal sampling ('final', 'future', etc.).
-            tolerance (float): Distance threshold for success determination.
-            num_goals (int): Number of goals to sample for hindsight replay.
-            save_dir (str): Directory to save models and logs.
-            # callbacks (Optional[list[Callback]]): List of callbacks for training.
-        """
-        try:
-            self.agent = agent
-            self.strategy = strategy
-            self.tolerance = tolerance
-            self.num_goals = num_goals
-            self.save_dir = self._setup_save_dir(save_dir)
+#         Args:
+#             agent (Agent): The underlying agent (e.g., DDPG, TD3) to wrap with HER.
+#             strategy (str): HER strategy for goal sampling ('final', 'future', etc.).
+#             tolerance (float): Distance threshold for success determination.
+#             num_goals (int): Number of goals to sample for hindsight replay.
+#             save_dir (str): Directory to save models and logs.
+#             # callbacks (Optional[list[Callback]]): List of callbacks for training.
+#         """
+#         try:
+#             self.agent = agent
+#             self.strategy = strategy
+#             self.tolerance = tolerance
+#             self.num_goals = num_goals
+#             self.save_dir = self._setup_save_dir(save_dir)
 
-            # Set learn iter to 0. For distributed training
-            self._learn_iter = 0
+#             # Set learn iter to 0. For distributed training
+#             self._learn_iter = 0
 
-        except Exception as e:
-            self.logger.error(f"Error in HER init: {e}", exc_info=True)
+#         except Exception as e:
+#             self.logger.error(f"Error in HER init: {e}", exc_info=True)
 
-        # Internal attributes
-        try:
-            # Initialize HER flag in agent
-            self.base_agent._init_her()
+#         # Internal attributes
+#         try:
+#             # Initialize HER flag in agent
+#             self.base_agent._init_her()
             
-            # Set distance threshold based on environment type
-            if isinstance(self.agent.env.env, gym.vector.SyncVectorEnv):
-                # Vectorized environment: set distance_threshold for each sub-environment
-                for i in range(len(self.agent.env.env.envs)):
-                    base_env = self.agent.env.get_base_env(i)
-                    if hasattr(base_env, "distance_threshold"):
-                        base_env.distance_threshold = self.tolerance
-                    else:
-                        self.logger.warning(f"Environment {base_env} does not have distance_threshold attribute")
-            else:
-                # Non-vectorized environment: set directly if attribute exists
-                if hasattr(self.agent.env.env, "distance_threshold"):
-                    self.agent.env.env.distance_threshold = self.tolerance
-                else:
-                    self.logger.warning("Underlying environment does not have distance_threshold attribute")
+#             # Set distance threshold based on environment type
+#             if isinstance(self.agent.env.env, gym.vector.SyncVectorEnv):
+#                 # Vectorized environment: set distance_threshold for each sub-environment
+#                 for i in range(len(self.agent.env.env.envs)):
+#                     base_env = self.agent.env.get_base_env()
+#                     if hasattr(base_env, "distance_threshold"):
+#                         base_env.distance_threshold = self.tolerance
+#                     else:
+#                         self.logger.warning(f"Environment {base_env} does not have distance_threshold attribute")
+#             else:
+#                 # Non-vectorized environment: set directly if attribute exists
+#                 if hasattr(self.agent.env.env, "distance_threshold"):
+#                     self.agent.env.env.distance_threshold = self.tolerance
+#                 else:
+#                     self.logger.warning("Underlying environment does not have distance_threshold attribute")
 
-            # self._sync_iter = 1
-            # self._learn_iter = 0
+#             # self._sync_iter = 1
+#             # self._learn_iter = 0
 
-        except Exception as e:
-            self.logger.error(f"Error in HER init internal attributes: {e}", exc_info=True)
+#         except Exception as e:
+#             self.logger.error(f"Error in HER init internal attributes: {e}", exc_info=True)
         
-    @property
-    def base_agent(self):
-        """Return the base agent"""
-        return self.agent
+#     @property
+#     def base_agent(self):
+#         """Return the base agent"""
+#         return self.agent
 
     # def get_parameters(self):
     #     """Get the parameters of all models, ensuring they are on CPU for Ray serialization."""
@@ -3217,383 +3232,383 @@ class HER(Agent):
     #         'dones': dones
     #     }
 
-    def _step(self,
-              step: int,
-              trajectories: list[list[tuple]],
-              states: dict,
-              max_episodes: int,
-              episode_scores: np.ndarray,
-              completed_episodes: np.ndarray,
-              score_history: deque[float],
-              best_reward: float,
-              success_counter: float,
-              training: bool = True):
-        """
-        Perform a single training step.
-        """
-        obs, goals = self._preprocess_inputs(states)
-        actions = self.base_agent.get_action(obs, goals, step=step, context='train' if training else 'test')
-        actions = self.base_agent.env.format_actions(actions)
-        next_states, rewards, dones, infos = self.base_agent.env.step(actions)
+    # def _step(self,
+    #           step: int,
+    #           trajectories: list[list[tuple]],
+    #           states: dict,
+    #           max_episodes: int,
+    #           episode_scores: np.ndarray,
+    #           completed_episodes: np.ndarray,
+    #           score_history: deque[float],
+    #           best_reward: float,
+    #           success_counter: float,
+    #           training: bool = True):
+    #     """
+    #     Perform a single training step.
+    #     """
+    #     obs, goals = self._preprocess_inputs(states)
+    #     actions = self.base_agent.get_action(obs, goals, step=step, context='train' if training else 'test')
+    #     actions = self.base_agent.env.format_actions(actions)
+    #     next_states, rewards, dones, infos = self.base_agent.env.step(actions)
 
-        # Ensure states, actions, rewards, next_states, and dones are tensors
-        obs, actions, rewards, next_states, dones = (
-            T.tensor(obs, dtype=T.float32, device=self.device) if isinstance(obs, np.ndarray) else obs,
-            T.tensor(actions, dtype=T.float32, device=self.device) if isinstance(actions, np.ndarray) else actions,
-            T.tensor(rewards, dtype=T.float32, device=self.device) if isinstance(rewards, np.ndarray) else rewards,
-            T.tensor(next_states, dtype=T.float32, device=self.device) if isinstance(next_states, np.ndarray) else next_states,
-            T.tensor(dones, dtype=T.int8, device=self.device) if isinstance(dones, np.ndarray) else dones,
-        )
+    #     # Ensure states, actions, rewards, next_states, and dones are tensors
+    #     obs, actions, rewards, next_states, dones = (
+    #         T.tensor(obs, dtype=T.float32, device=self.device) if isinstance(obs, np.ndarray) else obs,
+    #         T.tensor(actions, dtype=T.float32, device=self.device) if isinstance(actions, np.ndarray) else actions,
+    #         T.tensor(rewards, dtype=T.float32, device=self.device) if isinstance(rewards, np.ndarray) else rewards,
+    #         T.tensor(next_states, dtype=T.float32, device=self.device) if isinstance(next_states, np.ndarray) else next_states,
+    #         T.tensor(dones, dtype=T.int8, device=self.device) if isinstance(dones, np.ndarray) else dones,
+    #     )
 
-        episode_scores += rewards
-        step_logs = {f'step_reward': rewards.mean()}
+    #     episode_scores += rewards
+    #     step_logs = {f'step_reward': rewards.mean()}
         
-        # Store transitions in the env trajectory
-        for i in range(self.base_agent.env.num_envs):
-            trajectories[i].append(
-                (
-                    infos['n-step trajectory']['states'][i],
-                    infos['n-step trajectory']['actions'][i],
-                    infos['n-step trajectory']['rewards'][i],
-                    infos['n-step trajectory']['next_states'][i],
-                    infos['n-step trajectory']['dones'][i],
-                    infos['n-step trajectory']['state_achieved_goals'][i],
-                    infos['n-step trajectory']['next_state_achieved_goals'][i],
-                    infos['n-step trajectory']['desired_goals'][i]
-                )
-            )
+    #     # Store transitions in the env trajectory
+    #     for i in range(self.base_agent.env.num_envs):
+    #         trajectories[i].append(
+    #             (
+    #                 infos['n-step trajectory']['states'][i],
+    #                 infos['n-step trajectory']['actions'][i],
+    #                 infos['n-step trajectory']['rewards'][i],
+    #                 infos['n-step trajectory']['next_states'][i],
+    #                 infos['n-step trajectory']['dones'][i],
+    #                 infos['n-step trajectory']['state_achieved_goals'][i],
+    #                 infos['n-step trajectory']['next_state_achieved_goals'][i],
+    #                 infos['n-step trajectory']['desired_goals'][i]
+    #             )
+    #         )
 
-        if training:
-            # Update normalizers
-            if self.base_agent.state_normalizer:
-                self.base_agent.state_normalizer.add(
-                    T.tensor(next_states['observation'], dtype=T.float32, device=self.agent.state_normalizer.device.type)
-                )
-            if self.base_agent.goal_normalizer:
-                self.base_agent.goal_normalizer.add(
-                    T.tensor(next_states['achieved_goal'], dtype=T.float32, device=self.base_agent.goal_normalizer.device.type)
-                )
+    #     if training:
+    #         # Update normalizers
+    #         if self.base_agent.state_normalizer:
+    #             self.base_agent.state_normalizer.add(
+    #                 T.tensor(next_states['observation'], dtype=T.float32, device=self.agent.state_normalizer.device.type)
+    #             )
+    #         if self.base_agent.goal_normalizer:
+    #             self.base_agent.goal_normalizer.add(
+    #                 T.tensor(next_states['achieved_goal'], dtype=T.float32, device=self.base_agent.goal_normalizer.device.type)
+    #             )
 
-        done_episodes = np.flatnonzero(dones) # Get indices of completed episodes
-        episode_logs = []
-        successes = 0
-        for i in done_episodes:
-            completed_episodes[i] += 1
-            score_history.append(float(episode_scores[i].item()))
-            avg_reward = sum(score_history) / len(score_history)
+    #     done_episodes = np.flatnonzero(dones) # Get indices of completed episodes
+    #     episode_logs = []
+    #     successes = 0
+    #     for i in done_episodes:
+    #         completed_episodes[i] += 1
+    #         score_history.append(float(episode_scores[i].item()))
+    #         avg_reward = sum(score_history) / len(score_history)
             
-            # Store hindsight trajectory if training
-            if training:
-                self.store_hindsight_trajectory(trajectories[i])
-                # check if best reward
-                if avg_reward > best_reward:
-                    best_reward = avg_reward
-                    self.save()
-            # Calculate success rate
-            goal_distance = np.linalg.norm(next_states['achieved_goal'][i] - states['desired_goal'][i], axis=-1)
-            # successes += (goal_distance <= self.tolerance).astype(np.int32)
-            success_counter += (goal_distance <= self.tolerance).astype(np.int32)
-            success_perc = (success_counter / completed_episodes.sum())
-            episode_log = {
-                'env': i,
-                'episode': int(completed_episodes.sum()),
-                'episode_reward': episode_scores[i].round(2),
-                'avg_reward': avg_reward.round(2),
-                'goal_distance': goal_distance.round(2),
-                # 'Successes': successes,
-                'success_rate': success_perc.round(2)
-            }
-            if training:
-                episode_log.update({
-                    'best_reward': best_reward.round(2),
-                    'best': 1 if avg_reward > best_reward else 0,
-                })
-            episode_logs.append(episode_log)
-            trajectories[i] = []
+    #         # Store hindsight trajectory if training
+    #         if training:
+    #             self.store_hindsight_trajectory(trajectories[i])
+    #             # check if best reward
+    #             if avg_reward > best_reward:
+    #                 best_reward = avg_reward
+    #                 self.save()
+    #         # Calculate success rate
+    #         goal_distance = np.linalg.norm(next_states['achieved_goal'][i] - states['desired_goal'][i], axis=-1)
+    #         # successes += (goal_distance <= self.tolerance).astype(np.int32)
+    #         success_counter += (goal_distance <= self.tolerance).astype(np.int32)
+    #         success_perc = (success_counter / completed_episodes.sum())
+    #         episode_log = {
+    #             'env': i,
+    #             'episode': int(completed_episodes.sum()),
+    #             'episode_reward': episode_scores[i].round(2),
+    #             'avg_reward': avg_reward.round(2),
+    #             'goal_distance': goal_distance.round(2),
+    #             # 'Successes': successes,
+    #             'success_rate': success_perc.round(2)
+    #         }
+    #         if training:
+    #             episode_log.update({
+    #                 'best_reward': best_reward.round(2),
+    #                 'best': 1 if avg_reward > best_reward else 0,
+    #             })
+    #         episode_logs.append(episode_log)
+    #         trajectories[i] = []
 
-        return{
-            'episode_scores': episode_scores,
-            'completed_episodes': completed_episodes,
-            'score_history': score_history,
-            'trajectories': trajectories,
-            'next_states': next_states,
-            'success_counter': success_counter,
-            'step_logs': step_logs,
-            'episode_logs': episode_logs,
-            'done': completed_episodes.sum() >= max_episodes
-        }
+    #     return{
+    #         'episode_scores': episode_scores,
+    #         'completed_episodes': completed_episodes,
+    #         'score_history': score_history,
+    #         'trajectories': trajectories,
+    #         'next_states': next_states,
+    #         'success_counter': success_counter,
+    #         'step_logs': step_logs,
+    #         'episode_logs': episode_logs,
+    #         'done': completed_episodes.sum() >= max_episodes
+    #     }
 
-    def train(self, num_epochs: int, num_cycles: int, num_episodes: int, num_updates: int, render_freq: int = 0, seed: int | None = None):
-        """
-        Train the HER agent with a vectorized environment setup, following the HER paper's experiment structure.
+    # def train(self, num_epochs: int, num_cycles: int, num_episodes: int, num_updates: int, render_freq: int = 0, seed: int | None = None):
+    #     """
+    #     Train the HER agent with a vectorized environment setup, following the HER paper's experiment structure.
 
-        Args:
-            num_epochs (int): Number of training epochs.
-            num_cycles (int): Number of cycles per epoch.
-            num_episodes (int): Number of episodes to collect per cycle across all environments.
-            num_updates (int): Number of optimization steps per cycle after collecting episodes.
-            render_freq (int): Frequency of rendering (in total completed episodes).
-            seed (int, optional): Random seed for reproducibility.
-        """
+    #     Args:
+    #         num_epochs (int): Number of training epochs.
+    #         num_cycles (int): Number of cycles per epoch.
+    #         num_episodes (int): Number of episodes to collect per cycle across all environments.
+    #         num_updates (int): Number of optimization steps per cycle after collecting episodes.
+    #         render_freq (int): Frequency of rendering (in total completed episodes).
+    #         seed (int, optional): Random seed for reproducibility.
+    #     """
         
-        init_dict = self._initialize_run(seed, num_episodes=num_episodes, num_epochs=num_epochs, num_cycles=num_cycles, num_updates=num_updates)
-        step = init_dict['step']
-        states = init_dict['states']
-        episode_scores = init_dict['episode_scores']
-        completed_episodes = init_dict['completed_episodes']
-        score_history = init_dict['score_history']
-        best_reward = init_dict['best_reward']
-        trajectories = [[] for _ in range(self.base_agent.env.num_envs)]
-        success_counter = 0.0
+    #     init_dict = self._initialize_run(seed, num_episodes=num_episodes, num_epochs=num_epochs, num_cycles=num_cycles, num_updates=num_updates)
+    #     step = init_dict['step']
+    #     states = init_dict['states']
+    #     episode_scores = init_dict['episode_scores']
+    #     completed_episodes = init_dict['completed_episodes']
+    #     score_history = init_dict['score_history']
+    #     best_reward = init_dict['best_reward']
+    #     trajectories = [[] for _ in range(self.base_agent.env.num_envs)]
+    #     success_counter = 0.0
 
-        # Training loop
-        for epoch in range(num_epochs):
+    #     # Training loop
+    #     for epoch in range(num_epochs):
 
-            for cycle in range(num_cycles):
-                completed_before_cycle = completed_episodes.sum()
+    #         for cycle in range(num_cycles):
+    #             completed_before_cycle = completed_episodes.sum()
 
-                # Collect episodes until num_episodes_per_cycle are completed
-                while completed_episodes.sum() < completed_before_cycle + num_episodes:
-                    # If distributed, sync to shared agent
-                    # if self.agent._distributed and self.agent._step % self._sync_iter == 0:
-                    #     params = self.get_parameters()
-                    #     self.apply_parameters(params)
-                    step += 1
+    #             # Collect episodes until num_episodes_per_cycle are completed
+    #             while completed_episodes.sum() < completed_before_cycle + num_episodes:
+    #                 # If distributed, sync to shared agent
+    #                 # if self.agent._distributed and self.agent._step % self._sync_iter == 0:
+    #                 #     params = self.get_parameters()
+    #                 #     self.apply_parameters(params)
+    #                 step += 1
 
-                    step_result = self._step(step, trajectories, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, success_counter)
-                    states = step_result['next_states']
-                    trajectories = step_result['trajectories']
-                    episode_scores = step_result['episode_scores']
-                    completed_episodes = step_result['completed_episodes']
-                    score_history = step_result['score_history']
-                    success_counter = step_result['success_counter']
+    #                 step_result = self._step(step, trajectories, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, success_counter)
+    #                 states = step_result['next_states']
+    #                 trajectories = step_result['trajectories']
+    #                 episode_scores = step_result['episode_scores']
+    #                 completed_episodes = step_result['completed_episodes']
+    #                 score_history = step_result['score_history']
+    #                 success_counter = step_result['success_counter']
 
-                    if self.base_agent.callbacks:
-                        for callback in self.base_agent.callbacks:
-                            callback.on_train_step_end(step=step, logs=step_result['step_logs'])
+    #                 if self.base_agent.callbacks:
+    #                     for callback in self.base_agent.callbacks:
+    #                         callback.on_train_step_end(step=step, logs=step_result['step_logs'])
 
-                    render = True # Flag to keep track of render status to avoid rendering multiple times per step
-                    for episode_log in step_result['episode_logs']:
-                        # Print complete episode metrics to console
-                        print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-                        # Reset episode score
-                        episode_scores[episode_log['env']] = 0
-                        best_reward = episode_log['best_reward']
+    #                 render = True # Flag to keep track of render status to avoid rendering multiple times per step
+    #                 for episode_log in step_result['episode_logs']:
+    #                     # Print complete episode metrics to console
+    #                     print(f"Training Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
+    #                     # Reset episode score
+    #                     episode_scores[episode_log['env']] = 0
+    #                     best_reward = episode_log['best_reward']
 
-                        if self.base_agent.callbacks:
-                            for callback in self.base_agent.callbacks:
-                                callback.on_train_epoch_end(epoch=step, logs=episode_log)
+    #                     if self.base_agent.callbacks:
+    #                         for callback in self.base_agent.callbacks:
+    #                             callback.on_train_epoch_end(epoch=step, logs=episode_log)
 
-                        # Check if number of completed episodes should trigger render
-                        if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
-                            print(f"Rendering episode {episode_log['episode']} during training...")
-                            self.render_episode(episode_log['episode'], step, context='train')
-                            render = False
+    #                     # Check if number of completed episodes should trigger render
+    #                     if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
+    #                         print(f"Rendering episode {episode_log['episode']} during training...")
+    #                         self.render_episode(episode_log['episode'], step, context='train')
+    #                         render = False
 
-                # Perform optimization after collecting episodes
-                if step > self.base_agent.warmup and self.base_agent.replay_buffer.counter > self.base_agent.batch_size:
-                    # Check if distributed
-                    # if self.base_agent._distributed:
-                    #     self._distributed_learn(self.agent._step, self._run_number, num_updates)
-                    # else:
-                    for _ in range(num_updates):
-                        learn_logs = self.base_agent.learn(step)
+    #             # Perform optimization after collecting episodes
+    #             if step > self.base_agent.warmup and self.base_agent.replay_buffer.counter > self.base_agent.batch_size:
+    #                 # Check if distributed
+    #                 # if self.base_agent._distributed:
+    #                 #     self._distributed_learn(self.agent._step, self._run_number, num_updates)
+    #                 # else:
+    #                 for _ in range(num_updates):
+    #                     learn_logs = self.base_agent.learn(step)
 
-                    # Update target networks
-                    if isinstance(self.base_agent, DDPG):
-                        # self.agent.logger.debug(f"Updating DDPG target networks")
-                        self.agent.soft_update(self.base_agent.policy, self.base_agent.target_policy)
-                        self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
-                    elif isinstance(self.base_agent, TD3):
-                        # self.agent.logger.debug(f"Updating TD3 target networks")
-                        self.agent.soft_update(self.base_agent.policy, self.base_agent.target_policy)
-                        self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
-                        self.agent.soft_update(self.base_agent.critic_b, self.base_agent.target_critic_b)
-                    elif isinstance(self.base_agent, SAC):
-                        self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
-                        self.agent.soft_update(self.base_agent.critic_b, self.base_agent.target_critic_b)
+    #                 # Update target networks
+    #                 if isinstance(self.base_agent, DDPG):
+    #                     # self.agent.logger.debug(f"Updating DDPG target networks")
+    #                     self.agent.soft_update(self.base_agent.policy, self.base_agent.target_policy)
+    #                     self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
+    #                 elif isinstance(self.base_agent, TD3):
+    #                     # self.agent.logger.debug(f"Updating TD3 target networks")
+    #                     self.agent.soft_update(self.base_agent.policy, self.base_agent.target_policy)
+    #                     self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
+    #                     self.agent.soft_update(self.base_agent.critic_b, self.base_agent.target_critic_b)
+    #                 elif isinstance(self.base_agent, SAC):
+    #                     self.agent.soft_update(self.base_agent.critic, self.base_agent.target_critic)
+    #                     self.agent.soft_update(self.base_agent.critic_b, self.base_agent.target_critic_b)
 
-                else:
-                    learn_logs = None
+    #             else:
+    #                 learn_logs = None
 
-                if self.base_agent.callbacks:
-                    for callback in self.base_agent.callbacks:
-                        callback.on_train_epoch_end(epoch=step, logs=learn_logs)
+    #             if self.base_agent.callbacks:
+    #                 for callback in self.base_agent.callbacks:
+    #                     callback.on_train_epoch_end(epoch=step, logs=learn_logs)
 
-        if self.base_agent.callbacks:
-            for callback in self.base_agent.callbacks:
-                callback.on_train_end(logs=episode_log)
+    #     if self.base_agent.callbacks:
+    #         for callback in self.base_agent.callbacks:
+    #             callback.on_train_end(logs=episode_log)
 
-        self.base_agent.env.close()
+    #     self.base_agent.env.close()
     
-    def test(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
-        """Runs a test over 'num_episodes'."""
+    # def test(self, num_episodes: int, render_freq: int = 0, seed: int | None = None):
+    #     """Runs a test over 'num_episodes'."""
         
-        init_dict = self._initialize_run(seed, training=False)
-        step = init_dict['step']
-        states = init_dict['states']
-        episode_scores = init_dict['episode_scores']
-        completed_episodes = init_dict['completed_episodes']
-        score_history = init_dict['score_history']
-        best_reward = init_dict['best_reward']
-        trajectories = [[] for _ in range(self.base_agent.env.num_envs)]
-        success_counter = 0.0
+    #     init_dict = self._initialize_run(seed, training=False)
+    #     step = init_dict['step']
+    #     states = init_dict['states']
+    #     episode_scores = init_dict['episode_scores']
+    #     completed_episodes = init_dict['completed_episodes']
+    #     score_history = init_dict['score_history']
+    #     best_reward = init_dict['best_reward']
+    #     trajectories = [[] for _ in range(self.base_agent.env.num_envs)]
+    #     success_counter = 0.0
 
-        while completed_episodes.sum() < num_episodes:
-            step += 1
-            step_result = self._step(step, trajectories, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, success_counter, training=False)
-            states = step_result['next_states']
-            trajectories = step_result['trajectories']
-            episode_scores = step_result['episode_scores']
-            completed_episodes = step_result['completed_episodes']
-            score_history = step_result['score_history']
-            success_counter = step_result['success_counter']
+    #     while completed_episodes.sum() < num_episodes:
+    #         step += 1
+    #         step_result = self._step(step, trajectories, states, num_episodes, episode_scores, completed_episodes, score_history, best_reward, success_counter, training=False)
+    #         states = step_result['next_states']
+    #         trajectories = step_result['trajectories']
+    #         episode_scores = step_result['episode_scores']
+    #         completed_episodes = step_result['completed_episodes']
+    #         score_history = step_result['score_history']
+    #         success_counter = step_result['success_counter']
 
-            if self.base_agent.callbacks:
-                for callback in self.base_agent.callbacks:
-                    callback.on_test_step_end(step=step, logs=step_result['step_logs'])
+    #         if self.base_agent.callbacks:
+    #             for callback in self.base_agent.callbacks:
+    #                 callback.on_test_step_end(step=step, logs=step_result['step_logs'])
 
-            render = True # Flag to keep track of render status to avoid rendering multiple times per step
-            for episode_log in step_result['episode_logs']:
-                # Print complete episode metrics to console
-                print(f"Testing Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
-                # Reset episode score
-                episode_scores[episode_log['env']] = 0
-                best_reward = episode_log['best_reward']
+    #         render = True # Flag to keep track of render status to avoid rendering multiple times per step
+    #         for episode_log in step_result['episode_logs']:
+    #             # Print complete episode metrics to console
+    #             print(f"Testing Environment {episode_log['env']}: Episode {episode_log['episode']}, Score {episode_log['episode_reward']}, Avg_Score {episode_log['avg_reward']}")
+    #             # Reset episode score
+    #             episode_scores[episode_log['env']] = 0
+    #             best_reward = episode_log['best_reward']
 
-                # Check if number of completed episodes should trigger render
-                if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
-                    print(f"Rendering episode {episode_log['episode']} during testing...")
-                    # Call the test function to render an episode
-                    self.render_episode(episode_log['episode'], step, context='test')
-                    render = False
+    #             # Check if number of completed episodes should trigger render
+    #             if render and render_freq > 0 and episode_log['episode'] % render_freq == 0:
+    #                 print(f"Rendering episode {episode_log['episode']} during testing...")
+    #                 # Call the test function to render an episode
+    #                 self.render_episode(episode_log['episode'], step, context='test')
+    #                 render = False
 
 
-                if self.base_agent.callbacks:
-                    for callback in self.base_agent.callbacks:
-                        callback.on_test_epoch_end(epoch=step, logs=episode_log)
+    #             if self.base_agent.callbacks:
+    #                 for callback in self.base_agent.callbacks:
+    #                     callback.on_test_epoch_end(epoch=step, logs=episode_log)
 
-        if self.base_agent.callbacks:
-            for callback in self.base_agent.callbacks:
-                callback.on_test_end()
+    #     if self.base_agent.callbacks:
+    #         for callback in self.base_agent.callbacks:
+    #             callback.on_test_end()
 
-        self.base_agent.env.close()
+    #     self.base_agent.env.close()
 
-    def store_hindsight_trajectory(self, trajectory):
-        """
-        Store hindsight-augmented transitions from a completed trajectory into the replay buffer with n-step rewards.
+    # def store_hindsight_trajectory(self, trajectory):
+    #     """
+    #     Store hindsight-augmented transitions from a completed trajectory into the replay buffer with n-step rewards.
         
-        Args:
-            trajectory (list): List of tuples or dicts with transition data:
-                (state, action, reward, next_state, done, achieved_goal, next_achieved_goal, desired_goal)
-        """
-        states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = zip(*trajectory)
+    #     Args:
+    #         trajectory (list): List of tuples or dicts with transition data:
+    #             (state, action, reward, next_state, done, achieved_goal, next_achieved_goal, desired_goal)
+    #     """
+    #     states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals = zip(*trajectory)
         
-        # Convert to NumPy arrays for efficiency
-        states = np.array(states)
-        actions = np.array(actions)
-        rewards = np.array(rewards)
-        next_states = np.array(next_states)
-        dones = np.array(dones)
-        achieved_goals = np.array(achieved_goals)
-        next_achieved_goals = np.array(next_achieved_goals)
-        desired_goals = np.array(desired_goals)
+    #     # Convert to NumPy arrays for efficiency
+    #     states = np.array(states)
+    #     actions = np.array(actions)
+    #     rewards = np.array(rewards)
+    #     next_states = np.array(next_states)
+    #     dones = np.array(dones)
+    #     achieved_goals = np.array(achieved_goals)
+    #     next_achieved_goals = np.array(next_achieved_goals)
+    #     desired_goals = np.array(desired_goals)
 
-        # experiences = []
-        goals = []
+    #     # experiences = []
+    #     goals = []
         
-        if self.strategy == "final":
-            # New desired goal is the final achieved goal
-            new_desired_goal = next_achieved_goals[-1]
+    #     if self.strategy == "final":
+    #         # New desired goal is the final achieved goal
+    #         new_desired_goal = next_achieved_goals[-1]
             
-            # Compute new rewards for all transitions
-            new_rewards = [self.agent.env.get_base_env().compute_reward(achieved_goals[i], new_desired_goal, {}) 
-                        for i in range(len(trajectory))]
+    #         # Compute new rewards for all transitions
+    #         new_rewards = [self.agent.env.get_base_env().compute_reward(achieved_goals[i], new_desired_goal, {}) 
+    #                     for i in range(len(trajectory))]
             
-            # Compute n-step returns and store transitions
-            for t in range(len(trajectory)):
-                # Number of steps for n-step return (limited by trajectory length)
-                k = min(self.agent.N, len(trajectory) - t)
+    #         # Compute n-step returns and store transitions
+    #         for t in range(len(trajectory)):
+    #             # Number of steps for n-step return (limited by trajectory length)
+    #             k = min(self.agent.N, len(trajectory) - t)
                 
-                # Calculate n-step return
-                # n_step_reward = sum([self.agent.discount**i * new_rewards[t + i] for i in range(k)])
+    #             # Calculate n-step return
+    #             # n_step_reward = sum([self.agent.discount**i * new_rewards[t + i] for i in range(k)])
                 
-                states = np.append(states, np.expand_dims(states[t], axis=0), axis=0)
-                actions = np.append(actions, np.expand_dims(actions[t], axis=0), axis=0)
-                rewards = np.append(rewards, np.expand_dims(new_rewards[t], axis=0), axis=0)
-                next_states = np.append(next_states, np.expand_dims(next_states[t], axis=0), axis=0)
-                dones = np.append(dones, np.expand_dims(dones[t], axis=0), axis=0)
-                achieved_goals = np.append(achieved_goals, np.expand_dims(achieved_goals[t], axis=0), axis=0)
-                next_achieved_goals = np.append(next_achieved_goals, np.expand_dims(next_achieved_goals[t], axis=0), axis=0)
-                desired_goals = np.append(desired_goals, np.expand_dims(new_desired_goal, axis=0), axis=0)
+    #             states = np.append(states, np.expand_dims(states[t], axis=0), axis=0)
+    #             actions = np.append(actions, np.expand_dims(actions[t], axis=0), axis=0)
+    #             rewards = np.append(rewards, np.expand_dims(new_rewards[t], axis=0), axis=0)
+    #             next_states = np.append(next_states, np.expand_dims(next_states[t], axis=0), axis=0)
+    #             dones = np.append(dones, np.expand_dims(dones[t], axis=0), axis=0)
+    #             achieved_goals = np.append(achieved_goals, np.expand_dims(achieved_goals[t], axis=0), axis=0)
+    #             next_achieved_goals = np.append(next_achieved_goals, np.expand_dims(next_achieved_goals[t], axis=0), axis=0)
+    #             desired_goals = np.append(desired_goals, np.expand_dims(new_desired_goal, axis=0), axis=0)
         
-        elif self.strategy == "future":
-            # For "future" strategy, n-step rewards are tricky due to changing goals.
-            # Using single-step rewards as a fallback (modify if needed)
-            for t in range(len(trajectory)):
-                step_goals = []
-                for _ in range(self.num_goals):
-                    if t + 1 >= len(trajectory):
-                        break
-                    goal_idx = np.random.randint(t + 1, len(trajectory))
-                    step_goals.append(next_achieved_goals[goal_idx])
-                goals.append(step_goals)
+    #     elif self.strategy == "future":
+    #         # For "future" strategy, n-step rewards are tricky due to changing goals.
+    #         # Using single-step rewards as a fallback (modify if needed)
+    #         for t in range(len(trajectory)):
+    #             step_goals = []
+    #             for _ in range(self.num_goals):
+    #                 if t + 1 >= len(trajectory):
+    #                     break
+    #                 goal_idx = np.random.randint(t + 1, len(trajectory))
+    #                 step_goals.append(next_achieved_goals[goal_idx])
+    #             goals.append(step_goals)
             
-            for t in range(len(trajectory)):
-                for goal in goals[t]:
-                    goal_distance = np.linalg.norm(next_achieved_goals[t] - goal, axis=-1)
-                    new_reward = self.agent.env.get_base_env().compute_reward(next_achieved_goals[t], goal, {})
-                    states = np.append(states, np.expand_dims(states[t], axis=0), axis=0)
-                    actions = np.append(actions, np.expand_dims(actions[t], axis=0), axis=0)
-                    rewards = np.append(rewards, np.expand_dims(new_reward, axis=0), axis=0)
-                    next_states = np.append(next_states, np.expand_dims(next_states[t], axis=0), axis=0)
-                    dones = np.append(dones, np.expand_dims(dones[t], axis=0), axis=0)
-                    achieved_goals = np.append(achieved_goals, np.expand_dims(achieved_goals[t], axis=0), axis=0)
-                    next_achieved_goals = np.append(next_achieved_goals, np.expand_dims(next_achieved_goals[t], axis=0), axis=0)
-                    desired_goals = np.append(desired_goals, np.expand_dims(goal, axis=0), axis=0)
+    #         for t in range(len(trajectory)):
+    #             for goal in goals[t]:
+    #                 goal_distance = np.linalg.norm(next_achieved_goals[t] - goal, axis=-1)
+    #                 new_reward = self.agent.env.get_base_env().compute_reward(next_achieved_goals[t], goal, {})
+    #                 states = np.append(states, np.expand_dims(states[t], axis=0), axis=0)
+    #                 actions = np.append(actions, np.expand_dims(actions[t], axis=0), axis=0)
+    #                 rewards = np.append(rewards, np.expand_dims(new_reward, axis=0), axis=0)
+    #                 next_states = np.append(next_states, np.expand_dims(next_states[t], axis=0), axis=0)
+    #                 dones = np.append(dones, np.expand_dims(dones[t], axis=0), axis=0)
+    #                 achieved_goals = np.append(achieved_goals, np.expand_dims(achieved_goals[t], axis=0), axis=0)
+    #                 next_achieved_goals = np.append(next_achieved_goals, np.expand_dims(next_achieved_goals[t], axis=0), axis=0)
+    #                 desired_goals = np.append(desired_goals, np.expand_dims(goal, axis=0), axis=0)
                 
         
-        elif self.strategy == "none":
-            pass  # No hindsight replay
+    #     elif self.strategy == "none":
+    #         pass  # No hindsight replay
         
-        # Add all experiences to the replay buffer
-        self.agent.replay_buffer.add(states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals)
+    #     # Add all experiences to the replay buffer
+    #     self.agent.replay_buffer.add(states, actions, rewards, next_states, dones, achieved_goals, next_achieved_goals, desired_goals)
                 
         
 
-    # def set_normalizer_state(self, config):
-    #     self.agent.state_normalizer.set_state(config)
+    # # def set_normalizer_state(self, config):
+    # #     self.agent.state_normalizer.set_state(config)
 
-    def get_config(self):
-        config = {
-            "agent_type": self.__class__.__name__,
-            "agent": self.agent.get_config(),
-            "strategy": self.strategy,
-            "tolerance":self.tolerance,
-            "num_goals": self.num_goals,
-            "device": self.agent.device.type,
-            "save_dir": self.save_dir,
-        }
+    # def get_config(self):
+    #     config = {
+    #         "agent_type": self.__class__.__name__,
+    #         "agent": self.agent.get_config(),
+    #         "strategy": self.strategy,
+    #         "tolerance":self.tolerance,
+    #         "num_goals": self.num_goals,
+    #         "device": self.agent.device.type,
+    #         "save_dir": self.save_dir,
+    #     }
 
-        return config
+    #     return config
     
-    def save(self):
-        """Saves the model."""
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
+    # def save(self):
+    #     """Saves the model."""
+    #     config = self.get_config()
+    #     os.makedirs(self.save_dir, exist_ok=True)
+    #     with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
+    #         json.dump(config, f)
 
-        self.agent.save()
+    #     self.agent.save()
 
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool = True):
-        """Loads the model."""
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        agent = load_agent(Path(config["agent"]["save_dir"]), load_weights)
-        her = cls(agent, config["strategy"], config["tolerance"], config["num_goals"], config["save_dir"])
+    # @classmethod
+    # def load(cls, config_dir:str | Path, load_weights:bool = True):
+    #     """Loads the model."""
+    #     config = json.load(open(Path(config_dir) / 'config.json'))
+    #     agent = load_agent(Path(config["agent"]["save_dir"]), load_weights)
+    #     her = cls(agent, config["strategy"], config["tolerance"], config["num_goals"], config["save_dir"])
         
-        return her
+    #     return her
     
 # @runtime_checkable
 # class HasNoise(Protocol):

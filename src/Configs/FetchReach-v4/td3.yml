@@ -6,7 +6,7 @@ log_level: INFO
 
 schedule:
   stop_unit: timestep
-  stop_units: &stop_units 500000
+  stop_units: &stop_units 5000000
   learn_every_unit: episode
   learn_every: 16
   updates_per_learn: 40
@@ -21,13 +21,13 @@ agent:
     policy:
       layer_config:
         - type: dense
-          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 64, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
         - type: dense
-          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 64, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
         - type: dense
-          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 64, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
       output_config:
         - type: dense
@@ -43,13 +43,13 @@ agent:
       layer_config: []
       merged_config:
         - type: dense
-          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 64, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
         - type: dense
-          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 64, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
         - type: dense
-          params: {units: 256, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
+          params: {units: 64, kernel: variance_scaling, kernel_params: {scale: 1.0, mode: fan_in, distribution: uniform}}
         - type: relu
       output_config:
         - type: dense
@@ -85,7 +85,7 @@ agent:
     target_noise:
       type: NormalNoise
       config:
-        stddev: &target_noise_stddev 0.01
+        stddev: &target_noise_stddev 0.1
     # target_noise_schedule:
     #   schedule_type: linear
     #   steps: *stop_units
@@ -137,16 +137,7 @@ agent:
     #       end_value: 0.0
     #     beta: 0.2
     #     extrinsic_threshold: 20000
-    #     obs_normalizer:
-    #       type: RunningNorm
-    #       config:
-    #         name: ICM.StateNormalizer
-    #         clip_value: 10.0
-    #         device: *device
-    #         log_level: DEBUG
-    #         # kwargs
-    #         _diag_freq: 1000
-    #     intrinsic_reward_normalizer:
+    #     reward_normalizer:
     #       type: RewardNorm
     #       config:
     #         name: ICM.RewardNormalizer
@@ -188,7 +179,7 @@ buffer:
       num_goals: 4
       output_format: n_step
       N: *n
-      gamma: 0.98
+      gamma: 0.99
       device: *device
       relabel_terminations: false
       future_lo: inclusive
