@@ -478,6 +478,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         beta_start: float = 0.4,
         beta_iter: int = 100_000,
         priority: str = "proportional",
+        sort_freq: int = 1000, # How often to resort the priorities (in samples added)
         epsilon: float = 1e-6,
         N: int = 1,
         hindsight: HindsightRelabeler | None = None,
@@ -494,6 +495,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.beta_start = beta_start
         self.beta_iter = beta_iter
         self.priority = priority
+        self.sort_freq = sort_freq
         self.epsilon = epsilon
         self.beta = beta_start
  
@@ -503,7 +505,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.priorities = T.zeros(buffer_size, dtype=T.float32, device=self.device)
             self.sorted_indices: T.Tensor | None = None
             self.max_priority_rank = T.tensor(1.0, dtype=T.float32, device=self.device)
-            self._priority_updates_since_sort = 0
+            self._samples_since_sort = 0
             self._seg_cache_key: Tuple[int, int] = (-1, -1)
             self._seg_starts: Optional[T.Tensor] = None
             self._seg_ends: Optional[T.Tensor] = None
@@ -553,6 +555,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     ) -> None:
 
         batch_size = len(states)
+        self._samples_since_sort += batch_size
         start_idx = self.samples_added % self.buffer_size
         end_idx = (self.samples_added + batch_size) % self.buffer_size
         if end_idx > start_idx:
@@ -674,6 +677,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         Stratified-segments rank-based sampling
         """
         self._maybe_resort(size)
+        # pin size to sorted size to avoid OOB error
+        size = min(size, self.sorted_indices.numel())
         seg_starts, seg_ends = self._get_segments(size, samples)
 
         seg_widths = (seg_ends - seg_starts).float()
@@ -694,13 +699,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
           1. sorted_indices is None (first sample, or sort_freq).
           2. sorted_indices.numel() != size (buffer size changed).
         """
-        needs_resort = (
-            self.sorted_indices is None
-            or self.sorted_indices.numel() != size
-        )
+        needs_resort = self.sorted_indices is None
+
         if needs_resort:
             self.sorted_indices = T.argsort(self.priorities[:size], descending=True)
-            self._priority_updates_since_sort = 0
+            self._samples_since_sort = 0
 
     def _get_segments(
         self, size: int, samples: int
@@ -771,7 +774,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.max_priority_rank = T.maximum(
                 self.max_priority_rank, priorities.max()
             )
-            self.sorted_indices = None  # invalidate sort cache
+            if self._samples_since_sort >= self.sort_freq:
+                self.sorted_indices = None  # invalidate sort cache
  
     def get_config(self) -> Dict[str, Any]:
         config = super().get_config()
@@ -781,6 +785,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             "beta_start": self.beta_start,
             "beta_iter": self.beta_iter,
             "priority": self.priority,
+            "sort_freq": self.sort_freq,
             "epsilon": self.epsilon,
         })
         return config

@@ -11,10 +11,13 @@ import torch as T
 from torch.distributions import Distribution, Categorical
 from collections import deque
 from abc import abstractmethod
+import os
+import json
+from pathlib import Path
 
 from .torch_utils import set_seed
-from .rl_callbacks import Callback, WandbCallback
-from .rl_agents import Agent, HasTargetNetworks
+from .rl_callbacks import Callback, WandbCallback, callback_load
+from .rl_agents import Agent, HasTargetNetworks, load_agent
 from .env_wrapper import EnvWrapper, Observation, VectorNStepReward
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, RolloutBuffer, TrajectoryBuffer
 from .renderer import Renderer
@@ -75,8 +78,8 @@ class Trainer:
         self,
         agent:Agent,
         env:EnvWrapper,
-        buffer:Buffer,
         schedule:TrainingSchedule,
+        buffer:Buffer|None = None,
         renderer:Renderer|None = None,
         callbacks:list[Callback]|None = None,
         log_level: str = 'INFO',
@@ -85,8 +88,8 @@ class Trainer:
         
         self.agent = agent
         self.env = env
-        self.buffer = buffer
         self.schedule = schedule
+        self.buffer = buffer
         self.renderer = renderer
         self.callbacks = callbacks
         self.save_dir = save_dir
@@ -414,8 +417,8 @@ class Trainer:
 
         # Add step metrics to step log
         step_log.update({
-            'step_reward': observation.rewards[valid_steps].mean().item(),
-            'step_intrinsic_reward': observation.intrinsic_rewards[valid_steps].mean().item() if self.agent.intrinsic_motivation else 0.0
+            'step_reward': observation.rewards.mean().item(),
+            'step_intrinsic_reward': observation.intrinsic_rewards.mean().item() if self.agent.intrinsic_motivation else 0.0
         })
         
         # Check if any env is done
@@ -440,12 +443,19 @@ class Trainer:
                 success_rate = sum(self._success_tracker) / len(self._success_tracker)
                 episode_log['goal_distance'] = round(goal_distance.item(), 3)
                 episode_log['success_rate'] = round(success_rate.item(), 3)
-            if training:
-                # Check if best reward
-                if avg_reward > self._best_reward:
-                    self._best_reward = avg_reward
-                    self.agent.save()
+            # if training:
+            #     # Check if best reward
+            #     if avg_reward > self._best_reward:
+            #         self._best_reward = avg_reward
             episode_logs.append(episode_log)
+
+        if done_episodes.numel() > 0 and training:
+            if avg_reward > self._best_reward:
+                self._best_reward = avg_reward
+                # if self._step - self._last_save >= self.save_freq:   # add save_freq + _last_save
+                self.agent.save()
+                # self._last_save = self._step
+
 
         # set _cur_obs to observation
         self._prev_done = dones.clone()
@@ -623,20 +633,113 @@ class Trainer:
                         for callback in self.callbacks:
                             callback.on_train_epoch_end(self._step, episode_log)
 
-        if self.callbacks:
-            for episode_log in step_result['episode_logs']:
-                for callback in self.callbacks:
-                    callback.on_train_end(episode_log)
+            if self.callbacks:
+                for episode_log in step_result['episode_logs']:
+                    for callback in self.callbacks:
+                        callback.on_train_end(episode_log)
 
         self.env.close()
+
+    def test(self, unit: Literal["timestep", "episode"] = "episode", units: int = 1):
+        """Tests Agent following the Schedule."""
+        # Update schedule for testing
+        self.schedule.stop_unit = unit
+        self.schedule.stop_units = units
+        self._initialize_run(context="test")
+        # Initialize Rich Console
+        console = Console()
+        start_time = time.time()
+
+        with Live(console=console, refresh_per_second=8, transient=True) as live:
+            while not self.schedule.is_done(step=self._step, episodes=self._completed_episodes.sum().item()):
+
+                step_result = self.step(training=False)
+                self._step += self.env.num_envs
+                if self.callbacks:
+                    for callback in self.callbacks:
+                        callback.on_test_step_end(self._step, step_result['step_log'])
+
+                # Calculate metrics for dashboard
+                elapsed = time.time() - start_time
+                completed_episodes = self._completed_episodes.sum().item()
+                episodes_per_sec = completed_episodes / elapsed if elapsed > 0 else 0.0
+                avg_reward = sum(self._score_history) / len(self._score_history) if self._score_history else 0.0
+
+                # Build table and update
+                table = Table(
+                    title="Live Testing Dashboard",
+                    expand=True,
+                    highlight=True,
+                    border_style="bold blue"
+                )
+                table.add_column("Steps", justify="right", style="cyan")
+                table.add_column("Episodes", justify="right", style="green")
+                table.add_column("Avg Reward", justify="right", style="magenta")
+                table.add_column("Episodes/sec", justify="right", style="yellow")
+                table.add_column("Elapsed", justify="right", style="dim")
+                table.add_row(
+                    f"{self._step:,}",
+                    f"{completed_episodes:,}",
+                    f"{avg_reward:.2f}",
+                    f"{episodes_per_sec:.2f}",
+                    str(timedelta(seconds=int(elapsed)))
+                )
+                live.update(table)
+
+                for episode_log in step_result['episode_logs']:
+                    # Reset episode score and step count to 0
+                    self._episode_scores[episode_log['env']] = 0
+                    self._episode_steps[episode_log['env']] = 0
+                    if self.renderer and self.renderer.should_render(episode_log['episode']):
+                        # Set normalizers to eval mode
+                        self.set_normalizers(context="test")
+                        self.renderer.render_episode(self, episode_log['episode'], self._step, context='test', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
+                        # Set normalizers to train mode
+                        self.set_normalizers(context="train")
+                    if self.callbacks:
+                        for callback in self.callbacks:
+                            callback.on_test_epoch_end(self._step, episode_log)
+
+            if self.callbacks:
+                for episode_log in step_result['episode_logs']:
+                    for callback in self.callbacks:
+                        callback.on_test_end(episode_log)
+
+        self.env.close()
+
 
     def get_config(self) -> dict:
         return {
             'agent': self.agent.get_config(),
             'env': self.env.config,
-            'buffer': self.buffer.get_config(),
             'schedule': self.schedule.get_config(),
+            'buffer': self.buffer.get_config(),
             'renderer': self.renderer.get_config() if self.renderer else None,
             'callbacks': [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             'save_dir': self.save_dir,
         }
+
+    
+    def save(self):
+        """Saves the trainer."""
+        config = self.get_config()
+        os.makedirs(self.save_dir + "/trainer", exist_ok=True)
+        with open(self.save_dir + "/trainer/config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f)
+        # self.agent.save()
+        # self.env.save()
+        # self.schedule.save()
+        # self.buffer.save()
+        # self.renderer.save()
+        # self.callbacks.save()
+
+    
+    def load(self, config_dir: str | Path, load_weights: bool = True, env: EnvWrapper | None = None):
+        """Loads the trainer."""
+        config = json.load(open(Path(config_dir) / "trainer" / "config.json"))
+        self.agent = load_agent(config_dir, load_weights, env=env)
+        self.env = EnvWrapper.from_json(config["env"])
+        self.schedule = TrainingSchedule(**config["schedule"])
+        # self.buffer = build_buffer(config, self.env)
+        # self.renderer = build_renderer(config)
+        self.callbacks = [callback_load(callback["type"]).load(callback) for callback in config["callbacks"]]
