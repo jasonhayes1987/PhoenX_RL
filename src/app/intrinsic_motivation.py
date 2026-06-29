@@ -115,7 +115,7 @@ class IntrinsicMotivation(Model):
                      if hasattr(self.env, 'single_observation_space')
                      else self.env.observation_space)
         if isinstance(obs_space, gym.spaces.Dict):
-            self.obs_dim = obs_space['observation'].shape
+            self.obs_dim = obs_space[env.obs_key].shape
         else:
             self.obs_dim = obs_space.shape
 

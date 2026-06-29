@@ -10,6 +10,37 @@ import wandb
 
 from . import wandb_support
 
+_CALLBACK_REGISTRY: dict[str, type] = {}
+
+
+def register_callback(name: str | None = None):
+    """Decorator that registers a callback class under an explicit name.
+
+    When *name* is omitted the class's own ``__name__`` is used, which matches
+    the key written by every ``get_config()`` method in this module.
+
+    Usage::
+
+        @register_callback()              # key = "MyCallback"
+        class MyCallback(Callback): ...
+
+        @register_callback("my_alias")   # key = "my_alias"
+        class MyCallback(Callback): ...
+    """
+    def decorator(callback_class: type) -> type:
+        _CALLBACK_REGISTRY[name or callback_class.__name__] = callback_class
+        return callback_class
+    return decorator
+
+
+def callback_load(name: str) -> type:
+    """Return the callback *class* registered under *name*."""
+    try:
+        return _CALLBACK_REGISTRY[name]
+    except KeyError:
+        raise KeyError(f"Unknown callback '{name}'. Available: {list(_CALLBACK_REGISTRY)}")
+
+
 
 class Callback():
     """
@@ -29,6 +60,12 @@ class Callback():
         on_test_step_begin(logs): Called at the beginning of each testing step.
         on_test_step_end(step, logs): Called at the end of each testing step.
     """
+
+    def __init_subclass__(cls, register: bool = True, **kwargs):
+        """Auto-register every concrete subclass by its class name."""
+        super().__init_subclass__(**kwargs)
+        if register:
+            _CALLBACK_REGISTRY[cls.__name__] = cls
     
     def on_train_begin(self, models, logs=None):
         pass
@@ -68,6 +105,7 @@ class Callback():
 
     @classmethod
     def load(cls, config):
+
         return cls(**config)
 
 
@@ -213,6 +251,7 @@ class WandbCallback(Callback):
 
     @classmethod
     def load(cls, config):
+
         return cls(**config['config'])
     
 class RayWandbCallback(WandbCallback):
@@ -432,23 +471,22 @@ class DashCallback(Callback):
     def load(cls, config: dict):
         return cls(**config['config'])
     
-def load(config:dict):
+def load(config: dict):
     """
-    Load a callback class from its name and configuration.
+    Instantiate a callback from a config dict produced by ``get_config()``.
 
     Args:
-        config (dict): Configuration dictionary for the callback.
+        config (dict): Must contain a ``'type'`` key whose value matches a
+            registered callback class name, plus a ``'config'`` sub-dict of
+            constructor kwargs.
 
     Returns:
-        Callback: An instance of the callback class.
+        Callback: An instance of the requested callback class.
     """
-    types = {
-        "WandbCallback": WandbCallback,
-        "RayWandbCallback": RayWandbCallback,
-        "DashCallback": DashCallback,
-    }
-
-    if config['type'] in types:
-        return types[config['type']].load(config)
-
-    raise ValueError(f"Unknown callback type: {config['type']}")
+    cb_type = config.get("type", "")
+    if cb_type not in _CALLBACK_REGISTRY:
+        raise ValueError(
+            f"Unknown callback type '{cb_type}'. "
+            f"Available: {list(_CALLBACK_REGISTRY)}"
+        )
+    return _CALLBACK_REGISTRY[cb_type].load(config)

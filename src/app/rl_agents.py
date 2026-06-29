@@ -2580,16 +2580,24 @@ class SAC(Agent):
                 actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
 
                 if isinstance(self.policy, StochasticContinuousPolicy): # Continuous
-                    log_probs = (-T.log(self.policy.act_space_high - self.policy.act_space_low).sum(-1)) \
-                        * T.ones(actions.shape[0], device=self.device)
+                    delta = T.as_tensor(self.policy.act_space.high - self.policy.act_space.low, device=self.device)
+                    if T.isinf(delta).any():
+                        log_probs = T.full((actions.shape[0],), -10.0, device=self.device)
+                    else:
+                        log_probs = (-T.log(delta).sum(-1)) * T.ones(actions.shape[0], device=self.device)
                 else: # Discrete
-                    num_actions = T.as_tensor(self.policy.num_actions, device=self.device)
+                    num_actions = T.as_tensor(self.policy.act_space.n, device=self.device)
                     log_probs = T.full((actions.shape[0],), -T.log(num_actions), device=self.device)
             
             else: # Sample action from policy
                 with T.no_grad():
+                    #DEBUG
+                    # print(f"states: {states}")
+                    # print(f"goals: {goals}")
                     dist = self.policy(states, goals)
                     actions = dist.sample()
+                    #DEBUG
+                    # print(f"actions: {actions}")
                     log_probs = dist.log_prob(actions)
 
         elif context == 'test':
@@ -3024,8 +3032,8 @@ class SAC(Agent):
     def save(self):
         """Saves the model."""
         config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
+        os.makedirs(self.save_dir + "/agent", exist_ok=True)
+        with open(self.save_dir + "/agent/config.json", "w", encoding="utf-8") as f:
             json.dump(config, f)
         self.policy.save(self.save_dir)
         self.critic.save(self.save_dir, 'critic')
@@ -3040,47 +3048,73 @@ class SAC(Agent):
             self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
 
     @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool=True):
-        """Loads the model."""
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["env"])
-        distribution = config['policy_model']['distribution']
+    def load(cls, config_dir:str | Path, load_weights:bool=True, env: EnvWrapper | None = None):
+        """Load a saved SAC agent.
+
+        Args:
+            config_dir: Directory containing ``config.json`` plus the ``policy``,
+                ``critic`` and ``critic_b`` model sub-directories (and, if used,
+                ``state_normalizer.pt`` etc.).
+            load_weights: Whether to load the saved network weights.
+            env: Optional pre-built environment to reuse (e.g. a GUI/eval env with a
+                smaller ``num_envs`` or non-headless ``render_mode``). If omitted, the
+                env is rebuilt from the saved policy config. Reusing a single env is
+                important for Isaac Sim, where constructing an env launches a
+                simulator app — building one per model would launch several.
+
+        Returns:
+            SAC: The reconstructed agent.
+        """
+        config_dir = Path(config_dir)
+        full = json.load(open(config_dir / 'agent' / 'config.json'))
+        # Current save format: {"type": "SAC", "config": {...}}. Tolerate a flat dict.
+        cfg = full.get("config", full)
+
+        # The environment is serialized inside each model's config. Build it once
+        # (unless one was supplied) and share it across policy/critic/critic_b.
+        if env is None:
+            env = EnvWrapper.from_json(cfg["policy"]["env"])
+
+        distribution = cfg["policy"]["distribution"]
         if distribution == 'categorical':
-            policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
-            critic = DiscreteCritic.load(config_dir, 'critic', load_weights, env=env_wrapper)
-            critic_b = DiscreteCritic.load(config_dir, 'critic_b', load_weights, env=env_wrapper)
-        elif distribution in ['beta', 'normal']:
-            policy = StochasticContinuousPolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
-            critic = ContinuousCritic.load(config_dir, 'critic', load_weights, env=env_wrapper)
-            critic_b = ContinuousCritic.load(config_dir, 'critic_b', load_weights, env=env_wrapper)
+            policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env)
+            critic = DiscreteCritic.load(config_dir, 'critic', load_weights, env=env)
+            critic_b = DiscreteCritic.load(config_dir, 'critic_b', load_weights, env=env)
+        elif distribution in ['beta', 'normal', 'kumaraswamy']:
+            policy = StochasticContinuousPolicy.load(config_dir, 'policy', load_weights, env=env)
+            critic = ContinuousCritic.load(config_dir, 'critic', load_weights, env=env)
+            critic_b = ContinuousCritic.load(config_dir, 'critic_b', load_weights, env=env)
         else:
             raise ValueError(f"Invalid distribution: {distribution}")
-        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env_wrapper) if config["intrinsic_motivation"] else None
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
-        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
+
+        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env) if cfg['agent']['config'].get("intrinsic_motivation") else None
+        # Resolve normalizer state relative to the directory being loaded (robust to
+        # the model folder having been moved/renamed since training).
+        state_normalizer = BaseNormalizer.load(cfg["state_normalizer"], str(config_dir / "state_normalizer.pt")) if cfg.get("state_normalizer") else None
+        goal_normalizer = BaseNormalizer.load(cfg["goal_normalizer"], str(config_dir / "goal_normalizer.pt")) if cfg.get("goal_normalizer") else None
+        reward_normalizer = BaseNormalizer.load(cfg["reward_normalizer"], str(config_dir / "reward_normalizer.pt")) if cfg.get("reward_normalizer") else None
 
         agent = cls(
             policy = policy,
             critic = critic,
             critic_b = critic_b,
-            discount=config["discount"],
-            tau=config["tau"],
+            discount=cfg["discount"],
+            tau=cfg["tau"],
             state_normalizer=state_normalizer,
             goal_normalizer=goal_normalizer,
             reward_normalizer=reward_normalizer,
-            entropy_coefficient=config["entropy_coefficient"],
-            entropy_schedule = ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
-            auto_entropy_tuning=config["auto_entropy_tuning"],
-            entropy_lr=config["entropy_lr"],
-            target_entropy_scale=config["target_entropy_scale"],
-            policy_grad_clip=config["policy_grad_clip"],
-            critic_grad_clip=config["critic_grad_clip"],
-            critic_huber_delta=config.get("critic_huber_delta", 1.0),
-            N = config['N'],
+            entropy_coefficient=cfg["entropy_coefficient"],
+            entropy_schedule = ScheduleWrapper(**cfg["entropy_schedule"]) if cfg.get("entropy_schedule", None) else None,
+            auto_entropy_tuning=cfg["auto_entropy_tuning"],
+            entropy_lr=cfg["entropy_lr"],
+            target_entropy_scale=cfg["target_entropy_scale"],
+            policy_grad_clip=cfg["policy_grad_clip"],
+            critic_grad_clip=cfg["critic_grad_clip"],
+            critic_huber_delta=cfg.get("critic_huber_delta", 1.0),
+            N = cfg["N"],
             intrinsic_motivation=intrinsic_motivation,
-            save_dir=config["save_dir"],
-            device=config["device"]
+            save_dir=cfg.get("save_dir", str(config_dir)),
+            device=cfg.get("device"),
         )
 
         return agent

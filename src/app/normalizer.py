@@ -210,7 +210,10 @@ class BaseNormalizer:
         norm_type = config['type']
         if norm_type not in NORMALIZER_CLASSES:
             raise ValueError(f"Invalid normalizer type: {norm_type}")
-        return NORMALIZER_CLASSES[norm_type].load(config, state_path)
+        # Subclass .load() expects the flat inner config; the saved/get_config()
+        # format nests it under a "config" key. Tolerate an already-flat dict too.
+        inner = config.get('config', config)
+        return NORMALIZER_CLASSES[norm_type].load(inner, state_path)
 
 class RunningNorm(BaseNormalizer):
     """

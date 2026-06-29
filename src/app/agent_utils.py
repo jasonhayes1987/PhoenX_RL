@@ -226,28 +226,28 @@ def compute_q_retrace(
     q_retrace = q_cur[:, 0] + retrace_sum
 
     # Compute boundary leakage diagnostics
-    done_window_final_cum_c = []
-    done_window_max_leakage = []
-    has_done = (terminations | truncations).any(dim=1)
-    if has_done.any():
-        for i in range(batch_size):
-            if has_done[i]:
-                L = int(trajectory_lengths[i].item())
-                if L > 0:
-                    done_mask = (terminations[i, :L] | truncations[i, :L])
-                    if done_mask.any():
-                        first_done = int(done_mask.nonzero(as_tuple=True)[0][0])
-                        done_window_final_cum_c.append(float(cum_c[i].item()))
-                        if first_done + 1 < L:
-                            leakage = mask[i, first_done + 1 : L].max().item()
-                            done_window_max_leakage.append(leakage)
+    # done_window_final_cum_c = []
+    # done_window_max_leakage = []
+    # has_done = (terminations | truncations).any(dim=1)
+    # if has_done.any():
+    #     for i in range(batch_size):
+    #         if has_done[i]:
+    #             L = int(trajectory_lengths[i].item())
+    #             if L > 0:
+    #                 done_mask = (terminations[i, :L] | truncations[i, :L])
+    #                 if done_mask.any():
+    #                     first_done = int(done_mask.nonzero(as_tuple=True)[0][0])
+    #                     done_window_final_cum_c.append(float(cum_c[i].item()))
+    #                     if first_done + 1 < L:
+    #                         leakage = mask[i, first_done + 1 : L].max().item()
+    #                         done_window_max_leakage.append(leakage)
     metrics = {
         "td_errors": td_errors,
         "mask": mask,
         "is_ratio": is_ratio,
         "cum_c": cum_c,
-        "done_window_final_cum_c": done_window_final_cum_c,
-        "done_window_max_leakage": done_window_max_leakage,
+        # "done_window_final_cum_c": done_window_final_cum_c,
+        # "done_window_max_leakage": done_window_max_leakage,
     }
     
     return q_retrace, metrics
@@ -294,29 +294,35 @@ def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
     return float(T.sqrt(total_sq)) if total_sq is not None else 0.0
 
 
-def load_agent(config_dir:str | Path, load_weights: bool = True):
+def load_agent(config_dir:str | Path, load_weights: bool = True, env=None):
     """
     Load an agent from a configuration file.
-    
+
     Args:
         config_dir: Path to the configuration directory
         load_weights: Whether to load the model weights
-        
+        env: Optional pre-built environment to reuse instead of rebuilding one from
+            the saved config (useful for evaluation with a different num_envs /
+            render_mode, and required for Isaac Sim to avoid launching a second
+            simulator app). Only forwarded to loaders that accept an ``env`` kwarg.
+
     Returns:
         The loaded agent
     """
     config = json.load(open(Path(config_dir) / 'config.json'))
-    agent_type = config.get("agent_type")
+    # Current save format nests everything under {"type": ..., "config": {...}};
+    # fall back to the legacy top-level "agent_type" key for older saved agents.
+    agent_type = config.get("type")
     if agent_type is None:
-        raise ValueError("agent_type must be specified in config")
-        
+        raise ValueError("Agent type missing from config (expected a 'type' key).")
+
     agent_class = get_agent_class_from_type(agent_type)
     if agent_class is None:
         raise ValueError(f"Unknown agent type: {agent_type}")
-        
-    agent = agent_class.load(config_dir, load_weights)
-        
-    return agent
+
+    if env is not None:
+        return agent_class.load(config_dir, load_weights, env=env)
+    return agent_class.load(config_dir, load_weights)
 
 def get_agent_class_from_type(agent_type: str):
     """
@@ -328,16 +334,21 @@ def get_agent_class_from_type(agent_type: str):
     Returns:
         The agent class
     """
-    from .rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, HER, SAC
+    from .rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, SAC
     agent_classes = {
         "PPO": PPO,
         "DDPG": DDPG,
         "Reinforce": Reinforce,
         "ActorCritic": ActorCritic,
         "TD3": TD3,
-        "HER": HER,
-        "SAC": SAC
+        "SAC": SAC,
     }
+    # HER is optional and may be disabled/commented out; only register it if present.
+    try:
+        from .rl_agents import HER
+        agent_classes["HER"] = HER
+    except ImportError:
+        pass
     return agent_classes.get(agent_type) 
 
 def convert_to_distributed_callbacks(callbacks, role: str, worker_id=0):

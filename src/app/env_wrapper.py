@@ -1691,6 +1691,66 @@ class EnvPoolWrapper(EnvWrapper):
             return cls(**config)
         except Exception as e:
             raise ValueError(f"Environment wrapper error: {config}, {e}")
+
+_NEXT_STEP_ENV_CLS = None # cached after first build
+
+def _get_next_step_env_cls():
+    """Lazily build the NextStep ManagerBasedRLEnv subclass.
+    Deferred until after the Omniverse app is launched, because importing
+    ``isaaclab.envs`` (ManagerBasedRLEnv -> mdp -> controllers) requires a
+    running Kit app. Keeping this out of module scope means non-Isaac runs
+    never import or boot Isaac Sim.
+    """
+    global _NEXT_STEP_ENV_CLS
+    if _NEXT_STEP_ENV_CLS is not None:
+        return _NEXT_STEP_ENV_CLS
+    try:
+        from isaaclab.envs import ManagerBasedRLEnv  # type: ignore[reportMissingImports]
+    except (ModuleNotFoundError, ImportError):
+        from omni.isaac.lab.envs import ManagerBasedRLEnv  # type: ignore[reportMissingImports]
+    class NextStepManagerBasedRLEnv(ManagerBasedRLEnv):
+        """Converts a ManagerBasedRLEnv to use NextStep auto-reset mode."""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._capture_terminal = False
+            self._terminal_obs = None
+            self._phantom_mask = T.zeros(self.num_envs, dtype=T.bool, device=self.device)
+        def _reset_idx(self, env_ids):
+            if self._capture_terminal and len(env_ids) > 0:
+                self._terminal_obs = {k: v.clone() for k, v in self.observation_manager.compute(update_history=False).items()}
+            super()._reset_idx(env_ids)
+        def reset(self, *args, **kwargs):
+            self._capture_terminal = False
+            out = super().reset(*args, **kwargs)
+            self._phantom_mask.zero_()
+            self._terminal_obs = None
+            self._capture_terminal = True
+            return out
+        def step(self, action):
+            prev_term = self._phantom_mask
+            self._terminal_obs = None
+            states, rewards, terminations, truncations, extras = super().step(action)
+            new_phantom = (terminations | truncations) & ~prev_term
+            if self._terminal_obs is not None and new_phantom.any():
+                ids = new_phantom.nonzero(as_tuple=False).squeeze(-1)
+                for k, v in self._terminal_obs.items():
+                    states[k][ids] = v[ids]
+            if prev_term.any():
+                ids = prev_term.nonzero(as_tuple=False).squeeze(-1)
+                self._capture_terminal = False
+                self._reset_idx(ids)
+                self._capture_terminal = True
+                reset_obs = self.observation_manager.compute(update_history=False)
+                for k, v in reset_obs.items():
+                    states[k][ids] = v[ids]
+                rewards[ids] = 0.0
+                terminations[ids] = False
+                truncations[ids] = False
+            self._phantom_mask = new_phantom
+            return states, rewards, terminations, truncations, extras
+    _NEXT_STEP_ENV_CLS = NextStepManagerBasedRLEnv
+    return _NEXT_STEP_ENV_CLS
+
     
 class IsaacLabAdapter(VectorEnv):
     """Adapts an Isaac Lab ``ManagerBasedRLEnv`` to the gymnasium ``VectorWrapper``
@@ -1721,8 +1781,8 @@ class IsaacLabAdapter(VectorEnv):
     def reset(self, *, seed=None, options=None):
         return self._env.reset(seed=seed)
 
-    def step(self, actions):
-        return self._env.step(actions)
+    def step(self, action):
+        return self._env.step(action)
 
     def compute_reward(self, achieved_goal, desired_goal, info=None):
         """Sparse goal reward: 0 if within ``distance_threshold`` else -1 (batched)."""
@@ -1751,7 +1811,7 @@ class IsaacSimWrapper(EnvWrapper):
         wrappers:list[dict]|None=None,
         render_mode:str='headless',
         seed:int|None=None,
-        distance_threshold:float=0.05,
+        distance_threshold:float|None=None,
     ):
         """
         Wrapper for Isaac Sim environments.
@@ -1773,7 +1833,17 @@ class IsaacSimWrapper(EnvWrapper):
         self.distance_threshold = distance_threshold
         # Initialize env
         self.env = self._initialize_env()
-        
+
+        # Bound action space between [-1,1] if unbounded
+        if isinstance(self.env.single_action_space, gym.spaces.Box):
+            low = self.env.single_action_space.low
+            high = self.env.single_action_space.high
+            if np.isinf(low).any() or np.isinf(high).any():
+                act_dim = self.env.single_action_space.shape[-1]
+                space = gym.spaces.Box(low=-1.0, high=1.0, shape=(act_dim,), dtype=np.float32)
+                self.env.single_action_space = space
+                self.env.action_space = gym.vector.utils.batch_space(space, self.env.num_envs)
+
 
     def _initialize_env(self):
         """
@@ -1802,19 +1872,9 @@ class IsaacSimWrapper(EnvWrapper):
                     ) from e
             app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0", enable_cameras=False)
             self.app = app_launcher.app
-        
-        try:
-            from isaaclab.envs import ManagerBasedRLEnv  # type: ignore[reportMissingImports]
-        except (ModuleNotFoundError, ImportError):
-            try:
-                from omni.isaac.lab.envs import (  # type: ignore[reportMissingImports]
-                    ManagerBasedRLEnv,
-                )
-            except (ModuleNotFoundError, ImportError) as e:
-                raise ModuleNotFoundError(
-                    "Isaac Lab is required for Isaac Sim environments but could not be imported. "
-                    "Expected `isaaclab.envs` or `omni.isaac.lab.envs` to be available."
-                ) from e
+
+        # Lazy create NextStepManagerBasedRLEnv class
+        NextStepManagerBasedRLEnv = _get_next_step_env_cls()
 
         module_path, class_name = self.env_id.split(':')
         cfg_class = getattr(importlib.import_module(module_path), class_name)
@@ -1822,7 +1882,7 @@ class IsaacSimWrapper(EnvWrapper):
         cfg.scene.num_envs = self.num_envs
         cfg.sim.device = "cuda:0"
         cfg.seed = self.seed
-        env = ManagerBasedRLEnv(cfg=cfg)
+        env = NextStepManagerBasedRLEnv(cfg=cfg)
         # Adapt to the gymnasium VectorWrapper chain (VectorNStepReward, etc.) and
         # supply the goal reward HER recomputes during relabeling.
         env = IsaacLabAdapter(env, distance_threshold=self.distance_threshold)

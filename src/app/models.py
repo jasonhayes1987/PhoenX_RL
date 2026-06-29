@@ -414,7 +414,7 @@ class Model(nn.Module):
         if env is None:
             env = EnvWrapper.from_json(config.get("env"))
         lr_scheduler_config = config.get("lr_scheduler", None)
-        lr_scheduler = ScheduleWrapper(lr_scheduler_config) if lr_scheduler_config else None
+        lr_scheduler = ScheduleWrapper(**lr_scheduler_config) if lr_scheduler_config else None
 
         return config, lr_scheduler, env
 
@@ -588,11 +588,8 @@ class StochasticDiscretePolicy(Model):
                     )
 
         if load_weights:
-            try:
-                model_path = Path(config_dir) / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path, map_location=model.device))
-            except Exception as e:
-                print(f"Error loading model: {e}")
+            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -643,8 +640,8 @@ class StochasticContinuousPolicy(Model):
         self.distribution = distribution
         
         # Set lower/upper bounds of action space to Tensors
-        self.act_space_low = T.tensor(self.act_space.low, dtype=T.float32, device=self.device)
-        self.act_space_high = T.tensor(self.act_space.high, dtype=T.float32, device=self.device)
+        # self.act_space_low = T.tensor(self.act_space.low, dtype=T.float32, device=self.device)
+        # self.act_space_high = T.tensor(self.act_space.high, dtype=T.float32, device=self.device)
         # Set number of actions in the action space
         self.num_actions = self.act_space.shape[-1]
         # Create the output layer
@@ -723,10 +720,18 @@ class StochasticContinuousPolicy(Model):
             mu = T.clamp(param_1, min=-10.0, max=10.0)
             log_std = T.clamp(param_2, min=-6, max=2)
             sigma = T.exp(log_std) + 1e-8
+
+            # # If action space unbounded, return Torch Normal dist, else SquashedNormal
+            low = T.tensor(self.act_space.low, device=self.device)
+            high = T.tensor(self.act_space.high, device=self.device)
+
+            # if T.isinf(high).any() or T.isinf(low).any():
+            #     dist = Normal(mu, sigma)
+            # else:
             dist = SquashedNormal(
                 Normal(mu, sigma),
-                low=self.env.single_action_space.low,
-                high=self.env.single_action_space.high
+                low=low,
+                high=high
             )
         else:
             raise ValueError(f"Distribution {self.distribution} not supported.")
@@ -791,11 +796,8 @@ class StochasticContinuousPolicy(Model):
 
         # Load weights if True
         if load_weights:
-            try:
-                model_path = Path(config_dir) / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path, map_location=model.device))
-            except Exception as e:
-                print(f"Error loading model: {e}")
+            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -946,11 +948,8 @@ class ValueModel(Model):
                     )
         # Load weights if True
         if load_weights:
-            try:
-                model_path = Path(config_dir) / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path, map_location=model.device))
-            except Exception as e:
-                print(f"Error loading model: {e}")
+            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -1081,11 +1080,8 @@ class ActorModel(Model):
                     )
 
         if load_weights:
-            try:
-                model_path = Path(config_dir) / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path, map_location=model.device))
-            except Exception as e:
-                print(f"Error loading model: {e}")
+            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -1268,11 +1264,8 @@ class ContinuousCritic(BaseCritic):
 
         # Load weights if True
         if load_weights:
-            try:
-                model_path = Path(config_dir) / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path, map_location=model.device))
-            except Exception as e:
-                print(f"Error loading model: {e}")
+            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 
@@ -1397,11 +1390,8 @@ class DiscreteCritic(BaseCritic):
 
         # Load weights if True
         if load_weights:
-            try:
-                model_path = Path(config_dir) / "pytorch_model.pt"
-                model.load_state_dict(T.load(model_path, map_location=model.device))
-            except Exception as e:
-                print(f"Error loading model: {e}")
+            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
+            model.load_state_dict(T.load(model_path, map_location=model.device))
 
         return model
 

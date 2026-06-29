@@ -107,3 +107,7 @@ testpaths = ["tests", "src"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+markers = [
+    "isaac: integration tests that boot a real Isaac Sim / isaaclab environment (GPU required)",
+    "slow: long-running tests, e.g. stepping a real env to an episode boundary",
+]
