@@ -294,63 +294,6 @@ def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
     return float(T.sqrt(total_sq)) if total_sq is not None else 0.0
 
 
-def load_agent(config_dir:str | Path, load_weights: bool = True, env=None):
-    """
-    Load an agent from a configuration file.
-
-    Args:
-        config_dir: Path to the configuration directory
-        load_weights: Whether to load the model weights
-        env: Optional pre-built environment to reuse instead of rebuilding one from
-            the saved config (useful for evaluation with a different num_envs /
-            render_mode, and required for Isaac Sim to avoid launching a second
-            simulator app). Only forwarded to loaders that accept an ``env`` kwarg.
-
-    Returns:
-        The loaded agent
-    """
-    config = json.load(open(Path(config_dir) / 'config.json'))
-    # Current save format nests everything under {"type": ..., "config": {...}};
-    # fall back to the legacy top-level "agent_type" key for older saved agents.
-    agent_type = config.get("type")
-    if agent_type is None:
-        raise ValueError("Agent type missing from config (expected a 'type' key).")
-
-    agent_class = get_agent_class_from_type(agent_type)
-    if agent_class is None:
-        raise ValueError(f"Unknown agent type: {agent_type}")
-
-    if env is not None:
-        return agent_class.load(config_dir, load_weights, env=env)
-    return agent_class.load(config_dir, load_weights)
-
-def get_agent_class_from_type(agent_type: str):
-    """
-    Get the agent class from its type name.
-    
-    Args:
-        agent_type: The type name of the agent
-        
-    Returns:
-        The agent class
-    """
-    from .rl_agents import PPO, DDPG, Reinforce, ActorCritic, TD3, SAC
-    agent_classes = {
-        "PPO": PPO,
-        "DDPG": DDPG,
-        "Reinforce": Reinforce,
-        "ActorCritic": ActorCritic,
-        "TD3": TD3,
-        "SAC": SAC,
-    }
-    # HER is optional and may be disabled/commented out; only register it if present.
-    try:
-        from .rl_agents import HER
-        agent_classes["HER"] = HER
-    except ImportError:
-        pass
-    return agent_classes.get(agent_type) 
-
 def convert_to_distributed_callbacks(callbacks, role: str, worker_id=0):
     """
     Convert standard callbacks to distributed-friendly versions

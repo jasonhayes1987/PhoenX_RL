@@ -14,10 +14,13 @@ import torch.nn as nn
 from torch.nn.parameter import Parameter
 from torch import optim
 import torch.nn.functional as F
-from torch.distributions import Distribution, TransformedDistribution, Independent, Categorical, Beta, Normal, Kumaraswamy
+from torch.distributions import (
+    Distribution, TransformedDistribution,
+    Categorical, Beta, Normal, Kumaraswamy,
+)
 
 
-from app.distributions import SquashedNormal, ScaledBeta, ScaledKumaraswamy
+from app.distributions import SquashedNormal, ScaledBeta, ScaledKumaraswamy, BoundedIndependent
 from app.torch_utils import get_device, VarianceScaling_
 from app.logging_config import get_logger
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
@@ -317,7 +320,7 @@ class Model(nn.Module):
             Distribution: The base distribution.
         """
         while True:
-            if isinstance(dist, Independent):
+            if isinstance(dist, BoundedIndependent):
                 dist = dist.base_dist
             elif isinstance(dist, (SquashedNormal, ScaledBeta, ScaledKumaraswamy)):
                 dist = dist.base_dist
@@ -362,13 +365,35 @@ class Model(nn.Module):
 
     def get_config(self):
         return {
-            "env": self.env.to_json(),
-            'layer_config': self.layer_config,
-            'output_config': self.output_config,
-            'optimizer_params': self.optimizer_params,
-            'lr_scheduler': self.lr_scheduler.get_config() if self.lr_scheduler else None,
-            'device': self.device.type,
+            "type": self.__class__.__name__,
+            "config": {
+                "layer_config": self.layer_config,
+                "output_config": self.output_config,
+                "optimizer_params": self.optimizer_params,
+                "lr_scheduler": self.lr_scheduler.get_config() if self.lr_scheduler else None,
+                "device": self.device.type,
+            },
         }
+
+    @classmethod
+    def from_config(cls, config: dict, env: EnvWrapper) -> "Model":
+        """Rebuild a model (architecture + fresh weights/optimizer) from the
+        inner ``config`` dict produced by :meth:`get_config`.
+
+        The environment is injected live (never rebuilt here) so a single env
+        instance can be shared across every model of an agent.
+        """
+        import inspect
+
+        cfg = dict(config)
+        cfg.pop("env", None)  # env is injected, never taken from the config
+        for key in ("lr_scheduler", "temperature_schedule"):
+            if isinstance(cfg.get(key), dict):
+                cfg[key] = ScheduleWrapper.from_config(cfg[key])
+        cfg["env"] = env
+        params = inspect.signature(cls.__init__).parameters
+        kwargs = {k: v for k, v in cfg.items() if k in params}
+        return cls(**kwargs)
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         # Reconstruct the model from its configuration
@@ -384,39 +409,36 @@ class Model(nn.Module):
 
         return device, env
 
-    def save(self, config_dir: Path | str, model_name: str):
-        """
-        Save the model to the specified configuration directory.
+    def save_state(self, path: Path | str) -> None:
+        """Write weights + optimizer + scheduler progress to a single ``.pt``.
 
         Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to save.
+            path: Destination file (e.g. ``.../agent/policy.pt``).
         """
-        # Ensure the model directory exists
-        model_dir = Path(config_dir) / model_name
-        model_dir.mkdir(parents=True, exist_ok=True)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "model": self.state_dict(),
+            "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
+            "lr_scheduler": self.lr_scheduler.get_state() if self.lr_scheduler is not None else None,
+        }
+        temperature_schedule = getattr(self, "temperature_schedule", None)
+        if temperature_schedule is not None:
+            state["temperature_schedule"] = temperature_schedule.get_state()
+        T.save(state, path)
 
-        # Save the model parameters
-        T.save(self.state_dict(), model_dir / 'pytorch_model.onnx')
-        T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
-
-        # Save the model configuration
-        config = self.get_config()
-        with open(model_dir / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str, load_weights: bool = True, env: EnvWrapper | None = None):
-        model_dir = Path(config_dir) / model_name
-        if not model_dir.exists():
-            raise FileNotFoundError(f"Model directory {model_dir} not found")
-        config = json.load(open(model_dir / 'config.json'))
-        if env is None:
-            env = EnvWrapper.from_json(config.get("env"))
-        lr_scheduler_config = config.get("lr_scheduler", None)
-        lr_scheduler = ScheduleWrapper(**lr_scheduler_config) if lr_scheduler_config else None
-
-        return config, lr_scheduler, env
+    def load_state(self, path: Path | str, load_weights: bool = True) -> None:
+        """Restore weights + optimizer + scheduler progress from :meth:`save_state`."""
+        state = T.load(Path(path), map_location=self.device, weights_only=False)
+        if load_weights and state.get("model") is not None:
+            self.load_state_dict(state["model"])
+        if state.get("optimizer") is not None and self.optimizer is not None:
+            self.optimizer.load_state_dict(state["optimizer"])
+        if state.get("lr_scheduler") is not None and self.lr_scheduler is not None:
+            self.lr_scheduler.set_state(state["lr_scheduler"])
+        temperature_schedule = getattr(self, "temperature_schedule", None)
+        if temperature_schedule is not None and state.get("temperature_schedule") is not None:
+            temperature_schedule.set_state(state["temperature_schedule"])
 
 
 class StochasticDiscretePolicy(Model):
@@ -527,7 +549,7 @@ class StochasticDiscretePolicy(Model):
 
     def get_config(self):
         config = super().get_config()
-        config.update({
+        config["config"].update({
             'distribution': self.distribution,
             'temperature': self.temperature,
             "temperature_schedule": self.temperature_schedule.get_config() if self.temperature_schedule is not None else None,
@@ -550,48 +572,6 @@ class StochasticDiscretePolicy(Model):
         if copy_weights:
             cloned_model.load_state_dict(self.state_dict())
         return cloned_model
-
-    def save(self, config_dir: Path | str, model_name: str = "policy"):
-        """
-        Save the model to the specified configuration directory.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to save (default: "policy").
-        """
-        return super().save(config_dir, model_name)
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str = "policy", load_weights: bool = True, env: EnvWrapper | None = None):
-        """
-        Load a policy model from a saved configuration.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to load (default: "policy_model").
-            load_weights (bool): Whether to load the model weights (default: True).
-
-        Returns:
-            StochasticDiscretePolicy: Loaded policy model instance.
-        """
-        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
-
-        model = cls(env = env,
-                    layer_config = config.get("layer_config"),
-                    output_config = config.get("output_config", {"default":{}}),
-                    optimizer_params = config.get("optimizer_params", {}),
-                    lr_scheduler = lr_scheduler,
-                    distribution = config.get("distribution", "categorical"),
-                    temperature = config.get("temperature", None),
-                    temperature_schedule = config.get("temperature_schedule", None),
-                    device = config.get("device", None)
-                    )
-
-        if load_weights:
-            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
-            model.load_state_dict(T.load(model_path, map_location=model.device))
-
-        return model
 
 class StochasticContinuousPolicy(Model):
     """
@@ -682,22 +662,11 @@ class StochasticContinuousPolicy(Model):
             goal = goal.to(self.device)
             x = T.cat([x, goal], dim=-1)
 
-        #DEBUG
-        # print(f'input x: {x}')
-
         for layer in self.layers.values():
             x = layer(x)
-            #DEBUG
-            # print(f'output x layer {layer}: {x}')
 
         param_1 = self.output_layer['policy_output_param_1'](x)
         param_2 = self.output_layer['policy_output_param_2'](x)
-
-        # Check if parameters are finite
-        if not T.isfinite(param_1).all() or not T.isfinite(param_2).all():
-            # self.logger.warning(f'Non-finite parameters: {param_1}, {param_2}')
-            param_1 = T.nan_to_num(param_1, nan=0.0, posinf=5.0, neginf=-5.0)
-            param_2 = T.nan_to_num(param_2, nan=0.0, posinf=2.0, neginf=-10.0)
 
         if self.distribution in ['beta', 'kumaraswamy']:
             # Clamp params between -12 and 6 to allow max expressiveness within safe bounds of dist
@@ -707,27 +676,26 @@ class StochasticContinuousPolicy(Model):
             alpha = F.softplus(param_1) + 1.0
             beta = F.softplus(param_2) + 1.0
             # Clamp alpha/beta to prevent exploding gradients
-            alpha = T.clamp(alpha, min=1e-3, max=10.0)
-            beta = T.clamp(beta, min=1e-3, max=10.0)
+            # alpha = T.clamp(alpha, min=1e-3, max=10.0)
+            # beta = T.clamp(beta, min=1e-3, max=10.0)
 
-            if self.distribution == 'beta':
-                dist = ScaledBeta(Beta(alpha, beta), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
-        
-            elif self.distribution == 'kumaraswamy':
-                dist = ScaledKumaraswamy(Kumaraswamy(alpha, beta), low=self.env.single_action_space.low, high=self.env.single_action_space.high)
-
-        elif self.distribution == 'normal':
-            mu = T.clamp(param_1, min=-10.0, max=10.0)
-            log_std = T.clamp(param_2, min=-6, max=2)
-            sigma = T.exp(log_std) + 1e-8
-
-            # # If action space unbounded, return Torch Normal dist, else SquashedNormal
             low = T.tensor(self.act_space.low, device=self.device)
             high = T.tensor(self.act_space.high, device=self.device)
 
-            # if T.isinf(high).any() or T.isinf(low).any():
-            #     dist = Normal(mu, sigma)
-            # else:
+            if self.distribution == 'beta':
+                dist = ScaledBeta(Beta(alpha, beta), low=low, high=high)
+        
+            elif self.distribution == 'kumaraswamy':
+                dist = ScaledKumaraswamy(Kumaraswamy(alpha, beta), low=low, high=high)
+
+        elif self.distribution == 'normal':
+            mu = param_1
+            # sigma = T.clamp(param_2, min=-6, max=2)
+            sigma = F.softplus(param_2) + 1e-6
+
+            low = T.tensor(self.act_space.low, device=self.device)
+            high = T.tensor(self.act_space.high, device=self.device)
+
             dist = SquashedNormal(
                 Normal(mu, sigma),
                 low=low,
@@ -736,11 +704,11 @@ class StochasticContinuousPolicy(Model):
         else:
             raise ValueError(f"Distribution {self.distribution} not supported.")
 
-        return Independent(dist, reinterpreted_batch_ndims=1)
+        return BoundedIndependent(dist, reinterpreted_batch_ndims=1)
 
     def get_config(self):
         config = super().get_config()
-        config.update({
+        config["config"].update({
             'distribution': self.distribution,
         })
         return config
@@ -759,47 +727,6 @@ class StochasticContinuousPolicy(Model):
         if copy_weights:
             cloned_model.load_state_dict(self.state_dict())
         return cloned_model
-
-    def save(self, config_dir: Path | str, model_name: str = "policy"):
-        """
-        Save the model to the specified configuration directory.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to save (default: "policy").
-        """
-        return super().save(config_dir, model_name)
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str = "policy", load_weights: bool = True, env: EnvWrapper | None = None):
-        """
-        Load a policy model from a saved configuration.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to load (default: "policy").
-            load_weights (bool): Whether to load the model weights (default: True).
-
-        Returns:
-            StochasticContinuousPolicy: Loaded policy model instance.
-        """
-        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
-
-        model = cls(env = env,
-                    layer_config = config.get("layer_config"),
-                    output_config = config.get("output_config", {"default":{}}),
-                    optimizer_params = config.get("optimizer_params", {}),
-                    lr_scheduler = lr_scheduler,
-                    distribution = config.get("distribution", "beta"),
-                    device = config.get("device", "cpu")
-                    )
-
-        # Load weights if True
-        if load_weights:
-            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
-            model.load_state_dict(T.load(model_path, map_location=model.device))
-
-        return model
 
 
 class ValueModel(Model):
@@ -913,46 +840,6 @@ class ValueModel(Model):
 
         return cloned_model
 
-
-    def save(self, config_dir: Path | str, model_name: str = "value"):
-        """
-        Save the model to the specified configuration directory.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to save (default: "value").
-        """
-        return super().save(config_dir, model_name)
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str = "value", load_weights: bool = True, env: EnvWrapper | None = None):
-        """
-        Load a value model from a saved configuration.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to load (default: "value").
-            load_weights (bool): Whether to load the model weights (default: True).
-
-        Returns:
-            ValueModel: Loaded value model instance.
-        """
-        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
-
-        model = cls(env = env,
-                    layer_config = config.get("layer_config"),
-                    output_config = config.get("output_config"),
-                    optimizer_params = config.get("optimizer_params"),
-                    lr_scheduler = lr_scheduler,
-                    device = config.get("device")
-                    )
-        # Load weights if True
-        if load_weights:
-            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
-            model.load_state_dict(T.load(model_path, map_location=model.device))
-
-        return model
-
 class ActorModel(Model):
     """
     Actor model for continuous action spaces.
@@ -1044,47 +931,6 @@ class ActorModel(Model):
 
         return cloned_model
 
-
-    def save(self, config_dir: Path | str, model_name: str = "policy"):
-        """
-        Save the model to the specified configuration directory.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to save (default: "policy").
-        """
-        return super().save(config_dir, model_name)
-
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str = "policy", load_weights: bool = True, env: EnvWrapper | None = None):
-        """
-        Load an actor model from a saved configuration.
-
-        Args:
-            config_dir (Path | str): Path to the configuration directory.
-            model_name (str): Name of the model to load (default: "policy").
-            load_weights (bool): Whether to load the model weights (default: True).
-
-        Returns:
-            ActorModel: Loaded actor model instance.
-        """
-        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
-
-        model = cls(env = env,
-                    layer_config = config.get("layer_config"),
-                    output_config = config.get("output_config"),
-                    optimizer_params = config.get("optimizer_params"),
-                    lr_scheduler = lr_scheduler,
-                    device = config.get("device")
-                    )
-
-        if load_weights:
-            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
-            model.load_state_dict(T.load(model_path, map_location=model.device))
-
-        return model
-
 class BaseCritic(Model):
     """
     Base class for critic models.
@@ -1111,13 +957,6 @@ class BaseCritic(Model):
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
         return super().clone(copy_weights, device)
-
-    def save(self, config_dir: Path | str, model_name: str = "critic"):
-        return super().save(config_dir, model_name)
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str = "critic", load_weights: bool = True, env: EnvWrapper | None = None):
-        return super().load(config_dir, model_name, load_weights, env)
 
 class ContinuousCritic(BaseCritic):
     """
@@ -1200,7 +1039,7 @@ class ContinuousCritic(BaseCritic):
 
     def get_config(self):
         config = super().get_config()
-        config.update({
+        config["config"].update({
             'merged_config': self.merged_config,
         })
 
@@ -1225,49 +1064,6 @@ class ContinuousCritic(BaseCritic):
             cloned_model.load_state_dict(self.state_dict())
 
         return cloned_model
-
-
-    def save(self, config_dir: Path | str, model_name: str = "critic"):
-        """
-        Save the model to the specified configuration directory.
-
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to save (default: "critic").
-        """
-        return super().save(config_dir, model_name)
-
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str = "critic", load_weights: bool = True, env: EnvWrapper | None = None):
-        """
-        Load a continuous critic model from a saved configuration.
-
-        Args:
-            config_dir (Path | str): Path to the configuration directory.
-            model_name (str): Name of the model to load (default: "critic").
-            load_weights (bool): Whether to load the model weights (default: True).
-
-        Returns:
-            ContinuousCritic: Loaded continuous critic model instance.
-        """
-        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
-
-        model = cls(env = env,
-                    layer_config = config.get("layer_config"),
-                    merged_config = config.get("merged_config"),
-                    output_config = config.get("output_config"),
-                    optimizer_params = config.get("optimizer_params"),
-                    lr_scheduler = lr_scheduler,
-                    device = config.get("device")
-                    )
-
-        # Load weights if True
-        if load_weights:
-            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
-            model.load_state_dict(T.load(model_path, map_location=model.device))
-
-        return model
 
 class DiscreteCritic(BaseCritic):
     """
@@ -1354,46 +1150,24 @@ class DiscreteCritic(BaseCritic):
         return cloned_model
 
 
-    def save(self, config_dir: Path | str, model_name: str = "critic"):
-        """
-        Save the model to the specified configuration directory.
+# Registry of every concrete model class, keyed by class name (the "type" tag
+# emitted by get_config). Used by build_model to reconstruct from a config.
+MODEL_REGISTRY: Dict[str, type] = {
+    "StochasticDiscretePolicy": StochasticDiscretePolicy,
+    "StochasticContinuousPolicy": StochasticContinuousPolicy,
+    "ValueModel": ValueModel,
+    "ActorModel": ActorModel,
+    "ContinuousCritic": ContinuousCritic,
+    "DiscreteCritic": DiscreteCritic,
+}
 
-        Args:
-            config_dir (Path | str): Configuration directory.
-            model_name (str): Name of the model to save (default: "critic").
-        """
-        return super().save(config_dir, model_name)
 
-
-    @classmethod
-    def load(cls, config_dir: Path | str, model_name: str = "critic", load_weights: bool = True, env: EnvWrapper | None = None):
-        """
-        Load a discrete critic model from a saved configuration.
-
-        Args:
-            config_dir (Path | str): Path to the configuration directory.
-            model_name (str): Name of the model to load (default: "critic").
-            load_weights (bool): Whether to load the model weights (default: True).
-
-        Returns:
-            DiscreteCritic: Loaded discrete critic model instance.
-        """
-        config, lr_scheduler, env = super().load(config_dir, model_name, load_weights, env)
-
-        model = cls(env = env,
-                    layer_config = config.get("layer_config"),
-                    output_config = config.get("output_config"),
-                    optimizer_params = config.get("optimizer_params"),
-                    lr_scheduler = lr_scheduler,
-                    device = config.get("device")
-                    )
-
-        # Load weights if True
-        if load_weights:
-            model_path = Path(config_dir) / model_name / "pytorch_model.pt"
-            model.load_state_dict(T.load(model_path, map_location=model.device))
-
-        return model
+def build_model(config: dict, env: EnvWrapper) -> Model:
+    """Rebuild a model from a ``{"type", "config"}`` dict, injecting ``env``."""
+    model_type = config["type"]
+    if model_type not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model type: {model_type!r}")
+    return MODEL_REGISTRY[model_type].from_config(config["config"], env=env)
 
 
 def build_layers(types: List[str], units_per_layer: List[int], initializers: List[str], kernel_params:List[dict]):

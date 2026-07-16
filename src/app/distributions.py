@@ -1,201 +1,321 @@
+import math
 import numpy as np
 import torch as T
-from torch.distributions import Distribution, TransformedDistribution, TanhTransform, AffineTransform, Beta, Kumaraswamy, Normal
+import torch.nn.functional as F
+from torch.distributions import (
+    Distribution, TransformedDistribution, TanhTransform, AffineTransform,
+    Beta, Kumaraswamy, Normal, Independent,
+)
 from torch.distributions.utils import _sum_rightmost
 
-class TanhBijector:
+
+def stable_log1m_tanh_sq(z: T.Tensor) -> T.Tensor:
     """
-    Bijective tanh transformation with numerical safeguards for stable squashing 
-    of unbounded Gaussians to bounded continuous action spaces.
-    Provides forward (tanh), inverse (clamped atanh), and Jacobian correction.
+    log(1 - tanh(z)^2) computed without ever forming tanh(z).
+
+    Identity: 1 - tanh(z)^2 = 4 / (e^z + e^-z)^2
+        => log(1 - tanh(z)^2) = 2 * (log 2 - z - softplus(-2z))
+
+    Exact and finite for all finite z (no epsilon needed).
     """
-    def __init__(self, epsilon: float = 1e-6):
-        self.epsilon = epsilon
+    return 2.0 * (math.log(2.0) - z - F.softplus(-2.0 * z))
 
-    def atanh(self, x: T.Tensor) -> T.Tensor:
-        """Stable atanh."""
-        x = x.clamp(min=-1.0 + self.epsilon, max=1.0 - self.epsilon)
-        return 0.5 * (x.log1p() - (-x).log1p())
-
-    # @staticmethod
-    # def inverse(y: T.Tensor) -> T.Tensor:
-    #     """Inverse tanh with clamping."""
-    #     # eps = T.finfo(y.dtype).eps
-    #     return TanhBijector.atanh(y.clamp(min=-1.0 + eps, max=1.0 - eps))
-
-    def log_prob_correction(self, x: T.Tensor) -> T.Tensor:
-        """log|det J_tanh| = log(1 - tanh²(x))"""
-        return T.log(1.0 - T.tanh(x) ** 2 + self.epsilon)
-
-
-# class SquashedNormal(Distribution):
+# class TanhBijector:
 #     """
-#     Squashed Normal distribution that inherits from torch.distributions.Distribution.
-#     - Samples directly in [low, high].
-#     - Correct log_prob with full Jacobian correction.
-#     - Works with Independent(...), KL, etc.
-#     - No NaNs.
+#     Bijective tanh transformation with numerical safeguards for stable squashing 
+#     of unbounded Gaussians to bounded continuous action spaces.
+#     Provides forward (tanh), inverse (clamped atanh), and Jacobian correction.
 #     """
-#     def __init__(
-#         self,
-#         base_dist: Normal,
-#         low: T.Tensor | np.ndarray | float,
-#         high: T.Tensor | np.ndarray | float,
-#         epsilon: float = 1e-5,
-#         validate_args: bool = False,
-#     ):
-#         self.base_dist = base_dist
+#     def __init__(self, epsilon: float = 1e-6):
 #         self.epsilon = epsilon
 
-#         self.low = T.as_tensor(low, dtype=T.float32, device=base_dist.loc.device).flatten()
-#         self.high = T.as_tensor(high, dtype=T.float32, device=base_dist.loc.device).flatten()
+#     def atanh(self, x: T.Tensor) -> T.Tensor:
+#         """Stable atanh."""
+#         x = x.clamp(min=-1.0 + self.epsilon, max=1.0 - self.epsilon)
+#         return 0.5 * (x.log1p() - (-x).log1p())
 
-#         self.loc = (self.low + self.high) / 2.0
-#         self.scale = (self.high - self.low) / 2.0
-#         self.bijector = TanhBijector(epsilon)
+#     def log_prob_correction(self, x: T.Tensor) -> T.Tensor:
+#         """log|det J_tanh| = log(1 - tanh²(x))"""
+#         return T.log(1.0 - T.tanh(x) ** 2 + self.epsilon)
 
-#         super().__init__(
-#             batch_shape=self.base_dist.batch_shape,
-#             event_shape=self.base_dist.event_shape,
-#             validate_args=validate_args,
-#         )
-
-#     def rsample(self, sample_shape=T.Size()):
-#         z = self.base_dist.rsample(sample_shape)
-#         y = T.tanh(z)
-#         return self.loc + self.scale * y
-
-#     def sample(self, sample_shape=T.Size()):
-#         with T.no_grad():
-#             return self.rsample(sample_shape)
-
-#     def log_prob(self, value: T.Tensor) -> T.Tensor:
-#         """Returns (B, D) — Independent wrapper will sum to (B,)"""
-#         value = value.clamp(self.low + self.epsilon, self.high - self.epsilon)
-#         y = (value - self.loc) / self.scale
-#         y = y.clamp(-1.0 + self.epsilon, 1.0 - self.epsilon)
-#         z = self.bijector.atanh(y)
-
-#         log_prob = self.base_dist.log_prob(z)
-#         # log_prob -= self.bijector.log_prob_correction(z)
-#         # log_prob -= T.log(self.scale)
-#         log_prob = log_prob - T.log(self.scale) - T.log(1.0 - y.pow(2) + self.epsilon)
-
-#         return log_prob
-
-#     def entropy(self) -> T.Tensor:
-#         """Returns (B, D) per-dimension entropy — Independent will handle reduction"""
-#         mc_samples = 8
-#         z = self.base_dist.rsample((mc_samples,))
-
-#         y = T.tanh(z)
-#         log_det_tanh = T.log(1.0 - y.pow(2) + self.epsilon)
-
-#         base_entropy = self.base_dist.entropy()
-#         affine_term = T.log(self.scale)
-
-#         return base_entropy + log_det_tanh.mean(0) + affine_term
 
 class SquashedNormal(TransformedDistribution):
     """
-    Squashed Normal distribution for continuous actions.
+    Squashed Normal distribution over [low, high] for continuous actions.
 
     Args:
         base_dist (Normal): The base normal distribution.
-        low (float): The lower bound of the action space.
-        high (float): The upper bound of the action space.
+        low (T.Tensor | np.ndarray): The lower bound of the action space.
+        high (T.Tensor | np.ndarray): The upper bound of the action space.
+        mc_samples (int): The number of Monte Carlo samples for entropy calculation.
+        epsilon (float): The epsilon value for numerical stability.
     """
     def __init__(
         self,
         base_dist: Normal,
-        low:T.Tensor|np.ndarray,
-        high:T.Tensor|np.ndarray,
+        low:T.Tensor | np.ndarray,
+        high:T.Tensor | np.ndarray,
         mc_samples:int = 8,
         epsilon:float = 1e-6
     ):
-        self.low = T.as_tensor(low, dtype=T.float32, device=base_dist.loc.device)
-        self.high = T.as_tensor(high, dtype=T.float32, device=base_dist.loc.device)
+        device=base_dist.loc.device
+        self.low = T.as_tensor(low, dtype=T.float32, device=device)
+        self.high = T.as_tensor(high, dtype=T.float32, device=device)
         self.mc_samples = mc_samples
         self.epsilon = epsilon
-        self.scale = T.as_tensor((high - low) / 2.0, dtype=T.float32, device=base_dist.loc.device)
-        # self.log_scale = T.log(self.scale).sum()
-        self.loc = T.as_tensor((high + low) / 2.0, dtype=T.float32, device=base_dist.loc.device)
+        self.scale = (self.high - self.low) / 2.0
+        self.loc = (self.high + self.low) / 2.0
+        self._log_scale = T.log(self.scale)
         transforms = [
             TanhTransform(cache_size=1),
             AffineTransform(loc=self.loc, scale=self.scale, cache_size=1),
         ]
         super().__init__(base_dist, transforms)
 
-    # def log_prob(self, values: T.Tensor) -> T.Tensor:
-    #     values = values.clamp(self.low + self.epsilon, self.high - self.epsilon)
-    #     return super().log_prob(values)
+    def rsample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        """
+        Reparameterized sample with gradients flowing through both bouded action and raw action(z).
+
+        Args:
+            sample_shape (T.Size): The shape of the sample.
+
+        Returns:
+            tuple[T.Tensor, T.Tensor]: The reparameterized sample(action) and the raw sample(z).
+        """
+        z = self.base_dist.rsample(sample_shape)
+        actions = self.loc + self.scale * T.tanh(z)
+        return actions, z
+
+    def sample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        """
+        Sample bounded action and raw action(z) without gradients.
+
+        Args:
+            sample_shape (T.Size): The shape of the sample.
+
+        Returns:
+            tuple[T.Tensor, T.Tensor]: The sampled bounded action and the raw sample(z).
+        """
+        with T.no_grad():
+            return self.rsample_with_z(sample_shape)
+
+    def log_prob_from_z(self, z: T.Tensor) -> T.Tensor:
+        """
+        Per-dimension log-density of action(bounded) from raw sample(z).
+
+        Args:
+            z (T.Tensor): The raw sample(z).
+
+        Returns:
+            T.Tensor: The per-dimension log-density of the action. Shape: (batch, action_dim). (Independent sums over action_dim).
+        """
+        return self.base_dist.log_prob(z) + stable_log1m_tanh_sq(z) - self._log_scale
+
+    def mean_with_z(self) -> tuple[T.Tensor, T.Tensor]:
+        """
+        Deterministic mean action (tanh of base mean) and its raw/base mean (z).
+
+        Returns:
+            tuple[T.Tensor, T.Tensor]: The deterministic mean action and the raw/base mean(z).
+        """
+        z = self.base_dist.mean
+        return self.loc + self.scale * T.tanh(z), z
+
+    def z_from_action(self, actions: T.Tensor) -> T.Tensor:
+        """
+        Safe inverse for actions not generated by the policy (e.g. warmup sample actions).
+
+        Args:
+            actions (T.Tensor): The actions to invert.
+
+        Returns:
+            T.Tensor: The raw sample(z).
+        """
+        y = (actions - self.loc) / self.scale
+        y = y.clamp(min=-1.0 + self.epsilon, max=1.0 - self.epsilon)
+        return 0.5 * (y.log1p() - (-y).log1p())
+
+    def log_prob(self, actions: T.Tensor) -> T.Tensor:
+        """
+        Finite but biased near bounds. Use log_prob_from_z instead.
+
+        Args:
+            actions (T.Tensor): The actions.
+
+        Returns:
+            T.Tensor: The log-density of the actions. Shape: (batch, action_dim). (Independent sums over action_dim).
+        """
+        return self.log_prob_from_z(self.z_from_action(actions))
 
     def entropy(self) -> T.Tensor:
-        # Sample from the *base* Normal (pre-tanh)
-        z = self.base_dist.rsample((self.mc_samples,))          # (mc_samples, batch, action_dim)
+        """
+        MC estimate; per-dimension (Independent sums over action_dim).
+        
+        Returns:
+            T.Tensor: The entropy of the distribution. Shape: (batch, action_dim). (Independent sums over action_dim).
+        """
+        z = self.base_dist.rsample((self.mc_samples,))
+        log_det_jacobian = stable_log1m_tanh_sq(z)
+        return self.base_dist.entropy() + log_det_jacobian.mean(0) + self._log_scale
 
-        # Tanh transform (first transform)
-        tanh_z = T.tanh(z)                                      # u = tanh(z)
-
-        # Jacobian correction: log|det J_tanh| = sum log(1 - tanh²(z_i))
-        log_det_jacobian = T.log(1 - tanh_z.pow(2) + self.epsilon)#.sum(-1)   # negative value
-
-        # Base entropy (already summed over action dims by Normal)
-        base_entropy = self.base_dist.entropy()        # (batch,)
-
-        # Affine scale term (constant)
-        log_scale = T.log(self.scale)#.sum()                     # scalar (broadcasts)
-
-        # Monte-Carlo average
-        entropy = base_entropy + log_det_jacobian.mean(0) + log_scale
-
-        # Safety clamp (entropy cannot be negative)
-        # entropy = T.clamp(entropy, min=self.epsilon)
-
-        return entropy
-
-    # def entropy(self) -> T.Tensor:
-    #     return self.base_dist.entropy().sum(-1)
 
 class ScaledBeta(TransformedDistribution):
     """
-    Scaled Beta distribution to low/high bounds.
+    Beta distribution Scaled to [low, high] bounds.
 
     Args:
         base_dist (Beta): The base beta distribution.
-        low (float): The lower bound of the action space.
-        high (float): The upper bound of the action space.
+        low (T.Tensor | np.ndarray): The lower bound of the action space.
+        high (T.Tensor | np.ndarray): The upper bound of the action space.
+        epsilon (float): The epsilon value for numerical stability.
     """
     def __init__(
         self,
         base_dist: Beta,
-        low:T.Tensor|np.ndarray,
-        high:T.Tensor|np.ndarray
+        low:T.Tensor | np.ndarray,
+        high:T.Tensor | np.ndarray,
+        epsilon:float = 1e-6
     ):
-        self.low = T.as_tensor(low, dtype=T.float32, device=base_dist.concentration0.device)
-        self.high = T.as_tensor(high, dtype=T.float32, device=base_dist.concentration0.device)
-        scale = T.as_tensor((high - low), dtype=T.float32, device=base_dist.concentration0.device)
-        transforms = [AffineTransform(loc=self.low, scale=scale, cache_size=1)]
+        device = base_dist.concentration0.device
+        self.low = T.as_tensor(low, dtype=T.float32, device=device)
+        self.high = T.as_tensor(high, dtype=T.float32, device=device)
+        self.epsilon = epsilon
+        self._range = self.high - self.low
+        self.log_scale = T.log(self._range)
+        transforms = [AffineTransform(loc=self.low, scale=self._range, cache_size=1)]
         super().__init__(base_dist, transforms)
-        self.log_scale = T.log(scale)
+
+    def rsample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        """
+        Reparameterized sample with gradients flowing through both bouded action and raw action(z).
+
+        Args:
+            sample_shape (T.Size): The shape of the sample.
+
+        Returns:
+            tuple[T.Tensor, T.Tensor]: The reparameterized sample(action) and the raw sample(z).
+        """
+        z = self.base_dist.rsample(sample_shape)
+        return self.low + self._range * z, z
+
+    def sample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        """
+        Sample bounded action and raw action(z) without gradients.
+        
+        Args:
+            sample_shape (T.Size): The shape of the sample.
+
+        Returns:
+            tuple[T.Tensor, T.Tensor]: The sampled bounded action and the raw sample(z).
+        """
+        with T.no_grad():
+            return self.rsample_with_z(sample_shape)
+
+    def log_prob_from_z(self, z: T.Tensor) -> T.Tensor:
+        """
+        Per-dimension log-density of action(bounded) from raw sample(z).
+
+        Args:
+            z (T.Tensor): The raw sample.
+
+        Returns:
+            T.Tensor: The per-dimension log-density of the action. Shape: (batch, action_dim). (Independent sums over action_dim).
+        """
+        return self.base_dist.log_prob(z) - self.log_scale
+
+    def mean_with_z(self) -> tuple[T.Tensor, T.Tensor]:
+        """
+        Deterministic mean action (base mean) and its raw/base mean (z).
+
+        Returns:
+            tuple[T.Tensor, T.Tensor]: The deterministic mean action and the raw/base mean(z).
+        """
+        z = self.base_dist.mean
+        return self.low + self._range * z, z
+
+    def z_from_action(self, actions: T.Tensor) -> T.Tensor:
+        """
+        Safe inverse for actions not generated by the policy (e.g. warmup sample actions).
+
+        Args:
+            actions (T.Tensor): The actions to invert.
+
+        Returns:
+            T.Tensor: The raw sample(z).
+        """
+        return ((actions - self.low) / self._range).clamp(min=self.epsilon, max=1.0 - self.epsilon)
 
     def entropy(self) -> T.Tensor:
+        """
+        Per-dimension entropy of the distribution. (Independent sums over action_dim).
+        
+        Returns:
+            T.Tensor: The entropy of the distribution. Shape: (batch, action_dim). (Independent sums over action_dim).
+        """
         return self.base_dist.entropy() + self.log_scale
+
 
 class ScaledKumaraswamy(TransformedDistribution):
     """
-    Scaled Kumaraswamy distribution to low/high bounds.
+    Kumaraswamy distribution scaled to [low, high] bounds.
 
     Args:
         base_dist (Kumaraswamy): The base kumaraswamy distribution.
-        low (float): The lower bound of the action space.
-        high (float): The upper bound of the action space.
+        low (T.Tensor | np.ndarray): The lower bound of the action space.
+        high (T.Tensor | np.ndarray): The upper bound of the action space.
+        epsilon (float): The epsilon value for numerical stability.
     """
-    def __init__(self, base_dist: Kumaraswamy, low:float = 0.0, high:float = 1.0):
-        scale = T.tensor(high - low, device=base_dist.concentration0.device)
-        transforms = [AffineTransform(loc=low, scale=scale, cache_size=1)]
+    def __init__(
+        self,
+        base_dist: Kumaraswamy,
+        low:T.Tensor | np.ndarray,
+        high:T.Tensor | np.ndarray,
+        epsilon:float = 1e-6
+    ):
+        device = base_dist.concentration0.device
+        self.low = T.as_tensor(low, dtype=T.float32, device=device)
+        self.high = T.as_tensor(high, dtype=T.float32, device=device)
+        self.epsilon = epsilon
+        self._range = self.high - self.low
+        self.log_scale = T.log(self._range)
+        transforms = [AffineTransform(loc=self.low, scale=self._range, cache_size=1)]
         super().__init__(base_dist, transforms)
-        self.log_scale = T.log(scale)
+
+    rsample_with_z = ScaledBeta.rsample_with_z
+    sample_with_z = ScaledBeta.sample_with_z
+    log_prob_from_z = ScaledBeta.log_prob_from_z
+    mean_with_z = ScaledBeta.mean_with_z
+    z_from_action = ScaledBeta.z_from_action
 
     def entropy(self) -> T.Tensor:
+        """
+        Per-dimension entropy of the distribution. (Independent sums over action_dim).
+        
+        Returns:
+            T.Tensor: The entropy of the distribution. Shape: (batch, action_dim). (Independent sums over action_dim).
+        """
         return self.base_dist.entropy() + self.log_scale
+
+
+class BoundedIndependent(Independent):
+    """
+    Independent wrapper that forwards the z-interface of the bounded
+    distributions (SquashedNormal, ScaledBeta, ScaledKumaraswamy),
+    applying the same event-dim reduction to
+    log_prob_from_z that Independent applies to log_prob.
+    """
+    def rsample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        return self.base_dist.rsample_with_z(sample_shape)
+
+    def sample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        return self.base_dist.sample_with_z(sample_shape)
+
+    def log_prob_from_z(self, z: T.Tensor) -> T.Tensor:
+        lp = self.base_dist.log_prob_from_z(z)
+        return _sum_rightmost(lp, self.reinterpreted_batch_ndims)
+
+    def mean_with_z(self) -> tuple[T.Tensor, T.Tensor]:
+        return self.base_dist.mean_with_z()
+
+    def z_from_action(self, actions: T.Tensor) -> T.Tensor:
+        return self.base_dist.z_from_action(actions)

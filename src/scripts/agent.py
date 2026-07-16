@@ -7,7 +7,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import gymnasium as gym
 import numpy as np
 import yaml
-import json
 
 from app.models import StochasticContinuousPolicy, StochasticDiscretePolicy, ActorModel, ValueModel, DiscreteCritic, ContinuousCritic
 from app.buffer import Buffer
@@ -20,7 +19,6 @@ from app.intrinsic_motivation import IntrinsicMotivation
 from app.normalizer import create_normalizer as normalizer_factory, RunningNorm, BatchNorm, RewardNorm
 from app.schedulers import ScheduleWrapper
 from app.torch_utils import set_seed
-from app.agent_utils import load_agent
 
 
 def load_config(config_file: str | Path) -> dict:
@@ -237,19 +235,3 @@ def build_trainer_from_config(config: dict):
 def build_trainer_from_config_path(config_path: str | Path):
     config = load_config(config_path)
     return build_trainer_from_config(config)
-
-
-def load_trainer_from_dir(config_dir: str | Path, env: EnvWrapper | None = None):
-    """Loads a trainer from a directory."""
-    config = json.load(open(Path(config_dir) / 'config.json'))
-    agent = load_agent(config_dir, load_weights=True, env=env)
-    return Trainer(
-        agent=agent,
-        env=env,
-        schedule=TrainingSchedule(**config.get('schedule', {})),
-        buffer=build_buffer(config, env),
-        renderer=build_renderer(config),
-        callbacks=build_callbacks(config),
-        log_level=config.get('log_level', 'INFO'),
-        save_dir=config_dir,
-    )

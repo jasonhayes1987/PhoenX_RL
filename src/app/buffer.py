@@ -176,6 +176,42 @@ class Buffer:
         else:
             raise ValueError(f"{buffer_type} is not a subclass of Buffer")
 
+    def save_state(self, path) -> None:
+        """Persist the stored transitions + counters (optional resume data).
+
+        Generic over subclasses: every tensor attribute and every int/float/bool
+        counter is dumped. The SumTree of a prioritized buffer is handled
+        explicitly since it is a nested object rather than a bare tensor.
+        """
+        from pathlib import Path
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tensors, scalars = {}, {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, T.Tensor):
+                tensors[key] = value.detach().cpu()
+            elif isinstance(value, (int, float, bool)):
+                scalars[key] = value
+        extra = {}
+        sum_tree = getattr(self, "sum_tree", None)
+        if sum_tree is not None:
+            extra["sum_tree_tree"] = sum_tree.tree.detach().cpu()
+            extra["sum_tree_max_priority"] = sum_tree.max_priority.detach().cpu()
+        T.save({"tensors": tensors, "scalars": scalars, "extra": extra}, path)
+
+    def load_state(self, path, load_weights: bool = True) -> None:
+        """Restore transitions + counters written by :meth:`save_state`."""
+        ckpt = T.load(str(path), map_location=self.device, weights_only=False)
+        for key, value in ckpt.get("tensors", {}).items():
+            setattr(self, key, value.to(self.device))
+        for key, value in ckpt.get("scalars", {}).items():
+            setattr(self, key, value)
+        sum_tree = getattr(self, "sum_tree", None)
+        extra = ckpt.get("extra", {})
+        if sum_tree is not None and "sum_tree_tree" in extra:
+            sum_tree.tree = extra["sum_tree_tree"].to(self.device)
+            sum_tree.max_priority = extra["sum_tree_max_priority"].to(self.device)
+
 class ReplayBuffer(Buffer):
     """
     Off-Policy replay buffer with N-step sequence sampling.
