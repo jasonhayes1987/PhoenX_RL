@@ -121,13 +121,43 @@ class ScheduleWrapper:
         return 1.0
     
     def get_config(self):
-        return {
-            "type": self.schedule_type,
+        config = {
+            "schedule_type": self.schedule_type,
             "steps": self.steps,
             "start_value": self.start_value,
             "end_value": self.end_value,
-            "kwargs": self.kwargs
         }
+
+        config.update(**self.kwargs)
+
+        return config
+
+    @classmethod
+    def from_config(cls, config: dict) -> "ScheduleWrapper":
+        """Rebuild a ScheduleWrapper from a ``get_config()`` dict."""
+        # cfg = dict(config)
+        # schedule_type = cfg.pop("schedule_type")
+        # extra = cfg.pop("kwargs", {}) or {}
+        # return cls(
+        #     schedule_type=schedule_type,
+        #     steps=cfg["steps"],
+        #     start_value=cfg["start_value"],
+        #     end_value=cfg["end_value"],
+        #     **extra,
+        # )
+
+        return cls(**config)
+
+    def get_state(self) -> dict | None:
+        """Return the scheduler progress (``last_epoch`` etc.) for resuming."""
+        if self.scheduler is None:
+            return None
+        return self.scheduler.state_dict()
+
+    def set_state(self, state: dict | None) -> None:
+        """Restore scheduler progress produced by :meth:`get_state`."""
+        if state is not None and self.scheduler is not None:
+            self.scheduler.load_state_dict(state)
 
     def clone(self):
         new_wrapper = ScheduleWrapper(

@@ -23,11 +23,11 @@ import plotly.express as px
 from .intrinsic_motivation import IntrinsicMotivation
 from .rl_callbacks import WandbCallback, Callback
 from .rl_callbacks import load as callback_load
-from .models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, ContinuousCritic, DiscreteCritic, ActorModel
+from .models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, ContinuousCritic, DiscreteCritic, ActorModel, build_model
 from .schedulers import ScheduleWrapper
 from .adaptive_kl import AdaptiveKL
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, Buffer
-from .normalizer import BaseNormalizer, RewardNorm
+from .normalizer import BaseNormalizer, RewardNorm, create_normalizer
 from .noise import Noise, NormalNoise, UniformNoise
 import wandb
 from . import wandb_support
@@ -49,12 +49,38 @@ import numpy as np
 from isaaclab.app import AppLauncher
 
 
-from app.agent_utils import load_agent, get_agent_class_from_type, compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, compute_q_retrace, grad_norm_from_optimizer, setup_auto_entropy, soft_update
+from app.agent_utils import compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, compute_q_retrace, grad_norm_from_optimizer, setup_auto_entropy, soft_update
 
 
 ## Base Agent Class ##
 class Agent(ABC):
-    """Base class for all RL agents."""
+    """Base class for all RL agents.
+
+    Serialization contract (uniform across every agent):
+        - ``get_config()``  -> ``{"type", "config"}`` architecture description.
+        - ``from_config(config, env)`` -> rebuild architecture (fresh tensors),
+          the env injected as a live object.
+        - ``save_state(dir)`` / ``load_state(dir)`` -> dump/restore every tensor
+          (model weights + optimizers + schedule progress + normalizer stats +
+          entropy temperature + intrinsic motivation), driven entirely by the
+          class-level component-attribute declarations below.
+
+    Subclasses only declare *which* attributes hold each kind of component; the
+    base class handles the (de)serialization uniformly.
+    """
+
+    # Attribute names that hold trainable Models (weights + optimizer + schedule).
+    MODEL_ATTRS: tuple[str, ...] = ()
+    # Target/EMA networks (weights are saved; rebuilt as clones on construction).
+    TARGET_ATTRS: tuple[str, ...] = ()
+    # BaseNormalizer attributes (running statistics).
+    NORMALIZER_ATTRS: tuple[str, ...] = (
+        "state_normalizer", "goal_normalizer", "reward_normalizer", "advantage_normalizer",
+    )
+    # Agent-level ScheduleWrapper attributes (progress persisted via get_state).
+    SCHEDULE_ATTRS: tuple[str, ...] = ()
+    # IntrinsicMotivation attributes (self-contained sub-artifacts).
+    IM_ATTRS: tuple[str, ...] = ("intrinsic_motivation",)
 
     def __init__(self,
                  save_dir: str = "models/",
@@ -208,6 +234,7 @@ class Agent(ABC):
             "config":{
                 "save_dir": self.save_dir,
                 "name": self.name,
+                "device": self.device.type,
             }
         }
 
@@ -237,18 +264,121 @@ class Agent(ABC):
     #     """Runs a test over 'num_episodes'."""
     #     raise NotImplementedError("Subclasses must implement test.")
 
-    @abstractmethod
-    def save(self):
-        """Saves the model."""
-        raise NotImplementedError("Subclasses must implement save.")
-    
+    def _live_env(self) -> EnvWrapper:
+        """Return the single live env instance shared by the agent's models."""
+        for name in self.MODEL_ATTRS or ("policy",):
+            model = getattr(self, name, None)
+            if model is not None:
+                return model.env
+        raise AttributeError(f"{self.__class__.__name__} has no model to source env from.")
+
     @classmethod
-    @abstractmethod
-    def load(cls, config_dir:str | Path, load_weights:bool = True):
-        """Loads the model."""
-        raise NotImplementedError("Subclasses must implement load.")
+    def from_config(cls, config: dict, env: EnvWrapper) -> "Agent":
+        """Rebuild an agent (architecture + fresh tensors) from an inner config.
+
+        Every sub-component is reconstructed and the single live ``env`` is
+        injected into all models. Tensor state (weights, optimizers, stats,
+        entropy temperature) and intrinsic-motivation modules are restored
+        separately by :meth:`load_state`.
+        """
+        cfg = dict(config)
+        for key in ("policy", "critic", "critic_b", "value"):
+            if cfg.get(key) is not None:
+                cfg[key] = build_model(cfg[key], env)
+        for key in ("state_normalizer", "goal_normalizer",
+                    "reward_normalizer", "advantage_normalizer"):
+            if cfg.get(key) is not None:
+                cfg[key] = create_normalizer(cfg[key])
+        for key in ("noise", "target_noise"):
+            if cfg.get(key) is not None:
+                cfg[key] = Noise.create_instance(cfg[key]["type"], **cfg[key]["config"])
+        if cfg.get("kl_adapter") is not None:
+            cfg["kl_adapter"] = AdaptiveKL(**cfg["kl_adapter"])
+        for key in list(cfg):
+            if key.endswith("_schedule") and isinstance(cfg.get(key), dict):
+                cfg[key] = ScheduleWrapper.from_config(cfg[key])
+        # Intrinsic motivation is a self-contained artifact rebuilt in load_state.
+        for key in ("intrinsic_motivation", "curiosity"):
+            if key in cfg:
+                cfg[key] = None
+        return cls(**cfg)
+
+    def save_state(self, save_dir: str | Path) -> None:
+        """Dump every tensor of the agent under ``save_dir`` (mirrors the tree)."""
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        for name in self.MODEL_ATTRS + self.TARGET_ATTRS:
+            model = getattr(self, name, None)
+            if model is not None:
+                model.save_state(save_dir / f"{name}.pt")
+
+        for name in self.NORMALIZER_ATTRS:
+            normalizer = getattr(self, name, None)
+            if normalizer is not None:
+                normalizer.save_state(save_dir / "normalizers" / f"{name}.pt")
+
+        for name in self.IM_ATTRS:
+            intrinsic = getattr(self, name, None)
+            if intrinsic is not None:
+                intrinsic.save(save_dir)  # writes save_dir/intrinsic_motivation/...
+
+        extra: dict = {}
+        for name in self.SCHEDULE_ATTRS:
+            schedule = getattr(self, name, None)
+            if schedule is not None:
+                extra[name] = schedule.get_state()
+        if getattr(self, "auto_entropy_tuning", False):
+            extra["log_alpha"] = self.log_alpha.detach().cpu()
+            extra["entropy_optimizer"] = self.entropy_optimizer.state_dict()
+        kl_adapter = getattr(self, "kl_adapter", None)
+        if kl_adapter is not None and hasattr(kl_adapter, "get_state"):
+            extra["kl_adapter"] = kl_adapter.get_state()
+        if extra:
+            T.save(extra, save_dir / "agent_state.pt")
+
+    def load_state(self, save_dir: str | Path, load_weights: bool = True) -> None:
+        """Restore every tensor written by :meth:`save_state` (in place)."""
+        save_dir = Path(save_dir)
+
+        for name in self.MODEL_ATTRS + self.TARGET_ATTRS:
+            model = getattr(self, name, None)
+            path = save_dir / f"{name}.pt"
+            if model is not None and path.exists():
+                model.load_state(path, load_weights=load_weights)
+
+        for name in self.NORMALIZER_ATTRS:
+            normalizer = getattr(self, name, None)
+            path = save_dir / "normalizers" / f"{name}.pt"
+            if normalizer is not None and path.exists():
+                normalizer.load_state(path)
+
+        if (save_dir / "intrinsic_motivation" / "config.json").is_file():
+            intrinsic = IntrinsicMotivation.load(save_dir, env=self._live_env())
+            for name in self.IM_ATTRS:
+                setattr(self, name, intrinsic)
+
+        extra_path = save_dir / "agent_state.pt"
+        if extra_path.exists():
+            extra = T.load(extra_path, map_location=self.device, weights_only=False)
+            for name in self.SCHEDULE_ATTRS:
+                schedule = getattr(self, name, None)
+                if schedule is not None and extra.get(name) is not None:
+                    schedule.set_state(extra[name])
+            if getattr(self, "auto_entropy_tuning", False) and "log_alpha" in extra:
+                with T.no_grad():
+                    self.log_alpha.data.copy_(extra["log_alpha"].to(self.device))
+                if extra.get("entropy_optimizer") is not None:
+                    self.entropy_optimizer.load_state_dict(extra["entropy_optimizer"])
+            kl_adapter = getattr(self, "kl_adapter", None)
+            if kl_adapter is not None and hasattr(kl_adapter, "set_state") and "kl_adapter" in extra:
+                kl_adapter.set_state(extra["kl_adapter"])
 
 class Reinforce(Agent):
+    MODEL_ATTRS = ("policy", "value")
+    SCHEDULE_ATTRS = ("entropy_schedule",)
+    IM_ATTRS = ()
+
     def __init__(
         self,
         policy: StochasticDiscretePolicy,
@@ -499,10 +629,9 @@ class Reinforce(Agent):
 
     def get_config(self):
         config = super().get_config()
-        config["type"] = self.__class__.__name__
         config["config"].update({
             "policy": self.policy.get_config(),
-            "value": self.value.get_config(),
+            "value": self.value.get_config() if self.value is not None else None,
             "discount": self.discount,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
@@ -515,53 +644,12 @@ class Reinforce(Agent):
         })
         return config
 
-    def save(self):
-        """Saves the model."""
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        if self.value:
-            self.value.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.advantage_normalizer:
-            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
-        if self.reward_normalizer:
-            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool = True):
-        """Loads the model."""
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
-        policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
-        value_model = ValueModel.load(config_dir, 'value', load_weights, env=env_wrapper) if config.get('value', None) else None
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "/state_normalizer.pt") if config.get('state_normalizer', None) else None
-        advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "/advantage_normalizer.pt") if config.get('advantage_normalizer', None) else None
-        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
-
-        # return reinforce agent
-        agent = cls(
-            policy=policy,
-            value=value_model,
-            discount=config["discount"],
-            state_normalizer=state_normalizer,
-            advantage_normalizer=advantage_normalizer,
-            reward_normalizer=reward_normalizer,
-            entropy_coefficient=config["entropy_coefficient"],
-            entropy_schedule=ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
-            auto_entropy_tuning=config["auto_entropy_tuning"],
-            entropy_lr=config["entropy_lr"],
-            target_entropy_scale=config["target_entropy_scale"],
-            save_dir=config["save_dir"],
-        )
-
-        return agent
-
 class ActorCritic(Agent):
     """Actor Critic Agent."""
+
+    MODEL_ATTRS = ("policy", "value")
+    SCHEDULE_ATTRS = ("entropy_schedule",)
+    IM_ATTRS = ()
 
     def __init__(
         self,
@@ -881,6 +969,7 @@ class ActorCritic(Agent):
             "value": self.value.get_config(),
             "discount": self.discount,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
             "entropy_coefficient": self.entropy_coefficient,
@@ -895,58 +984,6 @@ class ActorCritic(Agent):
             "bootstrap_truncations": self.bootstrap_truncations,
         })
         return config
-
-    def save(self):
-        """Saves the model."""
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "/config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        self.value.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.goal_normalizer:
-            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
-        if self.advantage_normalizer:
-            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
-        if self.reward_normalizer:
-            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool = True):
-        """Loads the model."""
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
-        policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env_wrapper)
-        value = ValueModel.load(config_dir, 'value', load_weights, env=env_wrapper)
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
-        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
-        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
-
-        agent = cls(
-            policy=policy,
-            value=value,
-            discount=config["discount"],
-            state_normalizer=state_normalizer,
-            goal_normalizer=goal_normalizer,
-            advantage_normalizer=advantage_normalizer,
-            reward_normalizer=reward_normalizer,
-            entropy_coefficient=config["entropy_coefficient"],
-            entropy_schedule=ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
-            auto_entropy_tuning=config["auto_entropy_tuning"],
-            entropy_lr=config["entropy_lr"],
-            target_entropy_scale=config["target_entropy_scale"],
-            gae_coefficient=config["gae_coefficient"],
-            policy_grad_clip=config["policy_grad_clip"],
-            value_grad_clip=config["value_grad_clip"],
-            value_coef=config["value_coef"],
-            bootstrap_truncations=config["bootstrap_truncations"],
-            save_dir=config["save_dir"],
-        )
-
-        return agent
 
 class PPO(Agent):
     """
@@ -982,6 +1019,9 @@ class PPO(Agent):
         device: (str): Device for computations ('cpu' or 'cuda').
     """
 
+    MODEL_ATTRS = ("policy", "value")
+    SCHEDULE_ATTRS = ("entropy_schedule", "policy_clip_schedule", "value_clip_schedule")
+
     def __init__(
         self,
         policy: StochasticContinuousPolicy | StochasticDiscretePolicy,
@@ -1001,10 +1041,10 @@ class PPO(Agent):
         kl_adapter: AdaptiveKL|None = None,
         policy_clip: float = 0.2,
         policy_clip_schedule: ScheduleWrapper|None = None,
-        policy_grad_clip: float = float('inf'),
+        policy_grad_clip: float = 40.0,
         value_clip: float = 0.2,
         value_clip_schedule: ScheduleWrapper|None = None,
-        value_grad_clip: float = float('inf'),
+        value_grad_clip: float = 40.0,
         value_coef: float = 0.5,
         reward_clip: float = float('inf'),
         intrinsic_motivation: IntrinsicMotivation|None = None,
@@ -1101,7 +1141,7 @@ class PPO(Agent):
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
         **kwargs: Any
-    ) -> T.Tensor:
+    ) -> Action:
         """
         Select an action based on the current policy.
         Returns actions that are already scaled to the environment's action space.
@@ -1112,22 +1152,29 @@ class PPO(Agent):
             context: str: The context of the action (train, test).
         
         Returns:
-            T.Tensor: actions.
+            Action: actions.
         """
-        
-        if context == 'train':
+        raw_actions = None
+        with T.no_grad():
             dist = self.policy(states, goals)
-            actions = dist.sample()
+            if context == 'train':
+                if self.policy.distribution == 'categorical':
+                    actions = dist.sample()
+                    log_probs = dist.log_prob(actions)
+                else: # Continuous
+                    actions, raw_actions = dist.sample_with_z()
+                    log_probs = dist.log_prob_from_z(raw_actions)
+            elif context == 'test':
+                if self.policy.distribution == 'categorical':
+                    actions = self.policy.get_mean_actions(dist)
+                    log_probs = dist.log_prob(actions)
+                else: # Continuous
+                    actions, raw_actions = dist.mean_with_z()
+                    log_probs = dist.log_prob_from_z(raw_actions)
+            else:
+                raise ValueError(f"Invalid context: {context}")
 
-        elif context == 'test':
-            with T.no_grad():
-                dist = self.policy(states, goals)
-                actions = self.policy.get_mean_actions(dist)
-            
-        else:
-            raise ValueError(f"Invalid context: {context}")
-
-        return actions
+        return Action(actions, raw_actions=raw_actions, log_probs=log_probs)
 
     def learn(self, step:int, sample:dict, learning_epochs:int, mini_batch_size:int, **kwargs: Any)->dict:
         """
@@ -1153,7 +1200,9 @@ class PPO(Agent):
         # Unpack trajectory
         states = sample["states"]
         actions = sample["actions"]
-        rewards = sample["rewards"]
+        raw_actions = sample["raw_actions"]
+        extrinsic_rewards = sample["rewards"]
+        im_rollout_rewards = sample["intrinsic_rewards"]
         next_states = sample["next_states"]
         terminations = sample["terminations"]
         truncations = sample["truncations"]
@@ -1183,44 +1232,59 @@ class PPO(Agent):
         if self.kl_adapter:
             kl_coefficient = self.kl_adapter.get_beta()
 
-        # Normalize states and goals
-        if self.state_normalizer:
-            states = self.state_normalizer.normalize(states)
-            next_states = self.state_normalizer.normalize(next_states)
-        if self.goal_normalizer:
-            ach_goals = self.goal_normalizer.normalize(ach_goals)
-            next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
-            goals = self.goal_normalizer.normalize(goals)
-        if self.reward_normalizer:
-            rewards = self.reward_normalizer.normalize(rewards)
-
-        # Clip rewards if finite and not using reward normalizer
-        if T.isfinite(T.tensor(self.reward_clip)) and self.reward_normalizer is None:
-            rewards = T.clamp(rewards, min=-self.reward_clip, max=self.reward_clip)
-
         # Get trajectory length, num envs, and total samples for reshaping
-        traj_len, num_envs = rewards.shape
+        traj_len, num_envs = extrinsic_rewards.shape
         total_samples = traj_len * num_envs
 
         # Flatten trajectory data
         states_flat = states.reshape(total_samples, -1)
         next_states_flat = next_states.reshape(total_samples, -1)
         actions_flat = actions.reshape(total_samples, -1)
+        raw_actions_flat = raw_actions.reshape(total_samples, -1)
+        extrinsic_rewards_flat = extrinsic_rewards.reshape(total_samples, -1)
         goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
         # ach_goals_flat = ach_goals.reshape(total_samples, -1) if ach_goals is not None else None
         # next_ach_goals_flat = next_ach_goals.reshape(total_samples, -1) if next_ach_goals is not None else None
         # terminations_flat = terminations.reshape(total_samples, -1)
         # truncations_flat = truncations.reshape(total_samples, -1)
 
-        # Use intrinsic rewards if ICM
-        if self.intrinsic_motivation:
-            curiosity_loss = self.curiosity.train(states_flat, next_states_flat, actions_flat)
-            intrinsic_reward = self.curiosity.compute_intrinsic_reward(states_flat, next_states_flat, actions_flat)
-            intrinsic_reward = intrinsic_reward.reshape(num_steps, num_envs)
-            if step > self.curiosity.extrinsic_threshold:
-                rewards += self.curiosity.reward_weight * intrinsic_reward
+
+
+        # Normalize states and goals
+        if self.state_normalizer:
+            states_flat = self.state_normalizer.normalize(states_flat)
+            next_states_flat = self.state_normalizer.normalize(next_states_flat)
+        if self.goal_normalizer:
+            # ach_goals = self.goal_normalizer.normalize(ach_goals)
+            # next_ach_goals = self.goal_normalizer.normalize(next_ach_goals)
+            goals_flat = self.goal_normalizer.normalize(goals_flat)
+        if self.reward_normalizer:
+            extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
+
+        # Clip rewards if finite and not using reward normalizer
+        if T.isfinite(T.tensor(self.reward_clip)) and self.reward_normalizer is None:
+            extrinsic_rewards_flat = T.clamp(extrinsic_rewards_flat, min=-self.reward_clip, max=self.reward_clip)
+
+        # Train Intrinsic Motivation and get intrinsic rewards
+        if self.intrinsic_motivation:     
+            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+            # Compute intrinsic reward
+            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+                states_flat,
+                next_states_flat,
+                actions_flat
+            )
+            # Add intrinsic learn rewards to intrinsic rollout rewards
+            im_rewards = im_learn_rewards.reshape(traj_len, num_envs) + im_rollout_rewards
+            # Add extrinsic reward if past step threshold
+            if self.intrinsic_motivation.use_extrinsic_reward(step):
+                rewards = extrinsic_rewards_flat.reshape(traj_len, num_envs) + im_rewards
             else:
-                rewards = self.curiosity.reward_weight * intrinsic_reward
+                rewards = im_rewards
+        else:
+            rewards = extrinsic_rewards_flat.reshape(traj_len, num_envs)
+            im_learn_rewards = T.zeros_like(rewards)
+            im_rewards = T.zeros_like(rewards)
 
         # Get current log probs and values
         with T.no_grad():
@@ -1228,8 +1292,7 @@ class PPO(Agent):
             if self.policy.distribution == 'categorical':
                 cur_log_probs = cur_dist.log_prob(actions_flat.view(-1)).unsqueeze(-1)
             else:
-                cur_log_probs = cur_dist.log_prob(actions_flat).unsqueeze(-1)
-            cur_log_probs = T.nan_to_num(cur_log_probs, nan=0.0, posinf=20.0, neginf=-20.0)
+                cur_log_probs = cur_dist.log_prob_from_z(raw_actions_flat).unsqueeze(-1)
             
             cur_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
             cur_next_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs)
@@ -1253,6 +1316,7 @@ class PPO(Agent):
         states_flat = states_flat[valid_idx]
         next_states_flat = next_states_flat[valid_idx]
         actions_flat = actions_flat[valid_idx]
+        raw_actions_flat = raw_actions_flat[valid_idx]
         goals_flat = goals_flat[valid_idx] if goals is not None else None
         cur_log_probs = cur_log_probs[valid_idx]
         cur_values_flat = cur_values.reshape(total_samples, 1)[valid_idx]
@@ -1273,10 +1337,10 @@ class PPO(Agent):
 
             for batch_num in range(num_batches):
                 batch_indices = indices[batch_num * mini_batch_size : (batch_num + 1) * mini_batch_size]
-                # print("batch_indices:", batch_indices)
                 states_batch = states_flat[batch_indices]
                 goals_batch = goals_flat[batch_indices] if goals is not None else None
                 actions_batch = actions_flat[batch_indices]
+                raw_actions_batch = raw_actions_flat[batch_indices]
                 cur_log_probs_batch = cur_log_probs[batch_indices].detach()
                 cur_values_batch = cur_values_flat[batch_indices].detach()
                 advantages_batch = advantages_flat[batch_indices].detach()
@@ -1288,12 +1352,9 @@ class PPO(Agent):
                 if self.policy.distribution == 'categorical':
                     new_log_probs = new_dist.log_prob(actions_batch.view(-1)).unsqueeze(-1)
                 else: # Continuous Distributions
-                    new_log_probs = new_dist.log_prob(actions_batch).unsqueeze(-1)
-                    new_log_probs = T.nan_to_num(new_log_probs, nan=0.0, posinf=20.0, neginf=-20.0)
+                    new_log_probs = new_dist.log_prob_from_z(raw_actions_batch).unsqueeze(-1)
 
-                # prob_ratio = T.exp(new_log_probs - cur_log_probs_batch)
                 log_ratio = new_log_probs - cur_log_probs_batch
-                log_ratio = T.clamp(log_ratio, min=-10.0, max=10.0)
                 prob_ratio = T.exp(log_ratio)
 
                 # Calculate Surrogate Loss
@@ -1420,6 +1481,16 @@ class PPO(Agent):
             'policy_learning_rate': policy_learning_rate,
             'value_learning_rate': value_learning_rate
         })
+
+        if self.intrinsic_motivation:
+            learn_metrics.update({
+                "intrinsic_loss": im_loss,
+                "learn_intrinsic_reward": im_learn_rewards.mean().item(),
+                "intrinsic_reward": im_rewards.mean().item(),
+                "reward_weight": self.intrinsic_motivation.reward_weight * self.intrinsic_motivation.reward_scheduler.get_factor() \
+                    if self.intrinsic_motivation.reward_scheduler else self.intrinsic_motivation.reward_weight
+            })
+
         return learn_metrics
 
     def get_config(self):
@@ -1430,12 +1501,12 @@ class PPO(Agent):
             dict: Configuration dictionary.
         """
         config = super().get_config()
-        config["type"] = self.__class__.__name__
-        config.update({
+        config["config"].update({
             "policy": self.policy.get_config(),
             "value": self.value.get_config(),
             "discount": self.discount,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
+            "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
             "entropy_coefficient": self.entropy_coefficient,
@@ -1454,96 +1525,17 @@ class PPO(Agent):
             "reward_clip": self.reward_clip,
             "kl_coefficient": self.kl_coefficient,
             "kl_adapter": self.kl_adapter.get_config() if self.kl_adapter else None,
-            "curiosity": self.curiosity.get_config() if self.curiosity else None,
+            "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation else None,
             "bootstrap_truncations": self.bootstrap_truncations
         })
         return config
 
-    def save(self, save_dir=None):
-        """
-        Save the model and its configuration.
-
-        Args:
-            save_dir (str, optional): Directory to save the model. Defaults to self.save_dir.
-        """
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        self.value.save(self.save_dir)
-        if self.curiosity:
-            self.curiosity.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.goal_normalizer:
-            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
-        if self.advantage_normalizer:
-            self.advantage_normalizer.save(self.save_dir + "advantage_normalizer.pt")
-        if self.reward_normalizer:
-            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool=True):
-        """
-        Load a PPO agent from a saved configuration.
-
-        Args:
-            config (dict): Configuration dictionary.
-            load_weights (bool): Whether to load model weights.
-
-        Returns:
-            PPO: Loaded PPO agent.
-        """
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
-        distribution = config['policy']['distribution']
-        if distribution == 'categorical':
-            policy = StochasticDiscretePolicy.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
-        elif distribution in ['beta', 'normal']:
-            policy = StochasticContinuousPolicy.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
-        else:
-            raise ValueError(f"Invalid distribution: {distribution}")
-        value = ValueModel.load(Path(config_dir) / 'value', load_weights, env=env_wrapper)
-        curiosity = ICM.load(config["save_dir"], env=env_wrapper) if config["curiosity"] else None
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
-        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        advantage_normalizer = BaseNormalizer.load(config["advantage_normalizer"], config["save_dir"] + "advantage_normalizer.pt") if config["advantage_normalizer"] else None
-        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
-        agent = cls(
-            policy = policy,
-            value = value,
-            discount=config["discount"],
-            gae_coefficient = config["gae_coefficient"],
-            state_normalizer = state_normalizer,
-            goal_normalizer = goal_normalizer,
-            advantage_normalizer = advantage_normalizer,
-            reward_normalizer = reward_normalizer,
-            entropy_coefficient = config["entropy_coefficient"],
-            entropy_schedule = ScheduleWrapper(**config["entropy_schedule"]) if config.get("entropy_schedule", None) else None,
-            auto_entropy_tuning = config["auto_entropy_tuning"],
-            entropy_lr = config["entropy_lr"],
-            target_entropy_scale = config["target_entropy_scale"],
-            kl_coefficient = config["kl_coefficient"],
-            kl_adapter = AdaptiveKL(**config["kl_adapter"]) if config.get("kl_adapter", None) else None,
-            policy_clip = config["policy_clip"],
-            policy_clip_schedule = ScheduleWrapper(**config["policy_clip_schedule"]) if config.get("policy_clip_schedule", None) else None,
-            policy_grad_clip = config["policy_grad_clip"],
-            value_clip = config["value_clip"],
-            value_clip_schedule = ScheduleWrapper(**config["value_clip_schedule"]) if config.get("value_clip_schedule", None) else None,
-            value_grad_clip = config["value_grad_clip"],
-            value_coef = config["value_coef"],
-            reward_clip = config['reward_clip'],
-            curiosity = curiosity,
-            bootstrap_truncations = config["bootstrap_truncations"],
-            save_dir=config["save_dir"],
-            device=config["device"],
-        )
-
-        return agent
-
 class DDPG(Agent):
     """Deep Deterministic Policy Gradient Agent."""
+
+    MODEL_ATTRS = ("policy", "critic")
+    TARGET_ATTRS = ("target_policy", "target_critic")
+    SCHEDULE_ATTRS = ("noise_schedule",)
 
     def __init__(
         self,
@@ -1725,7 +1717,6 @@ class DDPG(Agent):
 
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
-            
             im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
@@ -1902,79 +1893,29 @@ class DDPG(Agent):
             "critic": self.critic.get_config(),
             "discount": self.discount,
             "tau": self.tau,
+            "action_epsilon": self.action_epsilon,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "noise": self.noise.get_config() if self.noise is not None else None,
+            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
+            "noise_clip": self.noise_clip,
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
             "critic_huber_delta": self.critic_huber_delta,
             "N": self.N,
             "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
-            "action_epsilon": self.action_epsilon,
-            "noise": self.noise.get_config() if self.noise is not None else None,
-            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
-            "noise_clip": self.noise_clip
         })
         return config
 
 
-    def save(self):
-        """Saves the model."""
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(self.save_dir + "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        self.critic.save(self.save_dir)
-        if self.intrinsic_motivation:
-            self.intrinsic_motivation.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.goal_normalizer:
-            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
-        if self.reward_normalizer:
-            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool = True):
-        """Loads the model."""
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
-        policy = ActorModel.load(Path(config_dir) / 'policy', load_weights, env=env_wrapper)
-        critic = ContinuousCritic.load(Path(config_dir) / 'critic', load_weights, env=env_wrapper)
-        noise = Noise.create_instance(config["noise"]["type"], **config["noise"]["config"])
-        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env_wrapper) if config["intrinsic_motivation"] else None
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
-        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
-
-        agent = cls(
-            policy = policy,
-            critic = critic,
-            discount=config["discount"],
-            tau=config["tau"],
-            action_epsilon=config["action_epsilon"],
-            state_normalizer=state_normalizer,
-            goal_normalizer=goal_normalizer,
-            reward_normalizer=reward_normalizer,
-            noise=noise,
-            noise_schedule=ScheduleWrapper(**config["noise_schedule"]) if config.get("noise_schedule", None) else None,
-            noise_clip=config["noise_clip"],
-            policy_grad_clip=config['policy_grad_clip'],
-            critic_grad_clip=config['critic_grad_clip'],
-            critic_huber_delta=config.get("critic_huber_delta", 1.0),
-            N = config['N'],
-            intrinsic_motivation=intrinsic_motivation,
-            save_dir=config["save_dir"],
-            device=config["device"]
-        )
-
-        return agent
-    
-
 class TD3(Agent):
     """Twin Delayed Deep Deterministic Policy Gradient Agent."""
-    
+
+    MODEL_ATTRS = ("policy", "critic", "critic_b")
+    TARGET_ATTRS = ("target_policy", "target_critic", "target_critic_b")
+    SCHEDULE_ATTRS = ("noise_schedule", "target_noise_schedule")
+
     def __init__(
         self,
         policy: ActorModel,
@@ -2168,7 +2109,6 @@ class TD3(Agent):
 
         # Train Intrinsic Motivation and get intrinsic rewards
         if self.intrinsic_motivation:
-            
             im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
@@ -2397,88 +2337,30 @@ class TD3(Agent):
             "critic_b": self.critic_b.get_config(),
             "discount": self.discount,
             "tau": self.tau,
+            "action_epsilon": self.action_epsilon,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
+            "noise": self.noise.get_config() if self.noise is not None else None,
+            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
+            "target_noise": self.target_noise.get_config() if self.target_noise is not None else None,
+            "target_noise_schedule": self.target_noise_schedule.get_config() if self.target_noise_schedule is not None else None,
+            "noise_clip": self.noise_clip,
             "policy_grad_clip": self.policy_grad_clip,
             "critic_grad_clip": self.critic_grad_clip,
             "critic_huber_delta": self.critic_huber_delta,
+            "policy_update_delay": self.policy_update_delay,
             "N": self.N,
             "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
-            "action_epsilon": self.action_epsilon,
-            "critic_b": self.critic_b.get_config(),
-            "noise": self.noise.get_config() if self.noise is not None else None,
-            "noise_schedule": self.noise_schedule.get_config() if self.noise_schedule is not None else None,
-            "noise_clip": self.noise_clip,
-            "target_noise": self.target_noise.get_config() if self.target_noise is not None else None,
-            "target_noise_schedule": self.target_noise_schedule.get_config() if self.target_noise_schedule is not None else None,
-            "policy_update_delay": self.policy_update_delay,
         })
         return config
 
-    def save(self):
-        """Saves the model."""
-        config = self.get_config()
-        os.makedirs(self.save_dir, exist_ok=True)
-        with open(os.path.join(self.save_dir, "config.json"), "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        self.critic.save(self.save_dir, 'critic')
-        self.critic_b.save(self.save_dir, 'critic_b')
-        if self.intrinsic_motivation:
-            self.intrinsic_motivation.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.goal_normalizer:
-            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
-        if self.reward_normalizer:
-            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool=True):
-        """Loads the model."""
-        config = json.load(open(Path(config_dir) / 'config.json'))
-        env_wrapper = EnvWrapper.from_json(config["policy"]["env"])
-        policy = ActorModel.load(config_dir, 'policy', load_weights, env=env_wrapper)
-        critic = ContinuousCritic.load(config_dir, 'critic', load_weights, env=env_wrapper)
-        critic_b = ContinuousCritic.load(config_dir, 'critic_b', load_weights, env=env_wrapper)
-        # load intrinsic motivation
-        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env_wrapper) if config["intrinsic_motivation"] else None
-        # load state normalizer
-        state_normalizer = BaseNormalizer.load(config["state_normalizer"], config["save_dir"] + "state_normalizer.pt") if config["state_normalizer"] else None
-        goal_normalizer = BaseNormalizer.load(config["goal_normalizer"], config["save_dir"] + "goal_normalizer.pt") if config["goal_normalizer"] else None
-        reward_normalizer = RewardNorm.load(config["reward_normalizer"], config["save_dir"] + "reward_normalizer.pt") if config["reward_normalizer"] else None
-        noise = Noise.create_instance(config["noise"]["type"], **config["noise"]["config"])
-        target_noise = Noise.create_instance(config["target_noise"]["type"], **config["target_noise"]["config"])
-
-        agent = cls(
-            policy=policy,
-            critic=critic,
-            critic_b=critic_b,
-            discount=config["discount"],
-            tau=config["tau"],
-            action_epsilon=config["action_epsilon"],
-            state_normalizer=state_normalizer,
-            goal_normalizer=goal_normalizer,
-            reward_normalizer=reward_normalizer,
-            noise=noise,
-            noise_schedule=ScheduleWrapper(**config["noise_schedule"]) if config.get("noise_schedule", None) else None,
-            target_noise=target_noise,
-            target_noise_schedule=ScheduleWrapper(**config["target_noise_schedule"]) if config.get("target_noise_schedule", None) else None,
-            noise_clip=config["noise_clip"],
-            policy_grad_clip=config["policy_grad_clip"],
-            critic_grad_clip=config["critic_grad_clip"],
-            critic_huber_delta=config.get("critic_huber_delta", 1.0),
-            policy_update_delay=config["policy_update_delay"],
-            N=config["N"],
-            intrinsic_motivation=intrinsic_motivation,
-            save_dir=config["save_dir"],
-            device=config["device"],
-        )
-        return agent
-
 class SAC(Agent):
     """Soft Actor Critic Agent."""
+
+    MODEL_ATTRS = ("policy", "critic", "critic_b")
+    TARGET_ATTRS = ("target_critic", "target_critic_b")
+    SCHEDULE_ATTRS = ("entropy_schedule",)
 
     def __init__(
         self,
@@ -2573,43 +2455,48 @@ class SAC(Agent):
         Returns:
             Action: actions.
         """
-
+        raw_actions = None
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
                 actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
-
                 if isinstance(self.policy, StochasticContinuousPolicy): # Continuous
-                    delta = T.as_tensor(self.policy.act_space.high - self.policy.act_space.low, device=self.device)
-                    if T.isinf(delta).any():
-                        log_probs = T.full((actions.shape[0],), -10.0, device=self.device)
-                    else:
-                        log_probs = (-T.log(delta).sum(-1)) * T.ones(actions.shape[0], device=self.device)
+                    with T.no_grad():
+                        dist = self.policy(states, goals)
+                        raw_actions = dist.z_from_action(actions)
+                    delta = T.as_tensor(
+                        self.policy.act_space.high - self.policy.act_space.low,
+                        device=self.device,
+                    )
+                    log_probs = (-T.log(delta).sum(-1)) * T.ones(actions.shape[0], device=self.device)
                 else: # Discrete
                     num_actions = T.as_tensor(self.policy.act_space.n, device=self.device)
                     log_probs = T.full((actions.shape[0],), -T.log(num_actions), device=self.device)
             
             else: # Sample action from policy
                 with T.no_grad():
-                    #DEBUG
-                    # print(f"states: {states}")
-                    # print(f"goals: {goals}")
                     dist = self.policy(states, goals)
-                    actions = dist.sample()
-                    #DEBUG
-                    # print(f"actions: {actions}")
-                    log_probs = dist.log_prob(actions)
+                    if isinstance(self.policy, StochasticContinuousPolicy):
+                        actions, raw_actions = dist.sample_with_z()
+                        log_probs = dist.log_prob_from_z(raw_actions)
+                    else: # Discrete
+                        actions = dist.sample()
+                        log_probs = dist.log_prob(actions)
 
         elif context == 'test':
             with T.no_grad():
                 dist = self.policy(states, goals)
-                actions = self.policy.get_mean_actions(dist)
-                log_probs = dist.log_prob(actions)
+                if isinstance(self.policy, StochasticContinuousPolicy):
+                    actions, raw_actions = dist.mean_with_z()
+                    log_probs = dist.log_prob_from_z(raw_actions)
+                else: # Discrete
+                    actions = self.policy.get_mean_actions(dist)
+                    log_probs = dist.log_prob(actions)
 
         else:
             raise ValueError(f"Invalid context: {context}")
 
-        return Action(actions, log_probs=log_probs)
+        return Action(actions, raw_actions=raw_actions, log_probs=log_probs)
 
     def soft_update_targets(self):
         soft_update(self.critic, self.target_critic, self.tau)
@@ -2627,6 +2514,7 @@ class SAC(Agent):
         # Unpack trajectory
         states = sample["states"]
         actions = sample["actions"]
+        raw_actions = sample["raw_actions"]
         buf_log_probs = sample["log_probs"]
         extrinsic_rewards = sample["rewards"]
         im_rollout_rewards = sample["intrinsic_rewards"]
@@ -2663,6 +2551,7 @@ class SAC(Agent):
         states_flat = states.reshape(-1, states.shape[-1])
         next_states_flat = next_states.reshape(-1, next_states.shape[-1])
         actions_flat = actions.reshape(-1, actions.shape[-1])
+        raw_actions_flat = raw_actions.reshape(-1, raw_actions.shape[-1])
         extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
         if goals is not None:
             goals_flat = goals.reshape(-1, goals.shape[-1])
@@ -2674,15 +2563,14 @@ class SAC(Agent):
             states_flat = self.state_normalizer.normalize(states_flat)
             next_states_flat = self.state_normalizer.normalize(next_states_flat)
         if self.goal_normalizer:
-            ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
-            next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
+            # ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
+            # next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
             goals_flat = self.goal_normalizer.normalize(goals_flat)
         if self.reward_normalizer:
             extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
         
         # Train Intrinsic Motivation and get intrinsic rewards
-        if self.intrinsic_motivation:
-            
+        if self.intrinsic_motivation:     
             im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
@@ -2703,12 +2591,6 @@ class SAC(Agent):
             im_rewards = T.zeros_like(rewards)
 
         with T.no_grad():
-            # q_targets = compute_n_step_return(
-            #     rewards,
-            #     self.discount,
-            #     device=self.target_critic.device
-            # ).squeeze()
-
             # Get current policy for sampled states
             cur_dist = self.policy(
                 states_flat,
@@ -2716,8 +2598,9 @@ class SAC(Agent):
             )
 
             # Get current values of sampled states and log probs of taking the sampled actions
+            # Continuous Action Space
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                cur_log_probs = cur_dist.log_prob(actions_flat).reshape(batch_size, n_step_length)
+                cur_log_probs = cur_dist.log_prob_from_z(raw_actions_flat).reshape(batch_size, n_step_length)
                 q_cur = T.minimum(
                     self.target_critic(
                         states_flat,
@@ -2731,7 +2614,7 @@ class SAC(Agent):
                         )
                 ).reshape(batch_size, n_step_length)
 
-            else: # Discrete action space
+            else: # Discrete Action Space
                 cur_log_probs = cur_dist.logits.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
                 q_cur_all = T.minimum(
                     self.target_critic(
@@ -2753,8 +2636,8 @@ class SAC(Agent):
 
             # Continuous critic target values
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                target_actions = next_dist.sample()
-                next_log_probs = next_dist.log_prob(target_actions)
+                target_actions, target_z = next_dist.sample_with_z()
+                next_log_probs = next_dist.log_prob_from_z(target_z)
                 q_next = T.minimum(
                     self.target_critic(
                         next_states_flat,
@@ -2863,8 +2746,8 @@ class SAC(Agent):
         )
         # Continuous policy update
         if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-            new_actions = dist.rsample()
-            log_probs = dist.log_prob(new_actions)
+            new_actions, new_z = dist.rsample_with_z()
+            log_probs = dist.log_prob_from_z(new_z)
             q1 = self.critic(states_reshaped[:,0,:], new_actions, goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
             q2 = self.critic_b(states_reshaped[:,0,:], new_actions, goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
             min_q = T.minimum(q1, q2)
@@ -3010,114 +2893,24 @@ class SAC(Agent):
         config["config"].update({
             "policy": self.policy.get_config(),
             "critic": self.critic.get_config(),
+            "critic_b": self.critic_b.get_config(),
             "discount": self.discount,
             "tau": self.tau,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
-            "policy_grad_clip": self.policy_grad_clip,
-            "critic_grad_clip": self.critic_grad_clip,
-            "critic_huber_delta": self.critic_huber_delta,
-            "N": self.N,
-            "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
-            "critic_b": self.critic_b.get_config(),
             "entropy_coefficient": self.entropy_coefficient,
             "entropy_schedule": self.entropy_schedule.get_config() if self.entropy_schedule is not None else None,
             "auto_entropy_tuning": self.auto_entropy_tuning,
             "entropy_lr": self.entropy_lr,
             "target_entropy_scale": self.target_entropy_scale,
+            "policy_grad_clip": self.policy_grad_clip,
+            "critic_grad_clip": self.critic_grad_clip,
+            "critic_huber_delta": self.critic_huber_delta,
+            "N": self.N,
+            "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
         })
         return config
-
-    def save(self):
-        """Saves the model."""
-        config = self.get_config()
-        os.makedirs(self.save_dir + "/agent", exist_ok=True)
-        with open(self.save_dir + "/agent/config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        self.policy.save(self.save_dir)
-        self.critic.save(self.save_dir, 'critic')
-        self.critic_b.save(self.save_dir, 'critic_b')
-        if self.intrinsic_motivation:
-            self.intrinsic_motivation.save(self.save_dir)
-        if self.state_normalizer:
-            self.state_normalizer.save(self.save_dir + "state_normalizer.pt")
-        if self.goal_normalizer:
-            self.goal_normalizer.save(self.save_dir + "goal_normalizer.pt")
-        if self.reward_normalizer:
-            self.reward_normalizer.save(self.save_dir + "reward_normalizer.pt")
-
-    @classmethod
-    def load(cls, config_dir:str | Path, load_weights:bool=True, env: EnvWrapper | None = None):
-        """Load a saved SAC agent.
-
-        Args:
-            config_dir: Directory containing ``config.json`` plus the ``policy``,
-                ``critic`` and ``critic_b`` model sub-directories (and, if used,
-                ``state_normalizer.pt`` etc.).
-            load_weights: Whether to load the saved network weights.
-            env: Optional pre-built environment to reuse (e.g. a GUI/eval env with a
-                smaller ``num_envs`` or non-headless ``render_mode``). If omitted, the
-                env is rebuilt from the saved policy config. Reusing a single env is
-                important for Isaac Sim, where constructing an env launches a
-                simulator app — building one per model would launch several.
-
-        Returns:
-            SAC: The reconstructed agent.
-        """
-        config_dir = Path(config_dir)
-        full = json.load(open(config_dir / 'agent' / 'config.json'))
-        # Current save format: {"type": "SAC", "config": {...}}. Tolerate a flat dict.
-        cfg = full.get("config", full)
-
-        # The environment is serialized inside each model's config. Build it once
-        # (unless one was supplied) and share it across policy/critic/critic_b.
-        if env is None:
-            env = EnvWrapper.from_json(cfg["policy"]["env"])
-
-        distribution = cfg["policy"]["distribution"]
-        if distribution == 'categorical':
-            policy = StochasticDiscretePolicy.load(config_dir, 'policy', load_weights, env=env)
-            critic = DiscreteCritic.load(config_dir, 'critic', load_weights, env=env)
-            critic_b = DiscreteCritic.load(config_dir, 'critic_b', load_weights, env=env)
-        elif distribution in ['beta', 'normal', 'kumaraswamy']:
-            policy = StochasticContinuousPolicy.load(config_dir, 'policy', load_weights, env=env)
-            critic = ContinuousCritic.load(config_dir, 'critic', load_weights, env=env)
-            critic_b = ContinuousCritic.load(config_dir, 'critic_b', load_weights, env=env)
-        else:
-            raise ValueError(f"Invalid distribution: {distribution}")
-
-        intrinsic_motivation = IntrinsicMotivation.load(config_dir, env=env) if cfg['agent']['config'].get("intrinsic_motivation") else None
-        # Resolve normalizer state relative to the directory being loaded (robust to
-        # the model folder having been moved/renamed since training).
-        state_normalizer = BaseNormalizer.load(cfg["state_normalizer"], str(config_dir / "state_normalizer.pt")) if cfg.get("state_normalizer") else None
-        goal_normalizer = BaseNormalizer.load(cfg["goal_normalizer"], str(config_dir / "goal_normalizer.pt")) if cfg.get("goal_normalizer") else None
-        reward_normalizer = BaseNormalizer.load(cfg["reward_normalizer"], str(config_dir / "reward_normalizer.pt")) if cfg.get("reward_normalizer") else None
-
-        agent = cls(
-            policy = policy,
-            critic = critic,
-            critic_b = critic_b,
-            discount=cfg["discount"],
-            tau=cfg["tau"],
-            state_normalizer=state_normalizer,
-            goal_normalizer=goal_normalizer,
-            reward_normalizer=reward_normalizer,
-            entropy_coefficient=cfg["entropy_coefficient"],
-            entropy_schedule = ScheduleWrapper(**cfg["entropy_schedule"]) if cfg.get("entropy_schedule", None) else None,
-            auto_entropy_tuning=cfg["auto_entropy_tuning"],
-            entropy_lr=cfg["entropy_lr"],
-            target_entropy_scale=cfg["target_entropy_scale"],
-            policy_grad_clip=cfg["policy_grad_clip"],
-            critic_grad_clip=cfg["critic_grad_clip"],
-            critic_huber_delta=cfg.get("critic_huber_delta", 1.0),
-            N = cfg["N"],
-            intrinsic_motivation=intrinsic_motivation,
-            save_dir=cfg.get("save_dir", str(config_dir)),
-            device=cfg.get("device"),
-        )
-
-        return agent
 
 # class HER(Agent):
 #     """Hindsight Experience Replay Agent wrapper."""
@@ -3651,6 +3444,33 @@ class SAC(Agent):
 @runtime_checkable
 class HasTargetNetworks(Protocol):
     def soft_update_targets(self) -> None: ...
+
+
+# Registry of every concrete agent class, keyed by class name (the "type" tag
+# emitted by Agent.get_config). Used by build_agent to reconstruct from a config.
+AGENT_REGISTRY: Dict[str, type] = {
+    "Reinforce": Reinforce,
+    "ActorCritic": ActorCritic,
+    "PPO": PPO,
+    "DDPG": DDPG,
+    "TD3": TD3,
+    "SAC": SAC,
+}
+
+
+def build_agent(config: dict, env: EnvWrapper) -> "Agent":
+    """Rebuild an agent from a ``{"type", "config"}`` dict, injecting ``env``.
+
+    This is the single entry point for rebuilding a saved agent config
+    back into a live (fresh-tensor) agent; tensor state is restored afterwards
+    via :meth:`Agent.load_state`.
+    """
+    agent_type = config["type"]
+    if agent_type not in AGENT_REGISTRY:
+        raise ValueError(
+            f"Unknown agent type: {agent_type!r}. Available: {list(AGENT_REGISTRY)}"
+        )
+    return AGENT_REGISTRY[agent_type].from_config(config["config"], env)
 
 
 # class MAPPO(Agent):

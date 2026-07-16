@@ -51,9 +51,19 @@ class AdaptiveKL():
     def get_config(self):
         return {
             "initial_beta": self.initial_beta,
+            "beta_max": self.beta_max,
             "target_kl": self.target_kl,
             "scale_up": self.scale_up,
             "scale_down": self.scale_down,
             "kl_tolerance_high": self.kl_tolerance_high,
             "kl_tolerance_low": self.kl_tolerance_low
         }
+
+    def get_state(self):
+        """Return the mutable state (current beta) for resuming training."""
+        return {"beta": self.beta}
+
+    def set_state(self, state):
+        """Restore the mutable state produced by :meth:`get_state`."""
+        if state:
+            self.beta = state.get("beta", self.beta)

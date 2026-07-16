@@ -13,13 +13,15 @@ from collections import deque
 from abc import abstractmethod
 import os
 import json
+import random
 from pathlib import Path
 
 from .torch_utils import set_seed
-from .rl_callbacks import Callback, WandbCallback, callback_load
-from .rl_agents import Agent, HasTargetNetworks, load_agent
+from .rl_callbacks import Callback, WandbCallback, load as build_callback
+from .rl_agents import Agent, HasTargetNetworks, build_agent
 from .env_wrapper import EnvWrapper, Observation, VectorNStepReward
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, RolloutBuffer, TrajectoryBuffer
+from .her import HindsightRelabeler
 from .renderer import Renderer
 from .logging_config import get_logger, configure_logging
 
@@ -94,8 +96,7 @@ class Trainer:
         self.callbacks = callbacks
         self.save_dir = save_dir
 
-        # Set Agent and Renderer save dir
-        self.agent.save_dir = self.save_dir
+        # Set Renderer save dir (the agent owns its own save_dir via its config)
         if self.renderer is not None:
             self.renderer.save_dir = self.save_dir
 
@@ -113,6 +114,9 @@ class Trainer:
         self._score_history = None
         self._last_learn = None
         self._success_tracker = None
+        # Checkpoint snapshots applied by _initialize_run when resuming (Trainer.load).
+        self._resume_state = None
+        self._resume_rng = None
 
     def _initialize_callbacks(self):
         """
@@ -212,6 +216,49 @@ class Trainer:
         self._score_history = deque(maxlen=100)
         self._last_learn = 0
         self._success_tracker = deque(maxlen=100)
+
+        # If resuming (Trainer.load), overlay the checkpointed counters + RNG.
+        self._apply_resume_state(context)
+
+    def _apply_resume_state(self, context: Literal["train", "test"]) -> None:
+        """Overlay checkpointed counters and RNG onto a freshly initialized run.
+
+        Applies only when resuming *training* so the run continues from the
+        saved step/episode progress and RNG stream. During evaluation the fresh
+        zeroed counters are kept (the test loop's stop condition depends on
+        them), and any staged snapshots are discarded.
+        """
+        if context != "train":
+            self._resume_state = None
+            self._resume_rng = None
+            return
+
+        state = self._resume_state
+        if state is not None:
+            self._step = state.get("_step", self._step)
+            self._best_reward = state.get("_best_reward", self._best_reward)
+            self._last_learn = state.get("_last_learn", self._last_learn)
+            for name in ("_completed_episodes", "_episode_scores", "_episode_steps"):
+                value = state.get(name)
+                if value is not None:
+                    setattr(self, name, value.to(self.agent.device))
+            if state.get("_score_history") is not None:
+                self._score_history = deque(state["_score_history"], maxlen=100)
+            if state.get("_success_tracker") is not None:
+                self._success_tracker = deque(state["_success_tracker"], maxlen=100)
+            self._resume_state = None
+
+        rng = self._resume_rng
+        if rng is not None:
+            try:
+                T.set_rng_state(rng["torch"])
+                np.random.set_state(rng["numpy"])
+                random.setstate(rng["python"])
+                if rng.get("cuda") is not None and T.cuda.is_available():
+                    T.cuda.set_rng_state_all(rng["cuda"])
+            except Exception as e:
+                self.logger.warning(f"Could not fully restore RNG state on resume: {e}")
+            self._resume_rng = None
 
     # def _find_nstep_wrapper(self, env: EnvWrapper) -> VectorNStepReward | None:
     #     """Finds the VectorNStepReward wrapper in the environment chain."""
@@ -393,13 +440,15 @@ class Trainer:
             nstep_wrapper.set_action(action)
         # Take action in environment and get new Observation
         observation = self.env.step(action.actions)
-        # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer
-        im = getattr(self.agent, 'intrinsic_motivation', None)
-        if im is not None:
-            # Pass normalized states to IM if present
-            next_obs_norm = self.normalize_observation(observation)
-            intrinsic_rewards = im.compute_rollout_reward(obs_norm.states, next_obs_norm.states, action.actions, env_indices = T.arange(self.env.num_envs, device=im.device))
-            # observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
+        # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer (Training Only)
+        if training:
+            im = getattr(self.agent, 'intrinsic_motivation', None)
+            if im is not None:
+                # Pass normalized states to IM if present
+                next_obs_norm = self.normalize_observation(observation)
+                intrinsic_rewards = im.compute_rollout_reward(obs_norm.states, next_obs_norm.states, action.actions, env_indices = T.arange(self.env.num_envs, device=im.device))
+            else:
+                intrinsic_rewards = T.zeros_like(observation.rewards)
         else:
             intrinsic_rewards = T.zeros_like(observation.rewards)
         observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
@@ -408,8 +457,9 @@ class Trainer:
         valid_steps = ~self._prev_done
        
         
-        # Add transitions to the buffer (non-normalized)
-        self.buffer.record(observation, prev_observation = self._prev_obs, actions = action, prev_dones = self._prev_done)
+        # Add transitions to the buffer (non-normalized) (Training Only)
+        if training:
+            self.buffer.record(observation, prev_observation = self._prev_obs, actions = action, prev_dones = self._prev_done)
 
         # Increment episode steps and rewards
         self._episode_steps[valid_steps] += 1
@@ -452,9 +502,7 @@ class Trainer:
         if done_episodes.numel() > 0 and training:
             if avg_reward > self._best_reward:
                 self._best_reward = avg_reward
-                # if self._step - self._last_save >= self.save_freq:   # add save_freq + _last_save
-                self.agent.save()
-                # self._last_save = self._step
+                self.save()
 
 
         # set _cur_obs to observation
@@ -691,11 +739,7 @@ class Trainer:
                     self._episode_scores[episode_log['env']] = 0
                     self._episode_steps[episode_log['env']] = 0
                     if self.renderer and self.renderer.should_render(episode_log['episode']):
-                        # Set normalizers to eval mode
-                        self.set_normalizers(context="test")
                         self.renderer.render_episode(self, episode_log['episode'], self._step, context='test', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
-                        # Set normalizers to train mode
-                        self.set_normalizers(context="train")
                     if self.callbacks:
                         for callback in self.callbacks:
                             callback.on_test_epoch_end(self._step, episode_log)
@@ -709,37 +753,157 @@ class Trainer:
 
 
     def get_config(self) -> dict:
+        """The entire run tree as one JSON-safe dict (the single source of truth).
+
+        The env is serialized exactly once here (as its ``{"type", "config"}``
+        spec); no sub-component re-embeds it.
+        """
         return {
             'agent': self.agent.get_config(),
             'env': self.env.config,
             'schedule': self.schedule.get_config(),
-            'buffer': self.buffer.get_config(),
+            'buffer': self.buffer.get_config() if self.buffer is not None else None,
             'renderer': self.renderer.get_config() if self.renderer else None,
             'callbacks': [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             'save_dir': self.save_dir,
         }
 
-    
-    def save(self):
-        """Saves the trainer."""
-        config = self.get_config()
-        os.makedirs(self.save_dir + "/trainer", exist_ok=True)
-        with open(self.save_dir + "/trainer/config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f)
-        # self.agent.save()
-        # self.env.save()
-        # self.schedule.save()
-        # self.buffer.save()
-        # self.renderer.save()
-        # self.callbacks.save()
+    def _trainer_state(self) -> dict:
+        """Training counters/progress needed to resume seamlessly."""
+        return {
+            "_step": self._step,
+            "_best_reward": self._best_reward,
+            "_last_learn": self._last_learn,
+            "_completed_episodes": self._completed_episodes,
+            "_episode_scores": self._episode_scores,
+            "_episode_steps": self._episode_steps,
+            "_score_history": list(self._score_history) if self._score_history is not None else None,
+            "_success_tracker": list(self._success_tracker) if self._success_tracker is not None else None,
+        }
 
-    
-    def load(self, config_dir: str | Path, load_weights: bool = True, env: EnvWrapper | None = None):
-        """Loads the trainer."""
-        config = json.load(open(Path(config_dir) / "trainer" / "config.json"))
-        self.agent = load_agent(config_dir, load_weights, env=env)
-        self.env = EnvWrapper.from_json(config["env"])
-        self.schedule = TrainingSchedule(**config["schedule"])
-        # self.buffer = build_buffer(config, self.env)
-        # self.renderer = build_renderer(config)
-        self.callbacks = [callback_load(callback["type"]).load(callback) for callback in config["callbacks"]]
+    @staticmethod
+    def _rng_state() -> dict:
+        """Snapshot torch / numpy / python RNG (plus CUDA if available)."""
+        state = {
+            "torch": T.get_rng_state(),
+            "numpy": np.random.get_state(),
+            "python": random.getstate(),
+        }
+        if T.cuda.is_available():
+            state["cuda"] = T.cuda.get_rng_state_all()
+        return state
+
+    def save(self, run_dir: str | Path | None = None, *, save_buffer: bool = False) -> None:
+        """Persist the full run under ``run_dir`` (defaults to ``self.save_dir``).
+
+        Writes one JSON config (the architecture of the whole tree) plus ``.pt``
+        state files mirroring the object tree::
+
+            <run_dir>/config.json        # entire run tree, env serialized once
+            <run_dir>/agent/             # weights + optimizers + normalizers + IM
+            <run_dir>/trainer_state.pt   # step / episode / best-reward counters
+            <run_dir>/rng.pt             # torch / numpy / python RNG
+            <run_dir>/buffer.pt          # optional replay tensors (save_buffer=True)
+        """
+        run_dir = Path(run_dir) if run_dir is not None else Path(self.save_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(run_dir / "config.json", "w", encoding="utf-8") as f:
+            json.dump(self.get_config(), f, indent=2)
+
+        self.agent.save_state(run_dir / "agent")
+
+        # Counters/RNG only exist once a run has been initialized.
+        if self._step is not None:
+            T.save(self._trainer_state(), run_dir / "trainer_state.pt")
+            T.save(self._rng_state(), run_dir / "rng.pt")
+
+        if save_buffer and self.buffer is not None:
+            self.buffer.save_state(run_dir / "buffer.pt")
+
+    @classmethod
+    def load(
+        cls,
+        run_dir: str | Path,
+        *,
+        env: EnvWrapper | None = None,
+        load_weights: bool = True,
+        load_buffer: bool = False,
+        log_level: str = 'INFO',
+    ) -> "Trainer":
+        """Rebuild a fully wired Trainer from a directory written by :meth:`save`.
+
+        The env is built exactly once from the saved spec (critical for Isaac
+        Sim, where only a single simulation app may exist at a time); pass a live
+        ``env`` to reuse an already-open instance instead.
+
+        Args:
+            run_dir: Directory containing ``config.json`` and the state files.
+            env: Optional live env to reuse instead of rebuilding from config.
+            load_weights: Restore model weights (False = architecture only).
+            load_buffer: Also restore the replay buffer from ``buffer.pt``.
+            log_level: Logger level for the rebuilt Trainer.
+
+        Returns:
+            A Trainer ready to ``.train()`` (resumes counters/RNG) or ``.test()``.
+        """
+        run_dir = Path(run_dir)
+        with open(run_dir / "config.json", "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        if env is None:
+            env = EnvWrapper.from_json(json.dumps(config["env"]))
+
+        agent = build_agent(config["agent"], env)
+        agent.load_state(run_dir / "agent", load_weights=load_weights)
+
+        schedule = TrainingSchedule(**config["schedule"])
+        if load_buffer:
+            buffer = cls._build_buffer(config.get("buffer"), env)
+        else:
+            buffer = None
+        renderer = Renderer(**config["renderer"]) if config.get("renderer") else None
+        callbacks = (
+            [build_callback(cb) for cb in config["callbacks"]]
+            if config.get("callbacks") else None
+        )
+
+        trainer = cls(
+            agent=agent,
+            env=env,
+            schedule=schedule,
+            buffer=buffer,
+            renderer=renderer,
+            callbacks=callbacks,
+            log_level=log_level,
+            save_dir=str(run_dir),
+        )
+
+        # Stage counters/RNG; applied by _initialize_run once the env is reset.
+        state_path = run_dir / "trainer_state.pt"
+        if state_path.exists():
+            trainer._resume_state = T.load(state_path, map_location=agent.device, weights_only=False)
+        rng_path = run_dir / "rng.pt"
+        if rng_path.exists():
+            trainer._resume_rng = T.load(rng_path, map_location="cpu", weights_only=False)
+
+        if load_buffer and buffer is not None and (run_dir / "buffer.pt").exists():
+            buffer.load_state(run_dir / "buffer.pt")
+
+        return trainer
+
+    @staticmethod
+    def _build_buffer(buffer_config: dict | None, env: EnvWrapper) -> Buffer | None:
+        """Reconstruct a buffer from its saved ``{"type", "config"}`` block."""
+        if not buffer_config:
+            return None
+        kwargs = dict(buffer_config.get("config", {}))
+        kwargs.pop("env", None)  # env is injected live, never rebuilt from config
+        kwargs["env"] = env
+        hindsight = kwargs.get("hindsight")
+        if hindsight is not None:
+            hindsight_kwargs = dict(hindsight.get("config", hindsight))
+            hindsight_kwargs.pop("env", None)
+            hindsight_kwargs["env"] = env
+            kwargs["hindsight"] = HindsightRelabeler(**hindsight_kwargs)
+        return Buffer.create_instance(buffer_config["type"], **kwargs)

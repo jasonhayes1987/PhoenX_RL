@@ -1743,7 +1743,7 @@ def _get_next_step_env_cls():
                 reset_obs = self.observation_manager.compute(update_history=False)
                 for k, v in reset_obs.items():
                     states[k][ids] = v[ids]
-                rewards[ids] = 0.0
+                # rewards[ids] = 0.0
                 terminations[ids] = False
                 truncations[ids] = False
             self._phantom_mask = new_phantom

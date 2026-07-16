@@ -25,7 +25,7 @@ class BaseNormalizer:
     """
     def __init__(
         self,
-        num_features: int,
+        num_features: int = 1,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
         device: str | T.device | None = None,
@@ -46,8 +46,6 @@ class BaseNormalizer:
         self.local_M2 = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         # Running statistics
         self.running_cnt = T.zeros(1, dtype=T.int32, device=self.device)
-        # self.running_sum = T.zeros(self.num_features, dtype=T.float32, device=self.device)
-        # self.running_sum_sq = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         self.running_mean = T.zeros(self.num_features, dtype=T.float32, device=self.device)
         self.running_var = T.ones(self.num_features, dtype=T.float32, device=self.device)
         self.running_std = T.ones(self.num_features, dtype=T.float32, device=self.device)
@@ -214,6 +212,30 @@ class BaseNormalizer:
         # format nests it under a "config" key. Tolerate an already-flat dict too.
         inner = config.get('config', config)
         return NORMALIZER_CLASSES[norm_type].load(inner, state_path)
+
+    def save_state(self, path) -> None:
+        """Persist running/local statistics to ``path`` (creates parent dirs)."""
+        from pathlib import Path
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.save(str(path))
+
+    def load_state(self, path, load_weights: bool = True) -> None:
+        """Restore running/local statistics in-place from :meth:`save_state`.
+
+        The architecture is unchanged; only the accumulated statistics are
+        overwritten. ``load_weights`` is accepted for interface symmetry with
+        the other components and is ignored (a normalizer has no weights).
+        """
+        state = T.load(str(path), map_location='cpu', weights_only=False)
+        self.step = state['step']
+        self.local_mean = T.as_tensor(state['local_mean'], device=self.device)
+        self.local_M2 = T.as_tensor(state['local_M2'], device=self.device)
+        self.local_cnt = T.as_tensor(state['local_cnt'], device=self.device)
+        self.running_cnt = T.as_tensor(state['running_cnt'], device=self.device)
+        self.running_mean = T.as_tensor(state['running_mean'], device=self.device)
+        self.running_var = T.as_tensor(state['running_var'], device=self.device)
+        self.running_std = T.as_tensor(state['running_std'], device=self.device)
 
 class RunningNorm(BaseNormalizer):
     """
@@ -394,7 +416,14 @@ class RewardNorm(BaseNormalizer):
         name: str | None = None,
         **kwargs
     ):
-        super().__init__(1, clip_value, epsilon, device, log_level, name, **kwargs)
+        super().__init__(
+            clip_value = clip_value,
+            epsilon = epsilon,
+            device = device,
+            log_level = log_level,
+            name = name,
+            **kwargs
+        )
         self.gamma = gamma
         # Set internal attrs
         self.num_envs = None
@@ -473,8 +502,6 @@ class RewardNorm(BaseNormalizer):
         normalizer.local_M2 = T.tensor(state['local_M2'], device=device)
         normalizer.local_cnt = T.tensor(state['local_cnt'], device=device)
         normalizer.running_cnt = T.tensor(state['running_cnt'], device=device)
-        # normalizer.running_sum = T.tensor(state['running_sum'], device=device)
-        # normalizer.running_sum_sq = T.tensor(state['running_sum_sq'], device=device)
         normalizer.running_mean = T.tensor(state['running_mean'], device=device)
         normalizer.running_var = T.tensor(state['running_var'], device=device)
         normalizer.running_std = T.tensor(state['running_std'], device=device)

@@ -13,6 +13,7 @@ from . import wandb_support
 _CALLBACK_REGISTRY: dict[str, type] = {}
 
 
+# Decorator For Third Party Callbacks
 def register_callback(name: str | None = None):
     """Decorator that registers a callback class under an explicit name.
 
