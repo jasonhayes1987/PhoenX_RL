@@ -12,9 +12,10 @@ from app.models import StochasticContinuousPolicy, StochasticDiscretePolicy, Act
 from app.buffer import Buffer
 from app.her import HindsightRelabeler
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
+from app.rl_agents import Agent
 from app.renderer import Renderer
 from app.rl_callbacks import load as callback_load
-from app.trainer import TrainingSchedule, Trainer
+from app.trainer import TrainingSchedule, Trainer, SuccessCriterion
 from app.intrinsic_motivation import IntrinsicMotivation
 from app.normalizer import create_normalizer as normalizer_factory, RunningNorm, BatchNorm, RewardNorm
 from app.schedulers import ScheduleWrapper
@@ -181,15 +182,21 @@ def build_buffer(config: dict, env: EnvWrapper) -> Buffer:
     return Buffer.create_instance(buffer_spec["type"], **buffer_kwargs)
 
 
-def build_schedule(config: dict):
+def build_schedule(config: dict) -> TrainingSchedule:
     schedule_spec = config.get("schedule")
     if not schedule_spec:
         raise ValueError("Config is missing the required 'schedule' section.")
 
     return TrainingSchedule(**schedule_spec)
 
+def build_success_criterion(config:dict) -> SuccessCriterion | None:
+    success_spec = config.get("success_criterion", None)
+    if success_spec is None:
+        return None
+    return SuccessCriterion(**success_spec)
 
-def build_agent(config: dict, env: EnvWrapper):
+
+def build_agent(config: dict, env: EnvWrapper) -> Agent:
     agent_type = config["agent"]["type"]
     if agent_type == "ActorCritic":
         from scripts.actor_critic import build
@@ -208,7 +215,7 @@ def build_agent(config: dict, env: EnvWrapper):
     return build(config, env)
 
 
-def build_trainer_from_config(config: dict):
+def build_trainer_from_config(config: dict) -> Trainer:
     seed = config.get('schedule', {}).get('seed', None)
     if seed is not None:
         set_seed(seed)
@@ -219,12 +226,13 @@ def build_trainer_from_config(config: dict):
     schedule = build_schedule(config)
     callbacks = build_callbacks(config)
     renderer = build_renderer(config)
-
+    success_criterion = build_success_criterion(config)
     return Trainer(
             agent=agent,
             env=env,
             buffer=buffer,
             schedule=schedule,
+            success_criterion=success_criterion,
             renderer=renderer,
             callbacks=callbacks,
             log_level=config.get('log_level', 'INFO'),
@@ -232,6 +240,6 @@ def build_trainer_from_config(config: dict):
         )
 
 
-def build_trainer_from_config_path(config_path: str | Path):
+def build_trainer_from_config_path(config_path: str | Path) -> Trainer:
     config = load_config(config_path)
     return build_trainer_from_config(config)

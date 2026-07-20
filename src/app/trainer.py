@@ -75,12 +75,65 @@ class TrainingSchedule:
             "seed": self.seed,
         }
 
+
+@dataclass
+class SuccessCriterion:
+    """
+    Defines what counts as a successful episode.
+
+    metric:
+        "info_flag": env reports success (e.g. gymnasium-robotics 'is_success')
+        "goal_distance": ||achieved - desired|| <= threshold
+        "episode_reward": episode reward >= threshold
+    """
+    metric: Literal["info_flag", "goal_distance", "episode_reward"]
+    threshold: float | None = None
+    info_key: str = "is_success"
+
+    def __post_init__(self):
+        if self.metric in ("goal_distance", "episode_reward") and self.threshold is None:
+            raise ValueError(f"metric '{self.metric}' requires a threshold")
+
+    def evaluate(self, obs: Observation, env_idx: int, episode_reward: float) -> bool | None:
+        """
+        Evaluates the success criterion for the given observation and environment index.
+        Returns True/False or None if the metric is not logged.
+
+        Args:
+            obs: Observation to evaluate.
+            env_idx: Environment index.
+            episode_reward: Episode reward.
+
+        Returns:
+            True/False or None if the metric is not logged.
+        """
+        if self.metric == "episode_reward":
+            return episode_reward >= self.threshold
+        if self.metric == "goal_distance":
+            if obs.goals is None or obs.ach_goals is None:
+                return None
+            distance = T.norm(obs.ach_goals[env_idx] - obs.goals[env_idx], p=2, dim=-1)
+            return bool(distance <= self.threshold)
+        # info_flag
+        flag = (obs.infos or {}).get(self.info_key)
+        if flag is None:
+            return None
+        return bool(flag[env_idx]) if hasattr(flag, "__getitem__") else bool(flag)
+
+    def get_config(self) -> dict:
+        return {
+            "metric": self.metric,
+            "threshold": self.threshold,
+            "info_key": self.info_key,
+        }
+
 class Trainer:
     def __init__(
         self,
         agent:Agent,
         env:EnvWrapper,
         schedule:TrainingSchedule,
+        success_criterion:SuccessCriterion|None = None,
         buffer:Buffer|None = None,
         renderer:Renderer|None = None,
         callbacks:list[Callback]|None = None,
@@ -91,6 +144,7 @@ class Trainer:
         self.agent = agent
         self.env = env
         self.schedule = schedule
+        self.success_criterion = success_criterion
         self.buffer = buffer
         self.renderer = renderer
         self.callbacks = callbacks
@@ -486,17 +540,18 @@ class Trainer:
                 'episode_reward': round(float(self._episode_scores[i]), 2),
                 'avg_reward': round(float(avg_reward), 2)
             }
-            # If env goal-aware, add success metrics to episode log
+            # Success metric
+            if self.success_criterion is not None:
+                success = self.success_criterion.evaluate(observation, i, float(self._episode_scores[i]))
+                if success is not None:
+                    self._success_tracker.append(int(success))
+                    episode_log['success_rate'] = round(
+                        sum(self._success_tracker) / len(self._success_tracker), 3
+                    )
+            # Goal distance tracking
             if self.env.goal_key is not None:
                 goal_distance = T.norm(observation.ach_goals[i] - observation.goals[i], p=2, dim=-1)
-                self._success_tracker.append((goal_distance <= self.buffer.hindsight._distance_threshold).int())
-                success_rate = sum(self._success_tracker) / len(self._success_tracker)
                 episode_log['goal_distance'] = round(goal_distance.item(), 3)
-                episode_log['success_rate'] = round(success_rate.item(), 3)
-            # if training:
-            #     # Check if best reward
-            #     if avg_reward > self._best_reward:
-            #         self._best_reward = avg_reward
             episode_logs.append(episode_log)
 
         if done_episodes.numel() > 0 and training:
@@ -762,6 +817,7 @@ class Trainer:
             'agent': self.agent.get_config(),
             'env': self.env.config,
             'schedule': self.schedule.get_config(),
+            'success_criterion': self.success_criterion.get_config() if self.success_criterion is not None else None,
             'buffer': self.buffer.get_config() if self.buffer is not None else None,
             'renderer': self.renderer.get_config() if self.renderer else None,
             'callbacks': [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
@@ -833,10 +889,6 @@ class Trainer:
     ) -> "Trainer":
         """Rebuild a fully wired Trainer from a directory written by :meth:`save`.
 
-        The env is built exactly once from the saved spec (critical for Isaac
-        Sim, where only a single simulation app may exist at a time); pass a live
-        ``env`` to reuse an already-open instance instead.
-
         Args:
             run_dir: Directory containing ``config.json`` and the state files.
             env: Optional live env to reuse instead of rebuilding from config.
@@ -858,6 +910,7 @@ class Trainer:
         agent.load_state(run_dir / "agent", load_weights=load_weights)
 
         schedule = TrainingSchedule(**config["schedule"])
+        success_criterion = SuccessCriterion(**config["success_criterion"]) if config.get("success_criterion") else None
         if load_buffer:
             buffer = cls._build_buffer(config.get("buffer"), env)
         else:
@@ -872,6 +925,7 @@ class Trainer:
             agent=agent,
             env=env,
             schedule=schedule,
+            success_criterion=success_criterion,
             buffer=buffer,
             renderer=renderer,
             callbacks=callbacks,

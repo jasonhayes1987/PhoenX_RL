@@ -96,6 +96,7 @@ agent:
     #   start_value: *target_noise_stddev
     #   end_value: 0.05
     noise_clip: 0.3
+    raw_action_l2_coef: 0.0
     policy_grad_clip: 40.0
     critic_grad_clip: 40.0
     policy_update_delay: 2
