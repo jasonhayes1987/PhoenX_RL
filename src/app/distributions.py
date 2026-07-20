@@ -109,7 +109,7 @@ class SquashedNormal(TransformedDistribution):
         Returns:
             T.Tensor: The per-dimension log-density of the action. Shape: (batch, action_dim). (Independent sums over action_dim).
         """
-        return self.base_dist.log_prob(z) + stable_log1m_tanh_sq(z) - self._log_scale
+        return self.base_dist.log_prob(z) - stable_log1m_tanh_sq(z) - self._log_scale
 
     def mean_with_z(self) -> tuple[T.Tensor, T.Tensor]:
         """

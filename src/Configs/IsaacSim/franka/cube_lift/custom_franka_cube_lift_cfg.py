@@ -17,8 +17,12 @@ sys.path.append(ISAACLAB_PATH)
 sys.path.append(ISAACLAB_TASKS_PATH)
 
 from isaaclab.utils import configclass
-
 import isaaclab_tasks.manager_based.manipulation.lift.mdp as mdp
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import (
+    ObservationsCfg as LiftObservationsCfg,
+)
 from isaaclab_tasks.manager_based.manipulation.lift.config.franka.joint_pos_env_cfg import (
     FrankaCubeLiftEnvCfg,
     FrankaCubeLiftEnvCfg_PLAY,
@@ -89,6 +93,44 @@ class FrankaCubeLiftEnvCfg_Custom_Limits(FrankaCubeLiftEnvCfg):
 @configclass
 class FrankaCubeLiftEnvCfg_Custom_Limits_PLAY(FrankaCubeLiftEnvCfg_Custom_Limits):
     """Play / evaluation version with fewer environments and no corruption."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        self.observations.policy.enable_corruption = False
+
+# Sparse Reward (gaol conditioned) config
+def target_object_position_b(env, command_name: str = "object_pose"):
+    """Position slice of the commanded object pose (drops the quaternion)."""
+    return env.command_manager.get_command(command_name)[:, :3]
+
+
+@configclass
+class GoalObservationsCfg(LiftObservationsCfg):
+    """Lift observations plus separate achieved/desired goal groups for HER."""
+    @configclass
+    class AchievedGoalCfg(ObsGroup):
+        object_position = ObsTerm(func=mdp.object_position_in_robot_root_frame)
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+    @configclass
+    class DesiredGoalCfg(ObsGroup):
+        target_position = ObsTerm(func=target_object_position_b)
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+    achieved_goal: AchievedGoalCfg = AchievedGoalCfg()
+    desired_goal: DesiredGoalCfg = DesiredGoalCfg()
+
+
+@configclass
+class FrankaCubeLiftEnvCfg_Custom_Goal(FrankaCubeLiftEnvCfg_Custom_Limits):
+    observations: GoalObservationsCfg = GoalObservationsCfg()
+
+@configclass
+class FrankaCubeLiftEnvCfg_Custom_Goal_PLAY(FrankaCubeLiftEnvCfg_Custom_Goal):
 
     def __post_init__(self):
         super().__post_init__()
