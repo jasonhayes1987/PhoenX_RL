@@ -95,6 +95,10 @@ def to_torch(value, device=None):
     if isinstance(value, np.ndarray) and value.dtype !=np.object_:
         if np.issubdtype(value.dtype, np.floating):
             return T.as_tensor(value, device=device, dtype=T.float32)
+        if value.dtype == np.uint8:
+            # Preserve uint8 (image observations) so buffers can store them
+            # compactly; models cast/scale at their input boundary.
+            return T.as_tensor(value, device=device, dtype=T.uint8)
         if np.issubdtype(value.dtype, np.integer):
             return T.as_tensor(value, device=device, dtype=T.int32)
         if np.issubdtype(value.dtype, np.bool_):

@@ -1,4 +1,4 @@
-from scripts.agent import create_intrinsic_motivation, create_normalizer, create_actor, create_critic
+from scripts.agent import apply_model_config, create_intrinsic_motivation, create_normalizer, create_actor, create_critic
 from app.rl_agents import TD3
 from app.env_wrapper import EnvWrapper
 from app.schedulers import ScheduleWrapper
@@ -6,14 +6,16 @@ from app.noise import Noise
 
 
 def build(config: dict, env: EnvWrapper):
-    # build policy
-    config['agent']['config']['policy'] = create_actor(config['agent']['config']['policy'], env)
+    # Canonical 'model:' schema (roots/trunk/branches) or legacy per-model keys
+    if not apply_model_config(config['agent']['config'], env):
+        # build policy
+        config['agent']['config']['policy'] = create_actor(config['agent']['config']['policy'], env)
 
-    # build critic model
-    config['agent']['config']['critic'] = create_critic(config['agent']['config']['critic'], env)
+        # build critic model
+        config['agent']['config']['critic'] = create_critic(config['agent']['config']['critic'], env)
 
-    # build critic_b model if present in config
-    config['agent']['config']['critic_b'] = create_critic(config['agent']['config']['critic_b'], env) if config['agent']['config'].get('critic_b', None) else None
+        # build critic_b model if present in config
+        config['agent']['config']['critic_b'] = create_critic(config['agent']['config']['critic_b'], env) if config['agent']['config'].get('critic_b', None) else None
 
     # create noise object if present in config
     if config['agent']['config'].get('noise', None):

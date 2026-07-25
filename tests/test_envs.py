@@ -335,10 +335,15 @@ class TestNextStepManagerBasedRLEnv:
         assert (obs["policy"][1:, 1] == 3.0).all()
         assert not term[1:].any() and not trunc[1:].any()
 
-        # --- phantom step: reset obs, reward 0, not done, re-reset, mask cleared
+        # --- phantom step: reset obs, not done, re-reset, mask cleared.
+        # NOTE: production no longer zeroes the phantom step's reward inside the
+        # env (the old `rewards[ids] = 0.0` is disabled); phantom rewards are
+        # masked downstream instead (trainer `valid_steps = ~prev_done`, buffer
+        # `first_steps`, and VectorNStepReward's `active = ~prev_done`). With
+        # this fake env (reward == age) the passed-through value is 1.0.
         obs, rewards, term, trunc, _ = env.step(None)
         assert obs["policy"][0, 1].item() == 0.0  # RESET age
-        assert rewards[0].item() == 0.0
+        assert rewards[0].item() == 1.0  # passes through; masked downstream
         assert not term[0].item() and not trunc[0].item()
         assert (env.reset_count[0] - rc0[0]).item() == 2  # done-reset + phantom re-reset
         assert not env._phantom_mask.any()
@@ -589,8 +594,10 @@ class TestIsaacSimIntegration:
         Franka reach only ever ends via ``time_out`` (truncation), so the
         ``NextStepManagerBasedRLEnv`` conversion must (1) return the *terminal*
         observation on the truncation step, then (2) emit a clean phantom on the
-        very next step - reward 0, no done flags, fresh reset obs - which the
-        trainer masks out. This is the one path the CPU fake base can't prove.
+        very next step - no done flags, fresh reset obs - which the trainer
+        masks out downstream (phantom rewards pass through the env unzeroed;
+        see the matching note in TestNextStepManagerBasedRLEnv). This is the
+        one path the CPU fake base can't prove.
         """
         env.reset(seed=42)
         act_dim = int(np.prod(env.single_action_space.shape))
@@ -610,7 +617,9 @@ class TestIsaacSimIntegration:
         phantom = env.step(zero)  # the masked phantom step for the done envs
         assert not phantom.terminations[done].any()
         assert not phantom.truncations[done].any()
-        assert T.allclose(phantom.rewards[done], T.zeros_like(phantom.rewards[done]))
+        # Phantom rewards pass through finite (masked downstream, not zeroed
+        # in the env - same contract as the CPU fake-base test).
+        assert T.isfinite(phantom.rewards[done]).all()
         # terminal obs (pre-reset) must differ from the phantom reset obs
         assert not T.allclose(terminal[done], phantom.states[done])
 

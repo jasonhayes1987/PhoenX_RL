@@ -1,4 +1,4 @@
-from scripts.agent import create_intrinsic_motivation, create_normalizer, create_actor, create_critic
+from scripts.agent import apply_model_config, create_intrinsic_motivation, create_normalizer, create_actor, create_critic
 from app.rl_agents import DDPG
 from app.env_wrapper import EnvWrapper
 from app.schedulers import ScheduleWrapper
@@ -15,11 +15,13 @@ def build(config: dict, env: EnvWrapper) -> DDPG:
     Returns:
         DDPG: The built DDPG agent.
     """
-    # build policy
-    config['agent']['config']['policy'] = create_actor(config['agent']['config']['policy'], env)
+    # Canonical 'model:' schema (roots/trunk/branches) or legacy per-model keys
+    if not apply_model_config(config['agent']['config'], env):
+        # build policy
+        config['agent']['config']['policy'] = create_actor(config['agent']['config']['policy'], env)
 
-    # build critic model
-    config['agent']['config']['critic'] = create_critic(config['agent']['config']['critic'], env)
+        # build critic model
+        config['agent']['config']['critic'] = create_critic(config['agent']['config']['critic'], env)
 
     # create noise object if present in config
     if config['agent']['config'].get('noise', None):

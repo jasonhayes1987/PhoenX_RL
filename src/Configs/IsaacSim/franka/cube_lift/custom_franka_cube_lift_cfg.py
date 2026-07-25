@@ -16,10 +16,13 @@ ISAACLAB_TASKS_PATH = os.path.join(ISAACLAB_PATH, 'isaaclab_tasks')
 sys.path.append(ISAACLAB_PATH)
 sys.path.append(ISAACLAB_TASKS_PATH)
 
+import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 import isaaclab_tasks.manager_based.manipulation.lift.mdp as mdp
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import TiledCameraCfg
 from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import (
     ObservationsCfg as LiftObservationsCfg,
 )
@@ -135,5 +138,126 @@ class FrankaCubeLiftEnvCfg_Custom_Goal_PLAY(FrankaCubeLiftEnvCfg_Custom_Goal):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        self.observations.policy.enable_corruption = False
+
+
+# =============================================================================
+# Multi-modal (camera + proprioception) variants
+# =============================================================================
+# Adds a per-env table-view TiledCamera and exposes it as its OWN observation
+# group ('rgb'), alongside the standard 'policy' state group. With the PhoenX
+# wrapper configured as `obs_key: null`, the agent receives a dict observation
+#   { 'policy': (N, 36) float32, 'rgb': (N, H, W, 3) uint8 }
+# which maps directly onto the roots -> trunk -> branches architecture
+# (see src/Configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml).
+#
+# NOTE: requires `enable_cameras: true` in the env config so the Kit app
+# launches with tiled rendering.
+
+CAMERA_WIDTH = 84
+CAMERA_HEIGHT = 84
+
+
+@configclass
+class CameraObservationsCfg(LiftObservationsCfg):
+    """Lift observations plus a separate 'rgb' image group."""
+
+    @configclass
+    class RGBCfg(ObsGroup):
+        """Raw RGB frames from the table camera (uint8, channels-last).
+
+        normalize=False keeps uint8 so the rollout buffer stores images
+        compactly; the model casts/scales at its input boundary.
+        """
+
+        image = ObsTerm(
+            func=mdp.image,
+            params={"sensor_cfg": SceneEntityCfg("table_cam"), "data_type": "rgb",
+                    "normalize": False},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    rgb: RGBCfg = RGBCfg()
+
+
+@configclass
+class FrankaCubeLiftCameraEnvCfg(FrankaCubeLiftEnvCfg_Custom_Limits):
+    """Cube lift with full state + a table-view RGB camera (pipeline check).
+
+    The state group still contains object_position, so this variant verifies
+    the multi-modal plumbing without REQUIRING vision to solve the task.
+    """
+
+    observations: CameraObservationsCfg = CameraObservationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Per-env tiled camera looking at the table workspace (pose adapted
+        # from IsaacLab's Franka stack visuomotor table_cam).
+        self.scene.table_cam = TiledCameraCfg(
+            prim_path="{ENV_REGEX_NS}/table_cam",
+            update_period=0.0,
+            height=CAMERA_HEIGHT,
+            width=CAMERA_WIDTH,
+            data_types=["rgb"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=24.0, focus_distance=400.0,
+                horizontal_aperture=32.0, clipping_range=(0.1, 2.0),
+            ),
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(1.3, 0.0, 0.4), rot=(0.35355, -0.43534, -0.43534, 0.35355),
+                convention="ros",
+            ),
+        )
+
+        # Remove action rate and joint velocity curriculum
+        self.curriculum.action_rate = None
+        self.curriculum.joint_vel = None
+
+        # Fresh camera frames for the spliced terminal/reset observations the
+        # NextStep autoreset conversion captures.
+        self.rerender_on_reset = True
+        # Disable DLSS antialiasing for tiled-render throughput.
+        self.sim.render.antialiasing_mode = "OFF"
+
+
+@configclass
+class FrankaCubeLiftCameraBlindEnvCfg(FrankaCubeLiftCameraEnvCfg):
+    """Camera cube lift with object_position REMOVED from the state group.
+
+    The cube's location is only observable through the camera — the true test
+    that the vision root carries task-relevant information.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        # The policy state keeps joints + target command + last action, but
+        # loses the ground-truth object position (36 -> 33 features).
+        self.observations.policy.object_position = None
+
+
+@configclass
+class FrankaCubeLiftCameraEnvCfg_PLAY(FrankaCubeLiftCameraEnvCfg):
+    """Play / evaluation version with fewer environments and no corruption."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 16
+        self.scene.env_spacing = 2.5
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class FrankaCubeLiftCameraBlindEnvCfg_PLAY(FrankaCubeLiftCameraBlindEnvCfg):
+    """Play / evaluation version with fewer environments and no corruption."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 16
         self.scene.env_spacing = 2.5
         self.observations.policy.enable_corruption = False

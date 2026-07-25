@@ -8,6 +8,10 @@ import math
 
 from .env_wrapper import Observation, Action, EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from .her import HindsightRelabeler, AchievedGoalPool
+from .obs_utils import (
+    alloc_from_spec, obs_batch_size, obs_spec_from_space, tree_assign,
+    tree_clone, tree_detach_clone, tree_index, tree_map, tree_stack, tree_zero_,
+)
 from .torch_utils import get_device
 
 
@@ -109,15 +113,24 @@ class Buffer:
         self.device = get_device(device)
         self.env_steps = 0 # Tracks how many steps have been taken in the environment
 
-        # Set observation, goal, and action space shapes
-        if isinstance(self.env.single_observation_space, gym.spaces.Dict):
-            self.obs_space_shape = self.env.single_observation_space[self.env.obs_key].shape
+        # Set observation, goal, and action space storage specs.
+        # obs_spec is either a single (shape, dtype) tuple (flat obs) or a
+        # {key: (shape, dtype)} dict (multi-modal Dict obs with obs_key=None).
+        obs_space = self.env.single_observation_space
+        self.obs_spec = obs_spec_from_space(
+            obs_space, self.env.obs_key, (self.env.goal_key, self.env.ach_goal_key)
+        )
+        if isinstance(obs_space, gym.spaces.Dict):
+            if self.env.obs_key is not None:
+                self.obs_space_shape = obs_space[self.env.obs_key].shape
+            else:
+                self.obs_space_shape = None  # multi-modal: shapes live in obs_spec
             if self.env.goal_key is not None:
-                self.goal_space_shape = self.env.single_observation_space[self.env.goal_key].shape
+                self.goal_space_shape = obs_space[self.env.goal_key].shape
             else:
                 self.goal_space_shape = None
         else:
-            self.obs_space_shape = self.env.single_observation_space.shape
+            self.obs_space_shape = obs_space.shape
             self.goal_space_shape = None
 
         if isinstance(self.env.single_action_space, gym.spaces.Box):
@@ -126,6 +139,37 @@ class Buffer:
         else: # Discrete
             self.action_type = T.long
             self.action_space_shape = (1,)
+
+        # Storage dtypes are reconciled against the FIRST real observation:
+        # some envs misreport dtypes in their observation space (IsaacLab
+        # manager-based envs declare float32 Boxes even for uint8 camera
+        # groups). Trusting the space would silently store uint8 frames as
+        # float 0..255 and bypass the models' uint8 -> [0,1] input scaling.
+        self._storage_dtypes_synced = False
+
+    def _sync_storage_dtypes(self, states) -> None:
+        """One-time cast of per-key state storage to the actual data dtypes.
+
+        Only applies to multi-modal dict storage (flat observations keep the
+        legacy float32 storage). Casting (rather than reallocating) preserves
+        any content restored by ``load_state``.
+        """
+        if self._storage_dtypes_synced:
+            return
+        self._storage_dtypes_synced = True
+        if not (isinstance(self.obs_spec, dict) and isinstance(states, dict)):
+            return
+        changed = {
+            k: (shape, states[k].dtype)
+            for k, (shape, dtype) in self.obs_spec.items()
+            if k in states and T.is_tensor(states[k]) and states[k].dtype != dtype
+        }
+        if not changed:
+            return
+        self.obs_spec = {**self.obs_spec, **changed}
+        for k, (_, dtype) in changed.items():
+            self.states[k] = self.states[k].to(dtype)
+            self.next_states[k] = self.next_states[k].to(dtype)
 
     def _empty_ep_buffer(self) -> Dict[str, List[T.Tensor]]:
         return {
@@ -179,7 +223,8 @@ class Buffer:
     def save_state(self, path) -> None:
         """Persist the stored transitions + counters (optional resume data).
 
-        Generic over subclasses: every tensor attribute and every int/float/bool
+        Generic over subclasses: every tensor attribute (including dict-of-
+        tensor storage for multi-modal observations) and every int/float/bool
         counter is dumped. The SumTree of a prioritized buffer is handled
         explicitly since it is a nested object rather than a bare tensor.
         """
@@ -190,6 +235,9 @@ class Buffer:
         for key, value in self.__dict__.items():
             if isinstance(value, T.Tensor):
                 tensors[key] = value.detach().cpu()
+            elif (isinstance(value, dict) and value
+                  and all(isinstance(v, T.Tensor) for v in value.values())):
+                tensors[key] = {k: v.detach().cpu() for k, v in value.items()}
             elif isinstance(value, (int, float, bool)):
                 scalars[key] = value
         extra = {}
@@ -203,7 +251,10 @@ class Buffer:
         """Restore transitions + counters written by :meth:`save_state`."""
         ckpt = T.load(str(path), map_location=self.device, weights_only=False)
         for key, value in ckpt.get("tensors", {}).items():
-            setattr(self, key, value.to(self.device))
+            if isinstance(value, dict):
+                setattr(self, key, {k: v.to(self.device) for k, v in value.items()})
+            else:
+                setattr(self, key, value.to(self.device))
         for key, value in ckpt.get("scalars", {}).items():
             setattr(self, key, value)
         sum_tree = getattr(self, "sum_tree", None)
@@ -241,17 +292,22 @@ class ReplayBuffer(Buffer):
         self.N = N  # N-step hyperparameter
         self.samples_added = 0
 
-        
-        self.states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        # states/next_states allocate from the obs spec: a single tensor for
+        # flat observations or a dict-of-tensors for multi-modal Dict obs
+        # (per-key dtype preserved — uint8 images stay uint8 in storage).
+        self.states = alloc_from_spec(self.obs_spec, (buffer_size, N), self.device)
         self.actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.raw_actions = T.zeros((buffer_size, N, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.log_probs = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
         self.intrinsic_rewards = T.zeros((buffer_size, N), dtype=T.float32, device=self.device)
-        self.next_states = T.zeros((buffer_size, N, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        self.next_states = alloc_from_spec(self.obs_spec, (buffer_size, N), self.device)
         self.terminations = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
         self.truncations = T.zeros((buffer_size, N), dtype=T.bool, device=self.device)
         self.trajectory_lengths = T.zeros((buffer_size,), dtype=T.int64, device=self.device)
+        # R2D2 stored state: recurrent hidden at each window's first step,
+        # flattened per key (lazily allocated on the first add carrying it).
+        self.initial_hidden: Dict[str, T.Tensor] | None = None
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             self.desired_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
             self.state_achieved_goals = T.zeros((buffer_size, N, *self.goal_space_shape), dtype=T.float32, device=self.device)
@@ -293,7 +349,11 @@ class ReplayBuffer(Buffer):
             if prev_dones[i]:
                 ep_buf = self._ep_buffers[i]
                 if len(ep_buf["states"]) > 0:
-                    episode = {k: T.stack(v) for k, v in ep_buf.items() if all(x is not None for x in v)}
+                    # tree_stack handles both tensor and dict-of-tensor steps
+                    episode = {
+                        k: tree_stack(v)
+                        for k, v in ep_buf.items() if all(x is not None for x in v)
+                    }
 
                     # Add achieved goals to pool if strategy = 'random'
                     if self.hindsight.goal_pool is not None:
@@ -309,13 +369,13 @@ class ReplayBuffer(Buffer):
                 
             # Add current step data to episode buffer
             ep_buf = self._ep_buffers[i]
-            ep_buf["states"].append(prev_observation.states[i].detach().clone())
+            ep_buf["states"].append(tree_detach_clone(tree_index(prev_observation.states, i)))
             ep_buf["actions"].append(actions.actions[i].detach().clone())
             ep_buf["rewards"].append(cur_observation.rewards[i].detach().clone())
             ir = (cur_observation.intrinsic_rewards[i].detach().clone()
               if cur_observation.intrinsic_rewards is not None else zero_ir.clone())
             ep_buf["intrinsic_rewards"].append(ir)
-            ep_buf["next_states"].append(cur_observation.states[i].detach().clone())
+            ep_buf["next_states"].append(tree_detach_clone(tree_index(cur_observation.states, i)))
             ep_buf["terminations"].append(cur_observation.terminations[i].detach().clone())
             ep_buf["truncations"].append(cur_observation.truncations[i].detach().clone())
             ep_buf["state_achieved_goals"].append(prev_observation.ach_goals[i].detach().clone())
@@ -345,8 +405,9 @@ class ReplayBuffer(Buffer):
         next_state_achieved_goals: T.Tensor | None = None,
         desired_goals: T.Tensor | None = None,
         trajectory_lengths: T.Tensor | None = None,
+        initial_hidden: Dict[str, T.Tensor] | None = None,
     ) -> None:
-        batch_size = len(states)
+        batch_size = obs_batch_size(states)
         start_idx = self.samples_added % self.buffer_size
         end_idx = (self.samples_added + batch_size) % self.buffer_size
 
@@ -355,19 +416,30 @@ class ReplayBuffer(Buffer):
         else:
             indices = T.cat([T.arange(start_idx, self.buffer_size, device=self.device), T.arange(0, end_idx, device=self.device)])
 
+        # R2D2 stored state: lazily allocate on first sight, then ring-write.
+        if initial_hidden is not None:
+            if self.initial_hidden is None:
+                self.initial_hidden = {
+                    k: T.zeros((self.buffer_size, *v.shape[1:]), dtype=T.float32, device=self.device)
+                    for k, v in initial_hidden.items()
+                }
+            tree_assign(self.initial_hidden, indices, initial_hidden)
+        elif self.initial_hidden is not None:
+            # Entries without stored state (e.g. HER-relabeled windows) fall
+            # back to zero-initialized hidden.
+            for buf in self.initial_hidden.values():
+                buf[indices] = 0.0
+
         # Unsqueeze to add dimenstion at index -1 if feature dim missing
-        if states.ndim == 2:
-            # states = states[:, T.newaxis, :]
-            states = states.unsqueeze(-1)
+        # (per-leaf for dict observations: scalar-feature leaves only)
+        states = tree_map(lambda x: x.unsqueeze(-1) if x.ndim == 2 else x, states)
         if actions.ndim == 2:
             # actions = actions[:, T.newaxis, :]
             actions = actions.unsqueeze(-1)
         if rewards.ndim == 1:
             # rewards = rewards[:, T.newaxis]
             rewards = rewards.unsqueeze(-1)
-        if next_states.ndim == 2:
-            # next_states = next_states[:, T.newaxis, :]
-            next_states = next_states.unsqueeze(-1)
+        next_states = tree_map(lambda x: x.unsqueeze(-1) if x.ndim == 2 else x, next_states)
         if terminations.ndim == 1:
             # terminations = terminations[:, T.newaxis]
             terminations = terminations.unsqueeze(-1)
@@ -388,11 +460,13 @@ class ReplayBuffer(Buffer):
                 # desired_goals = desired_goals[:, T.newaxis, :]
                 desired_goals = desired_goals.unsqueeze(-1)
 
-        # Store transitions (detach to avoid holding computation graphs)
-        self.states[indices] = states.detach().to(device=self.device, dtype=T.float32)
+        # Store transitions (detach to avoid holding computation graphs);
+        # tree_assign casts each leaf to its storage dtype/device.
+        self._sync_storage_dtypes(states)
+        tree_assign(self.states, indices, tree_map(lambda x: x.detach(), states))
         self.actions[indices] = actions.detach().to(device=self.device, dtype=self.action_type)
         self.rewards[indices] = rewards.detach().to(device=self.device, dtype=T.float32)
-        self.next_states[indices] = next_states.detach().to(device=self.device, dtype=T.float32)
+        tree_assign(self.next_states, indices, tree_map(lambda x: x.detach(), next_states))
         self.terminations[indices] = terminations.detach().to(device=self.device, dtype=T.bool)
         self.truncations[indices] = truncations.detach().to(device=self.device, dtype=T.bool)
         self.trajectory_lengths[indices] = trajectory_lengths.detach().to(device=self.device, dtype=T.int64)
@@ -435,17 +509,19 @@ class ReplayBuffer(Buffer):
         indices = self.gen.integers(0, size, (samples,))
 
         sample = {
-            "states": self.states[indices].clone(),
+            "states": tree_clone(tree_index(self.states, indices)),
             "actions": self.actions[indices].clone(),
             "rewards": self.rewards[indices].clone(),
             "intrinsic_rewards": self.intrinsic_rewards[indices].clone(),
-            "next_states": self.next_states[indices].clone(),
+            "next_states": tree_clone(tree_index(self.next_states, indices)),
             "terminations": self.terminations[indices].clone(),
             "truncations": self.truncations[indices].clone(),
             "trajectory_lengths": self.trajectory_lengths[indices].clone(),
             "raw_actions": self.raw_actions[indices].clone(),
             "log_probs": self.log_probs[indices].clone(),
         }
+        if self.initial_hidden is not None:
+            sample["initial_hidden"] = tree_clone(tree_index(self.initial_hidden, indices))
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             sample.update({
                 "state_achieved_goals": self.state_achieved_goals[indices].clone(),
@@ -465,11 +541,11 @@ class ReplayBuffer(Buffer):
         """
         Reset the buffer to all zeros and the counter to zero.
         """
-        self.states.zero_()
+        tree_zero_(self.states)
         self.actions.zero_()
         self.rewards.zero_()
         self.intrinsic_rewards.zero_()
-        self.next_states.zero_()
+        tree_zero_(self.next_states)
         self.terminations.zero_()
         self.truncations.zero_()
         self.trajectory_lengths.zero_()
@@ -513,6 +589,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         alpha: float = 0.6,
         beta_start: float = 0.4,
         beta_iter: int = 100_000,
+        beta_update_freq: int = 1, # Anneal beta every this many sample() calls
         priority: str = "proportional",
         sort_freq: int = 1000, # How often to resort the priorities (in samples added)
         epsilon: float = 1e-6,
@@ -530,10 +607,18 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.alpha = alpha
         self.beta_start = beta_start
         self.beta_iter = beta_iter
+        self.beta_update_freq = beta_update_freq
         self.priority = priority
         self.sort_freq = sort_freq
         self.epsilon = epsilon
         self.beta = beta_start
+        # β annealing progresses per sample() call (i.e. per gradient step),
+        # gated by beta_update_freq.
+        self._sample_calls = 0
+        self._beta_updates = 0
+        # Samples added since the last rank resort (tracked for both priority
+        # modes; only the rank strategy consumes it).
+        self._samples_since_sort = 0
  
         if self.priority == "proportional":
             self.sum_tree = SumTree(buffer_size, self.device)
@@ -541,7 +626,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.priorities = T.zeros(buffer_size, dtype=T.float32, device=self.device)
             self.sorted_indices: T.Tensor | None = None
             self.max_priority_rank = T.tensor(1.0, dtype=T.float32, device=self.device)
-            self._samples_since_sort = 0
             self._seg_cache_key: Tuple[int, int] = (-1, -1)
             self._seg_starts: Optional[T.Tensor] = None
             self._seg_ends: Optional[T.Tensor] = None
@@ -588,9 +672,10 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         next_state_achieved_goals: T.Tensor | None = None,
         desired_goals: T.Tensor | None = None,
         trajectory_lengths: T.Tensor | None = None,
+        initial_hidden: Dict[str, T.Tensor] | None = None,
     ) -> None:
 
-        batch_size = len(states)
+        batch_size = obs_batch_size(states)
         self._samples_since_sort += batch_size
         start_idx = self.samples_added % self.buffer_size
         end_idx = (self.samples_added + batch_size) % self.buffer_size
@@ -616,6 +701,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             next_state_achieved_goals=next_state_achieved_goals,
             desired_goals=desired_goals,
             trajectory_lengths=trajectory_lengths,
+            initial_hidden=initial_hidden,
         )
  
         if self.priority == "proportional":
@@ -623,9 +709,6 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.sum_tree.update(indices, init_priorities)
         else:  # rank
             self.priorities[indices] = self.max_priority_rank.expand(batch_size)
-
-        # Update beta
-        self.update_beta()
  
     def sample(self, samples: int) -> Dict[str, T.Tensor]:
         """
@@ -643,6 +726,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         if size == 0:
             raise ValueError("Cannot sample from empty buffer")
         samples = min(samples, size)
+
+        # Anneal beta per sample() call (a sample precedes each gradient step).
+        self._sample_calls += 1
+        if self._sample_calls % self.beta_update_freq == 0:
+            self.update_beta()
  
         if self.priority == "proportional":
             indices, probs, weights = self._sample_proportional(samples, size)
@@ -653,11 +741,11 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         indices = indices.clamp(max=size - 1)
  
         sample = {
-            "states": self.states[indices].clone(),
+            "states": tree_clone(tree_index(self.states, indices)),
             "actions": self.actions[indices].clone(),
             "rewards": self.rewards[indices].clone(),
             "intrinsic_rewards": self.intrinsic_rewards[indices].clone(),
-            "next_states": self.next_states[indices].clone(),
+            "next_states": tree_clone(tree_index(self.next_states, indices)),
             "terminations": self.terminations[indices].clone(),
             "truncations": self.truncations[indices].clone(),
             "trajectory_lengths": self.trajectory_lengths[indices].clone(),
@@ -667,6 +755,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             "probs": probs,
             "indices": indices,
         }
+        if self.initial_hidden is not None:
+            sample["initial_hidden"] = tree_clone(tree_index(self.initial_hidden, indices))
         if self.env.goal_key is not None and self.goal_space_shape is not None:
             sample.update({
                 "state_achieved_goals": self.state_achieved_goals[indices].clone(),
@@ -775,8 +865,9 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self._seg_ends = seg_ends
  
     def update_beta(self) -> None:
-        """Linearly anneal β from β_start toward 1.0 over beta_iter gradient steps."""
-        progress = min(self.env_steps / self.beta_iter, 1.0)
+        """Linearly anneal β from β_start toward 1.0 over beta_iter updates."""
+        self._beta_updates += 1
+        progress = min(self._beta_updates / self.beta_iter, 1.0)
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
  
     def update_priorities(self, indices: T.Tensor, td_errors: T.Tensor) -> None:
@@ -820,6 +911,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             "alpha": self.alpha,
             "beta_start": self.beta_start,
             "beta_iter": self.beta_iter,
+            "beta_update_freq": self.beta_update_freq,
             "priority": self.priority,
             "sort_freq": self.sort_freq,
             "epsilon": self.epsilon,
@@ -840,14 +932,14 @@ class RolloutBuffer(Buffer):
         super().__init__(env, buffer_size, hindsight, device)
         self.cur_idx = T.zeros((env.num_envs,), dtype=T.long, device=self.device)
 
-        #Instantiate buffers
-        self.states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        #Instantiate buffers (states/next_states: single tensor or per-key dict)
+        self.states = alloc_from_spec(self.obs_spec, (buffer_size, env.num_envs), self.device)
         self.actions = T.zeros((buffer_size, env.num_envs, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.raw_actions = T.zeros((buffer_size, env.num_envs, *self.action_space_shape), dtype=self.action_type, device=self.device)
         self.log_probs = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
         self.rewards = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
         self.intrinsic_rewards = T.zeros((buffer_size, env.num_envs), dtype=T.float32, device=self.device)
-        self.next_states = T.zeros((buffer_size, env.num_envs, *self.obs_space_shape), dtype=T.float32, device=self.device)
+        self.next_states = alloc_from_spec(self.obs_spec, (buffer_size, env.num_envs), self.device)
         self.terminations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
         self.truncations = T.zeros((buffer_size, env.num_envs), dtype=T.bool, device=self.device)
         # Tracks initial steps of each environment (Phantom steps)
@@ -917,13 +1009,15 @@ class RolloutBuffer(Buffer):
         env_ids = T.arange(self.env.num_envs, device=self.device)
 
         
-        # Add values to buffers at indices
-        self.states[idx, env_ids] = states.to(device=self.device, dtype=T.float32)
+        # Add values to buffers at indices (tree_assign casts each leaf to its
+        # storage dtype/device — dict observations write per key)
+        self._sync_storage_dtypes(states)
+        tree_assign(self.states, (idx, env_ids), states)
         self.actions[idx, env_ids] = actions.to(device=self.device, dtype=self.action_type)
         self.rewards[idx, env_ids] = rewards.to(device=self.device, dtype=T.float32)
         if intrinsic_rewards is not None:
             self.intrinsic_rewards[idx, env_ids] = intrinsic_rewards.to(device=self.device, dtype=T.float32)
-        self.next_states[idx, env_ids] = next_states.to(device=self.device, dtype=T.float32)
+        tree_assign(self.next_states, (idx, env_ids), next_states)
         self.terminations[idx, env_ids] = terminations.to(device=self.device, dtype=T.bool)
         self.truncations[idx, env_ids] = truncations.to(device=self.device, dtype=T.bool)
         self.first_steps[idx, env_ids] = first_steps
@@ -954,11 +1048,11 @@ class RolloutBuffer(Buffer):
         first_steps = self.first_steps[:idx].clone()
         valid_indices = (first_steps.reshape(-1) == 0).nonzero()
         sample = {
-            "states": self.states[:idx].clone(),
+            "states": tree_clone(tree_index(self.states, slice(None, idx))),
             "actions": self.actions[:idx].clone(),
             "rewards": self.rewards[:idx].clone(),
             "intrinsic_rewards": self.intrinsic_rewards[:idx].clone(),
-            "next_states": self.next_states[:idx].clone(),
+            "next_states": tree_clone(tree_index(self.next_states, slice(None, idx))),
             "terminations": self.terminations[:idx].clone(),
             "truncations": self.truncations[:idx].clone(),
             "raw_actions": self.raw_actions[:idx].clone(),
@@ -1095,11 +1189,11 @@ class TrajectoryBuffer(RolloutBuffer):
                 continue
 
             trajectory = {
-                "states": self.states[:idx, i][valid_steps].clone(),
+                "states": tree_clone(tree_index(tree_index(self.states, (slice(None, idx), i)), valid_steps)),
                 "actions": self.actions[:idx, i][valid_steps].clone(),
                 "rewards": self.rewards[:idx, i][valid_steps].clone(),
                 "intrinsic_rewards": self.intrinsic_rewards[:idx, i][valid_steps].clone(),
-                "next_states": self.next_states[:idx, i][valid_steps].clone(),
+                "next_states": tree_clone(tree_index(tree_index(self.next_states, (slice(None, idx), i)), valid_steps)),
                 "terminations": self.terminations[:idx, i][valid_steps].clone(),
                 "truncations": self.truncations[:idx, i][valid_steps].clone(),
                 "raw_actions": self.raw_actions[:idx, i][valid_steps].clone(),

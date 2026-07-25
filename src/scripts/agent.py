@@ -8,7 +8,10 @@ import gymnasium as gym
 import numpy as np
 import yaml
 
-from app.models import StochasticContinuousPolicy, StochasticDiscretePolicy, ActorModel, ValueModel, DiscreteCritic, ContinuousCritic
+from app.models import (
+    StochasticContinuousHead, StochasticDiscreteHead, DeterministicActorHead,
+    ValueHead, DiscreteQHead, ContinuousQHead, modular_parts_from_config,
+)
 from app.buffer import Buffer
 from app.her import HindsightRelabeler
 from app.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
@@ -56,58 +59,94 @@ def create_env(config: dict) -> EnvWrapper:
     raise ValueError(f"Invalid environment type: {env_type}")
 
 
-def create_policy(config: dict, env: EnvWrapper) -> StochasticContinuousPolicy | StochasticDiscretePolicy:
-    """Create a policy from a config.
+def apply_model_config(agent_cfg: dict, env: EnvWrapper) -> bool:
+    """Handle the canonical ``model:`` schema (roots/trunk/branches).
+
+    If ``agent_cfg`` carries a ``model`` entry it is decomposed into live
+    ``roots`` / ``trunk`` / per-role branch heads (plus model-wide
+    ``optimizer_params`` / ``lr_scheduler`` / ``shared_update``) written back
+    into ``agent_cfg``, and True is returned. Legacy per-model configs
+    (``policy:`` / ``value:`` / ...) return False and are handled by the
+    per-algorithm builders below.
+    """
+    model_cfg = agent_cfg.pop('model', None)
+    if not model_cfg:
+        return False
+    inner = model_cfg.get('config', model_cfg)
+    parts = modular_parts_from_config(inner, env)
+    agent_cfg['roots'] = parts['roots']
+    agent_cfg['trunk'] = parts['trunk']
+    for role, head in parts['branches'].items():
+        agent_cfg[role] = head
+    if parts['optimizer_params'] is not None:
+        agent_cfg.setdefault('optimizer_params', parts['optimizer_params'])
+    if parts['lr_scheduler'] is not None:
+        agent_cfg.setdefault('lr_scheduler', parts['lr_scheduler'])
+    if parts['shared_update']:
+        agent_cfg.setdefault('shared_update', parts['shared_update'])
+    return True
+
+
+def create_policy(config: dict, env: EnvWrapper) -> StochasticContinuousHead | StochasticDiscreteHead:
+    """Create a stochastic policy head from a config.
     
     Args:
         config (dict): The config to create the policy from.
         env (EnvWrapper): The environment to create the policy for.
         
     Returns:
-        StochasticContinuousPolicy | StochasticDiscretePolicy: The created policy.
+        StochasticContinuousHead | StochasticDiscreteHead: The created policy head.
     """
     config['env'] = env
     config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
     if config['distribution'] in ['categorical']:
         config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
-        return StochasticDiscretePolicy(**config)
+        return StochasticDiscreteHead(**config)
     elif config['distribution'] in ['beta', 'kumaraswamy', 'normal']:
-        return StochasticContinuousPolicy(**config)
+        return StochasticContinuousHead(**config)
     else:
         raise ValueError(f"Invalid distribution: {config['distribution']}")
 
 
-def create_actor(config: dict, env: EnvWrapper) -> ActorModel:
-    """Create an actor from a config.
+def create_actor(config: dict, env: EnvWrapper) -> DeterministicActorHead:
+    """Create a deterministic actor head from a config.
     
     Args:
         config (dict): The config to create the actor from.
         env (EnvWrapper): The environment to create the actor for.
         
     Returns:
-        ActorModel: The created actor.
+        DeterministicActorHead: The created actor head.
     """
     config['env'] = env
     config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
-    return ActorModel(**config)
+    return DeterministicActorHead(**config)
 
 
-def create_critic(config: dict, env: EnvWrapper) -> DiscreteCritic | ContinuousCritic:
-    """Create a critic from a config.
+def create_value(config: dict, env: EnvWrapper) -> ValueHead:
+    """Create a value head from a config."""
+    config = dict(config)
+    config['env'] = env
+    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
+    return ValueHead(**config)
+
+
+def create_critic(config: dict, env: EnvWrapper) -> DiscreteQHead | ContinuousQHead:
+    """Create a Q-head from a config.
     
     Args:
         config (dict): The config to create the critic from.
         env (EnvWrapper): The environment to create the critic for.
         
     Returns:
-        DiscreteCritic | ContinuousCritic: The created critic.
+        DiscreteQHead | ContinuousQHead: The created Q head.
     """
     config['env'] = env
     config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
     if isinstance(env.single_action_space, gym.spaces.Discrete):
-        return DiscreteCritic(**config)
+        return DiscreteQHead(**config)
     elif isinstance(env.single_action_space, gym.spaces.Box):
-        return ContinuousCritic(**config)
+        return ContinuousQHead(**config)
     else:
         raise ValueError(f"Invalid action space: {env.single_action_space}")
 
@@ -123,7 +162,9 @@ def create_normalizer(config: dict, env: EnvWrapper, key: str | None = None) -> 
     Returns:
         RunningNorm | BatchNorm | RewardNorm: The created normalizer.
     """
-    if config['type'] != 'RewardNorm':
+    # RewardNorm needs no feature dim; DictNormalizer/ImageScale configure
+    # their (per-key) dims themselves.
+    if config['type'] not in ('RewardNorm', 'DictNormalizer', 'ImageScale'):
         num_features = infer_dim(env, key)
         config['config'].update({'num_features': num_features})
     return normalizer_factory(config)
@@ -215,7 +256,7 @@ def build_agent(config: dict, env: EnvWrapper) -> Agent:
     return build(config, env)
 
 
-def build_trainer_from_config(config: dict) -> Trainer:
+def build_trainer_from_config(config: dict, log_level: str | None = None) -> Trainer:
     seed = config.get('schedule', {}).get('seed', None)
     if seed is not None:
         set_seed(seed)
@@ -235,11 +276,11 @@ def build_trainer_from_config(config: dict) -> Trainer:
             success_criterion=success_criterion,
             renderer=renderer,
             callbacks=callbacks,
-            log_level=config.get('log_level', 'INFO'),
+            log_level=log_level if log_level is not None else config.get('log_level', 'INFO'),
             save_dir=config.get('save_dir', 'models/'),
         )
 
 
-def build_trainer_from_config_path(config_path: str | Path) -> Trainer:
+def build_trainer_from_config_path(config_path: str | Path, log_level: str | None = None) -> Trainer:
     config = load_config(config_path)
-    return build_trainer_from_config(config)
+    return build_trainer_from_config(config, log_level)

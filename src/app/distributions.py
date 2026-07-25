@@ -20,24 +20,6 @@ def stable_log1m_tanh_sq(z: T.Tensor) -> T.Tensor:
     """
     return 2.0 * (math.log(2.0) - z - F.softplus(-2.0 * z))
 
-# class TanhBijector:
-#     """
-#     Bijective tanh transformation with numerical safeguards for stable squashing 
-#     of unbounded Gaussians to bounded continuous action spaces.
-#     Provides forward (tanh), inverse (clamped atanh), and Jacobian correction.
-#     """
-#     def __init__(self, epsilon: float = 1e-6):
-#         self.epsilon = epsilon
-
-#     def atanh(self, x: T.Tensor) -> T.Tensor:
-#         """Stable atanh."""
-#         x = x.clamp(min=-1.0 + self.epsilon, max=1.0 - self.epsilon)
-#         return 0.5 * (x.log1p() - (-x).log1p())
-
-#     def log_prob_correction(self, x: T.Tensor) -> T.Tensor:
-#         """log|det J_tanh| = log(1 - tanh²(x))"""
-#         return T.log(1.0 - T.tanh(x) ** 2 + self.epsilon)
-
 
 class SquashedNormal(TransformedDistribution):
     """
