@@ -1,0 +1,122 @@
+# Reinforce tuned for LunarLander-v3
+
+device: &device cuda
+save_dir: &save_dir ./Trained_Models/LunarLander-v3/Reinforce/
+log_level: INFO
+
+schedule:
+  stop_unit: timestep
+  stop_units: &stop_units 500000
+  learn_every_unit: episode
+  learn_every: 10
+  seed: &seed 42
+
+agent:
+  type: Reinforce
+  config:
+    discount: 0.99
+    entropy_coefficient: &entropy_coefficient 0.01
+    auto_entropy_tuning: false
+    entropy_lr: 1.0e-2
+    target_entropy_scale: 0.98
+    log_level: INFO
+    _diag_freq: 10
+
+env:
+  type: envpool # "isaacsim" or "gymnasium" or "envpool"
+  config:
+    # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
+    cfg: LunarLander-v3
+    num_envs: 8
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
+    # wrappers: [{"type": "OneHotObservationWrapper", "params": {}}]
+    wrappers: []
+    render_mode: null
+    seed: *seed
+    
+
+models:
+  policy:
+    layer_config:
+      - type: dense
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+      - type: dense
+        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+    output_config:
+      - type: dense
+        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
+    optimizer_params: {type: Adam, params: {lr: 0.001}}
+    distribution: categorical
+    temperature: &temperature 1.0
+    device: *device
+
+  value:
+    layer_config:
+      - type: dense
+        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+      - type: dense
+        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+      # - type: relu
+    output_config:
+      - type: dense
+        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
+    optimizer_params: {type: Adam, params: {lr: 0.0001}}
+    device: *device
+
+normalizers:
+  advantage:
+    type: BatchNorm
+    config:
+      clip_value: 10.0
+      device: *device
+      log_level: INFO
+      # kwargs
+      _diag_freq: 1024
+  state:
+    type: RunningNorm
+    config:
+      clip_value: 10.0
+      device: *device
+      log_level: INFO
+      # kwargs
+      _diag_freq: 1024
+  reward:
+    type: RewardNorm
+    config:
+      gamma: 0.99
+      clip_value: 10.0
+      device: *device
+      log_level: INFO
+      # kwargs
+      _diag_freq: 1024
+
+# entropy_schedule:
+#   schedule_type: "linear"
+#   steps: 100000
+#   start_value: *entropy_coefficient
+#   end_value: 0.001
+
+# temperature_schedule:
+#   schedule_type: "cosine"
+#   steps: 500000
+#   start_value: *temperature
+#   end_value: 1.0
+
+buffer:
+  type: TrajectoryBuffer
+  config:
+    buffer_size: 1001
+    device: *device
+
+renderer:
+  render_freq: 1000 # episodes
+  save_dir: *save_dir
+
+callbacks:
+  - type: WandbCallback
+    config: {project_name: LunarLander-v3}

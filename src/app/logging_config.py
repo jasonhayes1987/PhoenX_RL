@@ -1,51 +1,68 @@
 import logging
 from logging.handlers import RotatingFileHandler
-import os
+from pathlib import Path
 
-# Clear the debug.log file if it exists
-# log_file = 'debug.log'
-# if os.path.exists(log_file):
-#     with open(log_file, 'w'):
-#         pass
+_LOGGING_CONFIGURED = False
+_APP_LOGGER_NAME = "app"
 
 
-def get_logger(name, level='debug'):
-    logger = logging.getLogger(name)
-
-    if not logger.handlers:
-        if level == 'debug':
-            logger.setLevel(logging.DEBUG)
-        elif level == 'info':
-            logger.setLevel(logging.INFO)
-        elif level == 'warning':
-            logger.setLevel(logging.WARNING)
-        elif level == 'error':
-            logger.setLevel(logging.ERROR)
-
-        # Create handlers
-        console_handler = logging.StreamHandler()
-        console_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(console_format)
-        logger.addHandler(console_handler)
-
-        file_handler = RotatingFileHandler('app.log', maxBytes=1024*1024, backupCount=5)
-        file_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(file_format)
-        logger.addHandler(file_handler)
-
-        # Set levels for handlers
-        # console_handler.setLevel(logging.INFO)  # Show INFO and above in console
-        # file_handler.setLevel(logging.DEBUG)  # Log everything to file
+def _set_level(level: str | int) -> int:
+    if isinstance(level, int):
+        return level
+    return getattr(logging, str(level).upper(), logging.INFO)
 
 
-        # Set up root logger to WARNING level to suppress library debug messages
-        logging.getLogger().setLevel(logging.WARNING)
+def configure_logging(level: str = "INFO", log_dir: str | Path | None = None) -> logging.Logger:
+    global _LOGGING_CONFIGURED
 
-        # Set specific loggers to WARNING level to suppress their debug messages
-        logging.getLogger('matplotlib').setLevel(logging.WARNING)
-        logging.getLogger('numba').setLevel(logging.WARNING)
-        logging.getLogger('PIL').setLevel(logging.WARNING)
-        logging.getLogger('urllib3').setLevel(logging.WARNING)
-        logging.getLogger('ray').setLevel(logging.INFO)  # Keep Ray at INFO level for important messages
+    app_logger = logging.getLogger(_APP_LOGGER_NAME)
+    app_logger.setLevel(_set_level(level))
+    app_logger.propagate = False
+
+    if _LOGGING_CONFIGURED:
+        return app_logger
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    # console_handler = logging.StreamHandler()
+    # console_handler.setLevel(logging.NOTSET)
+    # console_handler.setFormatter(formatter)
+
+    # Configure logging path
+    if log_dir is not None:
+        log_path = Path(log_dir) / "app.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        log_path = Path(__file__).resolve().parents[1] / "app.log"
+
+    # Configure handler
+    file_handler = RotatingFileHandler(
+        log_path,
+        mode="w",
+        # maxBytes=1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.NOTSET)
+    file_handler.setFormatter(formatter)
+
+    app_logger.handlers.clear()
+    # app_logger.addHandler(console_handler)
+    app_logger.addHandler(file_handler)
+
+    _LOGGING_CONFIGURED = True
+    return app_logger
+
+
+def get_logger(name: str | None = None, level: str | int | None = None) -> logging.Logger:
+    app_logger = logging.getLogger(_APP_LOGGER_NAME)
+    logger = app_logger if not name else app_logger.getChild(name)
+
+    if level is None:
+        logger.setLevel(logging.NOTSET)
+    else:
+        logger.setLevel(_set_level(level))
 
     return logger

@@ -2,10 +2,10 @@
 name = "phoenx_rl"
 version = "0.1.0"
 description = "PhoenX Reinforcement Learning framework with IsaacLab integration"
-authors = ["Your Name <your.email@example.com>"]
-license = "MIT"  # Matches your LICENSE file
+authors = "Jason Hayes"
+license = "MIT"
 readme = "README.md"
-repository = "https://github.com/yourusername/phoennx_rl"  # Optional: Add if you have a repo
+repository = "https://github.com/jasonhayes1987/PhoenX_RL"
 keywords = ["reinforcement-learning", "rl", "isaaclab", "gymnasium", "pytorch"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -29,7 +29,7 @@ pyyaml = "^6.0.1"
 requests = "^2.31.0"
 setuptools = "^70.0.0"
 typing-extensions = "4.12.2"
-numpy = "^2.1.0"
+numpy = "^1.26.0"
 pandas = "^2.2.3"
 matplotlib = "^3.9.2"
 seaborn = "^0.13.2"
@@ -38,7 +38,7 @@ sympy = "^1.13.0"
 networkx = "^3.3.0"
 jinja2 = "^3.1.0"
 fsspec = "^2024.6.0"
-packaging = "23.0"
+packaging = "^23.1"
 lark = "^1.2.0"
 ale-py = "^0.9.0"
 flask = "^3.0.0"
@@ -54,8 +54,9 @@ ipywidgets = "^8.1.0"
 decorator = "==4.0.2"
 expecttest = "^0.3.0"
 optree = ">=0.9.1"
-wandb = "^0.16.4"
-gymnasium = {extras = ["all"], version = "==1.2.0"}
+wandb = "^0.27.0"
+gymnasium = {extras = ["mujoco", "atari", "box2d", "classic-control", "toy-text", "other"], version = "==1.2.0"}
+envpool = ">=1.0.1"
 
 [tool.poetry.group.dev.dependencies]  # Development dependencies (testing, linting)
 pytest = "^7.4.0"
@@ -70,10 +71,10 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]  # Optional: Entry points for CLI scripts (e.g., run your train.py)
-train = "phoenx_rl.app.train:main"  # Assumes you add a main() to train.py; run with `poetry run train`
+train = "app.scripts.train:main"  # Assumes you add a main() to train.py; run with `poetry run train`
 
 [[tool.poetry.packages]]  # Explicit package discovery (points to src/)
-include = "phoenx_rl"
+include = "app"
 from = "src"
 
 [tool.black]  # Formatter config
@@ -106,3 +107,7 @@ testpaths = ["tests", "src"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+markers = [
+    "isaac: integration tests that boot a real Isaac Sim / isaaclab environment (GPU required)",
+    "slow: long-running tests, e.g. stepping a real env to an episode boundary",
+]

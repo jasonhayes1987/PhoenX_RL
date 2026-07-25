@@ -7,6 +7,14 @@ Tests if Isaac Lab and related dependencies are properly installed and configure
 import sys
 import os
 
+sys.path.append('/workspace/isaaclab/source')
+sys.path.append('/workspace/isaaclab/source/isaaclab_tasks')
+
+from isaaclab.app import AppLauncher
+# Launch Isaac Sim headless to load extensions
+app_launcher = AppLauncher(headless=True, device="cuda")
+simulation_app = app_launcher.app
+
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # /workspaces/PhoenX_RL
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -15,6 +23,16 @@ print("Current sys.path (first few entries):")
 for path in sys.path[:10]:
     print(f"  - {path}")
 print()
+
+def test_gpu_physx():
+    try:
+        from omni.physx import acquire_physx_interface
+        physx = acquire_physx_interface()
+        print('GPU Supported:', physx.get_gpu_found())
+        # Note: is_gpu_pipeline may not be available; check logs for PhysX GPU status
+        print('PhysX interface acquired successfully')
+    except Exception as e:
+        print('Error accessing PhysX:', str(e))
 
 def test_imports():
     """Test various import scenarios and provide helpful feedback."""
@@ -68,5 +86,7 @@ def test_imports():
     return True
 
 if __name__ == "__main__":
+    test_gpu_physx()
     success = test_imports()
+    simulation_app.close()
     sys.exit(0 if success else 1)

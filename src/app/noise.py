@@ -1,10 +1,11 @@
+from abc import ABC, abstractmethod
 import torch as T
 from torch.distributions import uniform, normal
 import numpy as np
 from .torch_utils import get_device
 from typing import Optional
 
-class Noise:
+class Noise(ABC):
     """
     Base class for noise processes.
     """
@@ -12,21 +13,17 @@ class Noise:
     def __init__(self, device=None):
         self.device = get_device(device)
 
-    def __call__(self, shape):
+    @abstractmethod
+    def __call__(self, shape: tuple) -> T.Tensor:
         """
         Generate noise based on the specific implementation.
 
         Args:
             shape (tuple): Shape of the noise to generate.
         """
-        pass
+        raise NotImplementedError("Subclasses must implement reset.")
 
-    def reset(self):
-        """
-        Reset the noise process (if applicable).
-        """
-        pass
-
+    @abstractmethod
     def get_config(self) -> dict:
         """
         Retrieve the configuration of the noise process.
@@ -34,24 +31,25 @@ class Noise:
         Returns:
             dict: Configuration details.
         """
-        pass
+        raise NotImplementedError("Subclasses must implement get_config.")
 
-    def clone(self, device: Optional[str | T.device] = None):
+    @abstractmethod
+    def clone(self, device: Optional[str | T.device] = None) -> 'Noise':
         """
         Clone the noise process.
 
         Returns:
             Noise: A new instance of the same noise process.
         """
-        pass
+        raise NotImplementedError("Subclasses must implement clone.")
 
     @classmethod
-    def create_instance(cls, noise_class_name: str, **kwargs) -> 'Noise':
+    def create_instance(cls, noise_type: str, **kwargs) -> 'Noise':
         """
         Creates an instance of the requested noise class.
 
         Args:
-            noise_class_name (str): Name of the noise class to instantiate.
+            noise_type (str): Name of the noise class to instantiate.
             kwargs: Parameters for the noise class.
 
         Returns:
@@ -61,18 +59,18 @@ class Noise:
             ValueError: If the noise class is not recognized.
         """
         noise_classes = {
-            "Ornstein-Uhlenbeck": OUNoise,
-            "OUNoise": OUNoise,
+            # "Ornstein-Uhlenbeck": OUNoise,
+            # "OUNoise": OUNoise,
             "Normal": NormalNoise,
             "NormalNoise": NormalNoise,
             "Uniform": UniformNoise,
             "UniformNoise": UniformNoise,
         }
 
-        if noise_class_name in noise_classes:
-            return noise_classes[noise_class_name](**kwargs)
+        if noise_type in noise_classes:
+            return noise_classes[noise_type](**kwargs)
         else:
-            raise ValueError(f"{noise_class_name} is not a recognized noise class")
+            raise ValueError(f"{noise_type} is not a recognized noise class")
 
 class UniformNoise(Noise):
     """
@@ -106,7 +104,7 @@ class UniformNoise(Noise):
             dict: Configuration details.
         """
         return {
-            'class_name': 'UniformNoise',
+            'type': 'UniformNoise',
             'config': {
                 'shape': self.shape,
                 'minval': self.minval.item(),
@@ -135,7 +133,6 @@ class NormalNoise(Noise):
     """
     def __init__(self, mean=0.0, stddev=1.0, device=None):
         super().__init__(device)
-        # self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
         self.mean = T.tensor(mean, dtype=T.float32, device=self.device)
         self.stddev = T.tensor(stddev, dtype=T.float32, device=self.device)
         self.reset_noise_gen()
@@ -181,7 +178,7 @@ class NormalNoise(Noise):
             dict: Configuration details.
         """
         return {
-            'class_name': 'NormalNoise',
+            'type': 'NormalNoise',
             'config': {
                 'mean': self.mean.item(),
                 'stddev': self.stddev.item(),
@@ -203,78 +200,74 @@ class NormalNoise(Noise):
 
         return NormalNoise(self.mean.item(), self.stddev.item(), device)
     
-class OUNoise(Noise):
-    """
-    Ornstein-Uhlenbeck noise process.
+# class OUNoise(Noise):
+#     """
+#     Ornstein-Uhlenbeck noise process.
 
-    Commonly used in reinforcement learning for exploration in continuous action spaces.
-    """
+#     Commonly used in reinforcement learning for exploration in continuous action spaces.
+#     """
 
-    def __init__(self, shape: tuple, mean: float = 0.0, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2, device=None):
-        super().__init__(device)
-        # self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
-        self.shape = shape
-        self.mean = T.tensor(mean, device=self.device)
-        self.mu = T.ones(self.shape, device=self.device) * self.mean
-        self.theta = T.tensor(theta, device=self.device)
-        self.sigma = T.tensor(sigma, device=self.device)
-        self.dt = T.tensor(dt, device=self.device)
-        self.reset()
+#     def __init__(self, shape: tuple, mean: float = 0.0, theta: float = 0.15, sigma: float = 0.2, dt: float = 1e-2, device=None):
+#         super().__init__(device)
+#         # self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
+#         self.shape = shape
+#         self.mean = T.tensor(mean, device=self.device)
+#         self.mu = T.ones(self.shape, device=self.device) * self.mean
+#         self.theta = T.tensor(theta, device=self.device)
+#         self.sigma = T.tensor(sigma, device=self.device)
+#         self.dt = T.tensor(dt, device=self.device)
+#         self.reset()
 
-    def __call__(self, shape: tuple=None) -> T.Tensor:
-        """
-        Generate Ornstein-Uhlenbeck noise.
+#     def __call__(self, shape: tuple=None) -> T.Tensor:
+#         """
+#         Generate Ornstein-Uhlenbeck noise.
 
-        Returns:
-            T.Tensor: Generated noise.
-        """
-        if shape is None:
-            shape = self.shape
-        dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * T.randn(shape, device=self.device)
-        x = self.x_prev + dx
-        self.x_prev = x
-        return x
+#         Returns:
+#             T.Tensor: Generated noise.
+#         """
+#         if shape is None:
+#             shape = self.shape
+#         dx = self.theta * (self.mu - self.x_prev) * self.dt + self.sigma * T.randn(shape, device=self.device)
+#         x = self.x_prev + dx
+#         self.x_prev = x
+#         return x
 
-    def reset(self, mu: float = None) -> None:
-        """
-        Reset the noise process to its initial state.
+#     def reset(self) -> None:
+#         """
+#         Reset the noise process to its initial state.
+#         """
+#         # Reset the noise process to its initial state
+#         self.x_prev = T.ones(self.shape, device=self.device) * self.mean
 
-        Args:
-            mu (float, optional): New mean value. Defaults to the original mean.
-        """
-        # self.mu = T.ones(self.shape, device=self.device) * self.mean if mu is None else T.tensor(mu, device=self.device)
-        # self.x_prev = T.ones(self.shape, device=self.device) * self.mu
-        self.x_prev = T.ones(self.shape, device=self.device) * (mu if mu is not None else self.mean)
+#     def get_config(self) -> dict:
+#         """
+#         Retrieve the configuration of the OUNoise.
 
-    def get_config(self) -> dict:
-        """
-        Retrieve the configuration of the OUNoise.
-
-        Returns:
-            dict: Configuration details.
-        """
-        return {
-            'class_name': 'OUNoise',
-            'config': {
-                "shape": self.shape,
-                "mean": self.mean.item(),
-                "theta": self.theta.item(),
-                "sigma": self.sigma.item(),
-                "dt": self.dt.item(),
-                'device': self.device.type,
-            }
-        }
+#         Returns:
+#             dict: Configuration details.
+#         """
+#         return {
+#             'type': 'OUNoise',
+#             'config': {
+#                 "shape": self.shape,
+#                 "mean": self.mean.item(),
+#                 "theta": self.theta.item(),
+#                 "sigma": self.sigma.item(),
+#                 "dt": self.dt.item(),
+#                 'device': self.device.type,
+#             }
+#         }
         
-    def clone(self, device: Optional[str | T.device] = None) -> 'OUNoise':
-        """
-        Clone the OUNoise instance.
+#     def clone(self, device: Optional[str | T.device] = None) -> 'OUNoise':
+#         """
+#         Clone the OUNoise instance.
 
-        Returns:
-            OUNoise: A new instance with the same configuration.
-        """
-        if device:
-            device = get_device(device)
-        else:
-            device = self.device
+#         Returns:
+#             OUNoise: A new instance with the same configuration.
+#         """
+#         if device:
+#             device = get_device(device)
+#         else:
+#             device = self.device
 
-        return OUNoise(self.shape, self.mean.item(), self.theta.item(), self.sigma.item(), self.dt.item(), device)
+#         return OUNoise(self.shape, self.mean.item(), self.theta.item(), self.sigma.item(), self.dt.item(), device)
