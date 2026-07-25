@@ -6,7 +6,7 @@ import torch as T
 from typing import Dict, List, Optional
 import logging
 from .rl_agents import Agent
-from .agent_utils import load_agent, convert_to_distributed_callbacks
+from .agent_utils import convert_to_distributed_callbacks
 from .normalizer import Normalizer
 from .buffer import Buffer
 from .env_wrapper import EnvWrapper
@@ -560,7 +560,13 @@ class DistributedAgents:
             self.logger.debug(f'Creating base agent with device=cpu for safe cloning')
             base_agent_config = copy.deepcopy(self.agent_config)
             # self.logger.info(f'Base agent config: {base_agent_config}')
-            base_agent = load_agent(base_agent_config, load_weights=False)
+            # NOTE: The Ray distributed path predates the unified Trainer save/load
+            # contract and has not been migrated. Reconstruct via Trainer.load or
+            # rl_agents.build_agent(config, env) once this path is revived.
+            raise NotImplementedError(
+                "Distributed training has not been migrated to the unified "
+                "save/load architecture. Use Trainer.load / rl_agents.build_agent."
+            )
 
             agent_config = copy.deepcopy(self.agent_config)
             # self.logger.info(f'Agent config copy: {agent_config}')

@@ -1,24 +1,29 @@
 from app.rl_agents import Reinforce
 from app.env_wrapper import EnvWrapper
-from app.models import StochasticDiscretePolicy, ValueModel
+from app.models import StochasticDiscreteHead, ValueHead
 from app.normalizer import create_normalizer
-from scripts.agent import infer_dim
+from scripts.agent import apply_model_config, infer_dim
 from app.schedulers import ScheduleWrapper
 
 def build(config: dict, env: EnvWrapper):
-    # build policy
-    policy_config = config['models']['policy']
-    policy_config['env'] = env
-    policy_config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
-    policy = StochasticDiscretePolicy(**policy_config)
-
-    # # build value model if not None
-    if config.get('models', {}).get('value', None):
-        value_config = config['models']['value']
-        value_config['env'] = env
-        value = ValueModel(**value_config)
+    # Canonical 'model:' schema (roots/trunk/branches) or legacy per-model keys
+    if apply_model_config(config['agent']['config'], env):
+        policy = config['agent']['config'].pop('policy', None)
+        value = config['agent']['config'].pop('value', None)
     else:
-        value = None
+        # build policy
+        policy_config = config['models']['policy']
+        policy_config['env'] = env
+        policy_config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
+        policy = StochasticDiscreteHead(**policy_config)
+
+        # # build value model if not None
+        if config.get('models', {}).get('value', None):
+            value_config = config['models']['value']
+            value_config['env'] = env
+            value = ValueHead(**value_config)
+        else:
+            value = None
 
     # create state normalizer object if present in config
     if config.get('normalizers', {}).get('state', None):

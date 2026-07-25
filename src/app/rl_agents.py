@@ -23,7 +23,16 @@ import plotly.express as px
 from .intrinsic_motivation import IntrinsicMotivation
 from .rl_callbacks import WandbCallback, Callback
 from .rl_callbacks import load as callback_load
-from .models import select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy, ValueModel, ContinuousCritic, DiscreteCritic, ActorModel, build_model
+from .models import (
+    select_policy_model, StochasticContinuousPolicy, StochasticDiscretePolicy,
+    ValueModel, ContinuousCritic, DiscreteCritic, ActorModel, build_model,
+    # Modular (roots -> trunk -> branches) architecture
+    SubNetwork, Head, ModularModel,
+    ValueHead, StochasticDiscreteHead, StochasticContinuousHead,
+    DeterministicActorHead, ContinuousQHead, DiscreteQHead,
+    build_head, head_from_legacy_model_config, modular_parts_from_config,
+    map_legacy_state_dict,
+)
 from .schedulers import ScheduleWrapper
 from .adaptive_kl import AdaptiveKL
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, Buffer
@@ -50,6 +59,7 @@ from isaaclab.app import AppLauncher
 
 
 from app.agent_utils import compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, compute_q_retrace, grad_norm_from_optimizer, setup_auto_entropy, soft_update
+from app.obs_utils import flatten_leading, flatten_obs, tree_index, unflatten_leading
 
 
 ## Base Agent Class ##
@@ -102,6 +112,18 @@ class Agent(ABC):
             self._diag_freq = None
             self._learn_count = 0
             self._nstep_retrace_stats = deque(maxlen=2048)
+
+            # Recurrent rollout state (used when the composite model has a
+            # temporal trunk): the live hidden carried across act() calls, the
+            # snapshot taken at the start of the current rollout window, the
+            # pre-step hidden of the latest act (R2D2 stored state), and the
+            # rolling context window for causal-transformer trunks.
+            self._hidden = None
+            self._rollout_start_hidden = None
+            self._last_pre_hidden = None
+            self._ctx_obs = None
+            self._ctx_goals = None
+            self._ctx_starts = None
 
             if self.kwargs is not None:
                 for key, value in self.kwargs.items():
@@ -164,41 +186,18 @@ class Agent(ABC):
         if device:
             # Determine the target device
             target_device = get_device(device)
-            device_str = str(target_device).split(':')[0]  # Get 'cuda' or 'cpu' part
             # Update the cloned agent's device attribute
             cloned_agent.device = target_device
-            
-            # Explicitly update model configurations to use the target device
-            if hasattr(cloned_agent, '_config') and isinstance(cloned_agent._config, dict):
-                # Update top-level device
-                if 'device' in cloned_agent._config:
-                    cloned_agent._config['device'] = device_str
-                    
-                # Update devices in model configs
-                for model_key in ['actor_model', 'critic_model', 'critic_model_a', 'critic_model_b', 'value_model', 'policy_model']:
-                    if model_key in cloned_agent._config and isinstance(cloned_agent._config[model_key], dict):
-                        if 'device' in cloned_agent._config[model_key]:
-                            cloned_agent._config[model_key]['device'] = device_str
-            
-            # Explicitly update model device attributes
-            for model_name in ['actor_model', 'critic_model', 'critic_model_a', 'critic_model_b', 'value_model', 'policy_model']:
-                if hasattr(cloned_agent, model_name):
-                    model = getattr(cloned_agent, model_name)
-                    if hasattr(model, 'device'):
-                        setattr(model, 'device', target_device)
-            
-            # Explicitly handle target networks for algorithms like DDPG and TD3
-            for attr_name in dir(cloned_agent):
-                # Look for attributes starting with 'target_' that might be models
-                if attr_name.startswith('target_') and hasattr(cloned_agent, attr_name):
-                    target_model = getattr(cloned_agent, attr_name)
-                    # Check if it has a device attribute to update
-                    if hasattr(target_model, 'device'):
-                        setattr(target_model, 'device', target_device)
-            
-            # Now use move_to_device to handle all tensors and other components
+
+            # Move composite models (params + optimizer state + device attrs).
+            for attr_name in ('model', 'target_model'):
+                model = getattr(cloned_agent, attr_name, None)
+                if isinstance(model, ModularModel):
+                    model.set_device(target_device)
+
+            # Now use move_to_device to handle all remaining tensors/components
             cloned_agent = move_to_device(cloned_agent, target_device)
-        
+
         if clone.__class__.__name__ == 'HER':
             clone.agent = cloned_agent
         else:
@@ -264,9 +263,158 @@ class Agent(ABC):
     #     """Runs a test over 'num_episodes'."""
     #     raise NotImplementedError("Subclasses must implement test.")
 
+    # ------------------------------------------------------------------ #
+    # Composite-model plumbing (roots -> trunk -> branches architecture)
+    # ------------------------------------------------------------------ #
+    #: shared_update default used when the config doesn't specify one.
+    #: On-policy agents override with 'combined'; off-policy with 'critic'.
+    DEFAULT_SHARED_UPDATE: str = 'combined'
+
+    def _assemble_model(
+        self,
+        branches: Dict[str, Head],
+        roots: Dict[str, SubNetwork] | None = None,
+        trunk: SubNetwork | None = None,
+        optimizer_params: dict | None = None,
+        lr_scheduler: ScheduleWrapper | None = None,
+        shared_update: str | None = None,
+    ) -> ModularModel:
+        """Wire the branch heads (+ optional roots/trunk) into one composite."""
+        env = next(iter(branches.values())).env
+        return ModularModel(
+            env=env,
+            roots=roots,
+            trunk=trunk,
+            branches=branches,
+            optimizer_params=optimizer_params,
+            lr_scheduler=lr_scheduler,
+            shared_update=shared_update or self.DEFAULT_SHARED_UPDATE,
+            device=self.device,
+        )
+
+    @staticmethod
+    def _check_head(role: str, head, *expected_types, optional: bool = False):
+        """Type-enforce an algorithm's required head class(es)."""
+        if head is None:
+            if optional:
+                return
+            raise TypeError(f"'{role}' head is required")
+        if not isinstance(head, expected_types):
+            names = " | ".join(t.__name__ for t in expected_types)
+            raise TypeError(
+                f"'{role}' must be a {names} (got {type(head).__name__}). "
+                f"Legacy Model classes are no longer accepted directly; build the "
+                f"matching Head (see app.models.HEAD_REGISTRY) or use the config adapter."
+            )
+
+    # Convenience branch access so diagnostics/scripts keep reading
+    # ``agent.policy`` etc. (the heads live inside ``self.model``).
+    def _branch(self, role: str):
+        model = getattr(self, 'model', None)
+        if model is None or role not in model.branches:
+            return None
+        return model.branches[role]
+
+    @property
+    def policy(self):
+        return self._branch('policy')
+
+    @property
+    def value(self):
+        return self._branch('value')
+
+    @property
+    def critic(self):
+        return self._branch('critic')
+
+    @property
+    def critic_b(self):
+        return self._branch('critic_b')
+
+    # ------------------------------------------------------------------ #
+    # Recurrent rollout support
+    # ------------------------------------------------------------------ #
+    def reset_hidden(self) -> None:
+        """Clear the carried recurrent/context state (called at run start)."""
+        self._hidden = None
+        self._rollout_start_hidden = None
+        self._last_pre_hidden = None
+        self._ctx_obs = None
+        self._ctx_goals = None
+        self._ctx_starts = None
+
+    def _rollout_forward(self, states, goals=None, branches=('policy',), dones=None):
+        """Rollout-time forward that carries recurrent/context state.
+
+        ``dones`` (bool (num_envs,) — the previous step's done flags) resets
+        the hidden state of freshly reset envs before it is consumed. The
+        pre-step hidden actually used is kept in ``self._last_pre_hidden`` so
+        off-policy agents can attach it to Actions (R2D2 stored state). For
+        feedforward models this is a plain forward.
+        """
+        if self.model.is_causal and not self.model.is_recurrent:
+            return self._context_forward(states, goals, branches, dones)
+        if not self.model.is_temporal:
+            outputs, _ = self.model(states, goal=goals, branches=branches)
+            return outputs
+        from app.obs_utils import obs_batch_size
+        batch_size = obs_batch_size(states)
+        if self._hidden is None:
+            self._hidden = self.model.init_hidden(batch_size)
+        if dones is not None:
+            # Apply the episode-start reset eagerly so the stored pre-step
+            # hidden is exactly the state the forward consumes.
+            self._hidden = self.model.mask_hidden(self._hidden, dones)
+        if self._rollout_start_hidden is None:
+            self._rollout_start_hidden = self.model.detach_hidden(self._hidden)
+        self._last_pre_hidden = self._hidden
+        outputs, new_hidden = self.model(
+            states, goal=goals, branches=branches,
+            hidden=self._hidden, mode='step',
+        )
+        self._hidden = self.model.detach_hidden(new_hidden)
+        return outputs
+
+    def _context_forward(self, states, goals, branches, dones):
+        """Rolling-window inference for causal-transformer trunks: keep the
+        last ``context_length`` observations per env and run the heads on the
+        window's final position."""
+        from app.obs_utils import tree_detach_clone, tree_stack
+        window = int(getattr(self, 'context_length', 16))
+        if self._ctx_obs is None:
+            self._ctx_obs, self._ctx_goals, self._ctx_starts = [], [], []
+        num_envs = (next(iter(states.values())).shape[0]
+                    if isinstance(states, dict) else states.shape[0])
+        start = (dones.bool().to(self.device) if dones is not None
+                 else T.zeros(num_envs, dtype=T.bool, device=self.device))
+        if not self._ctx_obs:
+            start = T.ones(num_envs, dtype=T.bool, device=self.device)
+        self._ctx_obs.append(tree_detach_clone(states))
+        self._ctx_goals.append(goals.detach().clone() if goals is not None else None)
+        self._ctx_starts.append(start)
+        if len(self._ctx_obs) > window:
+            self._ctx_obs = self._ctx_obs[-window:]
+            self._ctx_goals = self._ctx_goals[-window:]
+            self._ctx_starts = self._ctx_starts[-window:]
+
+        obs_window = tree_stack(self._ctx_obs, dim=1)              # (E, W, ...)
+        goals_window = (T.stack([g for g in self._ctx_goals], dim=1)
+                        if self._ctx_goals[0] is not None else None)
+        start_mask = T.stack(self._ctx_starts, dim=1)              # (E, W)
+        return self.model.forward_context(
+            obs_window, goal=goals_window, branches=branches, start_mask=start_mask)
+
+    def _advance_rollout_window(self) -> None:
+        """Mark the current hidden as the next learn window's initial hidden
+        (called at the end of an on-policy learn: the rollout buffer resets)."""
+        if self.model.is_temporal:
+            self._rollout_start_hidden = (
+                self.model.detach_hidden(self._hidden) if self._hidden is not None else None
+            )
+
     def _live_env(self) -> EnvWrapper:
         """Return the single live env instance shared by the agent's models."""
-        for name in self.MODEL_ATTRS or ("policy",):
+        for name in self.MODEL_ATTRS or ("model",):
             model = getattr(self, name, None)
             if model is not None:
                 return model.env
@@ -280,11 +428,33 @@ class Agent(ABC):
         injected into all models. Tensor state (weights, optimizers, stats,
         entropy temperature) and intrinsic-motivation modules are restored
         separately by :meth:`load_state`.
+
+        Accepts BOTH schemas:
+            - new: a ``model`` entry (ModularModel config) that is decomposed
+              into ``roots`` / ``trunk`` / per-role branch heads;
+            - legacy: per-model entries (``policy`` / ``value`` / ``critic`` /
+              ``critic_b``) holding legacy Model or Head configs, adapted into
+              heads (branches-only composite).
         """
         cfg = dict(config)
-        for key in ("policy", "critic", "critic_b", "value"):
-            if cfg.get(key) is not None:
-                cfg[key] = build_model(cfg[key], env)
+        if cfg.get("model") is not None:
+            model_cfg = cfg.pop("model")
+            inner = model_cfg.get("config", model_cfg) if isinstance(model_cfg, dict) else model_cfg
+            parts = modular_parts_from_config(inner, env)
+            cfg["roots"] = parts["roots"]
+            cfg["trunk"] = parts["trunk"]
+            for role, head in parts["branches"].items():
+                cfg[role] = head
+            if parts["optimizer_params"] is not None:
+                cfg.setdefault("optimizer_params", parts["optimizer_params"])
+            if parts["lr_scheduler"] is not None:
+                cfg.setdefault("lr_scheduler", parts["lr_scheduler"])
+            if parts["shared_update"]:
+                cfg.setdefault("shared_update", parts["shared_update"])
+        else:
+            for key in ("policy", "critic", "critic_b", "value"):
+                if cfg.get(key) is not None:
+                    cfg[key] = head_from_legacy_model_config(cfg[key], env)
         for key in ("state_normalizer", "goal_normalizer",
                     "reward_normalizer", "advantage_normalizer"):
             if cfg.get(key) is not None:
@@ -337,8 +507,58 @@ class Agent(ABC):
         if extra:
             T.save(extra, save_dir / "agent_state.pt")
 
+    def _load_legacy_checkpoint(self, model: "ModularModel", attr_name: str,
+                                save_dir: Path, load_weights: bool) -> bool:
+        """Shim: map legacy per-model checkpoint files (``policy.pt``,
+        ``value.pt``, ``critic.pt``, ``critic_b.pt`` and their ``target_*``
+        variants) onto a composite ``ModularModel``. Returns True if any
+        legacy file was found and applied."""
+        prefix = "target_" if attr_name.startswith("target") else ""
+        found = False
+        for role in model.branches.keys():
+            path = save_dir / f"{prefix}{role}.pt"
+            if not path.exists():
+                continue
+            found = True
+            state = T.load(path, map_location=self.device, weights_only=False)
+            if load_weights and state.get("model") is not None:
+                mapped = map_legacy_state_dict(state["model"], role)
+                missing, unexpected = model.load_state_dict(mapped, strict=False)
+                if unexpected:
+                    self.logger.warning(
+                        f"Legacy checkpoint {path.name}: unexpected keys {unexpected}"
+                    )
+            opt_state = state.get("optimizer")
+            opt = model.optimizers.get(f"branches.{role}")
+            if opt_state is not None and opt is not None:
+                try:
+                    opt.load_state_dict(opt_state)
+                except Exception as e:  # param layout drift — weights still loaded
+                    self.logger.warning(
+                        f"Legacy checkpoint {path.name}: optimizer state not restored ({e})"
+                    )
+            sched_state = state.get("lr_scheduler")
+            sched = model.lr_schedulers.get(f"branches.{role}")
+            if sched_state is not None and sched is not None:
+                sched.set_state(sched_state)
+            ts_state = state.get("temperature_schedule")
+            head = model.branches[role] if role in model.branches else None
+            ts = getattr(head, "temperature_schedule", None) if head is not None else None
+            if ts_state is not None and ts is not None:
+                ts.set_state(ts_state)
+        if found:
+            self.logger.warning(
+                f"Loaded legacy per-model checkpoint files into '{attr_name}' "
+                f"(deprecated format; re-save to write the composite {attr_name}.pt)."
+            )
+        return found
+
     def load_state(self, save_dir: str | Path, load_weights: bool = True) -> None:
-        """Restore every tensor written by :meth:`save_state` (in place)."""
+        """Restore every tensor written by :meth:`save_state` (in place).
+
+        Falls back to the legacy per-model checkpoint layout (``policy.pt`` /
+        ``value.pt`` / ...) when the composite ``model.pt`` is absent.
+        """
         save_dir = Path(save_dir)
 
         for name in self.MODEL_ATTRS + self.TARGET_ATTRS:
@@ -346,6 +566,8 @@ class Agent(ABC):
             path = save_dir / f"{name}.pt"
             if model is not None and path.exists():
                 model.load_state(path, load_weights=load_weights)
+            elif isinstance(model, ModularModel):
+                self._load_legacy_checkpoint(model, name, save_dir, load_weights)
 
         for name in self.NORMALIZER_ATTRS:
             normalizer = getattr(self, name, None)
@@ -375,14 +597,20 @@ class Agent(ABC):
                 kl_adapter.set_state(extra["kl_adapter"])
 
 class Reinforce(Agent):
-    MODEL_ATTRS = ("policy", "value")
+    MODEL_ATTRS = ("model",)
     SCHEDULE_ATTRS = ("entropy_schedule",)
     IM_ATTRS = ()
+    DEFAULT_SHARED_UPDATE = 'combined'
 
     def __init__(
         self,
-        policy: StochasticDiscretePolicy,
-        value: ValueModel|None = None,
+        roots: Dict[str, SubNetwork] | None = None,
+        trunk: SubNetwork | None = None,
+        policy: StochasticDiscreteHead | None = None,
+        value: ValueHead | None = None,
+        optimizer_params: dict | None = None,
+        lr_scheduler: ScheduleWrapper | None = None,
+        shared_update: str | None = None,
         discount: float = 0.99,
         state_normalizer: BaseNormalizer|None = None,
         advantage_normalizer: BaseNormalizer|None = None,
@@ -400,8 +628,13 @@ class Reinforce(Agent):
         Reinforce Agent.
 
         Args:
-            policy: The policy model used for action selection.
-            value: The value model used for state-value prediction.
+            roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
+            trunk: Optional shared fusion SubNetwork.
+            policy: The StochasticDiscreteHead branch used for action selection (required).
+            value: Optional ValueHead branch for baseline state-value prediction.
+            optimizer_params: Model-wide default optimizer spec.
+            lr_scheduler: Model-wide default LR scheduler.
+            shared_update: Gradient-ownership rule for shared modules (default 'combined').
             discount: The discount factor for future rewards.
             state_normalizer: The normalizer for state inputs.
             advantage_normalizer: The normalizer for advantage/return inputs.
@@ -415,29 +648,38 @@ class Reinforce(Agent):
             device: The device to use for computations.
             kwargs: Additional keyword arguments.
         """
-        try:
-            super().__init__(save_dir, device, **kwargs)
-            self.policy = policy
-            self.value = value
-            self.discount = discount
-            self.state_normalizer = state_normalizer
-            self.advantage_normalizer = advantage_normalizer
-            self.reward_normalizer = reward_normalizer
-            self.entropy_coefficient = entropy_coefficient
-            self.entropy_schedule = entropy_schedule
-            self.auto_entropy_tuning = auto_entropy_tuning
-            self.entropy_lr = entropy_lr
-            self.target_entropy_scale = target_entropy_scale
-            if self.auto_entropy_tuning:
-                self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
-                    self.policy,
-                    target_entropy_scale=target_entropy_scale,
-                    lr=entropy_lr,
-                    device=self.device,
-                )
-            
-        except Exception as e:
-            self.logger.error(f"Error in Reinforce.__init__: {e}", exc_info=True)
+        super().__init__(save_dir, device, **kwargs)
+        self._check_head('policy', policy, StochasticDiscreteHead)
+        self._check_head('value', value, ValueHead, optional=True)
+        branches: Dict[str, Head] = {'policy': policy}
+        if value is not None:
+            branches['value'] = value
+        self.model = self._assemble_model(
+            branches, roots=roots, trunk=trunk,
+            optimizer_params=optimizer_params, lr_scheduler=lr_scheduler,
+            shared_update=shared_update,
+        )
+        if self.model.is_temporal:
+            raise NotImplementedError(
+                "Reinforce does not support temporal (recurrent/causal) trunks; "
+                "use ActorCritic or PPO for recurrent policies."
+            )
+        self.discount = discount
+        self.state_normalizer = state_normalizer
+        self.advantage_normalizer = advantage_normalizer
+        self.reward_normalizer = reward_normalizer
+        self.entropy_coefficient = entropy_coefficient
+        self.entropy_schedule = entropy_schedule
+        self.auto_entropy_tuning = auto_entropy_tuning
+        self.entropy_lr = entropy_lr
+        self.target_entropy_scale = target_entropy_scale
+        if self.auto_entropy_tuning:
+            self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
+                self.policy,
+                target_entropy_scale=target_entropy_scale,
+                lr=entropy_lr,
+                device=self.device,
+            )
 
     def act(
         self,
@@ -460,13 +702,15 @@ class Reinforce(Agent):
         """
         
         if context == 'train':
-            dist = self.policy(states, goals)
-            actions = dist.sample()
+            outputs = self._rollout_forward(
+                states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+            actions = outputs['policy'].sample()
 
         elif context == 'test':
             with T.no_grad():
-                dist = self.policy(states, goals)
-                actions = self.policy.get_mean_actions(dist)
+                outputs = self._rollout_forward(
+                    states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+                actions = self.policy.get_mean_actions(outputs['policy'])
             
         else:
             raise ValueError(f"Invalid context: {context}")
@@ -513,14 +757,17 @@ class Reinforce(Agent):
         if self.state_normalizer:
             states = self.state_normalizer.normalize(states)
 
-        # Clear gradients
-        self.policy.optimizer.zero_grad()
-        if self.value:
-            self.value.optimizer.zero_grad()
-        
+        # Clear gradients on every module optimizer
+        self.model.zero_grad()
+
+        # Single shared forward through roots/trunk into the requested heads
+        branch_roles = ('policy', 'value') if self.value is not None else ('policy',)
+        outputs, _ = self.model(states, branches=branch_roles)
+        dist = outputs['policy']
+
         # Calculate advantages and value loss if using value function
-        if self.value:
-            values = self.value(states)
+        if self.value is not None:
+            values = outputs['value']
             advantages = returns.detach() - values
             value_loss = advantages.pow(2).mean()
         else:
@@ -530,7 +777,7 @@ class Reinforce(Agent):
 
         # Calculate policy loss
         # Create policy_weight value based on advantages (if value) or returns
-        if self.value:
+        if self.value is not None:
             policy_weight = advantages.detach()
         else:
             policy_weight = returns.detach()
@@ -539,9 +786,7 @@ class Reinforce(Agent):
             if getattr(self.advantage_normalizer, 'add', None):
                 self.advantage_normalizer.add(policy_weight)
             policy_weight = self.advantage_normalizer.normalize(policy_weight)
-        
-        # dist, logits = self.policy_model(states)
-        dist = self.policy(states)
+
         log_probs = dist.log_prob(actions.squeeze(-1)).unsqueeze(-1)
         entropies = dist.entropy().unsqueeze(-1)
 
@@ -556,7 +801,8 @@ class Reinforce(Agent):
         # Get policy loss
         policy_loss = -(log_probs * policy_weight + entropy_coefficient * entropies).mean()
 
-        # Calculate gradients
+        # ONE combined backward; every module optimizer then steps exactly once
+        # (equivalent to a single optimizer over the whole composite).
         total_loss = policy_loss + value_loss
         total_loss.backward()
 
@@ -577,8 +823,9 @@ class Reinforce(Agent):
                 summarize_tensor(entropies, "entropies"),
                 f"entropy_coef={float(entropy_coefficient)}",
             )
-            value_grad_norm = grad_norm_from_optimizer(self.value.optimizer)
-            policy_grad_norm = grad_norm_from_optimizer(self.policy.optimizer)
+            value_opt = self.model.optimizers.get('branches.value')
+            value_grad_norm = grad_norm_from_optimizer(value_opt) if value_opt else 0.0
+            policy_grad_norm = grad_norm_from_optimizer(self.model.optimizers['branches.policy'])
             self.logger.debug(
                 "ac_grads step=%d learn_count=%d value_grad_norm=%.6f policy_grad_norm=%.6f "
                 "value_loss=%.6f policy_loss=%.6f",
@@ -590,10 +837,8 @@ class Reinforce(Agent):
                 float(policy_loss.item()),
             )
 
-        # Update weights
-        self.policy.optimizer.step()
-        if self.value:
-            self.value.optimizer.step()
+        # Update weights (all module optimizers step once on the combined grads)
+        self.model.step()
 
         if self.auto_entropy_tuning:
             self.entropy_optimizer.zero_grad()
@@ -604,8 +849,8 @@ class Reinforce(Agent):
             alpha_loss.backward()
             self.entropy_optimizer.step()
 
-        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
-        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
+        policy_learning_rate = self.model.learning_rate('branches.policy')
+        value_learning_rate = self.model.learning_rate('branches.value')
 
         # Get temperature value from policy if categorical
         if self.policy.distribution == 'categorical':
@@ -630,8 +875,7 @@ class Reinforce(Agent):
     def get_config(self):
         config = super().get_config()
         config["config"].update({
-            "policy": self.policy.get_config(),
-            "value": self.value.get_config() if self.value is not None else None,
+            "model": self.model.get_config(),
             "discount": self.discount,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "advantage_normalizer": self.advantage_normalizer.get_config() if self.advantage_normalizer is not None else None,
@@ -647,14 +891,20 @@ class Reinforce(Agent):
 class ActorCritic(Agent):
     """Actor Critic Agent."""
 
-    MODEL_ATTRS = ("policy", "value")
+    MODEL_ATTRS = ("model",)
     SCHEDULE_ATTRS = ("entropy_schedule",)
     IM_ATTRS = ()
+    DEFAULT_SHARED_UPDATE = 'combined'
 
     def __init__(
         self,
-        policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
-        value: ValueModel,
+        roots: Dict[str, SubNetwork] | None = None,
+        trunk: SubNetwork | None = None,
+        policy: StochasticDiscreteHead | StochasticContinuousHead | None = None,
+        value: ValueHead | None = None,
+        optimizer_params: dict | None = None,
+        lr_scheduler: ScheduleWrapper | None = None,
+        shared_update: str | None = None,
         discount: float=0.99,
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
@@ -668,57 +918,44 @@ class ActorCritic(Agent):
         gae_coefficient: float=0.95,
         policy_grad_clip: float=1.0,
         value_grad_clip: float=1.0,
+        shared_grad_clip: float|None = None, # None -> max(policy, value) clip
         value_coef: float=0.5,
         bootstrap_truncations: bool=True,
         save_dir: str = "models/",
         device: Optional[str | T.device] = None,
         **kwargs,
     ):
-        try:
-            # super().__init__(
-            #     policy,
-            #     value,
-            #     discount,
-            #     state_normalizer,
-            #     goal_normalizer,
-            #     advantage_normalizer = advantage_normalizer,
-            #     reward_normalizer = reward_normalizer,
-            #     entropy_coefficient = entropy_coefficient,
-            #     entropy_schedule = entropy_schedule,
-            #     auto_entropy_tuning = auto_entropy_tuning,
-            #     entropy_lr = entropy_lr,
-            #     target_entropy_scale = target_entropy_scale,
-            #     save_dir = save_dir,
-            #     device=device,
-            #     **kwargs
-            # )
-            super().__init__(save_dir, device, **kwargs)
-            self.policy = policy
-            self.value = value
-            self.discount = discount
-            self.state_normalizer = state_normalizer
-            self.goal_normalizer = goal_normalizer
-            self.advantage_normalizer = advantage_normalizer
-            self.reward_normalizer = reward_normalizer
-            self.entropy_coefficient = entropy_coefficient
-            self.entropy_schedule = entropy_schedule
-            self.auto_entropy_tuning = auto_entropy_tuning
-            self.entropy_lr = entropy_lr
-            self.target_entropy_scale = target_entropy_scale
-            if self.auto_entropy_tuning:
-                self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
-                    self.policy,
-                    target_entropy_scale=target_entropy_scale,
-                    lr=entropy_lr,
-                    device=self.device,
-                )
-            self.gae_coefficient = gae_coefficient
-            self.policy_grad_clip = policy_grad_clip
-            self.value_grad_clip = value_grad_clip
-            self.value_coef = value_coef
-            self.bootstrap_truncations = bootstrap_truncations
-        except Exception as e:
-            self.logger.error(f"Error in ActorCritic init: {e}", exc_info=True)
+        super().__init__(save_dir, device, **kwargs)
+        self._check_head('policy', policy, StochasticDiscreteHead, StochasticContinuousHead)
+        self._check_head('value', value, ValueHead)
+        self.model = self._assemble_model(
+            {'policy': policy, 'value': value}, roots=roots, trunk=trunk,
+            optimizer_params=optimizer_params, lr_scheduler=lr_scheduler,
+            shared_update=shared_update,
+        )
+        self.discount = discount
+        self.state_normalizer = state_normalizer
+        self.goal_normalizer = goal_normalizer
+        self.advantage_normalizer = advantage_normalizer
+        self.reward_normalizer = reward_normalizer
+        self.entropy_coefficient = entropy_coefficient
+        self.entropy_schedule = entropy_schedule
+        self.auto_entropy_tuning = auto_entropy_tuning
+        self.entropy_lr = entropy_lr
+        self.target_entropy_scale = target_entropy_scale
+        if self.auto_entropy_tuning:
+            self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
+                self.policy,
+                target_entropy_scale=target_entropy_scale,
+                lr=entropy_lr,
+                device=self.device,
+            )
+        self.gae_coefficient = gae_coefficient
+        self.policy_grad_clip = policy_grad_clip
+        self.value_grad_clip = value_grad_clip
+        self.shared_grad_clip = shared_grad_clip
+        self.value_coef = value_coef
+        self.bootstrap_truncations = bootstrap_truncations
 
     def act(
         self,
@@ -741,13 +978,15 @@ class ActorCritic(Agent):
         """
         
         if context == 'train':
-            dist = self.policy(states, goals)
-            actions = dist.sample()
+            outputs = self._rollout_forward(
+                states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+            actions = outputs['policy'].sample()
 
         elif context == 'test':
             with T.no_grad():
-                dist = self.policy(states, goals)
-                actions = self.policy.get_mean_actions(dist)
+                outputs = self._rollout_forward(
+                    states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+                actions = self.policy.get_mean_actions(outputs['policy'])
             
         else:
             raise ValueError(f"Invalid context: {context}")
@@ -763,8 +1002,7 @@ class ActorCritic(Agent):
 
         learn_metrics = {}
 
-        self.policy.optimizer.zero_grad()
-        self.value.optimizer.zero_grad()
+        self.model.zero_grad()
 
         # Extract trajectories from buffer
         states = sample['states']
@@ -803,23 +1041,29 @@ class ActorCritic(Agent):
         traj_len, num_envs = rewards.shape
         total_samples = traj_len * num_envs
 
-        # Flatten trajectory data
-        states_flat = states.reshape(total_samples, -1)
-        next_states_flat = next_states.reshape(total_samples, -1)
+        # Flatten trajectory data (feature shapes preserved; dict obs per key)
+        states_flat = flatten_leading(states, 2)
+        next_states_flat = flatten_leading(next_states, 2)
         actions_flat = actions.reshape(total_samples, -1)
         goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
 
-        # Flatten goals if not None
-        # if goals is not None:
-        #     goal_dim = goals.shape[-1]
-        #     flat_goals = goals.reshape(trajectory_length * num_envs, goal_dim)
-        #     flat_next_ach_goals = next_ach_goals.reshape(trajectory_length * num_envs, goal_dim)
-        # else:
-        #     flat_goals = None
-        #     flat_next_ach_goals = None
+        # Recurrent path: hidden-aware full-batch sequence update
+        if self.model.is_temporal:
+            learn_metrics.update(self._recurrent_update(
+                step=step,
+                states_flat=states_flat, next_states_flat=next_states_flat,
+                actions_flat=actions_flat, goals_flat=goals_flat,
+                rewards=rewards, terminations=terminations, truncations=truncations,
+                first_steps=sample["first_steps"], traj_len=traj_len, num_envs=num_envs,
+                entropy_coefficient=entropy_coefficient,
+            ))
+            return learn_metrics
 
-        state_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
-        next_state_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs).detach()
+        value_out, _ = self.model(states_flat, goal=goals_flat, branches=('value',))
+        state_values = value_out['value'].reshape(traj_len, num_envs)
+        with T.no_grad():
+            next_value_out, _ = self.model(next_states_flat, goal=goals_flat, branches=('value',))
+            next_state_values = next_value_out['value'].reshape(traj_len, num_envs)
 
         advantages, returns, td_errors = compute_advantages_and_returns(
             rewards,
@@ -835,8 +1079,8 @@ class ActorCritic(Agent):
 
         # Filter phantom steps
         valid_idx = valid_indices.squeeze(-1)
-        states_flat = states_flat[valid_idx]
-        next_states_flat = next_states_flat[valid_idx]
+        states_flat = tree_index(states_flat, valid_idx)
+        next_states_flat = tree_index(next_states_flat, valid_idx)
         actions_flat = actions_flat[valid_idx]
         goals_flat = goals_flat[valid_idx] if goals is not None else None
         state_values_flat = state_values.reshape(total_samples)[valid_idx]
@@ -857,32 +1101,35 @@ class ActorCritic(Agent):
             policy_advantages = self.advantage_normalizer.normalize(policy_advantages).reshape(-1)
 
         # Get log probs and entropy values from current policy dist
-        dist = self.policy(states_flat, goals_flat)
-        # dist = self.policy.transform_distribution(base_dist)
+        policy_out, _ = self.model(states_flat, goal=goals_flat, branches=('policy',))
+        dist = policy_out['policy']
         # reshape flat actions to be vector if categorical distribution
         if self.policy.distribution == 'categorical':
             actions_flat = actions_flat.squeeze(-1)
         log_probs = dist.log_prob(actions_flat).flatten()#.reshape(traj_len, num_envs)
-        # else:
-        #     log_probs = dist.log_prob(actions_flat).flatten()#.reshape(traj_len, num_envs)
-        
-        # Only calculate entropy if entropy coefficient > 0
-        # if entropy_coefficient > 0.0:
+
         entropies = dist.entropy().flatten()#.reshape(traj_len, num_envs)
-        # else:
-        #     entropies = T.zeros_like(log_probs)
 
         # Calculate policy loss
         policy_loss = -(log_probs * policy_advantages + entropy_coefficient * entropies).mean()
 
-        # Backpropogate
-        value_loss.backward()
-        policy_loss.backward()
-        # Clip gradients if grad clips
+        # ONE combined backward over both losses; shared modules (if any)
+        # accumulate gradients from both, applied exactly once by step().
+        (value_loss + policy_loss).backward()
+        # Clip gradients if grad clips (per branch, plus shared modules)
+        value_grad_norm = None
+        policy_grad_norm = None
         if self.value_grad_clip:
-            value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), self.value_grad_clip)
+            value_grad_norm = self.model.clip(self.value_grad_clip, modules=self.model.branch_module_names('value'))
         if self.policy_grad_clip:
-            policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
+            policy_grad_norm = self.model.clip(self.policy_grad_clip, modules=self.model.branch_module_names('policy'))
+        shared_modules = self.model.shared_module_names()
+        if shared_modules:
+            shared_clip = self.shared_grad_clip
+            if shared_clip is None:
+                shared_clip = max(self.policy_grad_clip or float('inf'),
+                                  self.value_grad_clip or float('inf'))
+            self.model.clip(shared_clip, modules=shared_modules)
 
         nonfinite_values = (
             count_nonfinite(state_values)
@@ -928,8 +1175,7 @@ class ActorCritic(Agent):
                 float(policy_loss.item()),
             )
 
-        self.value.optimizer.step()
-        self.policy.optimizer.step()
+        self.model.step()
 
         if self.auto_entropy_tuning:
             self.entropy_optimizer.zero_grad()
@@ -937,8 +1183,8 @@ class ActorCritic(Agent):
             alpha_loss.backward()
             self.entropy_optimizer.step()
 
-        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
-        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
+        policy_learning_rate = self.model.learning_rate('branches.policy')
+        value_learning_rate = self.model.learning_rate('branches.value')
 
         # Get temperature value from policy if categorical
         if self.policy.distribution == 'categorical':
@@ -961,12 +1207,137 @@ class ActorCritic(Agent):
 
         return learn_metrics
 
+    def _recurrent_update(
+        self,
+        *,
+        step: int,
+        states_flat, next_states_flat, actions_flat, goals_flat,
+        rewards, terminations, truncations, first_steps,
+        traj_len: int, num_envs: int,
+        entropy_coefficient,
+    ) -> dict:
+        """Hidden-aware full-batch ActorCritic update over env sequences.
+
+        Values and the policy distribution come from ONE sequence forward with
+        the rollout-start hidden (episode boundaries reset it mid-sequence).
+        Next-state values for TD targets are the shifted values from the same
+        stream (exact within episodes); the final step's next-value uses the
+        post-sequence hidden.
+        """
+        learn_metrics: dict = {}
+        from app.obs_utils import tree_map as _tree_map
+
+        def to_seq(flat):
+            seq = unflatten_leading(flat, (traj_len, num_envs))
+            return _tree_map(lambda x: x.transpose(0, 1).contiguous(), seq)
+
+        states_seq = to_seq(states_flat)
+        next_states_seq = to_seq(next_states_flat)
+        actions_seq = actions_flat.reshape(traj_len, num_envs, -1).transpose(0, 1).contiguous()
+        goals_seq = (goals_flat.reshape(traj_len, num_envs, -1).transpose(0, 1).contiguous()
+                     if goals_flat is not None else None)
+        start_mask = first_steps.transpose(0, 1).bool().to(self.device)
+        valid_mask = (~start_mask).float()
+        valid_count = valid_mask.sum().clamp(min=1.0)
+
+        hidden0 = self._rollout_start_hidden
+        if hidden0:
+            hb = next(iter(hidden0.values()))
+            hb = hb[0] if isinstance(hb, tuple) else hb
+            if hb.shape[1] != num_envs:
+                hidden0 = None
+        if not hidden0:
+            hidden0 = self.model.init_hidden(num_envs)
+
+        outputs, final_hidden = self.model(
+            states_seq, goal=goals_seq, branches=('policy', 'value'),
+            hidden=hidden0, start_mask=start_mask, mode='sequence')
+        dist = outputs['policy']
+        values_et = outputs['value'].squeeze(-1)                       # (E, T), grad
+
+        with T.no_grad():
+            last_next = tree_index(next_states_seq, (slice(None), -1))
+            goals_last = goals_seq[:, -1] if goals_seq is not None else None
+            last_out, _ = self.model(last_next, goal=goals_last, branches=('value',),
+                                     hidden=self.model.detach_hidden(final_hidden), mode='step')
+            next_values_et = T.cat(
+                [values_et.detach()[:, 1:], last_out['value'].reshape(num_envs, 1)], dim=1)
+
+        advantages_tm, returns_tm, td_errors_tm = compute_advantages_and_returns(
+            rewards, values_et.transpose(0, 1), next_values_et.transpose(0, 1),
+            terminations, truncations, self.discount, self.gae_coefficient,
+            self.bootstrap_truncations, self.device)
+        advantages_et = advantages_tm.transpose(0, 1)
+        returns_et = returns_tm.transpose(0, 1)
+
+        value_loss = self.value_coef * (
+            ((values_et - returns_et.detach()).pow(2) * valid_mask).sum() / valid_count)
+
+        policy_advantages = advantages_et.detach()
+        if self.advantage_normalizer:
+            valid_flat = policy_advantages[valid_mask.bool()].reshape(-1, 1)
+            if getattr(self.advantage_normalizer, 'add', None):
+                self.advantage_normalizer.add(valid_flat)
+            policy_advantages = self.advantage_normalizer.normalize(
+                policy_advantages.reshape(-1, 1)).reshape(num_envs, traj_len)
+
+        if self.policy.distribution == 'categorical':
+            log_probs = dist.log_prob(actions_seq.squeeze(-1))          # (E, T)
+        else:
+            log_probs = dist.log_prob(actions_seq)                     # (E, T)
+        entropies = dist.entropy()
+
+        policy_loss = -(((log_probs * policy_advantages
+                          + entropy_coefficient * entropies) * valid_mask).sum() / valid_count)
+
+        self.model.zero_grad()
+        (value_loss + policy_loss).backward()
+        if self.value_grad_clip:
+            self.model.clip(self.value_grad_clip, modules=self.model.branch_module_names('value'))
+        if self.policy_grad_clip:
+            self.model.clip(self.policy_grad_clip, modules=self.model.branch_module_names('policy'))
+        shared_modules = self.model.shared_module_names()
+        if shared_modules:
+            shared_clip = self.shared_grad_clip
+            if shared_clip is None:
+                shared_clip = max(self.policy_grad_clip or float('inf'),
+                                  self.value_grad_clip or float('inf'))
+            self.model.clip(shared_clip, modules=shared_modules)
+        self.model.step()
+
+        if self.auto_entropy_tuning:
+            self.entropy_optimizer.zero_grad()
+            masked_log_probs = (log_probs.detach() * valid_mask).sum() / valid_count
+            alpha_loss = -(self.log_alpha * (masked_log_probs + self.target_entropy)).mean()
+            alpha_loss.backward()
+            self.entropy_optimizer.step()
+
+        if self.policy.distribution == 'categorical':
+            temperature = self.policy.temperature
+            if self.policy.temperature_schedule:
+                temperature *= self.policy.temperature_schedule.get_factor()
+            learn_metrics.update({'temperature': temperature})
+
+        learn_metrics.update({
+            'policy_loss': policy_loss.item(),
+            'value_loss': value_loss.item(),
+            'temporal_difference': (td_errors_tm.transpose(0, 1) * valid_mask).sum().item() / valid_count.item(),
+            'advantages': (advantages_et * valid_mask).sum().item() / valid_count.item(),
+            'returns': (returns_et * valid_mask).sum().item() / valid_count.item(),
+            'entropy': ((entropies * valid_mask).sum() / valid_count).item(),
+            'entropy_coefficient': entropy_coefficient,
+            'policy_learning_rate': self.model.learning_rate('branches.policy'),
+            'value_learning_rate': self.model.learning_rate('branches.value'),
+        })
+
+        self._advance_rollout_window()
+        return learn_metrics
+
     def get_config(self):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
-            "policy": self.policy.get_config(),
-            "value": self.value.get_config(),
+            "model": self.model.get_config(),
             "discount": self.discount,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
@@ -980,6 +1351,7 @@ class ActorCritic(Agent):
             "gae_coefficient": self.gae_coefficient,
             "policy_grad_clip": self.policy_grad_clip,
             "value_grad_clip": self.value_grad_clip,
+            "shared_grad_clip": self.shared_grad_clip,
             "value_coef": self.value_coef,
             "bootstrap_truncations": self.bootstrap_truncations,
         })
@@ -1019,13 +1391,19 @@ class PPO(Agent):
         device: (str): Device for computations ('cpu' or 'cuda').
     """
 
-    MODEL_ATTRS = ("policy", "value")
+    MODEL_ATTRS = ("model",)
     SCHEDULE_ATTRS = ("entropy_schedule", "policy_clip_schedule", "value_clip_schedule")
+    DEFAULT_SHARED_UPDATE = 'combined'
 
     def __init__(
         self,
-        policy: StochasticContinuousPolicy | StochasticDiscretePolicy,
-        value: ValueModel,
+        roots: Dict[str, SubNetwork] | None = None,
+        trunk: SubNetwork | None = None,
+        policy: StochasticContinuousHead | StochasticDiscreteHead | None = None,
+        value: ValueHead | None = None,
+        optimizer_params: dict | None = None,
+        lr_scheduler: ScheduleWrapper | None = None,
+        shared_update: str | None = None,
         discount: float = 0.99,
         gae_coefficient: float = 0.95,
         state_normalizer: BaseNormalizer|None = None,
@@ -1045,6 +1423,7 @@ class PPO(Agent):
         value_clip: float = 0.2,
         value_clip_schedule: ScheduleWrapper|None = None,
         value_grad_clip: float = 40.0,
+        shared_grad_clip: float|None = None, # None -> max(policy, value) clip
         value_coef: float = 0.5,
         reward_clip: float = float('inf'),
         intrinsic_motivation: IntrinsicMotivation|None = None,
@@ -1056,7 +1435,13 @@ class PPO(Agent):
         """
         Initialize the PPO agent.
         Args:
-            policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
+            roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
+            trunk: Optional shared fusion SubNetwork (identity when None).
+            policy: (StochasticContinuousHead|StochasticDiscreteHead): The policy head used for action selection (required).
+            value: (ValueHead): The value head used for state-value prediction (required).
+            optimizer_params: Model-wide default optimizer spec (per-module overrides allowed).
+            lr_scheduler: Model-wide default LR scheduler.
+            shared_update: Gradient-ownership rule for shared modules (default 'combined').
             goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
             advantage_normalizer: (BaseNormalizer): Normalizer for advantages.
             reward_normalizer: (RewardNorm): Normalizer for rewards.
@@ -1069,10 +1454,11 @@ class PPO(Agent):
             kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
             policy_clip: (float): Clipping value for policy ratio updates.
             policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
-            policy_grad_clip: (float): Maximum norm for policy model gradients.
+            policy_grad_clip: (float): Maximum norm for policy branch gradients.
             value_clip: (float): Clipping value for value model updates.
             value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
-            value_grad_clip: (float): Maximum norm for value model gradients.
+            value_grad_clip: (float): Maximum norm for value branch gradients.
+            shared_grad_clip: (float|None): Maximum norm for shared (roots+trunk) gradients; None -> max(policy_grad_clip, value_grad_clip).
             value_coef: (float): value to weight the value loss by.
             reward_clip: (float): Maximum absolute value for reward clipping.
             intrinsic_motivation: (IntrinsicMotivation): Intrinsic Motivation Module for curiosity-driven learning.
@@ -1081,59 +1467,45 @@ class PPO(Agent):
             device: (str): Device for computations ('cpu' or 'cuda').
             kwargs: Additional keyword arguments.
         """
-        try:
-            # super().__init__(
-            #     policy,
-            #     value,
-            #     discount,
-            #     state_normalizer,
-            #     None,
-            #     advantage_normalizer = advantage_normalizer,
-            #     reward_normalizer = reward_normalizer,
-            #     entropy_coefficient = entropy_coefficient,
-            #     entropy_schedule = entropy_schedule,
-            #     auto_entropy_tuning = auto_entropy_tuning,
-            #     entropy_lr = entropy_lr,
-            #     target_entropy_scale = target_entropy_scale,
-            #     save_dir = save_dir,
-            #     device=device,
-            #     **kwargs
-            # )
-            super().__init__(save_dir, device, **kwargs)
-            self.policy = policy
-            self.value = value
-            self.discount = discount
-            self.state_normalizer = state_normalizer
-            self.goal_normalizer = goal_normalizer
-            self.advantage_normalizer = advantage_normalizer
-            self.reward_normalizer = reward_normalizer
-            self.entropy_coefficient = entropy_coefficient
-            self.entropy_schedule = entropy_schedule
-            self.auto_entropy_tuning = auto_entropy_tuning
-            self.entropy_lr = entropy_lr
-            self.target_entropy_scale = target_entropy_scale
-            if self.auto_entropy_tuning:
-                self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
-                    self.policy,
-                    target_entropy_scale=target_entropy_scale,
-                    lr=entropy_lr,
-                    device=self.device,
-                )
-            self.gae_coefficient = gae_coefficient
-            self.kl_coefficient = kl_coefficient
-            self.kl_adapter = kl_adapter
-            self.policy_clip = policy_clip
-            self.policy_clip_schedule = policy_clip_schedule
-            self.policy_grad_clip = policy_grad_clip
-            self.value_clip = value_clip
-            self.value_clip_schedule = value_clip_schedule
-            self.value_grad_clip = value_grad_clip
-            self.value_coef = value_coef
-            self.reward_clip = reward_clip
-            self.intrinsic_motivation = intrinsic_motivation
-            self.bootstrap_truncations = bootstrap_truncations
-        except Exception as e:
-            self.logger.error(f"Error in PPO.__init__: {e}", exc_info=True)
+        super().__init__(save_dir, device, **kwargs)
+        self._check_head('policy', policy, StochasticContinuousHead, StochasticDiscreteHead)
+        self._check_head('value', value, ValueHead)
+        self.model = self._assemble_model(
+            {'policy': policy, 'value': value}, roots=roots, trunk=trunk,
+            optimizer_params=optimizer_params, lr_scheduler=lr_scheduler,
+            shared_update=shared_update,
+        )
+        self.discount = discount
+        self.state_normalizer = state_normalizer
+        self.goal_normalizer = goal_normalizer
+        self.advantage_normalizer = advantage_normalizer
+        self.reward_normalizer = reward_normalizer
+        self.entropy_coefficient = entropy_coefficient
+        self.entropy_schedule = entropy_schedule
+        self.auto_entropy_tuning = auto_entropy_tuning
+        self.entropy_lr = entropy_lr
+        self.target_entropy_scale = target_entropy_scale
+        if self.auto_entropy_tuning:
+            self.target_entropy, self.log_alpha, self.entropy_optimizer = setup_auto_entropy(
+                self.policy,
+                target_entropy_scale=target_entropy_scale,
+                lr=entropy_lr,
+                device=self.device,
+            )
+        self.gae_coefficient = gae_coefficient
+        self.kl_coefficient = kl_coefficient
+        self.kl_adapter = kl_adapter
+        self.policy_clip = policy_clip
+        self.policy_clip_schedule = policy_clip_schedule
+        self.policy_grad_clip = policy_grad_clip
+        self.value_clip = value_clip
+        self.value_clip_schedule = value_clip_schedule
+        self.value_grad_clip = value_grad_clip
+        self.shared_grad_clip = shared_grad_clip
+        self.value_coef = value_coef
+        self.reward_clip = reward_clip
+        self.intrinsic_motivation = intrinsic_motivation
+        self.bootstrap_truncations = bootstrap_truncations
 
     def act(
         self,
@@ -1156,7 +1528,9 @@ class PPO(Agent):
         """
         raw_actions = None
         with T.no_grad():
-            dist = self.policy(states, goals)
+            outputs = self._rollout_forward(
+                states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+            dist = outputs['policy']
             if context == 'train':
                 if self.policy.distribution == 'categorical':
                     actions = dist.sample()
@@ -1236,17 +1610,13 @@ class PPO(Agent):
         traj_len, num_envs = extrinsic_rewards.shape
         total_samples = traj_len * num_envs
 
-        # Flatten trajectory data
-        states_flat = states.reshape(total_samples, -1)
-        next_states_flat = next_states.reshape(total_samples, -1)
+        # Flatten trajectory data (feature shapes preserved; dict obs per key)
+        states_flat = flatten_leading(states, 2)
+        next_states_flat = flatten_leading(next_states, 2)
         actions_flat = actions.reshape(total_samples, -1)
         raw_actions_flat = raw_actions.reshape(total_samples, -1)
         extrinsic_rewards_flat = extrinsic_rewards.reshape(total_samples, -1)
         goals_flat = goals.reshape(total_samples, -1) if goals is not None else None
-        # ach_goals_flat = ach_goals.reshape(total_samples, -1) if ach_goals is not None else None
-        # next_ach_goals_flat = next_ach_goals.reshape(total_samples, -1) if next_ach_goals is not None else None
-        # terminations_flat = terminations.reshape(total_samples, -1)
-        # truncations_flat = truncations.reshape(total_samples, -1)
 
 
 
@@ -1265,13 +1635,16 @@ class PPO(Agent):
         if T.isfinite(T.tensor(self.reward_clip)) and self.reward_normalizer is None:
             extrinsic_rewards_flat = T.clamp(extrinsic_rewards_flat, min=-self.reward_clip, max=self.reward_clip)
 
-        # Train Intrinsic Motivation and get intrinsic rewards
-        if self.intrinsic_motivation:     
-            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+        # Train Intrinsic Motivation and get intrinsic rewards (IM consumes a
+        # single flat vector view of the — possibly multi-modal — observation)
+        if self.intrinsic_motivation:
+            im_states = flatten_obs(states_flat)
+            im_next_states = flatten_obs(next_states_flat)
+            im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
-                states_flat,
-                next_states_flat,
+                im_states,
+                im_next_states,
                 actions_flat
             )
             # Add intrinsic learn rewards to intrinsic rollout rewards
@@ -1286,16 +1659,41 @@ class PPO(Agent):
             im_learn_rewards = T.zeros_like(rewards)
             im_rewards = T.zeros_like(rewards)
 
-        # Get current log probs and values
+        # Recurrent path: hidden-aware sequence updates over full env rollouts
+        if self.model.is_temporal:
+            learn_metrics.update(self._recurrent_update(
+                step=step,
+                states_flat=states_flat, next_states_flat=next_states_flat,
+                actions_flat=actions_flat, raw_actions_flat=raw_actions_flat,
+                goals_flat=goals_flat, rewards=rewards,
+                terminations=terminations, truncations=truncations,
+                first_steps=first_steps, traj_len=traj_len, num_envs=num_envs,
+                learning_epochs=learning_epochs, mini_batch_size=mini_batch_size,
+                policy_clip=policy_clip, value_clip=value_clip,
+                entropy_coefficient=entropy_coefficient, kl_coefficient=kl_coefficient,
+            ))
+            if self.intrinsic_motivation:
+                learn_metrics.update({
+                    "intrinsic_loss": im_loss,
+                    "learn_intrinsic_reward": im_learn_rewards.mean().item(),
+                    "intrinsic_reward": im_rewards.mean().item(),
+                    "reward_weight": self.intrinsic_motivation.reward_weight * self.intrinsic_motivation.reward_scheduler.get_factor() \
+                        if self.intrinsic_motivation.reward_scheduler else self.intrinsic_motivation.reward_weight
+                })
+            return learn_metrics
+
+        # Get current log probs and values (one shared forward for both heads)
         with T.no_grad():
-            cur_dist = self.policy(states_flat, goals_flat)
+            cur_out, _ = self.model(states_flat, goal=goals_flat, branches=('policy', 'value'))
+            cur_dist = cur_out['policy']
             if self.policy.distribution == 'categorical':
                 cur_log_probs = cur_dist.log_prob(actions_flat.view(-1)).unsqueeze(-1)
             else:
                 cur_log_probs = cur_dist.log_prob_from_z(raw_actions_flat).unsqueeze(-1)
-            
-            cur_values = self.value(states_flat, goals_flat).reshape(traj_len, num_envs)
-            cur_next_values = self.value(next_states_flat, goals_flat).reshape(traj_len, num_envs)
+
+            cur_values = cur_out['value'].reshape(traj_len, num_envs)
+            next_out, _ = self.model(next_states_flat, goal=goals_flat, branches=('value',))
+            cur_next_values = next_out['value'].reshape(traj_len, num_envs)
 
         # Calculate advantages and returns
         advantages, returns, td_errors = compute_advantages_and_returns(
@@ -1313,8 +1711,8 @@ class PPO(Agent):
         # Filter phantom steps
         valid_idx = valid_indices.squeeze(-1)
         num_valid = valid_idx.numel()
-        states_flat = states_flat[valid_idx]
-        next_states_flat = next_states_flat[valid_idx]
+        states_flat = tree_index(states_flat, valid_idx)
+        next_states_flat = tree_index(next_states_flat, valid_idx)
         actions_flat = actions_flat[valid_idx]
         raw_actions_flat = raw_actions_flat[valid_idx]
         goals_flat = goals_flat[valid_idx] if goals is not None else None
@@ -1337,7 +1735,7 @@ class PPO(Agent):
 
             for batch_num in range(num_batches):
                 batch_indices = indices[batch_num * mini_batch_size : (batch_num + 1) * mini_batch_size]
-                states_batch = states_flat[batch_indices]
+                states_batch = tree_index(states_flat, batch_indices)
                 goals_batch = goals_flat[batch_indices] if goals is not None else None
                 actions_batch = actions_flat[batch_indices]
                 raw_actions_batch = raw_actions_flat[batch_indices]
@@ -1346,9 +1744,10 @@ class PPO(Agent):
                 advantages_batch = advantages_flat[batch_indices].detach()
                 returns_batch = returns_flat[batch_indices].detach()
 
-                ## POLICY ##
-                # Create new distribution
-                new_dist = self.policy(states_batch, goals_batch)
+                ## POLICY + VALUE (one shared forward through roots/trunk) ##
+                batch_out, _ = self.model(states_batch, goal=goals_batch,
+                                          branches=('policy', 'value'))
+                new_dist = batch_out['policy']
                 if self.policy.distribution == 'categorical':
                     new_log_probs = new_dist.log_prob(actions_batch.view(-1)).unsqueeze(-1)
                 else: # Continuous Distributions
@@ -1377,22 +1776,32 @@ class PPO(Agent):
                 policy_loss = surrogate_loss + entropy_penalty + kl_penalty
 
                 ## VALUE ##
-                values = self.value(states_batch, goals_batch)
+                values = batch_out['value']
                 loss = (values - returns_batch).pow(2)
                 clipped_values = cur_values_batch + (values - cur_values_batch).clamp(-value_clip, value_clip)
                 clipped_value_loss = (clipped_values - returns_batch).pow(2)
                 value_loss = self.value_coef * (0.5 * T.max(loss, clipped_value_loss).mean())
 
-                # Calculate gradients
-                self.policy.optimizer.zero_grad()
-                policy_loss.backward()
+                # ONE combined backward; shared modules accumulate gradients
+                # from both losses and are stepped exactly once (SB3/RSL-RL
+                # on-policy standard).
+                self.model.zero_grad()
+                (policy_loss + value_loss).backward()
+                policy_grad_norm = None
+                value_grad_norm = None
                 if self.policy_grad_clip:
-                    policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
-
-                self.value.optimizer.zero_grad()
-                value_loss.backward()
+                    policy_grad_norm = self.model.clip(
+                        self.policy_grad_clip, modules=self.model.branch_module_names('policy'))
                 if self.value_grad_clip:
-                    value_grad_norm = T.nn.utils.clip_grad_norm_(self.value.parameters(), max_norm=self.value_grad_clip)
+                    value_grad_norm = self.model.clip(
+                        self.value_grad_clip, modules=self.model.branch_module_names('value'))
+                shared_modules = self.model.shared_module_names()
+                if shared_modules:
+                    shared_clip = self.shared_grad_clip
+                    if shared_clip is None:
+                        shared_clip = max(self.policy_grad_clip or float('inf'),
+                                          self.value_grad_clip or float('inf'))
+                    self.model.clip(shared_clip, modules=shared_modules)
 
                 # Log diag data
                 if should_log_diag and (epoch == learning_epochs - 1) and (batch_num == num_batches - 1):
@@ -1437,9 +1846,8 @@ class PPO(Agent):
                         float(policy_loss.item()),
                     )
 
-                # Update models
-                self.policy.optimizer.step()
-                self.value.optimizer.step()
+                # Update models (every module optimizer steps once)
+                self.model.step()
 
             
             if self.kl_adapter and mean_kl > self.kl_adapter.target_kl * 1.5:
@@ -1455,8 +1863,8 @@ class PPO(Agent):
             alpha_loss.backward()
             self.entropy_optimizer.step()
 
-        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
-        value_learning_rate = self.value.optimizer.param_groups[0]['lr']
+        policy_learning_rate = self.model.learning_rate('branches.policy')
+        value_learning_rate = self.model.learning_rate('branches.value')
 
         # Get temperature value from policy if categorical
         if self.policy.distribution == 'categorical':
@@ -1493,6 +1901,205 @@ class PPO(Agent):
 
         return learn_metrics
 
+    def _recurrent_update(
+        self,
+        *,
+        step: int,
+        states_flat, next_states_flat, actions_flat, raw_actions_flat, goals_flat,
+        rewards, terminations, truncations, first_steps,
+        traj_len: int, num_envs: int,
+        learning_epochs: int, mini_batch_size: int,
+        policy_clip: float, value_clip: float,
+        entropy_coefficient, kl_coefficient,
+    ) -> dict:
+        """Hidden-aware PPO update over full env sequences (RSL-RL style).
+
+        - Minibatches are subsets of ENVS carrying their full rollout
+          sequences; ``mini_batch_size`` is interpreted in env units (values
+          exceeding / not dividing ``num_envs`` fall back to all envs).
+        - Hidden states start from the snapshot taken at the rollout start and
+          are reset mid-sequence at episode boundaries (``first_steps``).
+        - Next-state values for GAE are the (exact within episodes) shifted
+          values from the same hidden stream; the final step's next-value is
+          computed with the post-sequence hidden.
+        """
+        learn_metrics: dict = {}
+
+        # ---- Sequence views: (T, E, *feat) -> (E, T, *feat) ---------------
+        def to_seq(flat):
+            seq = unflatten_leading(flat, (traj_len, num_envs))
+            from app.obs_utils import tree_map as _tree_map
+            return _tree_map(lambda x: x.transpose(0, 1).contiguous(), seq)
+
+        states_seq = to_seq(states_flat)
+        next_states_seq = to_seq(next_states_flat)
+        actions_seq = actions_flat.reshape(traj_len, num_envs, -1).transpose(0, 1).contiguous()
+        raw_actions_seq = raw_actions_flat.reshape(traj_len, num_envs, -1).transpose(0, 1).contiguous()
+        goals_seq = (goals_flat.reshape(traj_len, num_envs, -1).transpose(0, 1).contiguous()
+                     if goals_flat is not None else None)
+        start_mask = first_steps.transpose(0, 1).bool().to(self.device)  # (E, T)
+        valid_mask = (~start_mask).float()                               # phantom rows excluded
+        valid_count = valid_mask.sum().clamp(min=1.0)
+
+        # ---- Initial hidden for this rollout window ------------------------
+        hidden0 = self._rollout_start_hidden
+        if hidden0:
+            hidden_batch = next(iter(hidden0.values()))
+            hidden_batch = hidden_batch[0] if isinstance(hidden_batch, tuple) else hidden_batch
+            if hidden_batch.shape[1] != num_envs:
+                hidden0 = None
+        if not hidden0:
+            hidden0 = self.model.init_hidden(num_envs)
+
+        # ---- Old log probs / values (sequence forward, no grad) ------------
+        with T.no_grad():
+            cur_out, final_hidden = self.model(
+                states_seq, goal=goals_seq, branches=('policy', 'value'),
+                hidden=hidden0, start_mask=start_mask, mode='sequence')
+            cur_dist = cur_out['policy']
+            if self.policy.distribution == 'categorical':
+                cur_log_probs = cur_dist.log_prob(actions_seq.squeeze(-1))      # (E, T)
+            else:
+                cur_log_probs = cur_dist.log_prob_from_z(raw_actions_seq)       # (E, T)
+            cur_values_et = cur_out['value'].squeeze(-1)                        # (E, T)
+
+            # Next values: shifted within the same hidden stream (exact inside
+            # episodes); the final step uses the post-sequence hidden.
+            last_next = tree_index(next_states_seq, (slice(None), -1))
+            goals_last = goals_seq[:, -1] if goals_seq is not None else None
+            last_out, _ = self.model(last_next, goal=goals_last, branches=('value',),
+                                     hidden=final_hidden, mode='step')
+            next_values_et = T.cat(
+                [cur_values_et[:, 1:], last_out['value'].reshape(num_envs, 1)], dim=1)
+
+        cur_values_tm = cur_values_et.transpose(0, 1)      # (T, E)
+        next_values_tm = next_values_et.transpose(0, 1)    # (T, E)
+
+        advantages_tm, returns_tm, td_errors_tm = compute_advantages_and_returns(
+            rewards, cur_values_tm, next_values_tm, terminations, truncations,
+            self.discount, self.gae_coefficient, self.bootstrap_truncations, self.device)
+        advantages_et = advantages_tm.transpose(0, 1)      # (E, T)
+        returns_et = returns_tm.transpose(0, 1)
+
+        # Normalize advantages (running stats fed with valid entries only)
+        if self.advantage_normalizer:
+            valid_flat = advantages_et[valid_mask.bool()].reshape(-1, 1)
+            if getattr(self.advantage_normalizer, 'add', None):
+                self.advantage_normalizer.add(valid_flat)
+            advantages_et = self.advantage_normalizer.normalize(
+                advantages_et.reshape(-1, 1)).reshape(num_envs, traj_len)
+
+        # ---- Env-subset minibatches over full sequences ---------------------
+        envs_per_batch = mini_batch_size if 0 < mini_batch_size <= num_envs else num_envs
+        if num_envs % envs_per_batch != 0:
+            envs_per_batch = num_envs
+        num_batches = num_envs // envs_per_batch
+
+        for epoch in range(learning_epochs):
+            perm = T.randperm(num_envs, device=self.device)
+            for batch_num in range(num_batches):
+                idx = perm[batch_num * envs_per_batch:(batch_num + 1) * envs_per_batch]
+                mask_b = valid_mask[idx]
+                mask_sum = mask_b.sum().clamp(min=1.0)
+
+                batch_out, _ = self.model(
+                    tree_index(states_seq, idx),
+                    goal=goals_seq[idx] if goals_seq is not None else None,
+                    branches=('policy', 'value'),
+                    hidden=self.model.index_hidden(hidden0, idx),
+                    start_mask=start_mask[idx], mode='sequence')
+                new_dist = batch_out['policy']
+                if self.policy.distribution == 'categorical':
+                    new_log_probs = new_dist.log_prob(actions_seq[idx].squeeze(-1))
+                else:
+                    new_log_probs = new_dist.log_prob_from_z(raw_actions_seq[idx])
+
+                log_ratio = new_log_probs - cur_log_probs[idx]
+                prob_ratio = T.exp(log_ratio)
+
+                adv_b = advantages_et[idx]
+                surr1 = prob_ratio * adv_b
+                surr2 = T.clamp(prob_ratio, 1 - policy_clip, 1 + policy_clip) * adv_b
+                surrogate_loss = -(T.min(surr1, surr2) * mask_b).sum() / mask_sum
+
+                entropies = new_dist.entropy()
+                mean_entropy = (entropies * mask_b).sum() / mask_sum
+                entropy_penalty = mean_entropy * -entropy_coefficient
+
+                with T.no_grad():
+                    kl = prob_ratio - 1 - log_ratio
+                    mean_kl = (kl * mask_b).sum() / mask_sum
+                kl_penalty = mean_kl * kl_coefficient
+
+                policy_loss = surrogate_loss + entropy_penalty + kl_penalty
+
+                values = batch_out['value'].squeeze(-1)
+                cur_v_b = cur_values_et[idx]
+                ret_b = returns_et[idx]
+                loss = (values - ret_b).pow(2)
+                clipped_values = cur_v_b + (values - cur_v_b).clamp(-value_clip, value_clip)
+                clipped_value_loss = (clipped_values - ret_b).pow(2)
+                value_loss = self.value_coef * (
+                    0.5 * (T.max(loss, clipped_value_loss) * mask_b).sum() / mask_sum)
+
+                self.model.zero_grad()
+                (policy_loss + value_loss).backward()
+                if self.policy_grad_clip:
+                    self.model.clip(self.policy_grad_clip,
+                                    modules=self.model.branch_module_names('policy'))
+                if self.value_grad_clip:
+                    self.model.clip(self.value_grad_clip,
+                                    modules=self.model.branch_module_names('value'))
+                shared_modules = self.model.shared_module_names()
+                if shared_modules:
+                    shared_clip = self.shared_grad_clip
+                    if shared_clip is None:
+                        shared_clip = max(self.policy_grad_clip or float('inf'),
+                                          self.value_grad_clip or float('inf'))
+                    self.model.clip(shared_clip, modules=shared_modules)
+                self.model.step()
+
+            if self.kl_adapter and mean_kl > self.kl_adapter.target_kl * 1.5:
+                break
+
+        if self.kl_adapter:
+            self.kl_adapter.step(mean_kl)
+
+        if self.auto_entropy_tuning:
+            self.entropy_optimizer.zero_grad()
+            masked_log_probs = (new_log_probs * mask_b).sum() / mask_sum
+            alpha_loss = -(self.log_alpha * (masked_log_probs + self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.entropy_optimizer.step()
+
+        if self.policy.distribution == 'categorical':
+            temperature = self.policy.temperature
+            if self.policy.temperature_schedule:
+                temperature *= self.policy.temperature_schedule.get_factor()
+            learn_metrics.update({'temperature': temperature})
+
+        learn_metrics.update({
+            'policy_loss': policy_loss.item(),
+            'value_loss': value_loss.item(),
+            'entropy': mean_entropy.item(),
+            'kl': mean_kl.item(),
+            'prob_ratio': prob_ratio.detach().cpu().flatten().mean().item(),
+            'temporal_difference': (td_errors_tm.transpose(0, 1) * valid_mask).sum().item() / valid_count.item(),
+            'advantages': (advantages_et * valid_mask).sum().item() / valid_count.item(),
+            'returns': (returns_et * valid_mask).sum().item() / valid_count.item(),
+            'policy_clip': policy_clip,
+            'value_clip': value_clip,
+            'entropy_coefficient': entropy_coefficient,
+            'kl_coefficient': kl_coefficient,
+            'policy_learning_rate': self.model.learning_rate('branches.policy'),
+            'value_learning_rate': self.model.learning_rate('branches.value'),
+        })
+
+        # The rollout buffer resets after learn: the live hidden becomes the
+        # next window's initial hidden.
+        self._advance_rollout_window()
+        return learn_metrics
+
     def get_config(self):
         """
         Get the current configuration of the PPO agent.
@@ -1502,8 +2109,7 @@ class PPO(Agent):
         """
         config = super().get_config()
         config["config"].update({
-            "policy": self.policy.get_config(),
-            "value": self.value.get_config(),
+            "model": self.model.get_config(),
             "discount": self.discount,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
@@ -1521,6 +2127,7 @@ class PPO(Agent):
             "value_clip": self.value_clip,
             "value_clip_schedule": self.value_clip_schedule.get_config() if self.value_clip_schedule else None,
             "value_grad_clip": self.value_grad_clip,
+            "shared_grad_clip": self.shared_grad_clip,
             "value_coef": self.value_coef,
             "reward_clip": self.reward_clip,
             "kl_coefficient": self.kl_coefficient,
@@ -1533,15 +2140,21 @@ class PPO(Agent):
 class DDPG(Agent):
     """Deep Deterministic Policy Gradient Agent."""
 
-    MODEL_ATTRS = ("policy", "critic")
-    TARGET_ATTRS = ("target_policy", "target_critic")
+    MODEL_ATTRS = ("model",)
+    TARGET_ATTRS = ("target_model",)
     SCHEDULE_ATTRS = ("noise_schedule",)
+    DEFAULT_SHARED_UPDATE = 'critic'
 
     def __init__(
         self,
-        policy: ActorModel,
-        critic: ContinuousCritic,
+        roots: Dict[str, SubNetwork] | None = None,
+        trunk: SubNetwork | None = None,
+        policy: DeterministicActorHead | None = None,
+        critic: ContinuousQHead | None = None,
         *,
+        optimizer_params: dict | None = None,
+        lr_scheduler: ScheduleWrapper | None = None,
+        shared_update: str | None = None,
         discount: float=0.99,
         tau: float=0.001,
         action_epsilon: float = 0.2,
@@ -1556,14 +2169,20 @@ class DDPG(Agent):
         critic_grad_clip: float = float('inf'),
         critic_huber_delta: float = 1.0,
         N: int=1, # N-steps
+        recurrent_burn_in: int = 0, # R2D2 burn-in steps (temporal models; < N)
         intrinsic_motivation: IntrinsicMotivation | None = None,
         save_dir: str = "models",
         device: str | T.device | None = None,
         **kwargs: Any,
     ):
         super().__init__(save_dir, device, **kwargs)
-        self.policy = policy
-        self.critic = critic
+        self._check_head('policy', policy, DeterministicActorHead)
+        self._check_head('critic', critic, ContinuousQHead)
+        self.model = self._assemble_model(
+            {'policy': policy, 'critic': critic}, roots=roots, trunk=trunk,
+            optimizer_params=optimizer_params, lr_scheduler=lr_scheduler,
+            shared_update=shared_update,
+        )
         self.discount = discount
         self.tau = tau
         self.state_normalizer = state_normalizer
@@ -1574,9 +2193,12 @@ class DDPG(Agent):
         self.critic_huber_delta = critic_huber_delta
         self.critic_loss_fn = T.nn.HuberLoss(reduction='none', delta=critic_huber_delta)
         self.N = N
+        self.recurrent_burn_in = recurrent_burn_in
+        if recurrent_burn_in and recurrent_burn_in >= N:
+            raise ValueError(f"recurrent_burn_in ({recurrent_burn_in}) must be < N ({N})")
         self.intrinsic_motivation = intrinsic_motivation
-        self.target_policy = self.policy.clone(device=self.policy.device)
-        self.target_critic = self.critic.clone(device=self.critic.device)
+        # Target: policy + critic branches (+ shared roots/trunk), name-matched
+        self.target_model = self.model.clone(branches=['policy', 'critic'])
         self.action_epsilon = action_epsilon
         self.noise = noise
         self.noise_schedule = noise_schedule
@@ -1589,7 +2211,8 @@ class DDPG(Agent):
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
         step: int | None = None,
-        warmup: int | None = None
+        warmup: int | None = None,
+        **kwargs: Any,
     ) -> Action:
         """
         Select an action based on the current policy.
@@ -1605,19 +2228,30 @@ class DDPG(Agent):
             Action: actions.
         """
         
+        # Temporal models always run the forward (to advance the recurrent /
+        # context stream) and attach the pre-step hidden for R2D2 storage.
+        pol_outputs = None
+        pre_hidden_flat = None
+        if self.model.is_temporal:
+            with T.no_grad():
+                pol_outputs = self._rollout_forward(
+                    states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+            if self.model.is_recurrent and self._last_pre_hidden is not None:
+                pre_hidden_flat = self.model.hidden_to_tensors(self._last_pre_hidden)
+
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
-                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                actions = T.as_tensor(self.model.env.action_space.sample(), device=self.device)
                 raw_actions = actions
             # if random number is less than epsilon, sample random action
             elif np.random.random() < self.action_epsilon:
-                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                actions = T.as_tensor(self.model.env.action_space.sample(), device=self.device)
                 raw_actions = actions
             # otherwise, sample action from policy
             else:
-                noise = self.noise(self.policy.env.action_space.shape)
+                noise = self.noise(self.model.env.action_space.shape)
                 # Apply noise clipping if needed
                 if self.noise_clip > 0:
                     noise = noise.clamp(-self.noise_clip, self.noise_clip)
@@ -1626,20 +2260,23 @@ class DDPG(Agent):
                     noise *= self.noise_schedule.get_factor()
                 
                 with T.no_grad():
-                    raw_actions, actions = self.policy(states, goals)
+                    if pol_outputs is None:
+                        pol_outputs, _ = self.model(states, goal=goals, branches=('policy',))
+                    raw_actions, actions = pol_outputs['policy']
                 
                 # Convert the action space bounds to a tensor on the same device
                 actions = (actions + noise).clip(self.policy.act_space_low, self.policy.act_space_high)
 
         else: # context == 'test'
             with T.no_grad():
-                raw_actions, actions = self.policy(states, goals)
+                if pol_outputs is None:
+                    pol_outputs, _ = self.model(states, goal=goals, branches=('policy',))
+                raw_actions, actions = pol_outputs['policy']
         
-        return Action(actions, raw_actions=raw_actions)
+        return Action(actions, raw_actions=raw_actions, hidden=pre_hidden_flat)
 
     def soft_update_targets(self):
-        soft_update(self.policy, self.target_policy, self.tau)
-        soft_update(self.critic, self.target_critic, self.tau)
+        soft_update(self.model, self.target_model, self.tau)
 
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
         self._learn_count += 1
@@ -1676,45 +2313,46 @@ class DDPG(Agent):
         # Get batch_size and n-step trajectory length
         batch_size, n_step_length = extrinsic_rewards.shape
 
-        # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-        states_flat = states.reshape(-1, states.shape[-1])
-        next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+        # Reshape arrays to (batch_size * N, *feat) to train on all steps in N
+        # (feature shapes preserved; dict obs handled per key)
+        states_flat = flatten_leading(states, 2)
+        next_states_flat = flatten_leading(next_states, 2)
         actions_flat = actions.reshape(-1, actions.shape[-1])
         extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
         if goals is not None:
             goals_flat = goals.reshape(-1, goals.shape[-1])
-            # ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
-            # next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
 
         # Normalize states/goals/rewards
         if self.state_normalizer:
             states_flat = self.state_normalizer.normalize(states_flat)
             next_states_flat = self.state_normalizer.normalize(next_states_flat)
         if self.goal_normalizer:
-            # ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
-            # next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
             goals_flat = self.goal_normalizer.normalize(goals_flat)
         if self.reward_normalizer:
             extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
 
-        # Create normalized tensors reshaped to [batch_size, n_step_length]
-        states_norm = states_flat.reshape(batch_size, n_step_length, -1)
-        next_states_norm = next_states_flat.reshape(batch_size, n_step_length, -1)
+        # Create normalized tensors reshaped to [batch_size, n_step_length, *feat]
+        states_norm = unflatten_leading(states_flat, (batch_size, n_step_length))
+        next_states_norm = unflatten_leading(next_states_flat, (batch_size, n_step_length))
         extrinsic_rewards_norm = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
         if goals is not None:
             goals_norm = goals_flat.reshape(batch_size, n_step_length, -1)
-            # ach_goals_norm = ach_goals_flat.reshape(batch_size, n_step_length, -1)
-            # next_ach_goals_norm = next_ach_goals_flat.reshape(batch_size, n_step_length, -1)
         else:
             goals_norm = None
 
-        # Train Intrinsic Motivation and get intrinsic rewards
+        # First / last n-step positions (dict-aware indexing)
+        states0 = tree_index(states_norm, (slice(None), 0))
+        next_states_last = tree_index(next_states_norm, (slice(None), -1))
+
+        # Train Intrinsic Motivation and get intrinsic rewards (flat vector view)
         if self.intrinsic_motivation:
-            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+            im_states = flatten_obs(states_flat)
+            im_next_states = flatten_obs(next_states_flat)
+            im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
-                states_flat,
-                next_states_flat,
+                im_states,
+                im_next_states,
                 actions_flat
             )
             # Add intrinsic learn rewards to intrinsic rollout rewards
@@ -1729,37 +2367,84 @@ class DDPG(Agent):
             im_learn_rewards = T.zeros_like(rewards)
             im_rewards = T.zeros_like(rewards)
 
-        # Get target values
+        goals0 = goals_norm[:,0,:] if goals is not None else None
+        goals_last = goals_norm[:,-1,:] if goals is not None else None
+
+        # --- Recurrent (R2D2) setup: stored initial hidden + optional burn-in
+        temporal = self.model.is_temporal
+        hidden0 = None
+        h1 = None
+        anchor = 0
+        if temporal:
+            if self.model.is_recurrent:
+                stored = sample.get('initial_hidden')
+                hidden0 = (self.model.hidden_from_tensors(
+                              {k: v.to(self.device) for k, v in stored.items()})
+                           if stored else self.model.init_hidden(batch_size))
+                with T.no_grad():
+                    # hidden after the first step: initial state of the
+                    # next-state stream (exact within the window)
+                    _, h1 = self.model(
+                        tree_index(states_norm, (slice(None), slice(0, 1))),
+                        goal=goals_norm[:, :1] if goals is not None else None,
+                        branches=('policy',), hidden=hidden0, mode='sequence')
+                    h1 = self.model.detach_hidden(h1)
+            anchor = min(self.recurrent_burn_in, n_step_length - 1)
+            anchor_goals = goals_norm[:, anchor, :] if goals is not None else None
+
+        # Get target values (goals threaded through every target forward)
         with T.no_grad():
+            if temporal:
+                # Sequence-mode target stream; bootstrap from the LAST position
+                tgt_pol_out, _ = self.target_model(
+                    next_states_norm, goal=goals_norm, branches=('policy',),
+                    hidden=h1, mode='sequence')
+                _, target_actions_seq = tgt_pol_out['policy']
+                target_actions = target_actions_seq[:, -1]
+                target_actions_full = target_actions.unsqueeze(1).expand_as(target_actions_seq).contiguous()
+                tgt_q_out, _ = self.target_model(
+                    next_states_norm, action=target_actions_full, goal=goals_norm,
+                    branches=('critic',), hidden=h1, mode='sequence')
+                target_critic_values = tgt_q_out['critic'][:, -1].squeeze(-1)
+                rewards_eff = rewards[:, anchor:]
+                terminations_eff = terminations[:, anchor:]
+                lengths_eff = (trajectory_lengths - anchor).clamp(min=0)
+            else:
+                target_pol_out, _ = self.target_model(
+                    next_states_last, goal=goals_last, branches=('policy',))
+                _, target_actions = target_pol_out['policy']
+
+                target_q_out, _ = self.target_model(
+                    next_states_last, action=target_actions, goal=goals_last,
+                    branches=('critic',))
+                target_critic_values = target_q_out['critic'].squeeze()
+                rewards_eff = rewards
+                terminations_eff = terminations
+                lengths_eff = trajectory_lengths
+
             targets = compute_n_step_return(
-                rewards,
+                rewards_eff,
                 self.discount,
-                device=self.target_critic.device
+                device=self.target_model.device
             ).squeeze()
 
-            _, target_actions = self.target_policy(
-                next_states_norm[:,-1,:],
-                goals_norm[:,-1,:] if goals is not None else None
-            )
-
-            target_critic_values = self.target_critic(
-                next_states_norm[:,-1,:],
-                target_actions,
-                goals_norm[:,-1,:] if goals is not None else None
-            ).squeeze()
-
-            no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
-            gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
+            no_dones_mask = (terminations_eff.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
+            gamma_pow = self.discount ** lengths_eff # correctly discounts bootstrapped values by traj lengths
             targets += no_dones_mask * gamma_pow * target_critic_values
 
             targets = T.clamp(targets, min=-1/(1-self.discount))
 
-        # Get current critic predictions
-        predictions = self.critic(
-            states_norm[:,0,:],
-            actions[:,0,:],
-            goals_norm[:,0,:] if goals is not None else None
-        ).squeeze()
+        # Get current critic predictions (gradients flow through roots+trunk:
+        # the critic loss owns the shared body — SAC-AE/DrQ-v2 rule)
+        if temporal:
+            pred_out, _ = self.model(
+                states_norm, action=actions, goal=goals_norm, branches=('critic',),
+                hidden=hidden0, mode='sequence')
+            predictions = pred_out['critic'][:, anchor].reshape(batch_size)
+        else:
+            pred_out, _ = self.model(
+                states0, action=actions[:,0,:], goal=goals0, branches=('critic',))
+            predictions = pred_out['critic'].squeeze()
 
         # Calculate TD errors (kept as raw signed differences for PER priorities and logging)
         error = targets - predictions
@@ -1767,46 +2452,61 @@ class DDPG(Agent):
         # Per-sample Huber loss; apply IS weights before averaging if using PER
         per_sample_loss = self.critic_loss_fn(predictions, targets)
         if weights is not None:
-            critic_loss = (weights.to(self.critic.device) * per_sample_loss).mean()
+            critic_loss = (weights.to(self.model.device) * per_sample_loss).mean()
         else:
             critic_loss = per_sample_loss.mean()
 
-        # Update critic
-        self.critic.optimizer.zero_grad()
+        # Update critic branch + shared roots/trunk
+        critic_modules = self.model.branch_module_names('critic') + self.model.shared_module_names()
+        self.model.zero_grad()
         critic_loss.backward()
         
         # Clip value gradient
-        critic_grad_norm = T.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=self.critic_grad_clip)
-        self.critic.optimizer.step()
+        critic_grad_norm = self.model.clip(self.critic_grad_clip, modules=critic_modules)
+        self.model.step(critic_modules)
 
-        # Get actor's action predictions
-        pred_raw_actions, pred_actions = self.policy(
-            states_norm[:,0,:],
-            goals_norm[:,0,:] if goals is not None else None
-        )
-        
-        # Calculate actor loss based on critic
-        critic_values = self.critic(
-            states_norm[:,0,:],
-            pred_actions,
-            goals_norm[:,0,:] if goals is not None else None
-        )
+        # Get actor's action predictions — shared features DETACHED so the
+        # actor loss never updates roots/trunk (exactly one owner per param)
+        self.model.zero_grad()
+        if temporal:
+            pol_out, _ = self.model(
+                states_norm, goal=goals_norm, branches=('policy',),
+                hidden=hidden0, detach_shared=True, mode='sequence')
+            mu_seq, pi_seq = pol_out['policy']
+            pred_raw_actions = mu_seq[:, anchor]
+            pred_actions = pi_seq[:, anchor]
+            pred_actions_full = pred_actions.unsqueeze(1).expand_as(pi_seq).contiguous()
+            q_out, _ = self.model(
+                states_norm, action=pred_actions_full, goal=goals_norm,
+                branches=('critic',), hidden=hidden0, detach_shared=True, mode='sequence')
+            critic_values = q_out['critic'][:, anchor]
+        else:
+            pol_out, _ = self.model(
+                states0, goal=goals0, branches=('policy',), detach_shared=True)
+            pred_raw_actions, pred_actions = pol_out['policy']
+            
+            # Calculate actor loss based on critic (also on detached features; the
+            # critic branch's gradients are discarded — only the policy steps)
+            q_out, _ = self.model(
+                states0, action=pred_actions, goal=goals0,
+                branches=('critic',), detach_shared=True)
+            critic_values = q_out['critic']
 
         if weights is not None:
-            actor_loss = -(weights.to(self.policy.device) * critic_values).mean()
+            actor_loss = -(weights.to(self.model.device) * critic_values).mean()
         else:
             actor_loss = -critic_values.mean()
 
         # Add raw action l2 regularization if coef > 0
         actor_loss += self.raw_action_l2_coef * pred_raw_actions.pow(2).mean()
 
-        # Update actor
-        self.policy.optimizer.zero_grad()
+        # Update actor branch only
         actor_loss.backward()
 
         # Clip policy gradient
-        policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
-        self.policy.optimizer.step()
+        policy_grad_norm = self.model.clip(
+            self.policy_grad_clip, modules=self.model.branch_module_names('policy'))
+        self.model.step(self.model.branch_module_names('policy'))
 
         # Log diag data
         if should_log_diag:
@@ -1846,8 +2546,8 @@ class DDPG(Agent):
                 float(actor_loss.item()),
             )
 
-        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
-        critic_learning_rate = self.critic.optimizer.param_groups[0]['lr']
+        policy_learning_rate = self.model.learning_rate('branches.policy')
+        critic_learning_rate = self.model.learning_rate('branches.critic')
         
         learn_metrics.update({
             "extrinsic_rewards": extrinsic_rewards.mean().item(),
@@ -1881,8 +2581,7 @@ class DDPG(Agent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
-            "policy": self.policy.get_config(),
-            "critic": self.critic.get_config(),
+            "model": self.model.get_config(),
             "discount": self.discount,
             "tau": self.tau,
             "action_epsilon": self.action_epsilon,
@@ -1905,16 +2604,22 @@ class DDPG(Agent):
 class TD3(Agent):
     """Twin Delayed Deep Deterministic Policy Gradient Agent."""
 
-    MODEL_ATTRS = ("policy", "critic", "critic_b")
-    TARGET_ATTRS = ("target_policy", "target_critic", "target_critic_b")
+    MODEL_ATTRS = ("model",)
+    TARGET_ATTRS = ("target_model",)
     SCHEDULE_ATTRS = ("noise_schedule", "target_noise_schedule")
+    DEFAULT_SHARED_UPDATE = 'critic'
 
     def __init__(
         self,
-        policy: ActorModel,
-        critic: ContinuousCritic,
-        critic_b: ContinuousCritic|None = None,
+        roots: Dict[str, SubNetwork] | None = None,
+        trunk: SubNetwork | None = None,
+        policy: DeterministicActorHead | None = None,
+        critic: ContinuousQHead | None = None,
+        critic_b: ContinuousQHead | None = None,
         *,
+        optimizer_params: dict | None = None,
+        lr_scheduler: ScheduleWrapper | None = None,
+        shared_update: str | None = None,
         discount: float = 0.99,
         tau: float = 0.005,
         action_epsilon: float = 0.0,
@@ -1932,14 +2637,28 @@ class TD3(Agent):
         critic_huber_delta: float = 1.0,
         policy_update_delay: int = 2,
         N: int=1, # N-steps
+        recurrent_burn_in: int = 0, # R2D2 burn-in steps (temporal models; < N)
         intrinsic_motivation: IntrinsicMotivation|None = None,
         save_dir: str = "models",
         device: str|T.device|None = None,
         **kwargs
     ):
         super().__init__(save_dir, device, **kwargs)
-        self.policy = policy
-        self.critic = critic
+        self._check_head('policy', policy, DeterministicActorHead)
+        self._check_head('critic', critic, ContinuousQHead)
+        self._check_head('critic_b', critic_b, ContinuousQHead, optional=True)
+        self.recurrent_burn_in = recurrent_burn_in
+        if recurrent_burn_in and recurrent_burn_in >= N:
+            raise ValueError(f"recurrent_burn_in ({recurrent_burn_in}) must be < N ({N})")
+        # clone second critic head (fresh weights) if critic_b None
+        if critic_b is None:
+            critic_b = build_head(critic.get_config(), critic.env)
+        self.model = self._assemble_model(
+            {'policy': policy, 'critic': critic, 'critic_b': critic_b},
+            roots=roots, trunk=trunk,
+            optimizer_params=optimizer_params, lr_scheduler=lr_scheduler,
+            shared_update=shared_update,
+        )
         self.discount = discount
         self.tau = tau
         self.state_normalizer = state_normalizer
@@ -1951,13 +2670,8 @@ class TD3(Agent):
         self.critic_loss_fn = T.nn.HuberLoss(reduction='none', delta=critic_huber_delta)
         self.N = N
         self.intrinsic_motivation = intrinsic_motivation
-        self.critic_b = critic_b
-        # clone second critic (do not copy weights) if critic_b None
-        if not critic_b:
-            self.critic_b = self.critic.clone(copy_weights=False, device=self.critic.device)
-        self.target_policy = self.policy.clone(device=self.policy.device)
-        self.target_critic = self.critic.clone(device=self.critic.device)
-        self.target_critic_b = self.critic_b.clone(device=self.critic_b.device)
+        # Target: policy + both critics (+ shared roots/trunk)
+        self.target_model = self.model.clone(branches=['policy', 'critic', 'critic_b'])
         self.action_epsilon = action_epsilon
         self.noise = noise
         self.noise_schedule = noise_schedule
@@ -1973,7 +2687,8 @@ class TD3(Agent):
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
         step: int | None = None,
-        warmup: int | None = None
+        warmup: int | None = None,
+        **kwargs: Any,
     ) -> Action:
         """
         Select an action based on the current policy.
@@ -1989,19 +2704,30 @@ class TD3(Agent):
             Action: actions.
         """
         
+        # Temporal models always run the forward (to advance the recurrent /
+        # context stream) and attach the pre-step hidden for R2D2 storage.
+        pol_outputs = None
+        pre_hidden_flat = None
+        if self.model.is_temporal:
+            with T.no_grad():
+                pol_outputs = self._rollout_forward(
+                    states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+            if self.model.is_recurrent and self._last_pre_hidden is not None:
+                pre_hidden_flat = self.model.hidden_to_tensors(self._last_pre_hidden)
+
         # If training
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
-                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                actions = T.as_tensor(self.model.env.action_space.sample(), device=self.device)
                 raw_actions = actions
             # if random number is less than epsilon, sample random action
             elif np.random.random() < self.action_epsilon:
-                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
+                actions = T.as_tensor(self.model.env.action_space.sample(), device=self.device)
                 raw_actions = actions
             # otherwise, sample action from policy
             else:
-                noise = self.noise(self.policy.env.action_space.shape)
+                noise = self.noise(self.model.env.action_space.shape)
                 # Apply noise clipping if needed
                 if self.noise_clip > 0:
                     noise = noise.clamp(-self.noise_clip, self.noise_clip)
@@ -2010,21 +2736,23 @@ class TD3(Agent):
                     noise *= self.noise_schedule.get_factor()
                 
                 with T.no_grad():
-                    raw_actions, actions = self.policy(states, goals)
+                    if pol_outputs is None:
+                        pol_outputs, _ = self.model(states, goal=goals, branches=('policy',))
+                    raw_actions, actions = pol_outputs['policy']
                 
                 # Convert the action space bounds to a tensor on the same device
                 actions = (actions + noise).clip(self.policy.act_space_low, self.policy.act_space_high)
 
         else: # context == 'test'
             with T.no_grad():
-                raw_actions, actions = self.policy(states, goals)
+                if pol_outputs is None:
+                    pol_outputs, _ = self.model(states, goal=goals, branches=('policy',))
+                raw_actions, actions = pol_outputs['policy']
 
-        return Action(actions, raw_actions=raw_actions)
+        return Action(actions, raw_actions=raw_actions, hidden=pre_hidden_flat)
 
     def soft_update_targets(self):
-        soft_update(self.policy, self.target_policy, self.tau)
-        soft_update(self.critic, self.target_critic, self.tau)
-        soft_update(self.critic_b, self.target_critic_b, self.tau)
+        soft_update(self.model, self.target_model, self.tau)
             
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
         self._learn_count += 1
@@ -2061,45 +2789,46 @@ class TD3(Agent):
         # Get batch_size and n-step trajectory length
         batch_size, n_step_length = extrinsic_rewards.shape
 
-        # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-        states_flat = states.reshape(-1, states.shape[-1])
-        next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+        # Reshape arrays to (batch_size * N, *feat) to train on all steps in N
+        # (feature shapes preserved; dict obs handled per key)
+        states_flat = flatten_leading(states, 2)
+        next_states_flat = flatten_leading(next_states, 2)
         actions_flat = actions.reshape(-1, actions.shape[-1])
         extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
         if goals is not None:
             goals_flat = goals.reshape(-1, goals.shape[-1])
-            # ach_goals_flat = ach_goals.reshape(-1, ach_goals.shape[-1])
-            # next_ach_goals_flat = next_ach_goals.reshape(-1, next_ach_goals.shape[-1])
 
         # Normalize states/goals/rewards
         if self.state_normalizer:
             states_flat = self.state_normalizer.normalize(states_flat)
             next_states_flat = self.state_normalizer.normalize(next_states_flat)
         if self.goal_normalizer:
-            # ach_goals_flat = self.goal_normalizer.normalize(ach_goals_flat)
-            # next_ach_goals_flat = self.goal_normalizer.normalize(next_ach_goals_flat)
             goals_flat = self.goal_normalizer.normalize(goals_flat)
         if self.reward_normalizer:
             extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
 
-        # Create normalized tensors reshaped to [batch_size, n_step_length]
-        states_norm = states_flat.reshape(batch_size, n_step_length, -1)
-        next_states_norm = next_states_flat.reshape(batch_size, n_step_length, -1)
+        # Create normalized tensors reshaped to [batch_size, n_step_length, *feat]
+        states_norm = unflatten_leading(states_flat, (batch_size, n_step_length))
+        next_states_norm = unflatten_leading(next_states_flat, (batch_size, n_step_length))
         extrinsic_rewards_norm = extrinsic_rewards_flat.reshape(batch_size, n_step_length)
         if goals is not None:
             goals_norm = goals_flat.reshape(batch_size, n_step_length, -1)
-            # ach_goals_norm = ach_goals_flat.reshape(batch_size, n_step_length, -1)
-            # next_ach_goals_norm = next_ach_goals_flat.reshape(batch_size, n_step_length, -1)
         else:
             goals_norm = None
 
-        # Train Intrinsic Motivation and get intrinsic rewards
+        # First / last n-step positions (dict-aware indexing)
+        states0 = tree_index(states_norm, (slice(None), 0))
+        next_states_last = tree_index(next_states_norm, (slice(None), -1))
+
+        # Train Intrinsic Motivation and get intrinsic rewards (flat vector view)
         if self.intrinsic_motivation:
-            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+            im_states = flatten_obs(states_flat)
+            im_next_states = flatten_obs(next_states_flat)
+            im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
-                states_flat,
-                next_states_flat,
+                im_states,
+                im_next_states,
                 actions_flat
             )
             # Add intrinsic learn rewards to intrinsic rollout rewards
@@ -2114,18 +2843,40 @@ class TD3(Agent):
             im_learn_rewards = T.zeros_like(rewards)
             im_rewards = T.zeros_like(rewards)
 
-        # Get target values
-        with T.no_grad():
-            targets = compute_n_step_return(
-                rewards,
-                self.discount,
-                device=self.target_critic.device
-            ).squeeze()
+        goals0 = goals_norm[:,0,:] if goals is not None else None
+        goals_last = goals_norm[:,-1,:] if goals is not None else None
 
-            _, target_actions = self.target_policy(
-                next_states_norm[:,-1,:],
-                goals_norm[:,-1,:] if goals is not None else None,
-            )
+        # --- Recurrent (R2D2) setup: stored initial hidden + optional burn-in
+        temporal = self.model.is_temporal
+        hidden0 = None
+        h1 = None
+        anchor = 0
+        if temporal:
+            if self.model.is_recurrent:
+                stored = sample.get('initial_hidden')
+                hidden0 = (self.model.hidden_from_tensors(
+                              {k: v.to(self.device) for k, v in stored.items()})
+                           if stored else self.model.init_hidden(batch_size))
+                with T.no_grad():
+                    _, h1 = self.model(
+                        tree_index(states_norm, (slice(None), slice(0, 1))),
+                        goal=goals_norm[:, :1] if goals is not None else None,
+                        branches=('policy',), hidden=hidden0, mode='sequence')
+                    h1 = self.model.detach_hidden(h1)
+            anchor = min(self.recurrent_burn_in, n_step_length - 1)
+
+        # Get target values (goals threaded through every target forward)
+        with T.no_grad():
+            if temporal:
+                tgt_pol_out, _ = self.target_model(
+                    next_states_norm, goal=goals_norm, branches=('policy',),
+                    hidden=h1, mode='sequence')
+                _, target_actions_seq = tgt_pol_out['policy']
+                target_actions = target_actions_seq[:, -1]
+            else:
+                target_pol_out, _ = self.target_model(
+                    next_states_last, goal=goals_last, branches=('policy',))
+                _, target_actions = target_pol_out['policy']
 
             noise = self.target_noise(target_actions.shape)
             # Apply noise clipping if needed
@@ -2140,38 +2891,55 @@ class TD3(Agent):
             target_actions = target_actions + noise
             target_actions = target_actions.clamp(self.policy.act_space_low, self.policy.act_space_high)
             
-            target_critic_values_a = self.target_critic(
-                next_states_norm[:,-1,:],
-                target_actions,
-                goals_norm[:,-1,:] if goals is not None else None
+            if temporal:
+                target_actions_full = target_actions.unsqueeze(1).expand(
+                    batch_size, n_step_length, target_actions.shape[-1]).contiguous()
+                tgt_q_out, _ = self.target_model(
+                    next_states_norm, action=target_actions_full, goal=goals_norm,
+                    branches=('critic', 'critic_b'), hidden=h1, mode='sequence')
+                target_critic_values_a = tgt_q_out['critic'][:, -1].reshape(batch_size)
+                target_critic_values_b = tgt_q_out['critic_b'][:, -1].reshape(batch_size)
+                rewards_eff = rewards[:, anchor:]
+                terminations_eff = terminations[:, anchor:]
+                lengths_eff = (trajectory_lengths - anchor).clamp(min=0)
+            else:
+                target_q_out, _ = self.target_model(
+                    next_states_last, action=target_actions, goal=goals_last,
+                    branches=('critic', 'critic_b'))
+                target_critic_values_a = target_q_out['critic'].squeeze()
+                target_critic_values_b = target_q_out['critic_b'].squeeze()
+                rewards_eff = rewards
+                terminations_eff = terminations
+                lengths_eff = trajectory_lengths
+
+            targets = compute_n_step_return(
+                rewards_eff,
+                self.discount,
+                device=self.target_model.device
             ).squeeze()
-            
-            target_critic_values_b = self.target_critic_b(
-                next_states_norm[:,-1,:],
-                target_actions,
-                goals_norm[:,-1,:] if goals is not None else None
-            ).squeeze()
-            
+
             target_critic_values = T.minimum(target_critic_values_a, target_critic_values_b)
-            no_dones_mask = (terminations.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
-            gamma_pow = self.discount ** trajectory_lengths # correctly discounts bootstrapped values by traj lengths
+            no_dones_mask = (terminations_eff.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
+            gamma_pow = self.discount ** lengths_eff # correctly discounts bootstrapped values by traj lengths
             targets += no_dones_mask * gamma_pow * target_critic_values
             
             
             targets = T.clamp(targets, min=-1/(1-self.discount))
 
-        # Get current critic predictions
-        predictions_a = self.critic(
-            states_norm[:,0,:],
-            actions[:,0,:],
-            goals_norm[:,0,:] if goals is not None else None
-        ).squeeze()
-
-        predictions_b = self.critic_b(
-            states_norm[:,0,:],
-            actions[:,0,:],
-            goals_norm[:,0,:] if goals is not None else None
-        ).squeeze()
+        # Get current critic predictions (one shared forward for both critics;
+        # the critic loss owns the shared roots/trunk)
+        if temporal:
+            pred_out, _ = self.model(
+                states_norm, action=actions, goal=goals_norm,
+                branches=('critic', 'critic_b'), hidden=hidden0, mode='sequence')
+            predictions_a = pred_out['critic'][:, anchor].reshape(batch_size)
+            predictions_b = pred_out['critic_b'][:, anchor].reshape(batch_size)
+        else:
+            pred_out, _ = self.model(
+                states0, action=actions[:,0,:], goal=goals0,
+                branches=('critic', 'critic_b'))
+            predictions_a = pred_out['critic'].squeeze()
+            predictions_b = pred_out['critic_b'].squeeze()
 
         # Calculate TD errors (kept as raw signed differences for PER priorities and logging)
         error_a = targets - predictions_a
@@ -2183,43 +2951,59 @@ class TD3(Agent):
         per_sample_loss_a = self.critic_loss_fn(predictions_a, targets)
         per_sample_loss_b = self.critic_loss_fn(predictions_b, targets)
         if weights is not None:
-            critic_loss_a = (weights.to(self.critic.device) * per_sample_loss_a).mean()
-            critic_loss_b = (weights.to(self.critic_b.device) * per_sample_loss_b).mean()
+            critic_loss_a = (weights.to(self.model.device) * per_sample_loss_a).mean()
+            critic_loss_b = (weights.to(self.model.device) * per_sample_loss_b).mean()
             critic_loss = critic_loss_a + critic_loss_b
         else:
             critic_loss_a = per_sample_loss_a.mean()
             critic_loss_b = per_sample_loss_b.mean()
             critic_loss = critic_loss_a + critic_loss_b
 
-        # Update critics
-        self.critic.optimizer.zero_grad()
-        self.critic_b.optimizer.zero_grad()
-        critic_loss_a.backward()
-        critic_loss_b.backward()
+        # Update critics + shared roots/trunk (one combined critic backward)
+        critic_modules = (self.model.branch_module_names('critic', 'critic_b')
+                          + self.model.shared_module_names())
+        self.model.zero_grad()
+        critic_loss.backward()
 
+        # Clip value gradient (per critic branch)
+        critic_a_grad_norm = self.model.clip(
+            self.critic_grad_clip, modules=self.model.branch_module_names('critic'))
+        critic_b_grad_norm = self.model.clip(
+            self.critic_grad_clip, modules=self.model.branch_module_names('critic_b'))
+        shared_modules = self.model.shared_module_names()
+        if shared_modules:
+            self.model.clip(self.critic_grad_clip, modules=shared_modules)
+        self.model.step(critic_modules)
         
-        # Clip value gradient
-        critic_a_grad_norm = T.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=self.critic_grad_clip)
-        critic_b_grad_norm = T.nn.utils.clip_grad_norm_(self.critic_b.parameters(), max_norm=self.critic_grad_clip)
-        self.critic.optimizer.step()
-        self.critic_b.optimizer.step()
-        
-        # Get actor's action predictions
-        pred_raw_actions, pred_actions = self.policy(
-            states_norm[:,0,:],
-            goals_norm[:,0,:] if goals is not None else None
-        )
-        
-        # Calculate actor loss based on critic
-        critic_values = self.critic(
-            states_norm[:,0,:],
-            pred_actions,
-            goals_norm[:,0,:] if goals is not None else None
-        )
+        # Get actor's action predictions — shared features DETACHED (SAC-AE rule)
+        self.model.zero_grad()
+        if temporal:
+            pol_out, _ = self.model(
+                states_norm, goal=goals_norm, branches=('policy',),
+                hidden=hidden0, detach_shared=True, mode='sequence')
+            mu_seq, pi_seq = pol_out['policy']
+            pred_raw_actions = mu_seq[:, anchor]
+            pred_actions = pi_seq[:, anchor]
+            pred_actions_full = pred_actions.unsqueeze(1).expand_as(pi_seq).contiguous()
+            q_out, _ = self.model(
+                states_norm, action=pred_actions_full, goal=goals_norm,
+                branches=('critic',), hidden=hidden0, detach_shared=True, mode='sequence')
+            critic_values = q_out['critic'][:, anchor]
+        else:
+            pol_out, _ = self.model(
+                states0, goal=goals0, branches=('policy',), detach_shared=True)
+            pred_raw_actions, pred_actions = pol_out['policy']
+            
+            # Calculate actor loss based on critic (detached features; critic
+            # branch gradients are discarded — only the policy branch steps)
+            q_out, _ = self.model(
+                states0, action=pred_actions, goal=goals0,
+                branches=('critic',), detach_shared=True)
+            critic_values = q_out['critic']
         
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            actor_loss = -(weights.to(self.policy.device) * critic_values).mean()
+            actor_loss = -(weights.to(self.model.device) * critic_values).mean()
         else:
             actor_loss = -critic_values.mean()
         
@@ -2227,13 +3011,13 @@ class TD3(Agent):
         actor_loss += self.raw_action_l2_coef * pred_raw_actions.pow(2).mean()
 
         
-        # Update actor
-        self.policy.optimizer.zero_grad()
+        # Update actor branch only (delayed)
         actor_loss.backward()
         # Clip policy gradient
-        policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=self.policy_grad_clip)
+        policy_grad_norm = self.model.clip(
+            self.policy_grad_clip, modules=self.model.branch_module_names('policy'))
         if self._learn_count % self.policy_update_delay == 0:
-            self.policy.optimizer.step()
+            self.model.step(self.model.branch_module_names('policy'))
 
         # Log diag data
         if should_log_diag:
@@ -2279,9 +3063,9 @@ class TD3(Agent):
                 float(actor_loss.item()),
             )
 
-        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
-        critic_learning_rate = self.critic.optimizer.param_groups[0]['lr']
-        critic_b_learning_rate = self.critic_b.optimizer.param_groups[0]['lr']
+        policy_learning_rate = self.model.learning_rate('branches.policy')
+        critic_learning_rate = self.model.learning_rate('branches.critic')
+        critic_b_learning_rate = self.model.learning_rate('branches.critic_b')
 
         # Add metrics to step_logs
         learn_metrics.update({
@@ -2317,9 +3101,7 @@ class TD3(Agent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
-            "policy": self.policy.get_config(),
-            "critic": self.critic.get_config(),
-            "critic_b": self.critic_b.get_config(),
+            "model": self.model.get_config(),
             "discount": self.discount,
             "tau": self.tau,
             "action_epsilon": self.action_epsilon,
@@ -2344,16 +3126,22 @@ class TD3(Agent):
 class SAC(Agent):
     """Soft Actor Critic Agent."""
 
-    MODEL_ATTRS = ("policy", "critic", "critic_b")
-    TARGET_ATTRS = ("target_critic", "target_critic_b")
+    MODEL_ATTRS = ("model",)
+    TARGET_ATTRS = ("target_model",)
     SCHEDULE_ATTRS = ("entropy_schedule",)
+    DEFAULT_SHARED_UPDATE = 'critic'
 
     def __init__(
         self,
-        policy: StochasticDiscretePolicy|StochasticContinuousPolicy,
-        critic: ContinuousCritic|DiscreteCritic,
-        critic_b: ContinuousCritic|DiscreteCritic|None = None,
+        roots: Dict[str, SubNetwork] | None = None,
+        trunk: SubNetwork | None = None,
+        policy: StochasticDiscreteHead | StochasticContinuousHead | None = None,
+        critic: ContinuousQHead | DiscreteQHead | None = None,
+        critic_b: ContinuousQHead | DiscreteQHead | None = None,
         *,
+        optimizer_params: dict | None = None,
+        lr_scheduler: ScheduleWrapper | None = None,
+        shared_update: str | None = None,
         discount: float=0.99,
         tau: float=0.005,
         state_normalizer: BaseNormalizer|None = None,
@@ -2374,8 +3162,18 @@ class SAC(Agent):
         **kwargs
     ):
         super().__init__(save_dir, device, **kwargs)
-        self.policy = policy
-        self.critic = critic
+        self._check_head('policy', policy, StochasticDiscreteHead, StochasticContinuousHead)
+        self._check_head('critic', critic, ContinuousQHead, DiscreteQHead)
+        self._check_head('critic_b', critic_b, ContinuousQHead, DiscreteQHead, optional=True)
+        # clone second critic head (fresh weights) if critic_b None
+        if critic_b is None:
+            critic_b = build_head(critic.get_config(), critic.env)
+        self.model = self._assemble_model(
+            {'policy': policy, 'critic': critic, 'critic_b': critic_b},
+            roots=roots, trunk=trunk,
+            optimizer_params=optimizer_params, lr_scheduler=lr_scheduler,
+            shared_update=shared_update,
+        )
         self.discount = discount
         self.tau = tau
         self.state_normalizer = state_normalizer
@@ -2387,12 +3185,8 @@ class SAC(Agent):
         self.critic_loss_fn = T.nn.HuberLoss(reduction='none', delta=critic_huber_delta)
         self.N = N
         self.intrinsic_motivation = intrinsic_motivation
-        self.critic_b = critic_b
-        # clone second critic (do not copy weights) if critic_model_b None
-        if not critic_b:
-            self.critic_b = self.critic.clone(copy_weights=False, device=self.critic.device)
-        self.target_critic = self.critic.clone(device=self.critic.device)
-        self.target_critic_b = self.critic_b.clone(device=self.critic_b.device)
+        # Target: critics only (SAC keeps no target policy) + shared roots/trunk
+        self.target_model = self.model.clone(branches=['critic', 'critic_b'])
         self.entropy_coefficient = entropy_coefficient
         self.entropy_schedule = entropy_schedule
         self.auto_entropy_tuning = auto_entropy_tuning
@@ -2412,7 +3206,8 @@ class SAC(Agent):
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
         step: int | None = None,
-        warmup: int | None = None
+        warmup: int | None = None,
+        **kwargs: Any,
     ) -> Action:
         """
         Select an action based on the current policy.
@@ -2428,14 +3223,31 @@ class SAC(Agent):
             Action: actions.
         """
         raw_actions = None
+
+        # Temporal models always run the forward (to advance the recurrent /
+        # context stream) and attach the pre-step hidden for R2D2 storage.
+        pol_outputs = None
+        pre_hidden_flat = None
+        if self.model.is_temporal:
+            with T.no_grad():
+                pol_outputs = self._rollout_forward(
+                    states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
+            if self.model.is_recurrent and self._last_pre_hidden is not None:
+                pre_hidden_flat = self.model.hidden_to_tensors(self._last_pre_hidden)
+
+        def _policy_dist():
+            nonlocal pol_outputs
+            if pol_outputs is None:
+                pol_outputs, _ = self.model(states, goal=goals, branches=('policy',))
+            return pol_outputs['policy']
+
         if context == 'train':
             # If warmup, sample random action from action space
             if (step is not None) and (step <= warmup):
-                actions = T.as_tensor(self.policy.env.action_space.sample(), device=self.device)
-                if isinstance(self.policy, StochasticContinuousPolicy): # Continuous
+                actions = T.as_tensor(self.model.env.action_space.sample(), device=self.device)
+                if isinstance(self.policy, StochasticContinuousHead): # Continuous
                     with T.no_grad():
-                        dist = self.policy(states, goals)
-                        raw_actions = dist.z_from_action(actions)
+                        raw_actions = _policy_dist().z_from_action(actions)
                     delta = T.as_tensor(
                         self.policy.act_space.high - self.policy.act_space.low,
                         device=self.device,
@@ -2447,8 +3259,8 @@ class SAC(Agent):
             
             else: # Sample action from policy
                 with T.no_grad():
-                    dist = self.policy(states, goals)
-                    if isinstance(self.policy, StochasticContinuousPolicy):
+                    dist = _policy_dist()
+                    if isinstance(self.policy, StochasticContinuousHead):
                         actions, raw_actions = dist.sample_with_z()
                         log_probs = dist.log_prob_from_z(raw_actions)
                     else: # Discrete
@@ -2457,8 +3269,8 @@ class SAC(Agent):
 
         elif context == 'test':
             with T.no_grad():
-                dist = self.policy(states, goals)
-                if isinstance(self.policy, StochasticContinuousPolicy):
+                dist = _policy_dist()
+                if isinstance(self.policy, StochasticContinuousHead):
                     actions, raw_actions = dist.mean_with_z()
                     log_probs = dist.log_prob_from_z(raw_actions)
                 else: # Discrete
@@ -2468,11 +3280,10 @@ class SAC(Agent):
         else:
             raise ValueError(f"Invalid context: {context}")
 
-        return Action(actions, raw_actions=raw_actions, log_probs=log_probs)
+        return Action(actions, raw_actions=raw_actions, log_probs=log_probs, hidden=pre_hidden_flat)
 
     def soft_update_targets(self):
-        soft_update(self.critic, self.target_critic, self.tau)
-        soft_update(self.critic_b, self.target_critic_b, self.tau)
+        soft_update(self.model, self.target_model, self.tau)
 
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
         self._learn_count += 1
@@ -2519,9 +3330,10 @@ class SAC(Agent):
         # Get batch_size and n-step trajectory length
         batch_size, n_step_length = extrinsic_rewards.shape
 
-        # Reshape arrays to (batch_size * N, -1) to train on all steps in N
-        states_flat = states.reshape(-1, states.shape[-1])
-        next_states_flat = next_states.reshape(-1, next_states.shape[-1])
+        # Reshape arrays to (batch_size * N, *feat) to train on all steps in N
+        # (feature shapes preserved; dict obs handled per key)
+        states_flat = flatten_leading(states, 2)
+        next_states_flat = flatten_leading(next_states, 2)
         actions_flat = actions.reshape(-1, actions.shape[-1])
         raw_actions_flat = raw_actions.reshape(-1, raw_actions.shape[-1])
         extrinsic_rewards_flat = extrinsic_rewards.reshape(-1, extrinsic_rewards.shape[-1])
@@ -2541,13 +3353,15 @@ class SAC(Agent):
         if self.reward_normalizer:
             extrinsic_rewards_flat = self.reward_normalizer.normalize(extrinsic_rewards_flat)
         
-        # Train Intrinsic Motivation and get intrinsic rewards
-        if self.intrinsic_motivation:     
-            im_loss = self.intrinsic_motivation.train(states_flat, next_states_flat, actions_flat)
+        # Train Intrinsic Motivation and get intrinsic rewards (flat vector view)
+        if self.intrinsic_motivation:
+            im_states = flatten_obs(states_flat)
+            im_next_states = flatten_obs(next_states_flat)
+            im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
             # Compute intrinsic reward
             im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
-                states_flat,
-                next_states_flat,
+                im_states,
+                im_next_states,
                 actions_flat
             )
             # Add intrinsic learn rewards to intrinsic rollout rewards
@@ -2562,81 +3376,115 @@ class SAC(Agent):
             im_learn_rewards = T.zeros_like(rewards)
             im_rewards = T.zeros_like(rewards)
 
+        goals_arg = goals_flat if goals is not None else None
+
+        # --- Recurrent (R2D2) setup: sequence-mode window encodes with the
+        # stored initial hidden (retrace consumes the whole window, so all
+        # per-step encodings come from the exact rollout hidden stream).
+        temporal = self.model.is_temporal
+        hidden0 = None
+        h1 = None
+        if temporal:
+            states_seq = unflatten_leading(states_flat, (batch_size, n_step_length))
+            next_states_seq = unflatten_leading(next_states_flat, (batch_size, n_step_length))
+            actions_seq = actions_flat.reshape(batch_size, n_step_length, -1)
+            raw_actions_seq = raw_actions_flat.reshape(batch_size, n_step_length, -1)
+            goals_seq = (goals_flat.reshape(batch_size, n_step_length, -1)
+                         if goals is not None else None)
+            if self.model.is_recurrent:
+                stored = sample.get('initial_hidden')
+                hidden0 = (self.model.hidden_from_tensors(
+                              {k: v.to(self.device) for k, v in stored.items()})
+                           if stored else self.model.init_hidden(batch_size))
+                with T.no_grad():
+                    _, h1 = self.model(
+                        tree_index(states_seq, (slice(None), slice(0, 1))),
+                        goal=goals_seq[:, :1] if goals is not None else None,
+                        branches=('policy',), hidden=hidden0, mode='sequence')
+                    h1 = self.model.detach_hidden(h1)
+
         with T.no_grad():
             # Get current policy for sampled states
-            cur_dist = self.policy(
-                states_flat,
-                goals_flat if goals is not None else None
-            )
+            if temporal:
+                cur_out, _ = self.model(states_seq, goal=goals_seq, branches=('policy',),
+                                        hidden=hidden0, mode='sequence')
+            else:
+                cur_out, _ = self.model(states_flat, goal=goals_arg, branches=('policy',))
+            cur_dist = cur_out['policy']
 
             # Get current values of sampled states and log probs of taking the sampled actions
             # Continuous Action Space
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-                cur_log_probs = cur_dist.log_prob_from_z(raw_actions_flat).reshape(batch_size, n_step_length)
-                q_cur = T.minimum(
-                    self.target_critic(
-                        states_flat,
-                        actions_flat,
-                        goals_flat if goals is not None else None
-                        ),
-                    self.target_critic_b(
-                        states_flat,
-                        actions_flat,
-                        goals_flat if goals is not None else None
-                        )
-                ).reshape(batch_size, n_step_length)
+                if temporal:
+                    cur_log_probs = cur_dist.log_prob_from_z(raw_actions_seq)          # (B, N)
+                    tq_out, _ = self.target_model(
+                        states_seq, action=actions_seq, goal=goals_seq,
+                        branches=('critic', 'critic_b'), hidden=hidden0, mode='sequence')
+                    q_cur = T.minimum(tq_out['critic'], tq_out['critic_b']).reshape(batch_size, n_step_length)
+                else:
+                    cur_log_probs = cur_dist.log_prob_from_z(raw_actions_flat).reshape(batch_size, n_step_length)
+                    tq_out, _ = self.target_model(
+                        states_flat, action=actions_flat, goal=goals_arg,
+                        branches=('critic', 'critic_b'))
+                    q_cur = T.minimum(
+                        tq_out['critic'], tq_out['critic_b']
+                    ).reshape(batch_size, n_step_length)
 
             else: # Discrete Action Space
-                cur_log_probs = cur_dist.logits.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
-                q_cur_all = T.minimum(
-                    self.target_critic(
-                        states_flat,
-                        goals_flat if goals is not None else None
-                        ),
-                    self.target_critic_b(
-                        states_flat,
-                        goals_flat if goals is not None else None
-                        )
-                )
-                q_cur = q_cur_all.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
+                if temporal:
+                    cur_log_probs = cur_dist.logits.gather(
+                        2, actions_seq.long()).reshape(batch_size, n_step_length)
+                    tq_out, _ = self.target_model(
+                        states_seq, goal=goals_seq, branches=('critic', 'critic_b'),
+                        hidden=hidden0, mode='sequence')
+                    q_cur_all = T.minimum(tq_out['critic'], tq_out['critic_b'])
+                    q_cur = q_cur_all.gather(2, actions_seq.long()).reshape(batch_size, n_step_length)
+                else:
+                    cur_log_probs = cur_dist.logits.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
+                    tq_out, _ = self.target_model(
+                        states_flat, goal=goals_arg, branches=('critic', 'critic_b'))
+                    q_cur_all = T.minimum(tq_out['critic'], tq_out['critic_b'])
+                    q_cur = q_cur_all.gather(1, actions_flat.long()).reshape(batch_size, n_step_length)
 
             ## Critic Update ##
-            next_dist = self.policy(
-                next_states_flat,
-                goals_flat if goals is not None else None
-            )
+            if temporal:
+                next_out, _ = self.model(next_states_seq, goal=goals_seq, branches=('policy',),
+                                         hidden=h1, mode='sequence')
+            else:
+                next_out, _ = self.model(next_states_flat, goal=goals_arg, branches=('policy',))
+            next_dist = next_out['policy']
 
             # Continuous critic target values
             if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
                 target_actions, target_z = next_dist.sample_with_z()
                 next_log_probs = next_dist.log_prob_from_z(target_z)
-                q_next = T.minimum(
-                    self.target_critic(
-                        next_states_flat,
-                        target_actions,
-                        goals_flat if goals is not None else None
-                        ),
-                    self.target_critic_b(
-                        next_states_flat,
-                        target_actions,
-                        goals_flat if goals is not None else None
-                        )
-                ).squeeze(-1)
-                target_q = (q_next - entropy_coefficient * next_log_probs).reshape(batch_size, n_step_length)
+                if temporal:
+                    next_tq_out, _ = self.target_model(
+                        next_states_seq, action=target_actions, goal=goals_seq,
+                        branches=('critic', 'critic_b'), hidden=h1, mode='sequence')
+                    q_next = T.minimum(
+                        next_tq_out['critic'], next_tq_out['critic_b']).squeeze(-1)
+                    target_q = (q_next - entropy_coefficient * next_log_probs).reshape(batch_size, n_step_length)
+                else:
+                    next_tq_out, _ = self.target_model(
+                        next_states_flat, action=target_actions, goal=goals_arg,
+                        branches=('critic', 'critic_b'))
+                    q_next = T.minimum(
+                        next_tq_out['critic'], next_tq_out['critic_b']
+                    ).squeeze(-1)
+                    target_q = (q_next - entropy_coefficient * next_log_probs).reshape(batch_size, n_step_length)
 
             else: # Discrete critic target values
                 target_actions = next_dist.sample().float()
                 next_log_probs = next_dist.logits
-                q_next = T.minimum(
-                    self.target_critic(
-                        next_states_flat,
-                        goals_flat if goals is not None else None
-                    ),
-                    self.target_critic_b(
-                        next_states_flat,
-                        goals_flat if goals is not None else None
-                    )
-                )
+                if temporal:
+                    next_tq_out, _ = self.target_model(
+                        next_states_seq, goal=goals_seq, branches=('critic', 'critic_b'),
+                        hidden=h1, mode='sequence')
+                else:
+                    next_tq_out, _ = self.target_model(
+                        next_states_flat, goal=goals_arg, branches=('critic', 'critic_b'))
+                q_next = T.minimum(next_tq_out['critic'], next_tq_out['critic_b'])
                 target_q = (next_dist.probs * (q_next - entropy_coefficient * next_log_probs)).sum(-1).reshape(batch_size, n_step_length)
 
             
@@ -2662,31 +3510,43 @@ class SAC(Agent):
             # Set low bound of q-retrace to -1/1-self.discount
             q_retrace = T.clamp(q_retrace, min=-1/(1-self.discount))
 
-        # Reshape flat states, goals, actions to [batch_size, n-step, feature_dim]
-        states_reshaped = states_flat.reshape(batch_size, n_step_length, -1)
+        # Reshape flat states, goals, actions to [batch_size, n-step, *feat]
+        states_reshaped = unflatten_leading(states_flat, (batch_size, n_step_length))
         actions_reshaped = actions_flat.reshape(batch_size, n_step_length, -1)
         goals_reshaped = goals_flat.reshape(batch_size, n_step_length, -1) if goals is not None else None
-        
-        # Continuous critic predictions
+        goals0 = goals_reshaped[:,0,:] if goals_reshaped is not None else None
+        states0 = tree_index(states_reshaped, (slice(None), 0))
+
+        # Critic predictions (one shared forward for both critics; the critic
+        # loss owns the shared roots/trunk — SAC-AE/DrQ-v2 rule).
+        # Temporal models encode the whole window in sequence mode with the
+        # stored hidden and read the anchor (first) position.
         if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-            q1_preds = self.critic(
-                states_reshaped[:,0,:],
-                actions_reshaped[:,0,:],
-                goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
-            q2_preds = self.critic_b(
-                states_reshaped[:,0,:],
-                actions_reshaped[:,0,:],
-                goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
+            if temporal:
+                q_out, _ = self.model(
+                    states_reshaped, action=actions_reshaped, goal=goals_reshaped,
+                    branches=('critic', 'critic_b'), hidden=hidden0, mode='sequence')
+                q1_preds = q_out['critic'][:, 0].reshape(batch_size)
+                q2_preds = q_out['critic_b'][:, 0].reshape(batch_size)
+            else:
+                q_out, _ = self.model(
+                    states0, action=actions_reshaped[:,0,:], goal=goals0,
+                    branches=('critic', 'critic_b'))
+                q1_preds = q_out['critic'].squeeze()
+                q2_preds = q_out['critic_b'].squeeze()
 
         else: # Discrete critic predictions
-            q1 = self.critic(
-                states_reshaped[:,0,:],
-                goals_reshaped[:,0,:] if goals_reshaped is not None else None
-            )
-            q2 = self.critic_b(
-                states_reshaped[:,0,:],
-                goals_reshaped[:,0,:] if goals_reshaped is not None else None
-            )
+            if temporal:
+                q_out, _ = self.model(
+                    states_reshaped, goal=goals_reshaped,
+                    branches=('critic', 'critic_b'), hidden=hidden0, mode='sequence')
+                q1 = q_out['critic'][:, 0]
+                q2 = q_out['critic_b'][:, 0]
+            else:
+                q_out, _ = self.model(
+                    states0, goal=goals0, branches=('critic', 'critic_b'))
+                q1 = q_out['critic']
+                q2 = q_out['critic_b']
             buffer_actions = actions_reshaped[:,0,:].squeeze(-1).long().unsqueeze(1)
             q1_preds = q1.gather(1, buffer_actions).squeeze(1)
             q2_preds = q2.gather(1, buffer_actions).squeeze(1)
@@ -2698,57 +3558,101 @@ class SAC(Agent):
         errors = (T.minimum(q1_preds, q2_preds) - q_retrace).detach().flatten()
         # Apply importance sampling weights if using prioritized replay
         if weights is not None:
-            q1_loss = weights.to(self.critic.device) * q1_loss
-            q2_loss = weights.to(self.critic_b.device) * q2_loss
+            q1_loss = weights.to(self.model.device) * q1_loss
+            q2_loss = weights.to(self.model.device) * q2_loss
         critic_loss = 0.5 * (q1_loss.mean() + q2_loss.mean())
 
-        self.critic.optimizer.zero_grad()
-        self.critic_b.optimizer.zero_grad()
+        critic_modules = (self.model.branch_module_names('critic', 'critic_b')
+                          + self.model.shared_module_names())
+        self.model.zero_grad()
         critic_loss.backward()
-        # if self.grad_clip:
-        critic_a_grad_norm = T.nn.utils.clip_grad_norm_(self.critic.parameters(), self.critic_grad_clip)
-        critic_b_grad_norm = T.nn.utils.clip_grad_norm_(self.critic_b.parameters(), self.critic_grad_clip)
-        self.critic.optimizer.step()
-        self.critic_b.optimizer.step()
+        critic_a_grad_norm = self.model.clip(
+            self.critic_grad_clip, modules=self.model.branch_module_names('critic'))
+        critic_b_grad_norm = self.model.clip(
+            self.critic_grad_clip, modules=self.model.branch_module_names('critic_b'))
+        shared_modules = self.model.shared_module_names()
+        if shared_modules:
+            self.model.clip(self.critic_grad_clip, modules=shared_modules)
+        self.model.step(critic_modules)
 
-        ## Update Policy ##
-        dist = self.policy(
-            states_reshaped[:,0,:],
-            goals_reshaped[:,0,:] if goals_reshaped is not None else None
-        )
-        # Continuous policy update
-        if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
-            new_actions, new_z = dist.rsample_with_z()
-            log_probs = dist.log_prob_from_z(new_z)
-            q1 = self.critic(states_reshaped[:,0,:], new_actions, goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
-            q2 = self.critic_b(states_reshaped[:,0,:], new_actions, goals_reshaped[:,0,:] if goals_reshaped is not None else None).squeeze()
-            min_q = T.minimum(q1, q2)
-            actor_loss = entropy_coefficient * log_probs - min_q
+        ## Update Policy ## — shared features DETACHED so the actor loss never
+        ## reaches roots/trunk (exactly one owner per shared parameter)
+        self.model.zero_grad()
+        if temporal:
+            pol_out, _ = self.model(
+                states_reshaped, goal=goals_reshaped, branches=('policy',),
+                hidden=hidden0, detach_shared=True, mode='sequence')
+            dist_seq = pol_out['policy']
+            # Continuous policy update (anchor position 0 of the window)
+            if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+                new_actions_seq, new_z_seq = dist_seq.rsample_with_z()
+                log_probs = dist_seq.log_prob_from_z(new_z_seq)[:, 0]
+                new_actions = new_actions_seq[:, 0]
+                aq_out, _ = self.model(
+                    states_reshaped, action=new_actions_seq, goal=goals_reshaped,
+                    branches=('critic', 'critic_b'), hidden=hidden0,
+                    detach_shared=True, mode='sequence')
+                q1 = aq_out['critic'][:, 0].reshape(batch_size)
+                q2 = aq_out['critic_b'][:, 0].reshape(batch_size)
+                min_q = T.minimum(q1, q2)
+                actor_loss = entropy_coefficient * log_probs - min_q
+                dist = dist_seq
+            else: # Discrete policy update at the anchor position
+                new_actions = dist_seq.sample().float()[:, 0]
+                log_probs = dist_seq.logits[:, 0]
+                probs0 = dist_seq.probs[:, 0]
+                aq_out, _ = self.model(
+                    states_reshaped, goal=goals_reshaped,
+                    branches=('critic', 'critic_b'), hidden=hidden0,
+                    detach_shared=True, mode='sequence')
+                q1 = aq_out['critic'][:, 0]
+                q2 = aq_out['critic_b'][:, 0]
+                min_q = T.minimum(q1, q2)
+                actor_loss = (probs0 * (entropy_coefficient * log_probs - min_q)).sum(-1)
+                dist = dist_seq
+        else:
+            pol_out, _ = self.model(
+                states0, goal=goals0, branches=('policy',), detach_shared=True)
+            dist = pol_out['policy']
+            # Continuous policy update
+            if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
+                new_actions, new_z = dist.rsample_with_z()
+                log_probs = dist.log_prob_from_z(new_z)
+                aq_out, _ = self.model(
+                    states0, action=new_actions, goal=goals0,
+                    branches=('critic', 'critic_b'), detach_shared=True)
+                q1 = aq_out['critic'].squeeze()
+                q2 = aq_out['critic_b'].squeeze()
+                min_q = T.minimum(q1, q2)
+                actor_loss = entropy_coefficient * log_probs - min_q
 
-        else: # Discrete policy update
-            new_actions = dist.sample().float()
-            log_probs = dist.logits
-            q1 = self.critic(states_reshaped[:,0,:], goals_reshaped[:,0,:] if goals_reshaped is not None else None)
-            q2 = self.critic_b(states_reshaped[:,0,:], goals_reshaped[:,0,:] if goals_reshaped is not None else None)
-            min_q = T.minimum(q1, q2)
-            actor_loss = (dist.probs * (entropy_coefficient * log_probs - min_q)).sum(-1)
+            else: # Discrete policy update
+                new_actions = dist.sample().float()
+                log_probs = dist.logits
+                aq_out, _ = self.model(
+                    states0, goal=goals0,
+                    branches=('critic', 'critic_b'), detach_shared=True)
+                q1 = aq_out['critic']
+                q2 = aq_out['critic_b']
+                min_q = T.minimum(q1, q2)
+                actor_loss = (dist.probs * (entropy_coefficient * log_probs - min_q)).sum(-1)
 
 
         # if weights is not None:
-        #     actor_loss = weights.to(self.policy.device) * actor_loss
+        #     actor_loss = weights.to(self.model.device) * actor_loss
 
         actor_loss = actor_loss.mean()
 
-        self.policy.optimizer.zero_grad()
         actor_loss.backward()
-        # if self.grad_clip:
-        policy_grad_norm = T.nn.utils.clip_grad_norm_(self.policy.parameters(), self.policy_grad_clip)
-        self.policy.optimizer.step()
+        policy_grad_norm = self.model.clip(
+            self.policy_grad_clip, modules=self.model.branch_module_names('policy'))
+        self.model.step(self.model.branch_module_names('policy'))
 
         if self.policy.distribution in ['normal', 'beta', 'kumaraswamy']:
             entropy = -log_probs
         else:  # Discrete actor
-            entropy = -(dist.probs * log_probs).sum(dim=-1)
+            probs_for_entropy = probs0 if temporal else dist.probs
+            entropy = -(probs_for_entropy * log_probs).sum(dim=-1)
         if self.auto_entropy_tuning:
             self.entropy_optimizer.zero_grad()
             alpha_loss = -(self.log_alpha * (-entropy.mean() + self.target_entropy).detach())
@@ -2827,9 +3731,9 @@ class SAC(Agent):
                 float(actor_loss.item()),
             )
 
-        policy_learning_rate = self.policy.optimizer.param_groups[0]['lr']
-        critic_learning_rate = self.critic.optimizer.param_groups[0]['lr']
-        critic_b_learning_rate = self.critic_b.optimizer.param_groups[0]['lr']                                                     ###
+        policy_learning_rate = self.model.learning_rate('branches.policy')
+        critic_learning_rate = self.model.learning_rate('branches.critic')
+        critic_b_learning_rate = self.model.learning_rate('branches.critic_b')
 
         learn_metrics.update({
             "extrinsic_rewards": extrinsic_rewards.mean().item(),
@@ -2863,9 +3767,7 @@ class SAC(Agent):
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
-            "policy": self.policy.get_config(),
-            "critic": self.critic.get_config(),
-            "critic_b": self.critic_b.get_config(),
+            "model": self.model.get_config(),
             "discount": self.discount,
             "tau": self.tau,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,

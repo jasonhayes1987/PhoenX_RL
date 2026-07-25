@@ -20,6 +20,7 @@ from .torch_utils import set_seed
 from .rl_callbacks import Callback, WandbCallback, load as build_callback
 from .rl_agents import Agent, HasTargetNetworks, build_agent
 from .env_wrapper import EnvWrapper, Observation, VectorNStepReward
+from .obs_utils import flatten_obs, tree_index, tree_to
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer, RolloutBuffer, TrajectoryBuffer
 from .her import HindsightRelabeler
 from .renderer import Renderer
@@ -148,6 +149,7 @@ class Trainer:
         self.buffer = buffer
         self.renderer = renderer
         self.callbacks = callbacks
+        self.log_level = log_level
         self.save_dir = save_dir
 
         # Set Renderer save dir (the agent owns its own save_dir via its config)
@@ -197,24 +199,25 @@ class Trainer:
         if self._initialized:
             return
         
-        # Set models to train mode if training, else evaluation mode
-        for name in ['policy', 'value', 'critic', 'critic_a', 'critic_b']:
-            model = getattr(self.agent, name, None)
-            if model:
-                if context == "train":
-                    model.train()
-                    model.logger.debug(f"Set {name} to train mode")
-                elif context == "test":
-                    model.eval()
-                    model.logger.debug(f"Set {name} to eval mode")
-
-
-        # Set target models to eval mode
-        for name in ['target_policy', 'target_critic', 'target_critic_a', 'target_critic_b']:
-            model = getattr(self.agent, name, None)
-            if model:
+        # Set the composite model to train mode if training, else evaluation mode
+        model = getattr(self.agent, 'model', None)
+        if model is not None:
+            if context == "train":
+                model.train()
+                model.logger.debug("Set model to train mode")
+            elif context == "test":
                 model.eval()
-                model.logger.debug(f"Set {name} to eval mode")
+                model.logger.debug("Set model to eval mode")
+
+        # Set target model to eval mode
+        target_model = getattr(self.agent, 'target_model', None)
+        if target_model is not None:
+            target_model.eval()
+            target_model.logger.debug("Set target_model to eval mode")
+
+        # Fresh recurrent state for the new run
+        if hasattr(self.agent, 'reset_hidden'):
+            self.agent.reset_hidden()
 
         # Set VectorNStepReward wrapper Intrinsic Motivation pointer
         im = getattr(self.agent, 'intrinsic_motivation', None)
@@ -238,11 +241,7 @@ class Trainer:
             # config.update({'num_envs': self.env.num_envs, 'seed': seed})
             config.update(kwargs)
 
-            models = [model for model in [getattr(self.agent, "policy", None),
-                                          getattr(self.agent, "critic", None),
-                                          getattr(self.agent, "critic_a", None),
-                                          getattr(self.agent, "critic_b", None),
-                                          getattr(self.agent, "value", None),
+            models = [model for model in [getattr(self.agent, "model", None),
                                           self.agent.curiosity if hasattr(self.agent, 'curiosity') else None] if model is not None]
             
             func_name = 'on_train_begin' if context == "train" else 'on_test_begin'
@@ -291,7 +290,6 @@ class Trainer:
         if state is not None:
             self._step = state.get("_step", self._step)
             self._best_reward = state.get("_best_reward", self._best_reward)
-            self._last_learn = state.get("_last_learn", self._last_learn)
             for name in ("_completed_episodes", "_episode_scores", "_episode_steps"):
                 value = state.get(name)
                 if value is not None:
@@ -300,6 +298,15 @@ class Trainer:
                 self._score_history = deque(state["_score_history"], maxlen=100)
             if state.get("_success_tracker") is not None:
                 self._success_tracker = deque(state["_success_tracker"], maxlen=100)
+            if getattr(self, "_resume_buffer_restored", False):
+                self._last_learn = state.get("_last_learn", self._last_learn)
+            else:
+                # Start with an empty buffer. Re-anchor the learn gate so a full window
+                # fresh data is collected before the first learn.
+                self._last_learn = {
+                    "timestep": self._step,
+                    "episode": self._completed_episodes.sum().item(),
+                }[self.schedule.learn_every_unit]
             self._resume_state = None
 
         rng = self._resume_rng
@@ -397,7 +404,7 @@ class Trainer:
         """
         for name, norm in self._iter_normalizers():
             if name == "state_normalizer":
-                norm.add(obs.states.to(device=norm.device))
+                norm.add(tree_to(obs.states, device=norm.device))
 
             elif name == "goal_normalizer" and obs.goals is not None:
                 goals = T.cat([obs.goals, obs.ach_goals], dim=0).to(device=norm.device)
@@ -452,14 +459,14 @@ class Trainer:
             getattr(self.agent, name, None)
             for name in ("entropy_schedule", "noise_schedule", "target_noise_schedule")
         ] + [
-            getattr(getattr(self.agent, "policy", None), name, None)
-            for name in ("temperature_schedule", "lr_scheduler")
-        ] + [
-            getattr(getattr(self.agent, model, None), "lr_scheduler", None)
-            for model in ("value", "critic", "critic_b")
+            getattr(getattr(self.agent, "policy", None), "temperature_schedule", None)
         ] + [
             getattr(getattr(self.agent, "intrinsic_motivation", None), "reward_scheduler", None)
         ]
+        # Per-module LR schedulers live on the composite model.
+        model = getattr(self.agent, "model", None)
+        if model is not None:
+            schedulers.extend(getattr(model, "lr_schedulers", {}).values())
         # If using CompositeIntrinsicMotivation object, grab reward schedulers from each component
         # in the composite if any and update
         components = getattr(getattr(self.agent, 'intrinsic_motivation', None), 'components', None)
@@ -498,9 +505,9 @@ class Trainer:
         if training:
             im = getattr(self.agent, 'intrinsic_motivation', None)
             if im is not None:
-                # Pass normalized states to IM if present
+                # Pass normalized (flattened for IM) states to IM if present
                 next_obs_norm = self.normalize_observation(observation)
-                intrinsic_rewards = im.compute_rollout_reward(obs_norm.states, next_obs_norm.states, action.actions, env_indices = T.arange(self.env.num_envs, device=im.device))
+                intrinsic_rewards = im.compute_rollout_reward(flatten_obs(obs_norm.states), flatten_obs(next_obs_norm.states), action.actions, env_indices = T.arange(self.env.num_envs, device=im.device))
             else:
                 intrinsic_rewards = T.zeros_like(observation.rewards)
         else:
@@ -591,22 +598,29 @@ class Trainer:
             goals,
             context,
             step = self._step,
-            warmup = self.schedule.warmup_steps
+            warmup = self.schedule.warmup_steps,
+            dones = self._prev_done,  # recurrent agents reset hidden per env
         )
 
     @staticmethod
     def _shuffle_sample(sample: dict) -> dict:
-        """Apply one consistent random permutation across every tensor in a
-        sampled batch.
-        """
+        """Apply one consistent random permutation across every tensor (or
+        dict-of-tensors) in a sampled batch."""
         ref = sample.get("states")
         if ref is None:
             return sample
+        if isinstance(ref, dict):
+            ref = next(iter(ref.values()))
         perm = T.randperm(ref.shape[0], device=ref.device)
-        return {
-            k: (v[perm.to(v.device)] if isinstance(v, T.Tensor) else v)
-            for k, v in sample.items()
-        }
+
+        def _permute(v):
+            if isinstance(v, T.Tensor):
+                return v[perm.to(v.device)]
+            if isinstance(v, dict):
+                return {k: leaf[perm.to(leaf.device)] for k, leaf in v.items()}
+            return v
+
+        return {k: _permute(v) for k, v in sample.items()}
 
     def learn(self)->dict:
         """
@@ -635,7 +649,10 @@ class Trainer:
             for update in range(self.schedule.updates_per_learn):
                 lo_idx = update * self.schedule.batch_size
                 hi_idx = lo_idx + self.schedule.batch_size
-                sample = {k: (v[lo_idx:hi_idx] if v is not None else None) for k, v in samples.items()}
+                sample = {
+                    k: (tree_index(v, slice(lo_idx, hi_idx)) if v is not None else None)
+                    for k, v in samples.items()
+                }
                 learn_metrics = self.agent.learn(
                     self._step,
                     sample,
@@ -665,10 +682,15 @@ class Trainer:
                     episodes=self._completed_episodes.sum().item(),
                     last_learn_at=self._last_learn
                 ):
-                    # Update normalizers
-                    self.update_normalizers()
-
                     learn_metrics = self.learn()
+
+                    # Update normalizers AFTER learning: agent.learn()
+                    # re-normalizes the stored raw rollout, so the stats it
+                    # uses must be the ones the policy acted under. Updating
+                    # here means the next rollout is collected — and then
+                    # learned — under the refreshed statistics (SB3/RSL-RL
+                    # collection-time normalization semantics).
+                    self.update_normalizers()
                     step_result['step_log'].update(learn_metrics)
                     # Merge n-step boundary diagnostics
                     nstep_diag = {}
@@ -821,6 +843,7 @@ class Trainer:
             'buffer': self.buffer.get_config() if self.buffer is not None else None,
             'renderer': self.renderer.get_config() if self.renderer else None,
             'callbacks': [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
+            'log_level': self.log_level,
             'save_dir': self.save_dir,
         }
 
@@ -885,7 +908,7 @@ class Trainer:
         env: EnvWrapper | None = None,
         load_weights: bool = True,
         load_buffer: bool = False,
-        log_level: str = 'INFO',
+        log_level: str | None = None,
     ) -> "Trainer":
         """Rebuild a fully wired Trainer from a directory written by :meth:`save`.
 
@@ -921,6 +944,8 @@ class Trainer:
             if config.get("callbacks") else None
         )
 
+        log_level = log_level if log_level is not None else config.get('log_level', 'INFO')
+
         trainer = cls(
             agent=agent,
             env=env,
@@ -941,8 +966,11 @@ class Trainer:
         if rng_path.exists():
             trainer._resume_rng = T.load(rng_path, map_location="cpu", weights_only=False)
 
-        if load_buffer and buffer is not None and (run_dir / "buffer.pt").exists():
+        
+        buffer_restored = load_buffer and buffer is not None and (run_dir / "buffer.pt").exists()
+        if buffer_restored:
             buffer.load_state(run_dir / "buffer.pt")
+        trainer._resume_buffer_restored = buffer_restored
 
         return trainer
 

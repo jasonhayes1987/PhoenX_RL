@@ -269,19 +269,25 @@ def setup_auto_entropy(policy, *, target_entropy_scale=0.98,
 def soft_update(current_module, target_module, tau: float) -> None:
     """
     Soft update a module's parameters and buffers to target_module.
-    
+
+    Parameters and buffers are matched BY NAME (not by position), so the
+    target may be a subset of the current module (e.g. a branch-subset clone
+    of a ModularModel used as a target network).
+
     Args:
-        current_module: The module to update
-        target_module: The target module to update to
+        current_module: The module to update from
+        target_module: The target module to update
         tau: The interpolation factor
     """
-    for cp, tp in zip(current_module.parameters(), target_module.parameters()):
-        tp.data.lerp_(cp.data, tau)
-    main_buf = dict(current_module.named_buffers())
-    targ_buf = dict(target_module.named_buffers())
-    for name, buf in main_buf.items():
-        if name in targ_buf:
-            targ_buf[name].copy_(buf)
+    cur_params = dict(current_module.named_parameters())
+    for name, tp in target_module.named_parameters():
+        cp = cur_params.get(name)
+        if cp is not None:
+            tp.data.lerp_(cp.data, tau)
+    cur_buf = dict(current_module.named_buffers())
+    for name, tbuf in target_module.named_buffers():
+        if name in cur_buf:
+            tbuf.copy_(cur_buf[name])
 
 def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
     total_sq = None

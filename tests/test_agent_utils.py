@@ -110,8 +110,12 @@ def _reference_compute_q_retrace(
         - q_cur.detach()
     )
 
-    # 2. Raw IS ratios + masking (exactly as in production)
-    is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), max=1.0)
+    # 2. Raw IS ratios + masking (exactly as in production).
+    #    NOTE: production applies BOTH a lower clamp (0.5, a deliberate
+    #    variance-control floor) and the standard Retrace upper clamp (1.0).
+    #    The reference must mirror both — see
+    #    TestComputeQRetrace.test_is_ratio_lower_clamp_matches_reference.
+    is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), min=0.5, max=1.0)
 
     valid = (T.arange(n, device=device).unsqueeze(0) < trajectory_lengths.unsqueeze(1)).float()
     mask = T.ones(batch_size, n, device=device)
@@ -134,32 +138,17 @@ def _reference_compute_q_retrace(
 
     q_retrace = q_cur[:, 0] + retrace_sum
 
-    # 4. Boundary-leakage diagnostics (mirror of the production implementation).
-    #    These are the values the diagnostics-aware tests assert on, so the
-    #    reference must reproduce them exactly.
-    done_window_final_cum_c: list[float] = []
-    done_window_max_leakage: list[float] = []
-    has_done = (terminations | truncations).any(dim=1)
-    if has_done.any():
-        for i in range(batch_size):
-            if has_done[i]:
-                L = int(trajectory_lengths[i].item())
-                if L > 0:
-                    done_mask = (terminations[i, :L] | truncations[i, :L])
-                    if done_mask.any():
-                        first_done = int(done_mask.nonzero(as_tuple=True)[0][0])
-                        done_window_final_cum_c.append(float(cum_c[i].item()))
-                        if first_done + 1 < L:
-                            leakage = mask[i, first_done + 1 : L].max().item()
-                            done_window_max_leakage.append(leakage)
-
+    # NOTE: the production implementation's per-row boundary-leakage
+    # diagnostics ("done_window_final_cum_c" / "done_window_max_leakage") are
+    # currently disabled (commented out) for training-loop performance, so the
+    # production metrics dict contains only the four tensor entries below. The
+    # reference mirrors that contract exactly; boundary behavior is asserted
+    # directly on `mask` / `cum_c` by the tests instead.
     metrics = {
         "td_errors": td_errors,
         "mask": mask,
         "is_ratio": is_ratio,
         "cum_c": cum_c,
-        "done_window_final_cum_c": done_window_final_cum_c,
-        "done_window_max_leakage": done_window_max_leakage,
     }
     return q_retrace, metrics
 
@@ -378,6 +367,49 @@ class TestComputeQRetrace:
         assert T.allclose(q, q_ref, atol=1e-5)
         _assert_metrics_match(m, m_ref, atol=1e-5)
 
+    def test_is_ratio_lower_clamp_matches_reference(self):
+        """Drive IS ratios BELOW the 0.5 production floor and verify both the
+        clamp itself and reference agreement.
+
+        With buf_log_probs >> cur_log_probs the raw ratio exp(cur - buf) is
+        far below 0.5 (e.g. exp(-2) ~= 0.135); production clamps it to 0.5.
+        This branch was previously untested (audit finding 10.2.1): no fixture
+        produced a ratio under 0.5, so a regression in the lower clamp would
+        have been invisible.
+        """
+        n = 3
+        rewards = T.tensor([[1.0, 1.0, 1.0]], dtype=T.float32, device=DEVICE)
+        terminations = T.zeros((1, n), dtype=T.bool, device=DEVICE)
+        truncations = T.zeros((1, n), dtype=T.bool, device=DEVICE)
+        trajectory_lengths = T.tensor([3], dtype=T.long, device=DEVICE)
+        q_cur = T.zeros((1, n), dtype=T.float32, device=DEVICE)
+        target_q = T.zeros((1, n), dtype=T.float32, device=DEVICE)
+        cur_log_probs = T.zeros((1, n), dtype=T.float32, device=DEVICE)
+        buf_log_probs = T.full((1, n), 2.0, dtype=T.float32, device=DEVICE)  # ratio = exp(-2) ≈ 0.135
+
+        batch = dict(
+            rewards=rewards, terminations=terminations, truncations=truncations,
+            trajectory_lengths=trajectory_lengths, q_cur=q_cur, target_q=target_q,
+            cur_log_probs=cur_log_probs, buf_log_probs=buf_log_probs,
+            discount=0.9, device=DEVICE,
+        )
+        q, m = compute_q_retrace(**batch)
+        q_ref, m_ref = _reference_compute_q_retrace(**batch)
+
+        # The floor must be active: every valid ratio equals exactly 0.5
+        assert T.allclose(m["is_ratio"], T.full((1, n), 0.5, device=DEVICE), atol=1e-6)
+
+        # Hand-computed expectation with the floor:
+        #   td_k = 1.0 for all k (rewards 1, q_cur/target_q 0)
+        #   cum_c: 1.0 -> 0.5 (after k=0) -> 0.25 (after k=1)
+        #   q = 1*1*1 + 0.9*0.5*1 + 0.81*0.25*1 = 1 + 0.45 + 0.2025 = 1.6525
+        expected = T.tensor([1.6525], dtype=T.float32, device=DEVICE)
+        assert T.allclose(q, expected, atol=1e-6)
+
+        # And reference agreement on everything
+        assert T.allclose(q, q_ref, atol=1e-6)
+        _assert_metrics_match(m, m_ref, atol=1e-6)
+
     def test_n_equals_1_reduces_to_simple_one_step_target(self):
         """When every trajectory has length 1 the retrace target must be
         exactly the ordinary 1-step TD target (no accumulation, no IS multiply).
@@ -568,9 +600,11 @@ class TestVectorNStepRewardToComputeQRetraceIntegration:
                 # stays on CPU, matching DEVICE="cpu" used throughout this test file.
                 action_t = T.as_tensor(action_np, device="cpu")
 
-                # Always supply log_probs (dummy on CPU) so we avoid the pre-existing
-                # buggy fallback path inside VectorNStepReward.step that does
-                # T.zeros_like(self.num_envs) when log_probs is None.
+                # Always supply log_probs (dummy on CPU). (Historical note: an
+                # old VectorNStepReward.step fallback misused T.zeros_like on
+                # num_envs; production now falls back to T.zeros_like(rewards),
+                # which is correct — we still pass explicit log_probs for
+                # determinism.)
                 log_probs_dummy = T.zeros(action_t.shape[0], device="cpu", dtype=T.float32)
                 fake_action = _TestAction(actions=action_t, raw_actions=None, log_probs=log_probs_dummy)
                 env.set_action(fake_action)
@@ -665,10 +699,13 @@ class TestVectorNStepRewardToComputeQRetraceIntegration:
         """
         nstep_env = _create_real_nstep_wrapped_env(n=3, num_envs=2, seed=99)
 
-        # We only need a plain GymnasiumWrapper to satisfy the ReplayBuffer
-        # constructor (it needs observation/action spaces). We do not wrap
-        # it with VectorNStepReward here — we feed the n-step dicts manually.
-        plain_env = GymnasiumWrapper(cfg="CartPole-v1", num_envs=2, seed=99)
+        # The ReplayBuffer constructor validates that its env carries the
+        # VectorNStepReward wrapper, so build a matching wrapped env for it
+        # (we still feed the n-step dicts manually from `nstep_env`).
+        plain_env = GymnasiumWrapper(
+            cfg="CartPole-v1", num_envs=2, seed=99,
+            wrappers=[{"type": "VectorNStepReward", "params": {"n": 3}}],
+        )
 
         buf = ReplayBuffer(env=plain_env, buffer_size=5000, N=3, device=DEVICE)
 

@@ -19,6 +19,12 @@ class BaseNormalizer:
         num_features (int): Number of features to normalize.
         clip_value (float): Value to clip normalized values.
         epsilon (float): Small constant to prevent division by zero.
+        min_std (float): Floor for the running std used in normalization.
+            Guards against near-constant features early in training whose
+            tiny std would otherwise catastrophically amplify later drift
+            (RSL-RL's EmpiricalNormalization uses the same guard). The
+            default (1e-4) preserves the historical behavior; noisy sim
+            states (e.g. IsaacSim proprioception) should use ~1e-2.
         device (str): Device to run the normalizer on ('cpu' or 'cuda').
         log_level (str): Log level for the normalizer.
         **kwargs: Additional keyword arguments.
@@ -28,6 +34,7 @@ class BaseNormalizer:
         num_features: int = 1,
         clip_value: float = 5.0,
         epsilon: float = 1e-6,
+        min_std: float = 1e-4,
         device: str | T.device | None = None,
         log_level: str = 'INFO',
         name: str | None = None,
@@ -40,6 +47,7 @@ class BaseNormalizer:
         self.num_features = num_features
         self.clip_value = T.tensor(clip_value, device=self.device)
         self.epsilon = T.tensor(epsilon, device=self.device)
+        self.min_std = float(min_std)
         # Local statistics
         self.local_cnt = T.zeros(1, dtype=T.int32, device=self.device)
         self.local_mean = T.zeros(self.num_features, dtype=T.float32, device=self.device)
@@ -109,7 +117,7 @@ class BaseNormalizer:
             self.running_cnt.add_(batch_cnt)
             self.running_mean.copy_(batch_mean)
             self.running_var.copy_(batch_var)
-            self.running_std = T.sqrt(self.running_var + self.epsilon**2).clamp(min=1e-4)
+            self.running_std = T.sqrt(self.running_var + self.epsilon**2).clamp(min=self.min_std)
         else:
             total_cnt = self.running_cnt + batch_cnt
             delta = batch_mean - self.running_mean
@@ -122,7 +130,7 @@ class BaseNormalizer:
             self.running_var.copy_(m2 / total_cnt)
 
             self.running_cnt.add_(batch_cnt)
-            self.running_std = T.sqrt(self.running_var + self.epsilon**2).clamp(min=1e-4)
+            self.running_std = T.sqrt(self.running_var + self.epsilon**2).clamp(min=self.min_std)
         
         if self._log_diag:
             self.logger.debug(f"Normalizer update: step={self.step}, running_cnt={self.running_cnt}, running_mean={self.running_mean}, running_var={self.running_var}, running_std={self.running_std}")
@@ -167,6 +175,7 @@ class BaseNormalizer:
                 'num_features':self.num_features,
                 'epsilon':self.epsilon.item(),
                 'clip_value':self.clip_value.item(),
+                'min_std':self.min_std,
                 'device':self.device.type,
                 'name':self.name,
             },
@@ -257,7 +266,9 @@ class RunningNorm(BaseNormalizer):
         name: str | None = None,
         **kwargs
     ):
-        super().__init__(num_features, clip_value, epsilon, device, log_level, name, **kwargs)
+        super().__init__(num_features=num_features, clip_value=clip_value,
+                         epsilon=epsilon, device=device, log_level=log_level,
+                         name=name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
@@ -341,7 +352,9 @@ class BatchNorm(BaseNormalizer):
         name: str | None = None,
         **kwargs
     ):
-        super().__init__(num_features, clip_value, epsilon, device, log_level, name, **kwargs)
+        super().__init__(num_features=num_features, clip_value=clip_value,
+                         epsilon=epsilon, device=device, log_level=log_level,
+                         name=name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
         """
@@ -667,8 +680,156 @@ class SharedNormalizer:
     def create_instance(cls, **kwargs) -> 'SharedNormalizer':
         return cls(**kwargs)
 
+class ImageScale(BaseNormalizer):
+    """Stateless image scaler: casts to float and divides by ``scale``.
+
+    Intended for per-key use inside a :class:`DictNormalizer` on image
+    modalities stored as 0-255 values. (Models auto-scale raw ``uint8``
+    inputs themselves; use this when image data reaches the model as floats
+    in the 0-255 range.)
+    """
+
+    def __init__(
+        self,
+        scale: float = 255.0,
+        device: str | T.device | None = None,
+        log_level: str = 'INFO',
+        name: str | None = None,
+        **kwargs,
+    ):
+        super().__init__(num_features=1, clip_value=float('inf'), device=device,
+                         log_level=log_level, name=name, **kwargs)
+        self.scale = scale
+
+    def add(self, *args, **kwargs) -> None:
+        pass  # stateless
+
+    def update(self) -> None:
+        pass  # stateless
+
+    def normalize(self, v: T.Tensor) -> T.Tensor:
+        return v.to(self.device).float() / self.scale
+
+    def denormalize(self, v: T.Tensor) -> T.Tensor:
+        return v.to(self.device) * self.scale
+
+    def get_config(self) -> dict:
+        return {
+            'type': self.__class__.__name__,
+            'config': {
+                'scale': self.scale,
+                'device': self.device.type,
+                'name': self.name,
+            },
+        }
+
+    @classmethod
+    def load(cls, config: dict, state_path: str) -> 'ImageScale':
+        return ImageScale(scale=config.get('scale', 255.0), device=config.get('device'))
+
+
+class DictNormalizer(BaseNormalizer):
+    """Per-key normalizer for Dict (multi-modal) observations.
+
+    Routes each observation key to its own child normalizer; keys without an
+    entry pass through unchanged.
+
+    Config example::
+
+        state_normalizer:
+          type: DictNormalizer
+          config:
+            per_key:
+              vec: {type: RunningNorm, config: {num_features: 7, clip_value: 5.0}}
+              rgb: {type: ImageScale, config: {}}
+    """
+
+    def __init__(
+        self,
+        per_key: dict,
+        device: str | T.device | None = None,
+        log_level: str = 'INFO',
+        name: str | None = None,
+        **kwargs,
+    ):
+        super().__init__(num_features=1, device=device, log_level=log_level,
+                         name=name, **kwargs)
+        self.normalizers: dict[str, BaseNormalizer] = {}
+        for key, cfg in (per_key or {}).items():
+            cfg = dict(cfg)
+            cfg.setdefault('config', {})
+            cfg['config'].setdefault('device', device)
+            self.normalizers[key] = create_normalizer(cfg)
+
+    def add(self, new_data: dict) -> None:
+        for key, norm in self.normalizers.items():
+            if key in new_data:
+                norm.add(new_data[key])
+
+    def update(self) -> None:
+        for norm in self.normalizers.values():
+            norm.update()
+
+    def normalize(self, data: dict) -> dict:
+        return {
+            key: (self.normalizers[key].normalize(value) if key in self.normalizers else value)
+            for key, value in data.items()
+        }
+
+    def train(self):
+        super().train()
+        for norm in self.normalizers.values():
+            norm.train()
+        return self
+
+    def eval(self):
+        super().eval()
+        for norm in self.normalizers.values():
+            norm.eval()
+        return self
+
+    def get_config(self) -> dict:
+        return {
+            'type': self.__class__.__name__,
+            'config': {
+                'per_key': {key: norm.get_config() for key, norm in self.normalizers.items()},
+                'device': self.device.type,
+                'name': self.name,
+            },
+        }
+
+    def save_state(self, path) -> None:
+        """Save every child normalizer's statistics into one ``.pt`` file."""
+        from pathlib import Path
+        import tempfile, os
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {}
+        for key, norm in self.normalizers.items():
+            # Reuse each child's own save format via a temp file.
+            with tempfile.TemporaryDirectory() as tmp:
+                child_path = os.path.join(tmp, 'child.pt')
+                norm.save(child_path)
+                state[key] = T.load(child_path, map_location='cpu', weights_only=False)
+        T.save(state, path)
+
+    def load_state(self, path, load_weights: bool = True) -> None:
+        state = T.load(str(path), map_location='cpu', weights_only=False)
+        import tempfile, os
+        for key, child_state in state.items():
+            norm = self.normalizers.get(key)
+            if norm is None:
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                child_path = os.path.join(tmp, 'child.pt')
+                T.save(child_state, child_path)
+                norm.load_state(child_path)
+
+
 NORMALIZER_CLASSES = {
     "RunningNorm": RunningNorm,
     "BatchNorm": BatchNorm,
     "RewardNorm": RewardNorm,
+    "ImageScale": ImageScale,
+    "DictNormalizer": DictNormalizer,
 }

@@ -74,6 +74,7 @@ import numpy as np
 import torch as T
 
 from .env_wrapper import EnvWrapper
+from .obs_utils import tree_index, tree_to
 from .torch_utils import get_device
 
 
@@ -219,7 +220,11 @@ class HindsightRelabeler:
             - output_format='flat': List[Dict] of (T_ep, *feat) trajectory dicts,
               one per relabeled copy. Empty list if no goals could be sampled.
         """
-        T_ep = int(episode["states"].shape[0])
+        ep_states = episode["states"]
+        if isinstance(ep_states, dict):
+            T_ep = int(next(iter(ep_states.values())).shape[0])
+        else:
+            T_ep = int(ep_states.shape[0])
         if T_ep == 0:
             return None if self.output_format == "n_step" else []
 
@@ -316,7 +321,10 @@ class HindsightRelabeler:
         M = int(starts.shape[0])
         N = self.N
         dev = self.device
-        ep = {k: (v.to(dev) if isinstance(v, T.Tensor) else v) for k, v in episode.items()}
+        ep = {
+            k: (tree_to(v, device=dev) if isinstance(v, (T.Tensor, dict)) else v)
+            for k, v in episode.items()
+        }
 
         # Build the (M, N) index grid: window m's step n maps to original step starts[m]+n.
         offsets = T.arange(N, device=dev)
@@ -324,10 +332,11 @@ class HindsightRelabeler:
         valid = ts < T_ep                                 # (M, N) bool — in-range mask
         ts_repeat = T.clamp(ts, max=T_ep - 1)             # Repeat-pad indices.
 
-        # Gather state-like fields. Clamped indices give us repeat-padding for free.
-        states          = ep["states"][ts_repeat]
+        # Gather state-like fields (states may be dict-of-tensors, multi-modal).
+        # Clamped indices give us repeat-padding for free.
+        states          = tree_index(ep["states"], ts_repeat)
         actions         = ep["actions"][ts_repeat]
-        next_states     = ep["next_states"][ts_repeat]
+        next_states     = tree_index(ep["next_states"], ts_repeat)
         state_ach_goals = ep["state_achieved_goals"][ts_repeat]
         next_ach_goals  = ep["next_state_achieved_goals"][ts_repeat]
 
@@ -445,7 +454,10 @@ class HindsightRelabeler:
         """
         K = int(new_goals.shape[0])
         dev = self.device
-        ep = {k: (v.to(dev) if isinstance(v, T.Tensor) else v) for k, v in episode.items()}
+        ep = {
+            k: (tree_to(v, device=dev) if isinstance(v, (T.Tensor, dict)) else v)
+            for k, v in episode.items()
+        }
         goal_shape = new_goals.shape[1:]
         next_ach = ep["next_state_achieved_goals"]
         has_ir = "intrinsic_rewards" in ep and ep["intrinsic_rewards"] is not None

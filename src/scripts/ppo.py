@@ -1,28 +1,21 @@
-from scripts.agent import create_intrinsic_motivation, create_normalizer, create_policy
+from scripts.agent import (
+    apply_model_config, create_intrinsic_motivation, create_normalizer,
+    create_policy, create_value,
+)
 from app.rl_agents import PPO
 from app.env_wrapper import EnvWrapper
-from app.models import ValueModel
 from app.normalizer import create_normalizer as normalizer_factory
 from app.schedulers import ScheduleWrapper
 from app.adaptive_kl import AdaptiveKL
 
 
-def create_value(config: dict, env: EnvWrapper) -> ValueModel:
-    """Create a value model from a config."""
-    config = dict(config)
-    config["env"] = env
-    config["lr_scheduler"] = (
-        ScheduleWrapper(**config["lr_scheduler"]) if config.get("lr_scheduler", None) else None
-    )
-    return ValueModel(**config)
-
-
 def build(config: dict, env: EnvWrapper):
     agent_cfg = config["agent"]["config"]
 
-    # build policy / value
-    agent_cfg["policy"] = create_policy(agent_cfg["policy"], env)
-    agent_cfg["value"] = create_value(agent_cfg["value"], env)
+    # Canonical 'model:' schema (roots/trunk/branches) or legacy per-model keys
+    if not apply_model_config(agent_cfg, env):
+        agent_cfg["policy"] = create_policy(agent_cfg["policy"], env)
+        agent_cfg["value"] = create_value(agent_cfg["value"], env)
 
     # normalizers
     if agent_cfg.get("state_normalizer", None):
