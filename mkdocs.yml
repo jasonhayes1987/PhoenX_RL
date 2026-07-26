@@ -1,0 +1,52 @@
+site_name: PhoenX RL
+site_description: Documentation for the PhoenX RL framework
+repo_url: https://github.com/jasonhayes1987/PhoenX_RL
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            members_order: source
+
+markdown_extensions:
+  - pymdownx.snippets:
+      check_paths: true   # changelog include; run mkdocs from the repo root
+  - pymdownx.highlight
+  - pymdownx.keys
+  - pymdownx.magiclink
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.tilde
+  - pymdownx.critic
+
+nav:
+  - Home: index.md
+  - How-To Guides:
+      - Getting Started: how-to/getting-started.md      # phoenx-train / phoenx-test CLI usage
+      - Configuration Files: how-to/configuration.md    # YAML schema, configs/ layout
+      - Isaac Sim Environments: how-to/isaac-sim.md     # custom cfg .py files
+  - API Reference:
+      - Agents (phoenx.rl_agents): api/rl_agents.md
+      - Models (phoenx.models): api/models.md
+      - Trainer (phoenx.trainer): api/trainer.md
+      - Buffer (phoenx.buffer): api/buffer.md
+      - HER (phoenx.her): api/her.md
+      - Environment Wrappers (phoenx.env_wrapper): api/env_wrapper.md
+      - Intrinsic Motivation (phoenx.intrinsic_motivation): api/intrinsic_motivation.md
+      - Normalizers (phoenx.normalizer): api/normalizer.md
+      - Noise (phoenx.noise): api/noise.md
+      - Schedulers (phoenx.schedulers): api/schedulers.md
+      - Builder (phoenx.builder): api/builder.md
+  - Changelog: changelog.md

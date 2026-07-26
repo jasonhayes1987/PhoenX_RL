@@ -18,21 +18,39 @@
 </table>
 
 ## Overview
-PhoenX RL is a flexible, modular reinforcement learning (RL) framework designed for rapid experimentation and development of RL agents. Built on PyTorch, it supports a variety of on-policy and off-policy algorithms, integrates with Gymnasium environments, and includes components like intrinsic curiosity, N-step returns, replay buffers, schedulers, normalizers, and optional experiment logging via Weights & Biases (WandB).
+PhoenX RL is a flexible, modular reinforcement learning (RL) framework designed for rapid experimentation and development of RL agents. Built on PyTorch, it supports a variety of on-policy and off-policy algorithms, integrates with Gymnasium and IsaacSim environments, and includes components like intrinsic curiosity, N-step returns, replay buffers, schedulers, normalizers, and optional experiment logging via Weights & Biases (WandB).
 
-The framework emphasizes extensibility, allowing users to customize models, noise processes, buffers, and callbacks. It is suitable for both research and practical applications in robotics, games, and control tasks, with support for goal-oriented learning and scaling (Ray-based distributed training support exists in the codebase but is still evolving).
+The framework emphasizes extensibility, allowing users to customize models, noise processes, buffers, and callbacks. It is suitable for both research and practical applications in robotics, games, and control tasks, with support for goal-oriented learning and scaling.
 
 ## Key Features
 - **Supported Algorithms:**
    - **On-Policy**: Reinforce, Actor-Critic, Proximal Policy Optimization (PPO) with adaptive KL divergence.
    - **Off-Policy**: Deep Deterministic Policy Gradient (DDPG), Twin Delayed DDPG (TD3), Soft Actor-Critic (SAC).
    - **Goal-Oriented**: DDPG, TD3, SAC, PPO, Hindsight Experience Replay (HER) with DDPG/TD3/SAC backends.
+- **Modular roots → trunk → branches networks:** every agent is built on a
+  composite `ModularModel` — user-named per-modality encoder **roots**, an
+  optional shared **trunk** (the single place temporal layers may live), and
+  per-role **branches** (policy / value / critic heads). Per-module optimizers
+  with research-backed gradient ownership: on-policy agents combine losses into
+  ONE backward + coordinated step (SB3 / RSL-RL standard); off-policy agents
+  let the critic loss own the shared body while the policy trains on detached
+  features (SAC-AE / DrQ-v2 standard). See
+  `` and
+  `src/Configs/multi_modal_cfg.yml`.
+- **Multi-modal observations:** Dict observation spaces (e.g. camera +
+  proprioception) flow end to end — env wrappers, every buffer, per-key
+  `DictNormalizer`/`ImageScale` normalizers, HER, and intrinsic motivation —
+  with uint8 image storage and per-root `input_keys` routing.
+- **Temporal policies:** LSTM/GRU trunks (recurrent PPO/ActorCritic with
+  sequence minibatching and masked mid-sequence resets; recurrent
+  SAC/TD3/DDPG with R2D2-style stored initial hidden + optional burn-in) and
+  causal-transformer trunks with rolling context-window inference.
 - **Modular Components:**
-   - **Models**: Stochastic policies (discrete/continuous), value functions, actors, and critics with customizable layers (dense, conv, etc...) and initializers.
+   - **Models**: Head classes (stochastic discrete/continuous policies, deterministic actors, value and Q heads) with a data-driven layer registry (dense, conv1d/2d/3d, pooling, norms, activations, embeddings, attention, transformer encoders, LSTM/GRU) and per-layer weight initializers.
    - **Noise Processes**: Ornstein-Uhlenbeck (OU), Normal, Uniform noise for exploration, with optional scheduling.
-   - **Normalizers**: Running statistics for observations/actions/goals, with shared memory support in distributed settings.
-   - **Schedulers**: Learning rate and parameter schedulers (linear, step, cosine annealing, exponential).
-   - **Buffers**: Standard ReplayBuffer, PrioritizedReplayBuffer (proportional or rank-based), with N-step return support and trajectory tracking.
+   - **Normalizers**: Running statistics for observations/actions/goals, per-key Dict normalizers, image scaling.
+   - **Schedulers**: Learning rate and parameter schedulers (linear, step, cosine annealing, exponential), attachable per module.
+   - **Buffers**: Standard ReplayBuffer, PrioritizedReplayBuffer (proportional or rank-based), with N-step return support, trajectory tracking, and R2D2 stored-state support.
    - **Intrinsic Curiosity Module (ICM)**: For exploration in sparse-reward environments.
    - **Callbacks**: WandB integration for logging, metrics, and artifact saving; extensible for custom hooks, with distributed variants.
 - **Experiment Logging**: Optional Weights & Biases (WandB) callback support for metrics/logging and artifact saving.
@@ -83,11 +101,8 @@ You can override some training options from the CLI (for example `--render_freq`
 
 # Roadmap
 PhoenX RL is actively evolving. Future plans include:
-- **Ray Tune for Hyperparameter Optimization**: Incorporating Ray Tune to leverage advanced search algorithms (e.g., Bayesian optimization, HyperBand) for more efficient hyperparameter tuning.
-- **Expanded YAML Config Coverage**: Adding/standardizing YAML configs for PPO/SAC/HER and updating their script entrypoints to use the configs.
 - **MARL**: Adding Multi-Agent variants for DDPG, TD3, PPO, and SAC
 - **HRL**: Adding Hierarchical Reinforcement Learning support (Most likely through Ray RLib)
-- **Transformer Layers Support**: Extending the model architecture to include transformer layers for handling sequential data in RL tasks, such as in partially observable environments or long-horizon planning.
 
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.

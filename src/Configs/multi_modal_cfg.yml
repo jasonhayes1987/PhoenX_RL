@@ -1,0 +1,197 @@
+# =============================================================================
+# Canonical multi-modal (roots -> trunk -> branches) agent configuration.
+#
+# This is the reference for the `model:` schema introduced by the modular
+# networks refactor (see ):
+#
+#   model:
+#     roots:     optional {name: sub-network} — one encoder per input modality.
+#                Names are user-chosen and appear verbatim in parameter names /
+#                wandb (e.g. roots.camera.layers.conv2d_0.weight). Each root
+#                declares the observation key(s) it consumes via `input_keys`
+#                (multiple keys are concatenated; the reserved key `goal`
+#                routes the goal tensor for goal-conditioned envs). Root
+#                outputs are flattened and concatenated in declaration order.
+#     trunk:     optional shared fusion sub-network (identity when omitted).
+#                The ONLY module allowed to contain temporal layers
+#                (lstm / gru / causal transformer_encoder).
+#     branches:  {role: head} — role names are fixed per algorithm
+#                (PPO: policy + value; SAC/TD3: policy + critic [+ critic_b];
+#                DDPG: policy + critic). `type` selects the head class
+#                (StochasticContinuousHead, StochasticDiscreteHead,
+#                DeterministicActorHead, ValueHead, ContinuousQHead,
+#                DiscreteQHead). Only branches carry `output_config` (the
+#                init spec of the env-shaped output layer).
+#
+#   Gradient ownership (`shared_update`):
+#     combined  (on-policy default)  one combined loss, one backward, every
+#                                    per-module optimizer steps once.
+#     critic    (off-policy default) the critic loss updates roots+trunk; the
+#                                    policy branch trains on detached features
+#                                    (SAC-AE / DrQ-v2 rule).
+#
+#   Optimizers: `optimizer_params` at the model level is the default; any
+#   root / trunk / branch may override it with its own spec (the per-module
+#   optimizers always cover disjoint parameter sets).
+#
+# NOTE: this example describes a camera + proprioception IsaacSim setup. The
+# `camera` root expects an image observation group (obs_key: null exposes every
+# observation group as a dict keyed by group name); adapt `input_keys` to your
+# env's observation layout.
+# =============================================================================
+
+device: &device cuda
+save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/IsaacSim/Franka/CubeLift/PPO_MM_1/
+log_level: INFO
+
+# Anchors defined once (never re-defined) and referenced below.
+policy_lr: &policy_lr 1.0e-4
+value_lr: &value_lr 1.0e-4
+
+schedule:
+  stop_unit: timestep
+  stop_units: &stop_units 147456000
+  learn_every_unit: timestep
+  learn_every: 98304
+  # Recurrent models interpret mini_batch_size in ENV units (subsets of envs
+  # carrying their full rollout sequences); feedforward models in samples.
+  mini_batch_size: 24576
+  learning_epochs: 5
+  seed: &seed 42
+
+agent:
+  type: PPO
+  config:
+    name: PPO
+    model:
+      device: *device
+      # Model-wide default optimizer (per-module overrides below are optional)
+      optimizer_params: {type: Adam, params: {lr: *policy_lr}}
+      # On-policy gradient ownership: both losses update the shared body via
+      # ONE combined backward + coordinated step (SB3 / RSL-RL standard).
+      shared_update: combined
+      roots:
+        camera:                       # user-chosen name (wandb: roots.camera.*)
+          input_keys: [rgb]           # observation dict key(s) this root consumes
+          layer_config:
+            - type: conv2d
+              params: {out_channels: 32, kernel_size: 3, stride: 2, padding: 1}
+            - type: relu
+            - type: conv2d
+              params: {out_channels: 64, kernel_size: 3, stride: 2, padding: 1}
+            - type: relu
+            - type: conv2d
+              params: {out_channels: 128, kernel_size: 3, stride: 2, padding: 1}
+            - type: relu
+            - type: flatten
+            - type: dense             # projection to a compact embedding
+              params: {units: 256, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+          # Optional per-module optimizer override:
+          optimizer_params: {type: Adam, params: {lr: 3.0e-4}}
+        state:
+          input_keys: [policy]        # proprioceptive observation group
+          layer_config:
+            - type: dense
+              params: {units: 256, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+            - type: relu
+            - type: dense
+              params: {units: 128, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+            - type: relu
+      trunk:
+        # Shared fusion body. Temporal layers (lstm / gru / causal
+        # transformer_encoder) are only allowed here; uncomment to add memory:
+        #   - type: lstm
+        #     params: {hidden_size: 256}
+        layer_config:
+          - type: dense
+            params: {units: 256, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+          - type: relu
+          - type: dense
+            params: {units: 128, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+          - type: relu
+      branches:
+        policy:                       # role name required by PPO
+          type: StochasticContinuousHead
+          distribution: normal
+          layer_config:
+            - type: dense
+              params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+            - type: relu
+          output_config:              # init spec of the env-shaped output layer
+            - type: dense
+              params: {kernel: orthogonal, kernel_params: {gain: 0.01}}
+        value:
+          type: ValueHead
+          layer_config:
+            - type: dense
+              params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}
+            - type: relu
+          output_config:
+            - type: dense
+              params: {kernel: orthogonal, kernel_params: {gain: 1.0}}
+          optimizer_params: {type: Adam, params: {lr: *value_lr}}
+    discount: 0.98
+    gae_coefficient: 0.95
+    state_normalizer:
+      # Multi-modal observations use the per-key DictNormalizer: running stats
+      # for proprioception, image scaling for the camera (uint8 images are
+      # also auto-scaled at the model input, so ImageScale is only needed for
+      # float image data in the 0-255 range).
+      type: DictNormalizer
+      config:
+        name: PPO.StateNormalizer
+        per_key:
+          policy: {type: RunningNorm, config: {num_features: 39, clip_value: 5.0}}
+        device: *device
+    advantage_normalizer:
+      type: BatchNorm
+      config:
+        name: PPO.AdvantageNormalizer
+        clip_value: 10.0
+        device: *device
+    entropy_coefficient: 0.006
+    auto_entropy_tuning: false
+    kl_coefficient: 0.0
+    # Early-stop epochs when KL exceeds 1.5x target (RSL-RL adaptive schedule analogue)
+    kl_adapter:
+      initial_beta: 0.0
+      target_kl: 0.01
+      scale_up: 2.0
+      scale_down: 0.5
+      kl_tolerance_high: 1.5
+      kl_tolerance_low: 0.5
+    policy_clip: 0.2
+    policy_grad_clip: 1.0
+    value_clip: 0.2
+    value_grad_clip: 1.0
+    # Optional clip for the shared roots+trunk gradients
+    # (defaults to max(policy_grad_clip, value_grad_clip) when omitted):
+    # shared_grad_clip: 1.0
+    value_coef: 1.0
+    reward_clip: .inf
+    bootstrap_truncations: true
+
+env:
+  type: isaacsim
+  config:
+    cfg: "Configs.IsaacSim.franka.cube_lift.custom_franka_cube_lift_cfg:FrankaCubeLiftEnvCfg_Custom_Limits"
+    num_envs: 4096
+    # obs_key: null exposes EVERY observation group as a dict keyed by group
+    # name — required for multi-modal roots with input_keys. (Set a group name
+    # here to fall back to single-modality flat observations.)
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
+    wrappers: []
+    render_mode: headless
+    seed: *seed
+
+buffer:
+  type: RolloutBuffer
+  config:
+    buffer_size: 24
+    device: *device
+
+callbacks:
+  - type: "WandbCallback"
+    config: {project_name: IsaacSimFrankaCubeLift}

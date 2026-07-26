@@ -288,7 +288,12 @@ class ReplayBuffer(Buffer):
         super().__init__(env, buffer_size, hindsight, device)
         # Check to make sure environment is using VectorNStepReward Wrapper
         if env._find_nstep_wrapper() is None:
-            raise ValueError("ReplayBuffer requires the VectorNStepReward wrapper to be used in the environment")
+            raise ValueError(
+                f"{type(self).__name__} requires the VectorNStepReward wrapper on the "
+                "environment. Add {\"type\": \"VectorNStepReward\", \"params\": {\"n\": 1}} "
+                "(n >= 1) to the environment config's wrappers list. Off-policy buffers "
+                "store the (B, N) n-step trajectory windows this wrapper emits."
+            )
         self.N = N  # N-step hyperparameter
         self.samples_added = 0
 
