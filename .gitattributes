@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Append-only log: keep both sides when branches add entries in the same place
+CHANGELOG.md merge=union

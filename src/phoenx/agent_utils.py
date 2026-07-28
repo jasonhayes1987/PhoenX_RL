@@ -11,7 +11,6 @@ from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, NStepRew
 from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
 from .noise import Noise, NormalNoise, UniformNoise
 from .normalizer import BaseNormalizer, RunningNorm, BatchNorm, RewardNorm
-from .rl_callbacks import load as callback_load, WandbCallback, RayWandbCallback
 from .schedulers import ScheduleWrapper
 from .torch_utils import get_device
 
@@ -298,42 +297,3 @@ def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
             grad_sq = p.grad.detach().pow(2).sum()
             total_sq = grad_sq if total_sq is None else total_sq + grad_sq
     return float(T.sqrt(total_sq)) if total_sq is not None else 0.0
-
-
-def convert_to_distributed_callbacks(callbacks, role: str, worker_id=0):
-    """
-    Convert standard callbacks to distributed-friendly versions
-    
-    Args:
-        callbacks (list): List of callback objects
-        role (str): 'learner' or 'worker'
-        worker_id (int): Worker ID for this process
-        
-    Returns:
-        list: Modified callbacks for distributed training
-    """
-    if not callbacks:
-        return callbacks
-        
-    distributed_callbacks = []
-    
-    for callback in callbacks:
-        if isinstance(callback, WandbCallback):
-            config = callback.get_config()
-            # Replace with RayWandbCallback
-            ray_wandb_callback = RayWandbCallback(
-                project_name=config["config"]["project_name"],
-                role=role,
-                run_name=config["config"]["run_name"],
-                chkpt_freq=config["config"]["chkpt_freq"],
-                worker_id=worker_id,
-                _sweep=config["config"]["_sweep"]
-            )
-            
-            
-            distributed_callbacks.append(ray_wandb_callback)
-        else:
-            # Keep other callbacks as-is
-            distributed_callbacks.append(callback)
-            
-    return distributed_callbacks
