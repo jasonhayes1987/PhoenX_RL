@@ -13,18 +13,10 @@ Run explicitly with:  pytest tests/test_learning_smoke.py -m slow
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-import numpy as np
 import pytest
 import torch as T
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from scripts.agent import build_trainer_from_config  # noqa: E402
+from phoenx.builder import build_trainer_from_config
 
 DEV = "cuda" if T.cuda.is_available() else "cpu"
 

@@ -1,6 +1,6 @@
 """Agent-level tests for the composite roots->trunk->branches architecture.
 
-Uses the *real* agents from ``app.rl_agents`` end to end. Covers:
+Uses the *real* agents from ``phoenx.rl_agents`` end to end. Covers:
 
     * per-algorithm head-type enforcement (wrong head class raises TypeError);
     * ``critic_b`` auto-clone (fresh weights, same architecture);
@@ -20,19 +20,13 @@ Uses the *real* agents from ``app.rl_agents`` end to end. Covers:
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch as T
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.env_wrapper import GymnasiumWrapper  # noqa: E402
-from app.models import (  # noqa: E402
+from phoenx.env_wrapper import GymnasiumWrapper
+from phoenx.models import (
     ContinuousQHead,
     DeterministicActorHead,
     DiscreteQHead,
@@ -44,7 +38,7 @@ from app.models import (  # noqa: E402
     StochasticDiscretePolicy,
     map_legacy_state_dict,
 )
-from app.rl_agents import (  # noqa: E402
+from phoenx.rl_agents import (
     ActorCritic,
     DDPG,
     PPO,
@@ -53,7 +47,7 @@ from app.rl_agents import (  # noqa: E402
     TD3,
     build_agent,
 )
-from app.noise import NormalNoise  # noqa: E402
+from phoenx.noise import NormalNoise
 
 DEVICE = "cpu"
 T.manual_seed(0)

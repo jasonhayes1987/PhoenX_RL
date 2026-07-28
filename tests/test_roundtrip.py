@@ -1,8 +1,6 @@
 """Round-trip validation for the unified save/load architecture.
 
-Pytest port of ``src/scripts/roundtrip_test.py`` (which it supersedes),
-extended to the composite roots->trunk->branches models. Exercises the
-``get_config`` / ``from_config`` / ``save_state`` / ``load_state`` contract
+Tests the ``get_config`` / ``from_config`` / ``save_state`` / ``load_state`` contract
 end to end with the REAL production stack:
 
     1. SAC: build from the production ``src/Configs/sac.yml`` (legacy schema,
@@ -24,22 +22,17 @@ from __future__ import annotations
 import copy
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
 import torch as T
 import yaml
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+from phoenx.rl_agents import build_agent
+from phoenx.trainer import Trainer
+from phoenx.builder import build_trainer_from_config
 
-from app.rl_agents import build_agent  # noqa: E402
-from app.trainer import Trainer  # noqa: E402
-from scripts.agent import build_trainer_from_config  # noqa: E402
-
-CONFIGS_DIR = _SRC / "Configs"
+CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 T.manual_seed(0)
 

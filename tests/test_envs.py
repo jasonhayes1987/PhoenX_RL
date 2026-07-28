@@ -1,4 +1,4 @@
-"""Tests for ``src/app/env_wrapper.py``.
+"""Tests for ``src/phoenx/env_wrapper.py``.
 
 This is the single pytest module that validates every public class in
 ``env_wrapper.py``. It is built to grow over time, so it must stay importable
@@ -39,21 +39,15 @@ import contextlib
 import importlib.util
 import sys
 import types
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch as T
 
-# Make ``src/`` importable so ``import app.X`` works regardless of the CWD.
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
 import gymnasium as gym
 
-import app.env_wrapper as ew
-from app.env_wrapper import IsaacLabAdapter, IsaacSimWrapper, Observation
+import phoenx.env_wrapper as ew
+from phoenx.env_wrapper import IsaacLabAdapter, IsaacSimWrapper, Observation
 
 DEVICE = "cpu"
 

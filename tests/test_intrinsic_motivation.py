@@ -1,4 +1,4 @@
-"""Unit tests for ``src/app/intrinsic_motivation.py``.
+"""Unit tests for ``src/phoenx/intrinsic_motivation.py``.
 
 These tests import the real classes from the PhoenX API and exercise them
 directly so that any refactor of the API is automatically validated by simply
@@ -19,22 +19,14 @@ actions) so the full suite runs in seconds.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 import torch as T
 
-# Make ``src/`` importable so ``import app.X`` works regardless of where
-# pytest is invoked from.
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.env_wrapper import GymnasiumWrapper
-from app.intrinsic_motivation import (
+from phoenx.env_wrapper import GymnasiumWrapper
+from phoenx.intrinsic_motivation import (
     ICM,
     RND,
     CompositeIntrinsicMotivation,
@@ -48,8 +40,8 @@ from app.intrinsic_motivation import (
     ngu_combination,
     register_intrinsic_motivation,
 )
-from app.normalizer import RewardNorm
-from app.schedulers import ScheduleWrapper
+from phoenx.normalizer import RewardNorm
+from phoenx.schedulers import ScheduleWrapper
 
 DEVICE = "cpu"
 NUM_ENVS = 2

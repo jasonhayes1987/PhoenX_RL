@@ -1,4 +1,4 @@
-"""Unit tests for the composite ``ModularModel`` in ``src/app/models.py``.
+"""Unit tests for the composite ``ModularModel`` in ``src/phoenx/models.py``.
 
 Uses the *real* production classes end to end (real ``GymnasiumWrapper`` envs
 where an env is needed; the synthetic multi-modal / goal envs come from
@@ -22,20 +22,16 @@ where an env is needed; the synthetic multi-modal / goal envs come from
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch as T
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
 
-from app.agent_utils import soft_update  # noqa: E402
-from app.env_wrapper import GymnasiumWrapper  # noqa: E402
-from app.models import (  # noqa: E402
+from phoenx.agent_utils import soft_update
+from phoenx.env_wrapper import GymnasiumWrapper
+from phoenx.models import (
     ContinuousQHead,
     DeterministicActorHead,
     DiscreteQHead,
@@ -46,7 +42,7 @@ from app.models import (  # noqa: E402
     ValueHead,
     build_model,
 )
-from app.schedulers import ScheduleWrapper  # noqa: E402
+from phoenx.schedulers import ScheduleWrapper
 
 DEVICE = "cpu"
 T.manual_seed(0)
@@ -591,14 +587,14 @@ class TestRecurrentTrunk:
 # =============================================================================
 class TestCanonicalConfig:
     def test_multi_modal_cfg_yaml_builds(self):
-        """src/Configs/multi_modal_cfg.yml (the schema reference) must load,
+        """configs/multi_modal_cfg.yml (the schema reference) must load,
         decompose into modular parts, and assemble into a working PPO model
         against a matching multi-modal observation space."""
         import gymnasium as gym
         import yaml
-        from app.models import modular_parts_from_config
+        from phoenx.models import modular_parts_from_config
 
-        cfg_path = Path(__file__).resolve().parents[1] / "src" / "Configs" / "multi_modal_cfg.yml"
+        cfg_path = Path(__file__).resolve().parents[1] / "configs" / "multi_modal_cfg.yml"
         raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         model_cfg = raw["agent"]["config"]["model"]
 
@@ -636,16 +632,16 @@ class TestCanonicalConfig:
 
     def test_ppo_camera_yaml_builds_with_isaac_shaped_obs(self):
         """The Franka cube-lift camera training config
-        (src/Configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml) must build
+        (configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml) must build
         against IsaacLab-shaped observations: channels-LAST uint8 frames from a
         TiledCamera group ('rgb') plus a 36-dim proprio group ('policy'). The
         env stub is deliberately NOT a GymnasiumWrapper — the HWC->CHW
         conversion must apply to IsaacSim-sourced images too."""
         import gymnasium as gym
         import yaml
-        from app.models import modular_parts_from_config
+        from phoenx.models import modular_parts_from_config
 
-        cfg_path = (Path(__file__).resolve().parents[1] / "src" / "Configs" / "IsaacSim"
+        cfg_path = (Path(__file__).resolve().parents[1] / "configs" / "IsaacSim"
                     / "franka" / "cube_lift" / "dense" / "ppo_camera.yml")
         raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         model_cfg = raw["agent"]["config"]["model"]

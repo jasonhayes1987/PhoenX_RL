@@ -1,4 +1,4 @@
-"""Unit tests for ``src/app/buffer.py``.
+"""Unit tests for ``src/phoenx/buffer.py``.
 
 These tests import the **real** classes from the PhoenX API
 (``SumTree``, ``Buffer``, ``ReplayBuffer``, ``PrioritizedReplayBuffer``,
@@ -8,7 +8,7 @@ refactor of the API is automatically validated by simply re-running this file
 
 Goal of the suite:
     Passing every test here means "I can trust that all of my buffer classes in
-    ``src/app/buffer.py`` are behaving correctly."
+    ``src/phoenx/buffer.py`` are behaving correctly."
 
 Coverage:
     * SumTree            - capacity rounding, sum invariant, exact cumulative
@@ -37,22 +37,13 @@ Real Gymnasium environments are used as lightweight dependencies:
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
-from typing import Any, Dict
 
 import numpy as np
 import pytest
 import torch as T
 import gymnasium as gym
 
-# Make ``src/`` importable so ``import app.X`` works regardless of where
-# pytest is invoked from.
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.buffer import (  # noqa: E402
+from phoenx.buffer import (
     Buffer,
     PrioritizedReplayBuffer,
     ReplayBuffer,
@@ -60,8 +51,8 @@ from app.buffer import (  # noqa: E402
     SumTree,
     TrajectoryBuffer,
 )
-from app.env_wrapper import Action, GymnasiumWrapper  # noqa: E402
-from app.her import AchievedGoalPool, HindsightRelabeler  # noqa: E402
+from phoenx.env_wrapper import Action, GymnasiumWrapper
+from phoenx.her import AchievedGoalPool, HindsightRelabeler
 
 DEVICE = T.device("cpu")
 

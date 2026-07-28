@@ -4,16 +4,16 @@
 ![](src/assets/License-MIT-yellow.svg)
 <table>
   <tr>
-    <td><img src="src/assets/cheetah.gif" alt="Cheetah" width="200"></td>
-    <td><img src="src/assets/lunar.gif" alt="Lunar Lander" width="200"></td>
-    <td><img src="src/assets/pong.gif" alt="Atari Pong" width="200"></td>
-    <td><img src="src/assets/double_pendulum.gif" alt="Inverted Pendulum" width="200"></td>
+    <td><img src="assets/cheetah.gif" alt="Cheetah" width="200"></td>
+    <td><img src="assets/lunar.gif" alt="Lunar Lander" width="200"></td>
+    <td><img src="assets/pong.gif" alt="Atari Pong" width="200"></td>
+    <td><img src="assets/double_pendulum.gif" alt="Inverted Pendulum" width="200"></td>
   </tr>
   <tr>
-    <td><img src="src/assets/reach.gif" alt="Fetch Reach" width="200"></td>
-    <td><img src="src/assets/push.gif" alt="Fetch Push" width="200"></td>
-    <td><img src="src/assets/slide.gif" alt="Fetch Slide" width="200"></td>
-    <td><img src="src/assets/place.gif" alt="Fetch Pick and Place" width="200"></td>
+    <td><img src="assets/reach.gif" alt="Fetch Reach" width="200"></td>
+    <td><img src="assets/push.gif" alt="Fetch Push" width="200"></td>
+    <td><img src="assets/slide.gif" alt="Fetch Slide" width="200"></td>
+    <td><img src="assets/place.gif" alt="Fetch Pick and Place" width="200"></td>
   </tr>
 </table>
 
@@ -36,7 +36,7 @@ The framework emphasizes extensibility, allowing users to customize models, nois
   let the critic loss own the shared body while the policy trains on detached
   features (SAC-AE / DrQ-v2 standard). See
   `` and
-  `src/Configs/multi_modal_cfg.yml`.
+  `configs/multi_modal_cfg.yml`.
 - **Multi-modal observations:** Dict observation spaces (e.g. camera +
   proprioception) flow end to end — env wrappers, every buffer, per-key
   `DictNormalizer`/`ImageScale` normalizers, HER, and intrinsic motivation —
@@ -75,10 +75,10 @@ PhoenX RL uses a simple two-step workflow:
 2. **Train using `train.py` by pointing at that saved directory**
 
 ### 1) Edit a YAML config
-Configs live in `src/Configs/`. The ones currently wired up to the YAML build scripts are:
-- `src/Configs/reinforce.yml`
-- `src/Configs/actor_critic.yml`
-- `src/Configs/ddpg.yml`
+Configs live in `configs/`. The ones currently wired up to the YAML build scripts are:
+- `configs/reinforce.yml`
+- `configs/actor_critic.yml`
+- `configs/ddpg.yml`
 
 Update at least:
 - `save_dir`: where the agent + train/test configs will be written (recommended: change this to a path on your machine)
@@ -87,14 +87,14 @@ Update at least:
 
 ### 2) Build/save the agent from the YAML config
 ```bash
-python src/scripts/reinforce.py --config_file src/Configs/reinforce.yml
-python src/scripts/actor_critic.py --config_file src/Configs/actor_critic.yml
-python src/scripts/ddpg.py --config_file src/Configs/ddpg.yml
+python src/phoenx/builders/reinforce.py --config_file configs/reinforce.yml
+python src/phoenx/builders/actor_critic.py --config_file configs/actor_critic.yml
+python src/phoenx/builders/ddpg.py --config_file configs/ddpg.yml
 ```
 
 ### 3) Train from the saved agent directory
 ```bash
-python src/scripts/train.py --agent_dir "path/to/your/saved/agent_dir"
+python src/phoenx/cli/train.py --agent_dir "path/to/your/saved/agent_dir"
 ```
 
 You can override some training options from the CLI (for example `--render_freq`, `--num_episodes`, etc.); otherwise `train.py` reads them from `train_config.json` in the agent directory.

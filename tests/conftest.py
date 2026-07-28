@@ -1,7 +1,6 @@
 """Shared pytest fixtures/helpers for the PhoenX test suite.
 
 Provides:
-    * ``src/`` on ``sys.path`` so ``import app.X`` works from any CWD.
     * Registration of synthetic Gymnasium test envs used across test files:
         - ``PhoenXMultiModal-v0``          Dict obs (uint8 image + float vector),
                                            continuous Box(2,) actions.
@@ -21,17 +20,10 @@ and spaces behave exactly as in training.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import gymnasium as gym
 from gymnasium import spaces
-
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
 
 
 # =============================================================================
@@ -200,7 +192,7 @@ def force_cpu(monkeypatch):
     """Patch ``app.torch_utils.get_device`` (and the re-exported references in
     modules that imported it) to always return CPU for this test."""
     import torch as T
-    from app import torch_utils as tu
+    from phoenx import torch_utils as tu
 
     def _cpu(device_spec=None):
         return T.device("cpu")
@@ -208,10 +200,10 @@ def force_cpu(monkeypatch):
     monkeypatch.setattr(tu, "get_device", _cpu)
     # Modules that did ``from .torch_utils import get_device`` hold their own
     # reference; patch the ones the model/env stack uses.
-    import app.env_wrapper as ew
-    import app.models as models
-    import app.buffer as buffer_mod
-    import app.normalizer as norm_mod
+    import phoenx.env_wrapper as ew
+    import phoenx.models as models
+    import phoenx.buffer as buffer_mod
+    import phoenx.normalizer as norm_mod
     monkeypatch.setattr(ew, "get_device", _cpu)
     monkeypatch.setattr(models, "get_device", _cpu)
     monkeypatch.setattr(buffer_mod, "get_device", _cpu)

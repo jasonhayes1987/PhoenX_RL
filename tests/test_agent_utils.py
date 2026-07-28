@@ -1,4 +1,4 @@
-"""Unit tests for ``src/app/agent_utils.py``.
+"""Unit tests for ``src/phoenx/agent_utils.py``.
 
 These tests import the *real* functions and supporting classes from the
 PhoenX API (no test-side copies or mocks) so that any refactor is
@@ -28,32 +28,23 @@ All tests are fast, deterministic, CPU-only, and use only live API classes.
 from __future__ import annotations
 
 import math
-import sys
-from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
 
 import numpy as np
-import pytest
 import torch as T
 
-# Make ``src/`` importable so ``import app.X`` works regardless of where
-# pytest is invoked from.
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.agent_utils import compute_q_retrace
+from phoenx.agent_utils import compute_q_retrace
 
 # Real API classes for integration tests (exact same style as test_intrinsic_motivation.py)
 import gymnasium as gym
 from gymnasium.vector import AutoresetMode
-from app.env_wrapper import VectorNStepReward, GymnasiumWrapper
-from app.buffer import ReplayBuffer
+from phoenx.env_wrapper import VectorNStepReward, GymnasiumWrapper
+from phoenx.buffer import ReplayBuffer
 
 # Additional real classes needed for stronger integration coverage
-from app.normalizer import RunningNorm, RewardNorm
-from app.intrinsic_motivation import IntrinsicMotivation  # for smoke tests with IM active
+from phoenx.normalizer import RunningNorm, RewardNorm
+from phoenx.intrinsic_motivation import IntrinsicMotivation  # for smoke tests with IM active
 
 DEVICE = "cpu"
 
@@ -524,7 +515,7 @@ def _create_real_nstep_wrapped_env(n: int = 3, num_envs: int = 4, seed: int = 0)
     # This keeps the integration tests deterministic, fast, and consistent with
     # the pure CPU-only tests in the same file, even on machines where CUDA is
     # available and get_device() would otherwise return cuda:0.
-    from app import torch_utils as tu
+    from phoenx import torch_utils as tu
     original_get_device = tu.get_device
 
     def _forced_cpu(device: Any = None):
@@ -819,7 +810,7 @@ def _create_lunarlander_gymnasium_wrapper(n: int = 5, num_envs: int = 8, seed: i
     the real trainer uses.
     """
     # Force CPU for determinism and speed in the test suite
-    from app import torch_utils as tu
+    from phoenx import torch_utils as tu
     orig = tu.get_device
     tu.get_device = lambda *a, **k: T.device("cpu")
     try:

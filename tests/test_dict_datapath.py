@@ -20,36 +20,29 @@ Uses the REAL production stack on the synthetic multi-modal env registered in
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import gymnasium as gym
 import torch as T
 from gymnasium import spaces
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.buffer import (  # noqa: E402
+from phoenx.buffer import (
     PrioritizedReplayBuffer,
     ReplayBuffer,
     RolloutBuffer,
     TrajectoryBuffer,
 )
-from app.env_wrapper import Action, GymnasiumWrapper  # noqa: E402
-from app.her import HindsightRelabeler  # noqa: E402
-from app.models import (  # noqa: E402
+from phoenx.env_wrapper import Action, GymnasiumWrapper
+from phoenx.her import HindsightRelabeler
+from phoenx.models import (
     ContinuousQHead,
     StochasticContinuousHead,
     SubNetwork,
     ValueHead,
 )
-from app.normalizer import DictNormalizer, ImageScale, RunningNorm, create_normalizer  # noqa: E402
-from app.obs_utils import flatten_leading, flatten_obs, tree_index  # noqa: E402
-from app.rl_agents import PPO, SAC  # noqa: E402
+from phoenx.normalizer import DictNormalizer, ImageScale, RunningNorm, create_normalizer
+from phoenx.obs_utils import flatten_leading, flatten_obs, tree_index
+from phoenx.rl_agents import PPO, SAC
 
 DEVICE = "cpu"
 T.manual_seed(0)

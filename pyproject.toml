@@ -1,113 +1,77 @@
-[tool.poetry]
-name = "phoenx_rl"
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phoenx-rl"
 version = "0.1.0"
-description = "PhoenX Reinforcement Learning framework with IsaacLab integration"
-authors = "Jason Hayes"
-license = "MIT"
+description = "PhoenX Reinforcement Learning framework"
 readme = "README.md"
-repository = "https://github.com/jasonhayes1987/PhoenX_RL"
+requires-python = ">=3.11,<3.12"
+license = "MIT"
+authors = [{ name = "Jason Hayes" }]
 keywords = ["reinforcement-learning", "rl", "isaaclab", "gymnasium", "pytorch"]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.12"
-pylint = "^3.2.0"
-pytest = "^7.4.0"
-umap-learn = "^0.5.5"
-pynndescent = "^0.5.12"
-astunparse = "^1.6.3"
-hypothesis = "^6.1.0"
-pyyaml = "^6.0.1"
-requests = "^2.31.0"
-setuptools = "^70.0.0"
-typing-extensions = "4.12.2"
-numpy = "^1.26.0"
-pandas = "^2.2.3"
-matplotlib = "^3.9.2"
-seaborn = "^0.13.2"
-scikit-learn = "^1.5.2"
-sympy = "^1.13.0"
-networkx = "^3.3.0"
-jinja2 = "^3.1.0"
-fsspec = "^2024.6.0"
-packaging = "^23.1"
-lark = "^1.2.0"
-ale-py = "^0.9.0"
-flask = "^3.0.0"
-dash = "^2.17.0"
-natsort = "^8.4.0"
-dash-bootstrap-components = "^1.6.0"
-python-dotenv = "^1.0.0"
-ray = {extras = ["tune", "default"], version = "^2.10.0"}  # ray-all
-optuna = "^3.6.0"
-opencv-python = "4.11.0.86"
-hyperopt = "^0.2.7"
-ipywidgets = "^8.1.0"
-decorator = "==4.0.2"
-expecttest = "^0.3.0"
-optree = ">=0.9.1"
-wandb = "^0.27.0"
-gymnasium = {extras = ["mujoco", "atari", "box2d", "classic-control", "toy-text", "other"], version = "==1.2.0"}
-envpool = ">=1.0.1"
+dependencies = [
+  "torch>=2.5",
+  "numpy>=1.26",
+  "gymnasium[mujoco,atari,box2d,classic-control,toy-text,other]==1.2.0",
+  "ale-py>=0.9",
+  "envpool>=1.0.1; sys_platform == 'linux'",
+  "ray[tune,default]>=2.10",
+  "optuna>=3.6",
+  "hyperopt>=0.2.7",
+  "wandb>=0.27",
+  "pyyaml>=6.0.1",
+  "opencv-python==4.11.0.86",
+  "pandas>=2.2.3",
+  "matplotlib>=3.9.2",
+  "seaborn>=0.13.2",
+  "scikit-learn>=1.5.2",
+  "umap-learn>=0.5.5",
+  "python-dotenv>=1.0",
+  "natsort>=8.4",
+  "requests>=2.31",
+  "typing-extensions>=4.12",
+]
 
-[tool.poetry.group.dev.dependencies]  # Development dependencies (testing, linting)
-pytest = "^7.4.0"
-black = "^24.4.0"  # Code formatter
-isort = "^5.13.0"  # Import sorter
-pylint = "^3.2.0"  # Linter
-pytest-cov = "^5.0.0"  # Test coverage
-notebook = "^7.1.0"  # For Jupyter
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4", "pytest-cov>=5.0", "hypothesis>=6.1",
+  "black>=24.4", "isort>=5.13", "pylint>=3.2", "notebook>=7.1",
+]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 
-[build-system]  # Build backend (Poetry handles this automatically)
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+[project.scripts]
+phoenx-train = "phoenx.cli.train:main"
+phoenx-test  = "phoenx.cli.test:main"
 
-[tool.poetry.scripts]  # Optional: Entry points for CLI scripts (e.g., run your train.py)
-train = "app.scripts.train:main"  # Assumes you add a main() to train.py; run with `poetry run train`
+[project.urls]
+Repository = "https://github.com/jasonhayes1987/PhoenX_RL"
+Documentation = "https://jasonhayes1987.github.io/PhoenX_RL"
 
-[[tool.poetry.packages]]  # Explicit package discovery (points to src/)
-include = "app"
-from = "src"
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[tool.black]  # Formatter config
-line-length = 88
-target-version = ['py311']
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
-
-[tool.isort]  # Import sorter config
-profile = "black"
-line_length = 88
-
-[tool.pytest.ini_options]  # Test runner config
+[tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "-ra --strict-markers"
-testpaths = ["tests", "src"]
-python_files = "test_*.py"
-python_classes = "Test*"
-python_functions = "test_*"
+testpaths = ["tests"]
 markers = [
-    "isaac: integration tests that boot a real Isaac Sim / isaaclab environment (GPU required)",
-    "slow: long-running tests, e.g. stepping a real env to an episode boundary",
+  "isaac: integration tests that boot a real Isaac Sim / isaaclab environment (GPU required)",
+  "slow: long-running tests, e.g. stepping a real env to an episode boundary",
 ]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
