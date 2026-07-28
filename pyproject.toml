@@ -22,6 +22,7 @@ dependencies = [
   "torch>=2.5",
   "numpy>=1.26",
   "gymnasium[mujoco,atari,box2d,classic-control,toy-text,other]==1.2.0",
+  "gymnasium-robotics>=1.4.0",
   "ale-py>=0.9",
   "envpool>=1.0.1; sys_platform == 'linux'",
   "ray[tune,default]>=2.10",
