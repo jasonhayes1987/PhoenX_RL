@@ -24,7 +24,7 @@ dependencies = [
   "gymnasium[mujoco,atari,box2d,classic-control,toy-text,other]==1.2.0",
   "gymnasium-robotics>=1.4.0",
   "ale-py>=0.9",
-  "envpool>=1.0.1; sys_platform == 'linux'",
+  "envpool>=1.2.5,
   "ray[tune,default]>=2.10",
   "optuna>=3.6",
   "hyperopt>=0.2.7",
