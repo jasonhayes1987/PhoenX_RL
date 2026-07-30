@@ -29,7 +29,7 @@ and are portable as-is. List the names at runtime with
 3. Otherwise `FileNotFoundError`, listing the bundled names.
 
 ```bash
-# Bundled name â€” works from a bare pip install
+# Bundled name — works from a bare pip install
 phoenx-train --config LunarLanderContinuous-v3/sac.yml
 
 # Any path on your machine
@@ -68,16 +68,16 @@ package-import time; they only load when a config references them.
      and annotate every top-level key: agent/algorithm selection, environment
      spec, network architecture, training hyperparameters, buffer/HER options,
      logging/W&B, save paths. This section is the single most useful page in
-     the docs â€” be thorough. -->
+     the docs — be thorough. -->
 
 ## Key reference
 
 <!-- TODO: table of all recognized config keys per section, with
      type, default, and effect. Source of truth: phoenx.builder (load_config /
-     build_trainer_from_config) â€” document what the code actually reads, not
+     build_trainer_from_config) — document what the code actually reads, not
      what seems plausible. -->
 
 ## Creating a config for a new environment
 
-<!-- TODO: minimal steps â€” copy nearest existing config, keys that
+<!-- TODO: minimal steps — copy nearest existing config, keys that
      must change per environment, common pitfalls (obs/action space mismatches). -->

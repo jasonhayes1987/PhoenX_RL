@@ -9,7 +9,7 @@ final PhoenX `pip install` (or use `setup.ps1`, which installs it for you).
 Full install sequences, extras, `setup.ps1`, and troubleshooting:
 [Installation](installation.md).
 
-## Install â€” Gymnasium mode
+## Install — Gymnasium mode
 
 From a clone (editable, with test tooling):
 
@@ -28,7 +28,7 @@ No-clone (still run the SWIG step on Windows first):
 pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
 ```
 
-## Install â€” Isaac Lab mode
+## Install — Isaac Lab mode
 
 Same sequence with one extra command before PyTorch (PhoenX still last):
 
@@ -73,7 +73,7 @@ bundled examples under `phoenx/examples/configs/`; otherwise
 Console entry points: `phoenx-train` and `phoenx-test`.
 `python -m phoenx.cli.train` also works.
 
-<!-- TODO: document what appears during training â€” console output,
+<!-- TODO: document what appears during training — console output,
      where checkpoints/logs are written, W&B integration if enabled. -->
 
 ## Evaluate a trained agent
