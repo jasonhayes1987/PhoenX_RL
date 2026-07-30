@@ -35,7 +35,6 @@ The framework emphasizes extensibility, allowing users to customize models, nois
   ONE backward + coordinated step (SB3 / RSL-RL standard); off-policy agents
   let the critic loss own the shared body while the policy trains on detached
   features (SAC-AE / DrQ-v2 standard).
-
 - **Multi-modal observations:** Dict observation spaces (e.g. camera +
   proprioception) flow end to end — env wrappers, every buffer, per-key
   `DictNormalizer`/`ImageScale` normalizers, HER, and intrinsic motivation —
