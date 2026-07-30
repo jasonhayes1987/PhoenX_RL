@@ -122,6 +122,11 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# Personal working configs. Anchored with a leading slash so it matches only the
+# top-level directory — a bare "configs/" would also ignore the shipped examples
+# under src/phoenx/examples/configs/.
+/configs/
+
 # Other
 model*/
 .cursor/

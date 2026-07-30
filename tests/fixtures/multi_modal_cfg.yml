@@ -1,8 +1,9 @@
 # =============================================================================
-# Canonical multi-modal (roots -> trunk -> branches) agent configuration.
+# Test fixture: a multi-modal (roots -> trunk -> branches) agent configuration.
 #
-# This is the reference for the `model:` schema introduced by the modular
-# networks refactor (see ):
+# Not a shipped example and not authoritative. It exists so that
+# tests/test_modular_model.py can exercise the `model:` schema end to end
+# against a realistic config rather than an inline snippet:
 #
 #   model:
 #     roots:     optional {name: sub-network} — one encoder per input modality.
@@ -41,7 +42,7 @@
 # =============================================================================
 
 device: &device cuda
-save_dir: &save_dir E:/Documents/Programming/Projects/Reinforcement/PhoenX_RL/src/Trained_Models/IsaacSim/Franka/CubeLift/PPO_MM_1/
+save_dir: &save_dir ./Trained_Models/IsaacSim/Franka/CubeLift/PPO_MM_1/
 log_level: INFO
 
 # Anchors defined once (never re-defined) and referenced below.
@@ -174,7 +175,7 @@ agent:
 env:
   type: isaacsim
   config:
-    cfg: "Configs.IsaacSim.franka.cube_lift.custom_franka_cube_lift_cfg:FrankaCubeLiftEnvCfg_Custom_Limits"
+    cfg: "phoenx.examples.isaac.custom_franka_cube_lift_cfg:FrankaCubeLiftEnvCfg_Custom_Limits"
     num_envs: 4096
     # obs_key: null exposes EVERY observation group as a dict keyed by group
     # name — required for multi-modal roots with input_keys. (Set a group name

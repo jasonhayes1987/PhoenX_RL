@@ -1,4 +1,4 @@
-# Isaac Sim Environments
+﻿# Isaac Sim Environments
 
 PhoenX integrates with [Isaac Lab](https://isaac-sim.github.io/IsaacLab/) for
 GPU-accelerated robotics environments.
@@ -31,16 +31,23 @@ You can also run the module standalone inside the Isaac container:
 
 ## Training on Isaac Lab tasks
 
-<!-- TODO(docs-writer): worked example — a config that targets an Isaac Lab
+<!-- TODO: worked example â€” a config that targets an Isaac Lab
      task, the phoenx-train invocation, expected startup behavior (first-run
      extension pulls can take ~10 minutes), headless vs. rendered operation. -->
 
 ## Custom environment configurations
 
-PhoenX ships custom Isaac Lab environment configs (e.g. the Franka variants in
-the repo).
+PhoenX ships two custom Isaac Lab environment definitions in the
+`phoenx.examples.isaac` package: `custom_franka_cube_lift_cfg` and
+`custom_franka_reach_cfg`. Select one from a YAML config by module path, e.g.
 
-<!-- TODO(docs-writer): document each custom *_cfg.py — what task it defines,
+```yaml
+env:
+  config:
+    cfg: "phoenx.examples.isaac.custom_franka_cube_lift_cfg:FrankaCubeLiftCameraBlindEnvCfg"
+```
+
+<!-- TODO: document each custom *_cfg.py â€” what task it defines,
      how it differs from the stock Isaac Lab task, and how a user selects it
      from a YAML config. Explain how to write a new one, referencing Isaac
      Lab's own task-creation docs rather than duplicating them. -->

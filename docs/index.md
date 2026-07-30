@@ -8,13 +8,18 @@ agents to GPU-accelerated robotics simulation in Isaac Sim.
 
 ```bash
 pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
-phoenx-train --config configs/LunarLander-v3/sac.yml
+phoenx-train --config LunarLanderContinuous-v3/sac.yml
 ```
+
+The `--config` value is resolved from bundled package examples when no on-disk
+file matches, so this works with no clone. Full install sequences (Gymnasium
+and Isaac Lab): [Installation](how-to/installation.md).
 
 ## Where to go next
 
-- **[Getting Started](how-to/getting-started.md)** — install (Gymnasium or Isaac Lab mode) and run your first training job
-- **[Configuration Files](how-to/configurations.md)** — the YAML schema that defines agents, environments, and training runs
+- **[Installation](how-to/installation.md)** — Gymnasium mode, Isaac Lab mode, `setup.ps1`, troubleshooting
+- **[Getting Started](how-to/getting-started.md)** — `phoenx-train` / `phoenx-test` CLI usage
+- **[Configuration Files](how-to/configurations.md)** — YAML schema, bundled examples, config resolution
 - **[Isaac Sim Environments](how-to/isaac-sim.md)** — training in Isaac Lab, including custom environment configs
 - **[API Reference](api/rl_agents.md)** — every public module, generated from the source docstrings
 - **[Changelog](changelog.md)** — what changed and when

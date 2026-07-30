@@ -60,6 +60,10 @@ Documentation = "https://jasonhayes1987.github.io/PhoenX_RL"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"phoenx.examples" = ["configs/**/*.yml"]
 
 [tool.pytest.ini_options]
 minversion = "6.0"

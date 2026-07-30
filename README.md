@@ -1,7 +1,7 @@
 # PhoenX RL
-![](src/assets/Python-3.8+-blue.svg)
-![](src/assets/PyTorch-2.0+-orange.svg)
-![](src/assets/License-MIT-yellow.svg)
+![](https://img.shields.io/badge/Python-3.11-blue.svg)
+![](assets/PyTorch-2.0+-orange.svg)
+![](assets/License-MIT-yellow.svg)
 <table>
   <tr>
     <td><img src="assets/cheetah.gif" alt="Cheetah" width="200"></td>
@@ -34,9 +34,8 @@ The framework emphasizes extensibility, allowing users to customize models, nois
   with research-backed gradient ownership: on-policy agents combine losses into
   ONE backward + coordinated step (SB3 / RSL-RL standard); off-policy agents
   let the critic loss own the shared body while the policy trains on detached
-  features (SAC-AE / DrQ-v2 standard). See
-  `` and
-  `configs/multi_modal_cfg.yml`.
+  features (SAC-AE / DrQ-v2 standard).
+
 - **Multi-modal observations:** Dict observation spaces (e.g. camera +
   proprioception) flow end to end — env wrappers, every buffer, per-key
   `DictNormalizer`/`ImageScale` normalizers, HER, and intrinsic motivation —
@@ -57,47 +56,90 @@ The framework emphasizes extensibility, allowing users to customize models, nois
 - **Environment Support**: Gymnasium and IsaacSim
 
 ## Installation
-PhoenX RL is designed to be installed locally via Conda + Poetry. The recommended path is to run the provided PowerShell setup script after cloning.
+PhoenX installs with conda + pip. Two modes share the same order; Isaac Lab mode inserts one extra command. Full detail, extras, and troubleshooting: [`installation.md`](installation.md).
 
-See `installation.md` for the full, up-to-date instructions.
+### Gymnasium mode (~5 min)
+```bash
+conda create -n phoenx python=3.11
+conda activate phoenx
+pip install --upgrade pip
+pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+conda install -y -c conda-forge swig
+pip install -e ".[dev,docs]"
+```
+
+### Isaac Lab mode (~30-60 min)
+```bash
+conda create -n phoenx python=3.11
+conda activate phoenx
+pip install --upgrade pip
+pip install "isaaclab[isaacsim,all]==2.3.2.post1" --extra-index-url https://pypi.nvidia.com
+pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+conda install -y -c conda-forge swig
+pip install -e ".[dev,docs]"
+```
+
+On Windows, SWIG from conda-forge is required before the final `pip install`
+(no cp311 wheel for `box2d-py`; do not use `pip install swig` — that shim
+fails under pip's build isolation). `setup.ps1` installs SWIG for you.
+
+No-clone: replace the final line with
+`pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"`.
 
 ### Quick start (Windows / PowerShell)
-```bash
-git clone <your-repo-url>
+```powershell
+git clone https://github.com/jasonhayes1987/PhoenX_RL.git
 cd PhoenX_RL
 .\setup.ps1
 ```
 
+`.\setup.ps1 -Isaac -Docs` installs everything (including SWIG). See
+`installation.md` for switches.
+
 ## Usage
-PhoenX RL uses a simple two-step workflow:
+Training is driven by a YAML config. At least one of `--config` or `--agent_dir`
+is required; if both are passed, `--config` wins. Console entry points: `phoenx-train` and `phoenx-test`
+(`python -m phoenx.cli.train` also works).
 
-1. **Create an agent directory from a YAML config** (writes `config.json`, `train_config.json`, and `test_config.json` into `save_dir`)
-2. **Train using `train.py` by pointing at that saved directory**
+### Bundled example configs
+Four portable examples ship inside the package (relative `save_dir` values):
 
-### 1) Edit a YAML config
-Configs live in `configs/`. The ones currently wired up to the YAML build scripts are:
-- `configs/reinforce.yml`
-- `configs/actor_critic.yml`
-- `configs/ddpg.yml`
+- `LunarLander-v3/reinforce.yml`
+- `LunarLanderContinuous-v3/ppo.yml`
+- `LunarLanderContinuous-v3/sac.yml`
+- `IsaacSim/franka/cube_lift/dense/ppo_camera.yml`
 
-Update at least:
-- `save_dir`: where the agent + train/test configs will be written (recommended: change this to a path on your machine)
-- `env`: environment type/config
-- `device`: `"cuda"` or `"cpu"`
+An existing on-disk path always wins; otherwise a relative `--config` is looked
+up among the bundled examples. Works with no clone:
 
-### 2) Build/save the agent from the YAML config
 ```bash
-python src/phoenx/builders/reinforce.py --config_file configs/reinforce.yml
-python src/phoenx/builders/actor_critic.py --config_file configs/actor_critic.yml
-python src/phoenx/builders/ddpg.py --config_file configs/ddpg.yml
+pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
+phoenx-train --config LunarLanderContinuous-v3/sac.yml
 ```
 
-### 3) Train from the saved agent directory
+Keep your own configs anywhere on disk and pass a path when you need something
+beyond the bundled set.
+
+### Train from a config
 ```bash
-python src/phoenx/cli/train.py --agent_dir "path/to/your/saved/agent_dir"
+phoenx-train --config LunarLanderContinuous-v3/sac.yml
+phoenx-train --config path/to/my_experiment.yml
 ```
 
-You can override some training options from the CLI (for example `--render_freq`, `--num_episodes`, etc.); otherwise `train.py` reads them from `train_config.json` in the agent directory.
+### Resume from a saved agent directory
+```bash
+phoenx-train --agent_dir path/to/saved/agent_dir
+```
+
+Optional: `--log_level INFO` (or any standard level).
+
+### Evaluate a trained agent
+```bash
+phoenx-test --agent_dir path/to/saved/agent_dir
+```
+
+`phoenx-test` also accepts `--num_episodes`, `--num_envs`, `--render_mode`,
+`--env`, `--seed`, and `--log_level`.
 
 # Roadmap
 PhoenX RL is actively evolving. Future plans include:

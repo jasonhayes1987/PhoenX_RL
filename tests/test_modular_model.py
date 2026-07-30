@@ -22,7 +22,6 @@ where an env is needed; the synthetic multi-modal / goal envs come from
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -583,18 +582,20 @@ class TestRecurrentTrunk:
 
 
 # =============================================================================
-# The shipped canonical multi-modal config must parse and build
+# Realistic whole-file configs must parse and build
 # =============================================================================
 class TestCanonicalConfig:
     def test_multi_modal_cfg_yaml_builds(self):
-        """configs/multi_modal_cfg.yml (the schema reference) must load,
-        decompose into modular parts, and assemble into a working PPO model
-        against a matching multi-modal observation space."""
+        """tests/fixtures/multi_modal_cfg.yml must load, decompose into modular
+        parts, and assemble into a working PPO model against a matching
+        multi-modal observation space."""
+        from pathlib import Path
+
         import gymnasium as gym
         import yaml
         from phoenx.models import modular_parts_from_config
 
-        cfg_path = Path(__file__).resolve().parents[1] / "configs" / "multi_modal_cfg.yml"
+        cfg_path = Path(__file__).resolve().parent / "fixtures" / "multi_modal_cfg.yml"
         raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         model_cfg = raw["agent"]["config"]["model"]
 
@@ -632,18 +633,24 @@ class TestCanonicalConfig:
 
     def test_ppo_camera_yaml_builds_with_isaac_shaped_obs(self):
         """The Franka cube-lift camera training config
-        (configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml) must build
-        against IsaacLab-shaped observations: channels-LAST uint8 frames from a
-        TiledCamera group ('rgb') plus a 36-dim proprio group ('policy'). The
-        env stub is deliberately NOT a GymnasiumWrapper — the HWC->CHW
-        conversion must apply to IsaacSim-sourced images too."""
+        (phoenx.examples configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml)
+        must build against IsaacLab-shaped observations: channels-LAST uint8
+        frames from a TiledCamera group ('rgb') plus a 36-dim proprio group
+        ('policy'). The env stub is deliberately NOT a GymnasiumWrapper — the
+        HWC->CHW conversion must apply to IsaacSim-sourced images too."""
         import gymnasium as gym
         import yaml
+        from importlib import resources
         from phoenx.models import modular_parts_from_config
 
-        cfg_path = (Path(__file__).resolve().parents[1] / "configs" / "IsaacSim"
-                    / "franka" / "cube_lift" / "dense" / "ppo_camera.yml")
-        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(
+            resources.files("phoenx.examples")
+            .joinpath(
+                "configs", "IsaacSim", "franka", "cube_lift", "dense",
+                "ppo_camera.yml",
+            )
+            .read_text(encoding="utf-8")
+        )
         model_cfg = raw["agent"]["config"]["model"]
 
         assert raw["env"]["config"]["enable_cameras"] is True

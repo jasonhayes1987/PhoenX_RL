@@ -1,3 +1,4 @@
+from importlib import resources
 from pathlib import Path
 
 import gymnasium as gym
@@ -21,9 +22,84 @@ from phoenx.schedulers import ScheduleWrapper
 from phoenx.torch_utils import set_seed
 
 
+def available_example_configs() -> list[str]:
+    """List bundled example config names under ``phoenx.examples``.
+
+    Recursively walks ``phoenx/examples/configs/`` and returns every ``.yml``
+    file as a sorted forward-slash path relative to that root. Returns an
+    empty list when the packaged configs directory is absent.
+
+    Returns:
+        Sorted list of relative config paths, e.g.
+        ``["LunarLander-v3/reinforce.yml", ...]``.
+
+    Example:
+        >>> from phoenx.builder import available_example_configs
+        >>> available_example_configs()  # doctest: +SKIP
+        ['LunarLander-v3/reinforce.yml', ...]
+    """
+    configs_root = resources.files("phoenx.examples").joinpath("configs")
+    if not configs_root.is_dir():
+        return []
+
+    names: list[str] = []
+
+    def _walk(node, prefix: str) -> None:
+        for entry in node.iterdir():
+            rel = f"{prefix}/{entry.name}" if prefix else entry.name
+            if entry.is_dir():
+                _walk(entry, rel)
+            elif entry.is_file() and entry.name.endswith(".yml"):
+                names.append(rel)
+
+    _walk(configs_root, "")
+    return sorted(names)
+
+
 def load_config(config_file: str | Path) -> dict:
-    with open(config_file, "r", encoding="utf-8") as file_obj:
-        return yaml.safe_load(file_obj)
+    """Load a YAML training config from disk or from bundled examples.
+
+    An existing on-disk path always wins. If the path does not exist and is
+    not absolute, fall back to the packaged copy under
+    ``phoenx/examples/configs/``.
+
+    Args:
+        config_file: Filesystem path or bundled example name
+            (e.g. ``LunarLanderContinuous-v3/sac.yml``). Forward or
+            backslash separators are accepted.
+
+    Returns:
+        Parsed YAML mapping.
+
+    Raises:
+        FileNotFoundError: If neither an on-disk path nor a bundled example
+            resolves. The message names the request and lists available
+            bundled examples.
+
+    Example:
+        >>> from phoenx.builder import load_config
+        >>> cfg = load_config("LunarLanderContinuous-v3/sac.yml")  # doctest: +SKIP
+        >>> isinstance(cfg, dict)
+        True
+    """
+    path = Path(config_file)
+    if path.is_file():
+        with open(path, "r", encoding="utf-8") as file_obj:
+            return yaml.safe_load(file_obj)
+
+    if not path.is_absolute():
+        parts = path.as_posix().split("/")
+        packaged = resources.files("phoenx.examples").joinpath("configs", *parts)
+        if packaged.is_file():
+            return yaml.safe_load(packaged.read_text(encoding="utf-8"))
+
+    available = available_example_configs()
+    available_msg = ", ".join(available) if available else "(none)"
+    raise FileNotFoundError(
+        f"Config not found: {config_file!s}. "
+        f"Bundled examples: {available_msg}"
+    )
+
 
 
 def infer_dim(env: EnvWrapper, key: str | None = None) -> int:

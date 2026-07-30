@@ -150,7 +150,7 @@ class FrankaCubeLiftEnvCfg_Custom_Goal_PLAY(FrankaCubeLiftEnvCfg_Custom_Goal):
 # wrapper configured as `obs_key: null`, the agent receives a dict observation
 #   { 'policy': (N, 36) float32, 'rgb': (N, H, W, 3) uint8 }
 # which maps directly onto the roots -> trunk -> branches architecture
-# (see src/Configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml).
+# (see phoenx/examples/configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml).
 #
 # NOTE: requires `enable_cameras: true` in the env config so the Kit app
 # launches with tiled rendering.

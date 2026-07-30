@@ -3,10 +3,10 @@
     Sets up a PhoenX RL environment on Windows.
 
 .DESCRIPTION
-    Creates a conda environment, installs PhoenX and its dependencies, and
-    optionally installs Isaac Sim / Isaac Lab. All package installation goes
-    through pip against the standard pyproject.toml — there is no Poetry and no
-    environment.yml. Safe to re-run; every step is idempotent.
+    Creates a conda environment, then installs packages in this order: optional
+    Isaac Sim / Isaac Lab, CUDA PyTorch, then PhoenX from pyproject.toml.
+    Isaac first + torch -U last among those two keeps the cu128 build; PhoenX
+    last so its floor constraints see already-satisfied versions.
 
 .EXAMPLE
     .\setup.ps1
@@ -96,20 +96,22 @@ $minicondaInstaller = "Miniforge3-26.3.2-3-Windows-x86_64.exe"
 $minicondaUrl       = "https://github.com/conda-forge/miniforge/releases/download/26.3.2-3/$minicondaInstaller"
 
 # Pinned versions — these are known-good on this machine. Bump deliberately.
-$torchSpec       = @("torch==2.7.0", "torchvision==0.22.0")
-$torchIndex      = "https://download.pytorch.org/whl/cu128"
-$isaaclabSpec    = "isaaclab[isaacsim]==2.3.0"
-$nvidiaIndex     = "https://pypi.nvidia.com"
-$gymRoboticsSpec = "git+https://github.com/Farama-Foundation/Gymnasium-Robotics.git@v1.4.0"
+$torchSpec    = @("torch==2.7.0", "torchvision==0.22.0")
+$torchIndex   = "https://download.pytorch.org/whl/cu128"
+$isaaclabSpec = "isaaclab[isaacsim,all]==2.3.2.post1"
+$nvidiaIndex  = "https://pypi.nvidia.com"
 
 function Assert-Success {
     param([string]$What)
     if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)" }
 }
 
+# Deliberately a simple function, not an advanced one. Declaring a [Parameter()]
+# attribute pulls in PowerShell's common parameters, and `pip install -e .` then
+# dies with "the parameter name 'e' is ambiguous" (-ErrorAction/-ErrorVariable).
+# A plain function passes everything through the automatic $args untouched.
 function Invoke-EnvPython {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    & $condaExe run --no-capture-output -p $envPrefix python @Args
+    & $condaExe run --no-capture-output -p $envPrefix python @args
 }
 
 Write-Host "Setting up PhoenX RL ($EnvName, Python $PythonVersion)..." -ForegroundColor Green
@@ -127,12 +129,15 @@ if (Test-Path $condaExe) {
     if (-not (Test-Path $condaExe)) { throw "Miniforge install did not produce $condaExe" }
 }
 
-$env:PATH = "$minicondaPath;$minicondaPath\Scripts;$minicondaPath\Library\bin;$env:PATH"
+# Deliberately NOT prepending Miniforge to PATH. Every conda call below uses the
+# absolute $condaExe, while `conda run -p <prefix> python` resolves `python` from
+# PATH — so putting base Miniforge first makes it run the BASE interpreter and
+# install every package into the wrong environment.
 
 # -----------------------------------------------------------------------------
 # Step 1: Conda env — Python version + isolation only. No packages.
-# Addressed by prefix (-p) so it can't collide with an rl_env from another
-# conda installation on the machine.
+# Addressed by prefix (-p) so it can't collide with a same-named env from
+# another conda installation on the machine.
 # -----------------------------------------------------------------------------
 if (Test-Path $envPrefix) {
     Write-Host "Using existing env at $envPrefix." -ForegroundColor DarkGray
@@ -142,25 +147,60 @@ if (Test-Path $envPrefix) {
     Assert-Success "conda create"
 }
 
-Invoke-EnvPython --version
-Assert-Success "python --version"
+# Assert conda run really drives the ENV's interpreter. If PATH ordering makes it
+# resolve the base interpreter instead, every package below installs into the
+# wrong environment and the only symptom is a confusing "no matching
+# distribution" error much later. Fail loudly and immediately instead.
+$probe = & $condaExe run -p $envPrefix python -c "import sys; print(sys.prefix)" 2>&1 | Out-String
+Assert-Success "python interpreter probe"
+# Last non-empty line, so a stray conda warning on stderr can't fail the compare.
+$resolvedPrefix = ($probe -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
+if ($resolvedPrefix -ne $envPrefix) {
+    throw "Environment mismatch: expected the interpreter at '$envPrefix' but conda run resolved sys.prefix='$resolvedPrefix'. Refusing to install into the wrong environment."
+}
+Write-Host "Interpreter: $resolvedPrefix" -ForegroundColor DarkGray
 
 Invoke-EnvPython -m pip install --upgrade pip
 Assert-Success "pip upgrade"
 
 # -----------------------------------------------------------------------------
-# Step 2: PyTorch with CUDA — BEFORE the project install.
-# pyproject declares `torch>=2.5`. Installing the CUDA build first means the
-# project install sees that constraint already satisfied and leaves it alone.
-# Reversing this order downloads a second, CPU-only torch (~2.5 GB wasted) and
-# then overwrites it.
+# Step 2: Optional Isaac Sim / Isaac Lab
+# -----------------------------------------------------------------------------
+if ($Isaac) {
+    Write-Host "Installing Isaac Lab + Isaac Sim (large, be patient) ..." -ForegroundColor Yellow
+    Invoke-EnvPython -m pip install $isaaclabSpec --extra-index-url $nvidiaIndex
+    Assert-Success "pip install isaaclab"
+
+    # Isaac's resolver commonly downgrades filelock. Restore it afterwards.
+    Invoke-EnvPython -m pip install -U "filelock>=3.20.1"
+    Assert-Success "pip install filelock"
+}
+
+# -----------------------------------------------------------------------------
+# Step 3: PyTorch with CUDA — AFTER Isaac (so this cu128 build survives
+# isaacsim's own torch pin) and BEFORE PhoenX (so pyproject's torch>=2.5
+# floor is already satisfied and the project install leaves it alone).
+# Unconditional: PyPI torch on Windows is CPU-only; the cu128 index is what
+# makes CUDA work in both Gymnasium and Isaac modes.
 # -----------------------------------------------------------------------------
 Write-Host "Installing PyTorch (CUDA) ..." -ForegroundColor Yellow
 Invoke-EnvPython -m pip install -U @torchSpec --index-url $torchIndex
 Assert-Success "pip install torch"
 
 # -----------------------------------------------------------------------------
-# Step 3: PhoenX itself, from pyproject.toml
+# Step 4: Build prerequisites
+# gymnasium[box2d] pins box2d-py==2.3.5, which ships no cp311 Windows wheel and
+# so builds from source — and that build shells out to SWIG. Installed from
+# conda-forge rather than PyPI on purpose: the pip `swig` package is a Python
+# console-script shim that dies with "No module named 'swig'" inside pip's build
+# isolation, while conda-forge ships a native swig.exe that isolation can't break.
+# -----------------------------------------------------------------------------
+Write-Host "Installing build prerequisites (swig, needed to build box2d-py) ..." -ForegroundColor Yellow
+& $condaExe install -y -p $envPrefix -c conda-forge swig
+Assert-Success "conda install swig"
+
+# -----------------------------------------------------------------------------
+# Step 5: PhoenX itself, from pyproject.toml
 # -----------------------------------------------------------------------------
 $extras = @()
 if (-not $NoDev) { $extras += "dev" }
@@ -175,37 +215,6 @@ if ($NonEditable) {
     Invoke-EnvPython -m pip install -e ".$extraSpec"
 }
 Assert-Success "pip install PhoenX"
-
-# -----------------------------------------------------------------------------
-# Step 4: Optional Isaac Sim / Isaac Lab
-# Cannot live in pyproject dependencies: it comes from NVIDIA's package index,
-# which PEP 508 metadata has no way to express portably.
-# -----------------------------------------------------------------------------
-if ($Isaac) {
-    Write-Host "Installing Isaac Lab + Isaac Sim (large, be patient) ..." -ForegroundColor Yellow
-    Invoke-EnvPython -m pip install $isaaclabSpec --extra-index-url $nvidiaIndex
-    Assert-Success "pip install isaaclab"
-
-    # Isaac's resolver commonly downgrades filelock. Restore it afterwards.
-    Invoke-EnvPython -m pip install -U "filelock>=3.20.1"
-    Assert-Success "pip install filelock"
-}
-
-# -----------------------------------------------------------------------------
-# Step 5: Packages that need a non-PyPI source or are platform-fragile
-# -----------------------------------------------------------------------------
-Write-Host "Installing Gymnasium-Robotics ..." -ForegroundColor Yellow
-Invoke-EnvPython -m pip install $gymRoboticsSpec
-Assert-Success "pip install gymnasium-robotics"
-
-# envpool publishes Linux wheels only. Attempt it, but never fail the setup:
-# on Windows the correct outcome is "not installed" plus a clear warning.
-Write-Host "Attempting envpool (Linux-only; expected to skip on Windows) ..." -ForegroundColor Yellow
-Invoke-EnvPython -m pip install "envpool>=1.0.1"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "envpool unavailable on this platform — continuing. Vectorized envs will fall back to Gymnasium's own vector API." -ForegroundColor DarkYellow
-    $global:LASTEXITCODE = 0
-}
 
 # -----------------------------------------------------------------------------
 # Step 6: Verify
@@ -240,4 +249,6 @@ Write-Host "Setup complete." -ForegroundColor Green
 Write-Host "Activate with:" -ForegroundColor Green
 Write-Host "    conda activate `"$envPrefix`"" -ForegroundColor Cyan
 Write-Host "Then try:" -ForegroundColor Green
-Write-Host "    phoenx-train --config configs/LunarLander-v3/sac.yml" -ForegroundColor Cyan
+# Bundled example name, not a repo path: the top-level configs/ tree is personal
+# and untracked, so a fresh clone has no such directory.
+Write-Host "    phoenx-train --config LunarLanderContinuous-v3/sac.yml" -ForegroundColor Cyan

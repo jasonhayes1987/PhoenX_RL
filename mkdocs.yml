@@ -34,8 +34,9 @@ markdown_extensions:
 nav:
   - Home: index.md
   - How-To Guides:
+      - Installation: how-to/installation.md            # snippet include of root installation.md
       - Getting Started: how-to/getting-started.md      # phoenx-train / phoenx-test CLI usage
-      - Configuration Files: how-to/configuration.md    # YAML schema, configs/ layout
+      - Configuration Files: how-to/configurations.md   # YAML schema, bundled examples, config resolution
       - Isaac Sim Environments: how-to/isaac-sim.md     # custom cfg .py files
   - API Reference:
       - Agents (phoenx.rl_agents): api/rl_agents.md

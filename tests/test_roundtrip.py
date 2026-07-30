@@ -3,7 +3,7 @@
 Tests the ``get_config`` / ``from_config`` / ``save_state`` / ``load_state`` contract
 end to end with the REAL production stack:
 
-    1. SAC: build from the production ``src/Configs/sac.yml`` (legacy schema,
+    1. SAC: build from ``tests/fixtures/sac.yml`` (legacy schema,
        exercising the config adapter), shrink to a tiny CPU/GPU Pendulum run,
        train ~120 steps, ``Trainer.save``, ``Trainer.load`` and assert:
         - the rebuilt config is byte-identical,
@@ -32,7 +32,7 @@ from phoenx.rl_agents import build_agent
 from phoenx.trainer import Trainer
 from phoenx.builder import build_trainer_from_config
 
-CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 T.manual_seed(0)
 
@@ -111,12 +111,12 @@ def _arch(cfg: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 1. SAC: full Trainer round trip from the production sac.yml (legacy schema)
+# 1. SAC: full Trainer round trip from the fixture sac.yml (legacy schema)
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
 def test_sac_trainer_round_trip(tmp_path):
     run_dir = str(tmp_path / "sac_run") + os.sep
-    raw = yaml.safe_load((CONFIGS_DIR / "sac.yml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load((FIXTURES_DIR / "sac.yml").read_text(encoding="utf-8"))
     config = _shrink(raw, run_dir)
 
     trainer = build_trainer_from_config(config)
