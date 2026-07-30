@@ -2105,7 +2105,7 @@ class ModularModel(nn.Module):
     - ``branches``: ``{role: Head}`` — per-role output heads (``policy``,
       ``value``, ``critic``, ``critic_b``, ...).
 
-    Gradient-ownership contract (see design doc):
+    Gradient-ownership contract:
 
     - Every module with parameters gets its own optimizer over exactly its
       parameters (disjoint by construction).
