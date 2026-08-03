@@ -24,6 +24,10 @@ does it.
 
 ## Gymnasium mode (no Isaac, ~5 min)
 
+`phoenx` below is only the default environment name. With `setup.ps1`, pass
+`-EnvName <name>` to override it; the chosen name (and its full prefix) is
+recorded in `.phoenx-env` after a successful install.
+
 ```bash
 conda create -n phoenx python=3.11
 conda activate phoenx
@@ -36,7 +40,8 @@ pip install -e ".[dev,docs]"
 ## Isaac Lab mode (~30-60 min)
 
 Identical to Gymnasium mode, with one extra command inserted before PyTorch.
-PhoenX still installs last:
+PhoenX still installs last. Same default environment name (`phoenx`); override
+with `setup.ps1 -EnvName <name>` when using the script.
 
 ```bash
 conda create -n phoenx python=3.11
@@ -64,7 +69,7 @@ Isaac Lab installed. The SWIG step still applies on Windows before this line.
 
 | Extra | Packages | Required? |
 |-------|----------|-----------|
-| `dev` | pytest, pytest-cov, hypothesis, black, isort, pylint, notebook | No |
+| `dev` | pytest, pytest-cov, hypothesis, black, isort, pylint, ruff, notebook | No |
 | `docs` | mkdocs-material, mkdocstrings | No |
 
 Plain `pip install -e .` is enough to run agents. The sequences above include
@@ -97,13 +102,14 @@ Plain `pip install -e .` is enough to run agents. The sequences above include
 `setup.ps1` mirrors the sequences above exactly. Step order: Miniforge
 bootstrap → conda env (+ pip upgrade, interpreter assertion) → Isaac (if
 requested) → CUDA PyTorch → build prerequisites (swig via conda-forge) →
-PhoenX → verify. The script installs SWIG for you; the manual
-`conda install … swig` step applies only to hand-run sequences.
+PhoenX → verify → write `.phoenx-env`. The script installs SWIG for you; the
+manual `conda install … swig` step applies only to hand-run sequences.
 
 ```powershell
 .\setup.ps1                          # Gymnasium + dev tooling
 .\setup.ps1 -Isaac -Docs             # Everything
 .\setup.ps1 -EnvName phoenx-test -NonEditable   # Throwaway env, end-user install
+.\setup.ps1 -CondaRoot E:\Miniconda3 -EnvName rl_env   # Existing conda install
 ```
 
 | Switch | Effect |
@@ -114,9 +120,43 @@ PhoenX → verify. The script installs SWIG for you; the manual
 | `-NonEditable` | `pip install .` instead of `pip install -e .` |
 | `-EnvName <name>` | Conda env name (default `phoenx`) |
 | `-PythonVersion <ver>` | Python version (default `3.11`) |
+| `-CondaRoot <path>` | Conda installation root (default `%USERPROFILE%\miniforge3`) |
 
 The script installs Miniforge to `%USERPROFILE%\miniforge3` if conda is
-absent, addresses the env by prefix (`-p`), and is safe to re-run.
+absent at `-CondaRoot`, addresses the env by prefix (`-p`), writes
+`.phoenx-env` after a successful install, and is safe to re-run.
+
+## Activating in a new terminal
+
+A fresh PowerShell or Git Bash session does not inherit the environment from
+install. After `setup.ps1` (or after pointing an existing checkout with
+`use-env.ps1`), activate from the repo root:
+
+```powershell
+.\scripts\activate.ps1
+```
+
+```bash
+source scripts/activate.sh
+```
+
+Both scripts read the machine-local `.phoenx-env` record, load conda from the *recorded* root rather than whichever `conda`
+happens to be first on `PATH`, and activate by full environment prefix. The
+record stores a prefix rather than a name because the same environment name
+can exist under multiple conda installations on one machine, and a name alone
+is ambiguous.
+
+To point an existing checkout at an environment you already have, without
+reinstalling:
+
+```powershell
+.\scripts\use-env.ps1 -Prefix "E:\Miniconda3\envs\rl_env"
+# or:
+.\scripts\use-env.ps1 -CondaRoot "E:\Miniconda3" -EnvName rl_env
+```
+
+That writes `.phoenx-env`; subsequent `activate.ps1` / `activate.sh` calls use
+it.
 
 ## Verification
 
@@ -199,6 +239,20 @@ not been tested):
    ordinary stderr progress output into terminating errors. Run the script
    unpiped.
 
+9. **Git Bash: `conda activate E:\Miniconda3\envs\rl_env` fails with
+   `EnvironmentNameNotFound: Could not find conda environment:
+   E:Miniconda3envsrl_env`.** Cause: backslash is bash's escape character, so
+   an unquoted Windows path collapses and the separators vanish. Fix: quote
+   it — `conda activate "E:\Miniconda3\envs\rl_env"` — or use a POSIX path, or
+   `source scripts/activate.sh`, which quotes the recorded prefix for you.
+
+10. **Git Bash: `conda activate <anything>` fails with `CondaError: Run
+    'conda init' before 'conda activate'`.** Cause: conda was never
+    initialized for bash; on a fresh Windows setup there is often no
+    `~/.bashrc`, `~/.bash_profile`, or `~/.profile` at all. Fix: run
+    `eval "$(conda shell.bash hook)"` first, which is exactly what
+    `scripts/activate.sh` does for you.
+
 A stale per-user site-packages copy of `typing_extensions` can shadow the
-env's copy and produce `cannot import name 'Sentinel'`. `setup.ps1` sets
-`PYTHONNOUSERSITE=1` to prevent it.
+env's copy and produce `cannot import name 'Sentinel'`. `setup.ps1` and the
+activation scripts set `PYTHONNOUSERSITE=1` to prevent it.

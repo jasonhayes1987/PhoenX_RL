@@ -20,6 +20,11 @@
     .\setup.ps1 -EnvName phoenx-test -NonEditable
     Throwaway env, non-editable install — reproduces exactly what an end user
     gets from `pip install`. Use this to test a release before pushing.
+
+.EXAMPLE
+    .\setup.ps1 -CondaRoot E:\Miniconda3 -EnvName rl_env
+    Build the env under an existing conda installation instead of the default
+    Miniforge location.
 #>
 
 param(
@@ -29,7 +34,7 @@ param(
     # Install docs tooling (mkdocs-material, mkdocstrings).
     [switch]$Docs,
 
-    # Skip dev tooling (pytest, black, isort, pylint). Dev is ON by default.
+    # Skip dev tooling (pytest, black, isort, pylint, ruff). Dev is ON by default.
     [switch]$NoDev,
 
     # Install non-editable, i.e. copy into site-packages instead of linking to
@@ -41,7 +46,11 @@ param(
 
     # Python version. Must match your Isaac Sim release:
     #   Isaac Sim 4.5 -> 3.10   |   5.X -> 3.11   |   6.X -> 3.12
-    [string]$PythonVersion = "3.11"
+    [string]$PythonVersion = "3.11",
+
+    # Root of the conda installation to use. Defaults to Miniforge in the user profile;
+    # point it at an existing installation to build the env there instead.
+    [string]$CondaRoot = (Join-Path $env:USERPROFILE "miniforge3")
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,9 +96,8 @@ if ($lpVal -ne 1) {
 $projectRoot = $PSScriptRoot
 Set-Location $projectRoot   # so relative paths work even when launched elevated
 
-$minicondaPath = Join-Path $env:USERPROFILE "miniforge3"
-$envPrefix     = Join-Path $minicondaPath   "envs\$EnvName"
-$condaExe      = Join-Path $minicondaPath   "Scripts\conda.exe"
+$envPrefix = Join-Path $CondaRoot "envs\$EnvName"
+$condaExe  = Join-Path $CondaRoot "Scripts\conda.exe"
 
 # Miniforge = conda-forge-only distribution; avoids the repo.anaconda.com ToS.
 $minicondaInstaller = "Miniforge3-26.3.2-3-Windows-x86_64.exe"
@@ -106,10 +114,6 @@ function Assert-Success {
     if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)" }
 }
 
-# Deliberately a simple function, not an advanced one. Declaring a [Parameter()]
-# attribute pulls in PowerShell's common parameters, and `pip install -e .` then
-# dies with "the parameter name 'e' is ambiguous" (-ErrorAction/-ErrorVariable).
-# A plain function passes everything through the automatic $args untouched.
 function Invoke-EnvPython {
     & $condaExe run --no-capture-output -p $envPrefix python @args
 }
@@ -120,19 +124,15 @@ Write-Host "Setting up PhoenX RL ($EnvName, Python $PythonVersion)..." -Foregrou
 # Step 0: Miniforge
 # -----------------------------------------------------------------------------
 if (Test-Path $condaExe) {
-    Write-Host "Found Miniforge at $minicondaPath." -ForegroundColor DarkGray
+    Write-Host "Found conda at $CondaRoot." -ForegroundColor DarkGray
 } else {
-    Write-Host "Installing Miniforge to $minicondaPath ..." -ForegroundColor Yellow
+    Write-Host "Installing Miniforge to $CondaRoot ..." -ForegroundColor Yellow
     $installerPath = Join-Path $env:TEMP $minicondaInstaller
     Invoke-WebRequest -Uri $minicondaUrl -OutFile $installerPath
-    Start-Process -FilePath $installerPath -ArgumentList @("/S", "/D=$minicondaPath") -Wait
+    Start-Process -FilePath $installerPath -ArgumentList @("/S", "/D=$CondaRoot") -Wait
     if (-not (Test-Path $condaExe)) { throw "Miniforge install did not produce $condaExe" }
 }
 
-# Deliberately NOT prepending Miniforge to PATH. Every conda call below uses the
-# absolute $condaExe, while `conda run -p <prefix> python` resolves `python` from
-# PATH — so putting base Miniforge first makes it run the BASE interpreter and
-# install every package into the wrong environment.
 
 # -----------------------------------------------------------------------------
 # Step 1: Conda env — Python version + isolation only. No packages.
@@ -147,10 +147,7 @@ if (Test-Path $envPrefix) {
     Assert-Success "conda create"
 }
 
-# Assert conda run really drives the ENV's interpreter. If PATH ordering makes it
-# resolve the base interpreter instead, every package below installs into the
-# wrong environment and the only symptom is a confusing "no matching
-# distribution" error much later. Fail loudly and immediately instead.
+# Assert conda run really drives the ENV's interpreter.
 $probe = & $condaExe run -p $envPrefix python -c "import sys; print(sys.prefix)" 2>&1 | Out-String
 Assert-Success "python interpreter probe"
 # Last non-empty line, so a stray conda warning on stderr can't fail the compare.
@@ -244,11 +241,33 @@ if ($Isaac) {
 & $condaExe run --no-capture-output -p $envPrefix phoenx-train --help | Out-Null
 Assert-Success "phoenx-train --help"
 
+# Record which env was built so activation scripts can find it. Missing recorder
+# is non-fatal — a successful install that merely lacks a convenience record
+# should not be reported as a failed install.
+$useEnvScript = Join-Path $PSScriptRoot "scripts\use-env.ps1"
+$recorded = $false
+if (Test-Path $useEnvScript) {
+    # try/catch, not Assert-Success: PowerShell script invocations do not set
+    # $LASTEXITCODE the way native executables do; use-env.ps1 throws on failure.
+    try {
+        & $useEnvScript -CondaRoot $CondaRoot -EnvName $EnvName -Quiet
+        $recorded = $true
+    } catch {
+        Write-Host "Warning: could not record environment ($_). Activation scripts may not pick it up automatically." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Warning: scripts\use-env.ps1 not found; skipping environment record. Activation scripts may not pick it up automatically." -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "Setup complete." -ForegroundColor Green
+if ($recorded) {
+    Write-Host "The environment was recorded in .phoenx-env so newly opened terminals pick it up." -ForegroundColor Green
+}
 Write-Host "Activate with:" -ForegroundColor Green
+Write-Host "    PowerShell:  .\scripts\activate.ps1" -ForegroundColor Cyan
+Write-Host "    Git Bash:    source scripts/activate.sh" -ForegroundColor Cyan
+Write-Host "Or fall back to:" -ForegroundColor Green
 Write-Host "    conda activate `"$envPrefix`"" -ForegroundColor Cyan
 Write-Host "Then try:" -ForegroundColor Green
-# Bundled example name, not a repo path: the top-level configs/ tree is personal
-# and untracked, so a fresh clone has no such directory.
 Write-Host "    phoenx-train --config LunarLanderContinuous-v3/sac.yml" -ForegroundColor Cyan

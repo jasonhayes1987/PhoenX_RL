@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Machine-local `.phoenx-env` record (gitignored) plus `scripts/use-env.ps1`,
+  `scripts/activate.ps1`, and `scripts/activate.sh`. An environment *name* is
+  ambiguous when several conda installations on one machine each have an env
+  called e.g. `rl_env`; the record stores the absolute prefix (and the conda
+  root that owns it) so activation always hits the intended install. `use-env.ps1`
+  writes the record for an existing checkout; the activate scripts load conda
+  from the *recorded* root (not whichever `conda` is first on `PATH`), activate
+  by prefix, and set `PYTHONNOUSERSITE=1`.
+- `ruff` to the `dev` extra. `[tool.ruff.lint]` selects pydocstyle (`D`) with the
+  google convention.
 - Three portable example configs bundled as package data under `phoenx/examples/configs/`, so `phoenx-train --config LunarLanderContinuous-v3/sac.yml` works from a bare `pip install` with no clone and no `configs/` directory.
 - A fourth bundled example config, `IsaacSim/franka/cube_lift/dense/ppo_camera.yml`, covering a multi-modal Isaac run (proprioception plus an RGB camera).
 - `phoenx.examples.isaac`, shipping the `custom_franka_cube_lift_cfg` and `custom_franka_reach_cfg` Isaac Lab environment definitions so configs can reference them by real module path.
@@ -14,6 +24,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - MkDocs documentation site with auto-generated API reference.
 
 ### Changed
+- `setup.ps1` gained `-CondaRoot` (default `%USERPROFILE%\miniforge3`; the
+  Miniforge path was previously hardcoded) so an install can target an existing
+  conda installation, and now writes `.phoenx-env` after a successful run so
+  new terminals can activate via the scripts above.
 - `installation.md` rewritten around the two canonical install sequences (Gymnasium mode and Isaac Lab mode); README install and usage sections corrected to match the real `phoenx-train` / `phoenx-test` CLI and the bundled example configs.
 - Documented the SWIG prerequisite in the manual install sequences (and related README / Getting Started pages). Without `conda install -y -c conda-forge swig` before the final `pip install`, those sequences could not succeed on a clean Windows machine. `setup.ps1` users are unaffected — the script installs SWIG. Recorded the one validated configuration from the first end-to-end `setup.ps1 -Isaac` run (Windows 11 / RTX 4090 / driver 581.08 / Python 3.11.15; Isaac Lab 2.3.2.post1 + Isaac Sim 5.1.0.0 + torch 2.7.0+cu128; 410 passed / 14 deselected Gymnasium and Isaac; 13 passed / 1 skipped GPU `isaac` integration tests). Linux has not been tested.
 - Isaac Sim/Lab installation and GPU verification is now part of the pytest suite as `tests/test_isaac_setup.py` (marker `isaac`, auto-skips without `isaaclab`/CUDA), replacing the uncollected `tests/isaac_test.py` script.

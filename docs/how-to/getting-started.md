@@ -72,8 +72,7 @@ bundled examples under `phoenx/examples/configs/`; otherwise
 
 Console entry points: `phoenx-train` and `phoenx-test`.
 `python -m phoenx.cli.train` also works.
-
-<!-- TODO: document what appears during training — console output,
+<!-- TODO(docs-writer): document what appears during training — console output,
      where checkpoints/logs are written, W&B integration if enabled. -->
 
 ## Evaluate a trained agent
@@ -84,11 +83,9 @@ Console entry points: `phoenx-train` and `phoenx-test`.
 phoenx-test --agent_dir path/to/saved/agent_dir
 phoenx-test --agent_dir path/to/saved/agent_dir --num_episodes 10 --render_mode human
 ```
-
 Optional flags: `--env`, `--num_episodes`, `--num_envs`, `--render_mode`,
 `--seed`, `--log_level`.
-
-<!-- TODO: document required config fields for evaluation,
+<!-- TODO(docs-writer): document required config fields for evaluation,
      where results/videos land, and one full worked example. -->
 
 ## Next steps

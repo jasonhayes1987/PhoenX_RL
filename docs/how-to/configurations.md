@@ -1,4 +1,4 @@
-﻿# Configuration Files
+# Configuration Files
 
 Every training and evaluation run is defined by a YAML file. You keep your own
 configs wherever you like on disk and pass a path to `--config`. PhoenX also
@@ -58,13 +58,12 @@ env:
     cfg: "phoenx.examples.isaac.custom_franka_cube_lift_cfg:FrankaCubeLiftCameraBlindEnvCfg"
 ```
 
-These modules import `isaaclab` at module scope and are never imported at
-package-import time; they only load when a config references them.
+<!-- TODO(docs-writer): verify this tree against the repo and correct it. -->
 
 ## Anatomy of a config
 
-<!-- TODO: paste 2 real configs. A non-multi-modal config
-     (e.g. LunarLander sac.yml) and a multi-modal (e.g )
+<!-- TODO(docs-writer): paste 2 real configs. A non-multi-modal config
+     (e.g. LunarLander sac.yml) and a multi-modal (e.g ppo_camera.yml)
      and annotate every top-level key: agent/algorithm selection, environment
      spec, network architecture, training hyperparameters, buffer/HER options,
      logging/W&B, save paths. This section is the single most useful page in
@@ -72,12 +71,12 @@ package-import time; they only load when a config references them.
 
 ## Key reference
 
-<!-- TODO: table of all recognized config keys per section, with
+<!-- TODO(docs-writer): table of all recognized config keys per section, with
      type, default, and effect. Source of truth: phoenx.builder (load_config /
      build_trainer_from_config) — document what the code actually reads, not
      what seems plausible. -->
 
 ## Creating a config for a new environment
 
-<!-- TODO: minimal steps — copy nearest existing config, keys that
+<!-- TODO(docs-writer): minimal steps — copy nearest existing config, keys that
      must change per environment, common pitfalls (obs/action space mismatches). -->

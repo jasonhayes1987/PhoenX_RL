@@ -97,6 +97,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+# Machine-local conda env record (written by scripts/use-env.ps1 / setup.ps1)
+.phoenx-env
 
 # Spyder project settings
 .spyderproject
@@ -158,3 +160,4 @@ node_modules/
 /playwright/.cache/
 *.npz
 src/app/wandb_api_key
+tools/check_docstring_only_diff.py

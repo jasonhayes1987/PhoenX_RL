@@ -19,6 +19,7 @@ plugins:
             docstring_style: google
             show_source: true
             members_order: source
+            show_if_no_docstring: true
 
 markdown_extensions:
   - pymdownx.snippets:
