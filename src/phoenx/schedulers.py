@@ -3,8 +3,7 @@ from torch import optim
 from torch.optim import lr_scheduler, Optimizer
 
 class ScheduleWrapper:
-    """
-    Wrapper for schedule types.
+    """Wrapper for schedule types.
 
     Args:
         schedule_type: The type of scheduler to use. Supported types: "linear", "cosine", "exponential".
@@ -22,8 +21,7 @@ class ScheduleWrapper:
         optimizer: Optimizer|None = None,
         **kwargs
     ):
-        """
-        Wrapper for schedule types.
+        """Wrapper for schedule types.
 
         Args:
             schedule_type: The type of scheduler to use. Supported types: "linear", "cosine", "exponential".
@@ -105,8 +103,7 @@ class ScheduleWrapper:
         self._create_scheduler()
 
     def step(self, num_steps: int = 1):
-        """
-        Steps the scheduler for the given number of steps.
+        """Steps the scheduler for the given number of steps.
 
         Args:
             num_steps: The number of steps to step the scheduler for.

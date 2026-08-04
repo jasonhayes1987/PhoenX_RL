@@ -14,8 +14,7 @@ from .torch_utils import get_device
 
 
 class SumTree:
-    """
-    Binary sum tree for priority-based sampling.
+    """Binary sum tree for priority-based sampling.
     """
  
     def __init__(self, capacity: int, device: T.device):
@@ -64,8 +63,7 @@ class SumTree:
         return data_indices, priorities
  
     def _traverse(self, p_values: T.Tensor) -> T.Tensor:
-        """
-        Vectorized batch descent.
+        """Vectorized batch descent.
  
         At each level every batch element is at some node `idx`; read its
         left child's stored sum and decide left vs. right based on whether `p`
@@ -91,8 +89,7 @@ class SumTree:
         return self.tree[0].item()
 
 class Buffer:
-    """
-    Base class for replay buffers with N-step functionality.
+    """Base class for replay buffers with N-step functionality.
     """
     def __init__(
         self,
@@ -180,16 +177,14 @@ class Buffer:
 
     @abstractmethod
     def add(self, states, actions, rewards, next_states, dones):
-        """
-        Add a transition to the buffer, including trajectory metadata.
+        """Add a transition to the buffer, including trajectory metadata.
         Abstract method to be implemented by subclasses.
         """
         raise NotImplementedError
 
     @abstractmethod
     def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
-        """
-        Sample a batch of transitions from the buffer.
+        """Sample a batch of transitions from the buffer.
         Abstract method to be implemented by subclasses.
         """
         raise NotImplementedError
@@ -262,8 +257,7 @@ class Buffer:
             sum_tree.max_priority = extra["sum_tree_max_priority"].to(self.device)
 
 class ReplayBuffer(Buffer):
-    """
-    Off-Policy replay buffer with N-step sequence sampling.
+    """Off-Policy replay buffer with N-step sequence sampling.
     """
     def __init__(
         self,
@@ -325,8 +319,7 @@ class ReplayBuffer(Buffer):
         actions: Action,
         prev_dones: T.Tensor,
         ) -> None:
-        """
-        Record a transition into the buffer.
+        """Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
@@ -344,8 +337,7 @@ class ReplayBuffer(Buffer):
         self._her_step(cur_observation, prev_observation, actions, prev_dones)
 
     def _her_step(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
-        """
-        Adds trajectory data to the episodes buffers and adds relabeled completed trajectories to the buffer.
+        """Adds trajectory data to the episodes buffers and adds relabeled completed trajectories to the buffer.
         """
         zero_ir = T.zeros((), dtype=T.float32, device=self.device)
         for i in range(self.env.num_envs):
@@ -541,8 +533,7 @@ class ReplayBuffer(Buffer):
         return sample
     
     def reset(self) -> None:
-        """
-        Reset the buffer to all zeros and the counter to zero.
+        """Reset the buffer to all zeros and the counter to zero.
         """
         tree_zero_(self.states)
         self.actions.zero_()
@@ -563,8 +554,7 @@ class ReplayBuffer(Buffer):
             self.next_state_achieved_goals.zero_()
 
     def is_ready(self, samples: int) -> bool:
-        """
-        Check if the buffer is ready to sample.
+        """Check if the buffer is ready to sample.
         """
         return self.samples_added >= samples
     
@@ -577,8 +567,7 @@ class ReplayBuffer(Buffer):
         return config
 
 class PrioritizedReplayBuffer(ReplayBuffer):
-    """
-    Prioritized off-policy replay buffer.
+    """Prioritized off-policy replay buffer.
  
     Samples transitions with probability proportional to (|δ| + ε)^α and
     corrects the resulting bias with importance weights (N · P)^(-β). β is
@@ -642,8 +631,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         actions: Action,
         prev_dones: T.Tensor,
         ) -> None:
-        """
-        Record a transition into the buffer.
+        """Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
@@ -714,8 +702,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.priorities[indices] = self.max_priority_rank.expand(batch_size)
  
     def sample(self, samples: int) -> Dict[str, T.Tensor]:
-        """
-        Sample a batch weighted by priority.
+        """Sample a batch weighted by priority.
 
         Args:
             samples: int: The number of samples to draw from the buffer.
@@ -802,8 +789,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     def _sample_rank(
         self, samples: int, size: int
     ) -> Tuple[T.Tensor, T.Tensor, T.Tensor]:
-        """
-        Stratified-segments rank-based sampling
+        """Stratified-segments rank-based sampling
         """
         self._maybe_resort(size)
         # pin size to sorted size to avoid OOB error
@@ -874,8 +860,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
  
     def update_priorities(self, indices: T.Tensor, td_errors: T.Tensor) -> None:
-        """
-        Recompute priorities from new TD errors for previously-sampled transitions.
+        """Recompute priorities from new TD errors for previously-sampled transitions.
  
         Stores p = (|δ| + ε)^α
         """
@@ -922,8 +907,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         return config
 
 class RolloutBuffer(Buffer):
-    """
-    On-Policy buffer for storing rollouts.
+    """On-Policy buffer for storing rollouts.
     """
     def __init__(
         self,
@@ -954,8 +938,7 @@ class RolloutBuffer(Buffer):
             self.next_state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
 
     def record(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
-        """
-        Record a transition into the buffer.
+        """Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.
@@ -1039,8 +1022,7 @@ class RolloutBuffer(Buffer):
         self.cur_idx += 1
 
     def sample(self, **kwargs: Any) -> Dict[str, T.Tensor]:
-        """
-        Returns a dictionary of all buffer tensors up to the current index of each environment.
+        """Returns a dictionary of all buffer tensors up to the current index of each environment.
         Current index values will match across all tensors because all rollouts are of same length.
         """
         idx = int(self.cur_idx.max().item())
@@ -1085,8 +1067,7 @@ class RolloutBuffer(Buffer):
         self.first_steps.zero_()
 
     def is_ready(self, **kwargs: Any) -> bool:
-        """
-        Check if the buffer is ready to sample. Always returns True.
+        """Check if the buffer is ready to sample. Always returns True.
         """
         return True
     
@@ -1097,8 +1078,7 @@ class RolloutBuffer(Buffer):
         return config
 
 class TrajectoryBuffer(RolloutBuffer):
-    """
-    On-Policy buffer for storing completedtrajectories
+    """On-Policy buffer for storing completedtrajectories
     """
     def __init__(
         self,
@@ -1120,8 +1100,7 @@ class TrajectoryBuffer(RolloutBuffer):
 
 
     def record(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
-        """
-        Record a transition into the buffer.
+        """Record a transition into the buffer.
 
         Args:
             cur_observation: Observation: The observation of the current state.

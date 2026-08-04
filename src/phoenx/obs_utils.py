@@ -94,7 +94,8 @@ def tree_zero_(obs: ObsLike) -> None:
 def flatten_leading(obs: ObsLike, n_dims: int = 2) -> ObsLike:
     """Fold the leading ``n_dims`` dims into one per leaf:
     ``(A, B, *feat) -> (A*B, *feat)`` (feature shape preserved — image leaves
-    are NOT flattened, unlike a bare ``reshape(total, -1)``)."""
+    are NOT flattened, unlike a bare ``reshape(total, -1)``).
+    """
     def _flat(x: T.Tensor) -> T.Tensor:
         lead = int(np.prod(x.shape[:n_dims]))
         return x.reshape(lead, *x.shape[n_dims:])

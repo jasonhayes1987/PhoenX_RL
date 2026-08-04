@@ -36,8 +36,7 @@ def save_model_artifact(file_path: str, project_name: str, model_is_best: bool =
 
 
 def load_model_from_artifact(artifact, load_weights: bool = True):
-    """
-    Load a model from a W&B artifact.
+    """Load a model from a W&B artifact.
 
     Args:
         artifact (wandb.Artifact): The artifact containing the model.
@@ -54,7 +53,7 @@ def load_model_from_artifact(artifact, load_weights: bool = True):
 
 
 def format_layers(sweep_config):
-    """formats sweep_config into policy and value layers.
+    """Formats sweep_config into policy and value layers.
 
     Args:
         sweep_config (dict): The sweep configuration.
@@ -324,7 +323,7 @@ def format_dense_layer(sweep_config, agent, model, layer):
     return params
     
 def get_kernel_params(sweep_config, agent, model, layer):
-    """Returns dict of parameters for the layers kernel 
+    """Returns dict of parameters for the layers kernel
 
     Args:
         sweep_config (wandb config): wandb config
@@ -386,7 +385,6 @@ def load_model_from_run(run_name: str, project_name: str, load_weights: bool = T
     Returns:
         rl_agents.Agent: The agent object.
     """
-
     artifact = get_artifact_from_run(project_name, run_name)
 
     return load_model_from_artifact(artifact, load_weights)
@@ -604,7 +602,6 @@ def get_run_id_from_name(project_name, run_name):
     Returns:
         str: The run ID.
     """
-
     api = wandb.Api()
     # Fetch all runs in the project
     runs = api.runs(f"{api.default_entity}/{project_name}")
@@ -667,7 +664,6 @@ def get_run(project_name, run_name):
     Returns:
     wandb.Run: The run object.
     """
-
     api = wandb.Api()
     # get the runs ID
     run_id = get_run_id_from_name(project_name, run_name)
@@ -735,7 +731,6 @@ def get_runs(project_name):
     Returns:
         list: The list of runs.
     """
-
     api = wandb.Api()
 
     runs = api.runs(f"{api.default_entity}/{project_name}")
@@ -750,7 +745,6 @@ def delete_all_runs(project_name, delete_artifacts: bool = True):
     project_name (str): The name of the project.
     delete_artifacts (bool): Whether to delete the artifacts associated with the runs.
     """
-
     api = wandb.Api()
     wandb.finish()
     runs = api.runs(f"{api.default_entity}/{project_name}")

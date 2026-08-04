@@ -2,8 +2,7 @@ import os
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 
 def stitch_videos(input_dir='videos', output_file='stitched_video.mp4', extensions=['.mp4', '.avi', '.mov']):
-    """
-    Stitch all video files in the input directory into a single video.
+    """Stitch all video files in the input directory into a single video.
 
     Args:
         input_dir (str): Directory containing the video files.

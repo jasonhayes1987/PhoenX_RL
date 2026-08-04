@@ -76,8 +76,7 @@ class TrainingSchedule:
 
 @dataclass
 class SuccessCriterion:
-    """
-    Defines what counts as a successful episode.
+    """Defines what counts as a successful episode.
 
     metric:
         "info_flag": env reports success (e.g. gymnasium-robotics 'is_success')
@@ -93,8 +92,7 @@ class SuccessCriterion:
             raise ValueError(f"metric '{self.metric}' requires a threshold")
 
     def evaluate(self, obs: Observation, env_idx: int, episode_reward: float) -> bool | None:
-        """
-        Evaluates the success criterion for the given observation and environment index.
+        """Evaluates the success criterion for the given observation and environment index.
         Returns True/False or None if the metric is not logged.
 
         Args:
@@ -172,8 +170,7 @@ class Trainer:
         self._resume_rng = None
 
     def _initialize_callbacks(self):
-        """
-        Initialize and configure callbacks for logging and monitoring.
+        """Initialize and configure callbacks for logging and monitoring.
 
         """
         try:
@@ -187,8 +184,8 @@ class Trainer:
             raise ValueError(f"Error initializing callbacks: {e}")
 
     def _initialize_run(self, context: Literal["train", "test"], **kwargs: Any):
-        """
-        Initializes the environment, seeds, and tracking variables for training.
+        """Initializes the environment, seeds, and tracking variables for training.
+
         Args:
             context (Literal["train", "test"]): Context of the run.
             **kwargs: Additional keyword arguments for the run.
@@ -335,7 +332,8 @@ class Trainer:
 
     def _apply_per_update(self, sample: dict, learn_metrics: dict) -> None:
         """If using a PrioritizedReplayBuffer, push TD errors back as priorities
-        and (optionally) collect PER diagnostics for logging."""
+        and (optionally) collect PER diagnostics for logging.
+        """
         # Pop so a per-sample tensor never leaks into wandb scalar logs.
         td_errors = learn_metrics.pop("td_errors", None)
 
@@ -393,8 +391,7 @@ class Trainer:
         #     im.set_normalizers_mode(context)
 
     def add_to_normalizers(self, obs: Observation):
-        """
-        Add relavent data from obs to the normalizers.
+        """Add relavent data from obs to the normalizers.
 
         Args:
             obs: Observation to feed.
@@ -476,8 +473,7 @@ class Trainer:
                 s.step(self.env.num_envs)
 
     def step(self, training: bool = True):
-        """
-        Performs a single step of training/testing.
+        """Performs a single step of training/testing.
         
         Args:
         training: bool: Whether the step is for training or testing.
@@ -485,7 +481,6 @@ class Trainer:
         Returns:
         dict: A dictionary containing the step metrics.
         """
-
         step_log = {}
         episode_logs = []
 
@@ -578,8 +573,7 @@ class Trainer:
         goals: np.ndarray|T.Tensor|None=None,
         context: str = 'train',
     )->T.Tensor:
-        """
-        Select an action based on the current policy.
+        """Select an action based on the current policy.
 
         Args:
             states: np.ndarray | T.Tensor: The current states.
@@ -589,7 +583,6 @@ class Trainer:
         Returns:
             T.Tensor: actions.
         """
-
         return self.agent.act(
             states,
             goals,
@@ -602,7 +595,8 @@ class Trainer:
     @staticmethod
     def _shuffle_sample(sample: dict) -> dict:
         """Apply one consistent random permutation across every tensor (or
-        dict-of-tensors) in a sampled batch."""
+        dict-of-tensors) in a sampled batch.
+        """
         ref = sample.get("states")
         if ref is None:
             return sample
@@ -620,8 +614,7 @@ class Trainer:
         return {k: _permute(v) for k, v in sample.items()}
 
     def learn(self)->dict:
-        """
-        Calls Agent.learn() schedule.update times, passing samples from the buffer.
+        """Calls Agent.learn() schedule.update times, passing samples from the buffer.
         
         Returns:
             dict: A dictionary containing the learn metrics.

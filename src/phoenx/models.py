@@ -410,8 +410,7 @@ def build_optimizer(parameters: Iterator[Parameter], optimizer_params: dict) -> 
 
 
 class Model(nn.Module):
-    """
-    Base class for all reinforcement learning models.
+    """Base class for all reinforcement learning models.
 
     This class dynamically constructs a neural network based on the provided layer configuration
     and supports various optimizers and learning rate schedulers.
@@ -435,8 +434,7 @@ class Model(nn.Module):
         device: str|None = None,
         # log_level: str = 'info'
     ):
-        """
-        Sets up the module dictionary of layers (most of which
+        """Sets up the module dictionary of layers (most of which
         will be lazy).
 
         Args:
@@ -478,8 +476,7 @@ class Model(nn.Module):
         self.to(self.device)
         
     def _init_model(self, module_dict: nn.ModuleDict, layer_config: list):
-        """
-        Performs a "dry run" forward pass with dummy_input to initialize
+        """Performs a "dry run" forward pass with dummy_input to initialize
         all lazy modules. Then, initializes weights and optimizer/scheduler.
 
         Args:
@@ -487,7 +484,6 @@ class Model(nn.Module):
                 a dummy input based on env.observation_space.shape. If your
                 environment is a 3D image (C, H, W), use (1, C, H, W).
         """
-
         # Dry run forward pass to initialize lazy modules
         # Check if the observation space is a dictionary AND contains goal-conditioned keys
         is_goal_conditioned = (isinstance(self.obs_space, gym.spaces.Dict) and 
@@ -529,8 +525,7 @@ class Model(nn.Module):
         self._init_weights(layer_config, module_dict)
 
     def _build_layer(self, layer_type, params):
-        """
-        Build a specific layer based on its type and parameters.
+        """Build a specific layer based on its type and parameters.
 
         Args:
             layer_type (str): Type of the layer (e.g., 'dense', 'conv2d', etc.).
@@ -542,8 +537,7 @@ class Model(nn.Module):
         return build_layer(layer_type, params)
 
     def _init_weights(self, layer_config, layers):
-        """
-        Initialize the weights for the model.
+        """Initialize the weights for the model.
 
         Args:
             layer_config (dict): configuration of layer.
@@ -558,8 +552,7 @@ class Model(nn.Module):
             init_module_weights(layer, kernel, kernel_params)
 
     def _init_optimizer(self, parameters: Iterator[Parameter] | None = None):
-        """
-        Initialize the optimizer for the model.
+        """Initialize the optimizer for the model.
 
         Args:
             parameters (Iterator[Parameter] | None): Iterator over the parameters to optimize. If None, uses all parameters.
@@ -572,8 +565,7 @@ class Model(nn.Module):
         return build_optimizer(parameters, self.optimizer_params)
     
     def _preprocess_state(self, state):
-        """
-        Preprocess the state tensor to handle various shapes, including flat vectors and images.
+        """Preprocess the state tensor to handle various shapes, including flat vectors and images.
         
         - Adds a feature dim to 1D (flat) states.
         - Adds a channel dim to 3D (grayscale image) states.
@@ -599,8 +591,7 @@ class Model(nn.Module):
         return state
 
     def _unwrap_distribution(self, dist: Distribution) -> Distribution:
-        """
-        Recursively unwrap a distribution to get the base distribution (Normal, Beta, etc.).
+        """Recursively unwrap a distribution to get the base distribution (Normal, Beta, etc.).
 
         Args:
             dist (Distribution): The distribution to unwrap.
@@ -620,8 +611,7 @@ class Model(nn.Module):
         return dist
 
     def get_mean_actions(self, dist: Distribution)->T.Tensor:
-        """
-        Get the mean action of the Transformed distribution.
+        """Get the mean action of the Transformed distribution.
 
         Args:
             dist (Distribution): The Transformed distribution to get the mean of.
@@ -731,8 +721,7 @@ class Model(nn.Module):
 
 
 class StochasticDiscretePolicy(Model):
-    """
-    Policy model for predicting a probability distribution over a discrete action space.
+    """Policy model for predicting a probability distribution over a discrete action space.
 
     This class builds on the `Model` base class and adds functionality specific to
     policies with a discrete action space, such as using a Categorical distribution
@@ -763,8 +752,7 @@ class StochasticDiscretePolicy(Model):
         temperature_schedule: ScheduleWrapper|None = None,
         device: str|T.device|None = None,
     ):
-        """
-        Initialize the policy model.
+        """Initialize the policy model.
 
         Args:
             env (EnvWrapper): The environment wrapper.
@@ -777,7 +765,6 @@ class StochasticDiscretePolicy(Model):
             temperature_schedule (ScheduleWrapper, optional): Temperature scheduler configuration. Default=None
             device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
         """
-        
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.distribution = distribution
         self.temperature = temperature
@@ -806,8 +793,7 @@ class StochasticDiscretePolicy(Model):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
-        """
-        Perform a forward pass through the model.
+        """Perform a forward pass through the model.
 
         Args:
             x (Tensor): Input tensor (e.g., observation from the environment).
@@ -863,8 +849,7 @@ class StochasticDiscretePolicy(Model):
         return cloned_model
 
 class StochasticContinuousPolicy(Model):
-    """
-    Policy model for predicting a probability distribution over a continuous action space.
+    """Policy model for predicting a probability distribution over a continuous action space.
 
     This class extends the `Model` base class to implement policies for continuous action spaces,
     supporting Beta and Normal distributions.
@@ -890,8 +875,7 @@ class StochasticContinuousPolicy(Model):
         distribution: str = 'beta',
         device: str|T.device|None = None,
     ):
-        """
-        Initialize the policy model.
+        """Initialize the policy model.
 
         Args:
             env (EnvWrapper): The environment wrapper.
@@ -934,8 +918,7 @@ class StochasticContinuousPolicy(Model):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
-        """
-        Perform a forward pass through the model.
+        """Perform a forward pass through the model.
 
         Args:
             x (Tensor): Input tensor (e.g., observation from the environment).
@@ -1019,8 +1002,7 @@ class StochasticContinuousPolicy(Model):
 
 
 class ValueModel(Model):
-    """
-    Value model for predicting state values.
+    """Value model for predicting state values.
 
     This class extends the `Model` base class to implement a neural network for value function approximation in reinforcement learning.
 
@@ -1043,8 +1025,7 @@ class ValueModel(Model):
         device: str|T.device|None = None,
         # log_level: str = 'info'
     ):
-        """
-        Initialize the value model.
+        """Initialize the value model.
 
         Args:
             env (EnvWrapper): The environment wrapper.
@@ -1077,8 +1058,7 @@ class ValueModel(Model):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
-        """
-        Perform a forward pass through the model.
+        """Perform a forward pass through the model.
 
         Args:
             x (Tensor): Input tensor (e.g., observation from the environment).
@@ -1087,7 +1067,6 @@ class ValueModel(Model):
         Returns:
             Tensor: Predicted state value.
         """
-
         # Preprocess state to ensure correct formatting
         x = self._preprocess_state(x)
         x = x.to(self.device)
@@ -1130,8 +1109,7 @@ class ValueModel(Model):
         return cloned_model
 
 class ActorModel(Model):
-    """
-    Actor model for continuous action spaces.
+    """Actor model for continuous action spaces.
 
     Attributes:
         env (EnvWrapper): The environment wrapper.
@@ -1221,8 +1199,7 @@ class ActorModel(Model):
         return cloned_model
 
 class BaseCritic(Model):
-    """
-    Base class for critic models.
+    """Base class for critic models.
     """
 
     def __init__(
@@ -1248,8 +1225,7 @@ class BaseCritic(Model):
         return super().clone(copy_weights, device)
 
 class ContinuousCritic(BaseCritic):
-    """
-    Critic model for continuous action spaces.
+    """Critic model for continuous action spaces.
 
     Attributes:
         env (EnvWrapper): The environment wrapper.
@@ -1355,8 +1331,7 @@ class ContinuousCritic(BaseCritic):
         return cloned_model
 
 class DiscreteCritic(BaseCritic):
-    """
-    Critic model for discrete action spaces.
+    """Critic model for discrete action spaces.
 
     Attributes:
         env (EnvWrapper): The environment wrapper.
@@ -1702,7 +1677,8 @@ class Head(nn.Module):
 
     def init_weights(self) -> None:
         """Initialize body layers per ``layer_config`` and output layers per
-        ``output_config`` (legacy zip semantics preserved)."""
+        ``output_config`` (legacy zip semantics preserved).
+        """
         self.body.init_weights()
         for config, (layer_name, layer) in zip(self.output_config, self.output_layer.items()):
             kernel = config.get('params', {}).get('kernel', 'default')
@@ -1808,7 +1784,8 @@ class StochasticDiscreteHead(Head):
 
 class StochasticContinuousHead(Head):
     """Bounded continuous policy head (extracted from
-    :class:`StochasticContinuousPolicy`; identical output math)."""
+    :class:`StochasticContinuousPolicy`; identical output math).
+    """
 
     def __init__(
         self,
@@ -1901,7 +1878,8 @@ class DeterministicActorHead(Head):
 
 class ContinuousQHead(Head):
     """Q(s, a) head for continuous actions (extracted from
-    :class:`ContinuousCritic`): state stack -> concat(action) -> merged stack."""
+    :class:`ContinuousCritic`): state stack -> concat(action) -> merged stack.
+    """
 
     requires_action = True
 
@@ -2239,7 +2217,8 @@ class ModularModel(nn.Module):
     @staticmethod
     def index_hidden(hidden: Dict[str, Any] | None, idx) -> Dict[str, Any]:
         """Select a batch subset of a hidden-state dict (batch dim is dim 1:
-        recurrent states are shaped (num_layers, B, H))."""
+        recurrent states are shaped (num_layers, B, H)).
+        """
         out: Dict[str, Any] = {}
         for k, v in (hidden or {}).items():
             if isinstance(v, tuple):
@@ -2828,7 +2807,8 @@ class ModularModel(nn.Module):
 
     def set_device(self, device: str | T.device) -> 'ModularModel':
         """Move the composite (params, buffers, head attrs, optimizer state)
-        to ``device`` and update every internal device attribute."""
+        to ``device`` and update every internal device attribute.
+        """
         device = get_device(device)
         self.device = device
         for head in self.branches.values():
@@ -2868,7 +2848,7 @@ def build_model(config: dict, env: EnvWrapper) -> Model:
 
 
 def build_layers(types: List[str], units_per_layer: List[int], initializers: List[str], kernel_params:List[dict]):
-    """formats config into policy and value layers"""
+    """Formats config into policy and value layers"""
     # get policy layers
     layers = []
     for type, units, kernel, k_param in zip(types, units_per_layer, initializers, kernel_params):
@@ -2884,8 +2864,7 @@ def build_layers(types: List[str], units_per_layer: List[int], initializers: Lis
     return layers
 
 def select_policy_model(env: EnvWrapper):
-    """
-    Select the appropriate policy model based on the environment's action space.
+    """Select the appropriate policy model based on the environment's action space.
 
     Args:
         env (gym.Env): The environment object.
@@ -2907,8 +2886,7 @@ def select_policy_model(env: EnvWrapper):
     return model_class
 
 def select_critic_model(env: EnvWrapper):
-    """
-    Select the appropriate critic model based on the environment's action space.
+    """Select the appropriate critic model based on the environment's action space.
     """
     if isinstance(env.action_space, gym.spaces.Discrete) or isinstance(env.action_space, gym.spaces.MultiDiscrete):
         model_class = DiscreteCritic

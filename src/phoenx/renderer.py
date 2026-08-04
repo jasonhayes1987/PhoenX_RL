@@ -11,8 +11,7 @@ from .logging_config import get_logger
 
 @dataclass
 class Renderer:
-    """
-    Handles all rendering, video creation, and video logging.
+    """Handles all rendering, video creation, and video logging.
     """
     render_freq: int = 0
     save_dir: str = "models/"

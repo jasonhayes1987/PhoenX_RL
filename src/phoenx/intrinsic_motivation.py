@@ -1,5 +1,4 @@
-"""
-intrinsic_motivation.py
+"""intrinsic_motivation.py
 
 Pluggable intrinsic motivation framework for PhoenX RL.
 
@@ -55,8 +54,7 @@ def register_intrinsic_motivation(cls):
     return cls
 
 class IntrinsicMotivation(Model):
-    """
-    Abstract base for any module that produces intrinsic rewards.
+    """Abstract base for any module that produces intrinsic rewards.
 
     Inherits from Model so subclasses get _build_layer / _init_weights /
     _init_optimizer / device handling for free. The base itself has no
@@ -129,8 +127,7 @@ class IntrinsicMotivation(Model):
         ...
         
     def use_extrinsic_reward(self, step: int) -> bool:
-        """
-        Return True if extrinsic reward should be used at the given step, False otherwise.
+        """Return True if extrinsic reward should be used at the given step, False otherwise.
         """
         return step >= self.extrinsic_threshold
 
@@ -141,8 +138,7 @@ class IntrinsicMotivation(Model):
         actions: T.Tensor | None = None,
         **kwargs: Any,
     ) -> T.Tensor:
-        """
-        Return learn reward of shape (batch,) — defaults to zero reward. Subclasses can override.
+        """Return learn reward of shape (batch,) — defaults to zero reward. Subclasses can override.
         
         Args:
             states: Tensor of shape (batch, state_dim).
@@ -161,8 +157,7 @@ class IntrinsicMotivation(Model):
         actions: T.Tensor | None = None,
         env_indices: T.Tensor | None = None,
     ) -> T.Tensor:
-        """
-        Return rollout reward of shape (batch,) — defaults to zero reward. Subclasses can override.
+        """Return rollout reward of shape (batch,) — defaults to zero reward. Subclasses can override.
         
         Args:
             states: Tensor of shape (batch, state_dim).
@@ -176,8 +171,7 @@ class IntrinsicMotivation(Model):
         return T.zeros(states.shape[0], device=self.device, dtype=T.float32)
 
     def on_episode_end(self, env_indices: T.Tensor) -> None:
-        """
-        Called by the Trainer for each parallel env that just terminated/truncated.
+        """Called by the Trainer for each parallel env that just terminated/truncated.
 
         Args:
             env_indices: 1-D Long tensor of env indices that finished this step.
@@ -213,8 +207,7 @@ class IntrinsicMotivation(Model):
             n.train() if context == 'train' else n.eval()
 
     def _feed_reward_normalizer(self, reward: T.Tensor) -> None:
-        """
-        Feed reward to reward normalizer and update if present.
+        """Feed reward to reward normalizer and update if present.
 
         Args:
             reward: Tensor to feed.
@@ -225,8 +218,7 @@ class IntrinsicMotivation(Model):
             self.reward_normalizer.update()
 
     def _normalize_reward(self, intrinsic_reward: T.Tensor) -> T.Tensor:
-        """
-        Normalize intrinsic reward through the reward_normalizer if present, else identity.
+        """Normalize intrinsic reward through the reward_normalizer if present, else identity.
 
         Args:
             intrinsic_reward: Tensor to normalize.
@@ -294,8 +286,7 @@ class IntrinsicMotivation(Model):
 
 @register_intrinsic_motivation
 class ICM(IntrinsicMotivation):
-    """
-    Intrinsic Curiosity Module (Pathak et al. 2017).
+    """Intrinsic Curiosity Module (Pathak et al. 2017).
 
     Three sub-networks:
         encoder  φ : s -> features        (optional; if absent, raw obs are used)
@@ -442,8 +433,7 @@ class ICM(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         **kwargs: Any,
     ) -> T.Tensor:
-        """
-        Compute learn reward for a batch of states, next states, and actions.
+        """Compute learn reward for a batch of states, next states, and actions.
 
         Args:
             states: Tensor of shape (batch, state_dim).
@@ -539,8 +529,7 @@ class ICM(IntrinsicMotivation):
 
 @register_intrinsic_motivation
 class RND(IntrinsicMotivation):
-    """
-    Random Network Distillation (Burda et al. 2018).
+    """Random Network Distillation (Burda et al. 2018).
 
     Two networks of identical architecture:
         target     f̂_φ : s -> R^k    (random init, FROZEN forever)
@@ -649,8 +638,7 @@ class RND(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         **kwargs: Any,
     ) -> T.Tensor:
-        """
-        Compute learn reward for a batch of states, next states, and actions.
+        """Compute learn reward for a batch of states, next states, and actions.
 
         Args:
             states: Tensor of shape (batch, state_dim).
@@ -737,8 +725,7 @@ class RND(IntrinsicMotivation):
 
 @register_intrinsic_motivation
 class EpisodicNovelty(IntrinsicMotivation):
-    """
-    Episodic novelty signal from NGU (Badia et al. 2020).
+    """Episodic novelty signal from NGU (Badia et al. 2020).
 
     Per-env episodic memory M_i (one per parallel env). At each step we:
       1. Embed s_{t+1} via an encoder φ trained by inverse dynamics
@@ -859,8 +846,7 @@ class EpisodicNovelty(IntrinsicMotivation):
         return self._forward_submodel(x, self.encoder)
 
     def _knn_bonus(self, embeddings: T.Tensor, env_indices: T.Tensor) -> T.Tensor:
-        """
-        For each row i, query memory[env_indices[i]] for k-NN of embeddings[i]
+        """For each row i, query memory[env_indices[i]] for k-NN of embeddings[i]
         and return the per-row bonus α_epi.
         """
         bonuses = T.zeros(embeddings.shape[0], device=self.device)
@@ -908,8 +894,7 @@ class EpisodicNovelty(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         env_indices: T.Tensor | None = None,
     ) -> T.Tensor:
-        """
-        Compute rollout reward for a batch of states, next states, and actions.
+        """Compute rollout reward for a batch of states, next states, and actions.
 
         Args:
             states: Tensor of shape (batch, state_dim).
@@ -1019,7 +1004,7 @@ class EpisodicNovelty(IntrinsicMotivation):
 
 def additive_combination(rewards: List[T.Tensor],
                          weights: Sequence[float] | None = None) -> T.Tensor:
-    """r = Σ_i w_i * r_i.  weights default to 1.0 each."""
+    """R = Σ_i w_i * r_i.  weights default to 1.0 each."""
     if not rewards:
         raise ValueError("Empty rewards list")
     if weights is None:
@@ -1031,7 +1016,7 @@ def additive_combination(rewards: List[T.Tensor],
 
 
 def multiplicative_combination(rewards: List[T.Tensor]) -> T.Tensor:
-    """r = ∏_i r_i.  Useful when you want every signal to fire."""
+    """R = ∏_i r_i.  Useful when you want every signal to fire."""
     if not rewards:
         raise ValueError("Empty rewards list")
     out = rewards[0]
@@ -1041,7 +1026,7 @@ def multiplicative_combination(rewards: List[T.Tensor]) -> T.Tensor:
 
 
 def max_combination(rewards: List[T.Tensor]) -> T.Tensor:
-    """r = max_i r_i.  Strongest single signal wins per step."""
+    """R = max_i r_i.  Strongest single signal wins per step."""
     if not rewards:
         raise ValueError("Empty rewards list")
     stacked = T.stack(rewards, dim=0)
@@ -1049,8 +1034,7 @@ def max_combination(rewards: List[T.Tensor]) -> T.Tensor:
 
 
 def ngu_combination(rewards: List[T.Tensor], L: float = 5.0) -> T.Tensor:
-    """
-    NGU's reward: r = α_epi * clip(α_lifelong, 1, L)
+    """NGU's reward: r = α_epi * clip(α_lifelong, 1, L)
     Expects rewards in order: [episodic, lifelong].
     """
     if len(rewards) != 2:
@@ -1070,8 +1054,7 @@ _COMBINATION_RULES: dict[str, Callable] = {
 
 @register_intrinsic_motivation
 class CompositeIntrinsicMotivation(IntrinsicMotivation):
-    """
-    Wraps a list of IntrinsicMotivation modules and combines their per-step
+    """Wraps a list of IntrinsicMotivation modules and combines their per-step
     intrinsic rewards according to a combination rule.
 
     The composite has no networks of its own and no optimizer — every child
@@ -1119,8 +1102,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             raise
 
     def _split_components(self) -> tuple[list[IntrinsicMotivation], list[IntrinsicMotivation]]:
-        """
-        Splits components into online and parametric components.
+        """Splits components into online and parametric components.
 
         Returns:
             tuple of lists: (online components, parametric components)
@@ -1134,8 +1116,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         return online, parametric
 
     def _weights_for(self, components: list[tuple[int, IntrinsicMotivation]]) -> list[float]:
-        """
-        Returns weights for list of components.
+        """Returns weights for list of components.
 
         Args:
             components: List of tuples: (index, component)
@@ -1155,8 +1136,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         env_indices: T.Tensor | None = None,
     ) -> T.Tensor:
-        """
-        Compute rollout intrinsic reward for a batch of states, next state, and actions
+        """Compute rollout intrinsic reward for a batch of states, next state, and actions
         across all intrinsic motivations in the composite.
 
         Args:
@@ -1187,8 +1167,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         rollout_rewards: T.Tensor | None = None,
     ) -> T.Tensor:
-        """
-        Compute learn reward for a batch of states, next states, and actions
+        """Compute learn reward for a batch of states, next states, and actions
         across all intrinsic motivations in the composite and adds to them the rollout rewards
         if provided.
 

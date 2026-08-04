@@ -41,8 +41,7 @@ def callback_load(name: str) -> type:
 
 
 class Callback():
-    """
-    Base class for all callbacks in reinforcement learning.
+    """Base class for all callbacks in reinforcement learning.
 
     Methods:
         on_train_begin(logs): Called at the beginning of training.
@@ -109,8 +108,7 @@ class Callback():
 
 
 class WandbCallback(Callback):
-    """
-    W&B integration callback for tracking and logging metrics.
+    """W&B integration callback for tracking and logging metrics.
 
     Args:
         project_name (str): Name of the W&B project.
@@ -254,8 +252,7 @@ class WandbCallback(Callback):
 
     
 def load(config: dict):
-    """
-    Instantiate a callback from a config dict produced by ``get_config()``.
+    """Instantiate a callback from a config dict produced by ``get_config()``.
 
     Args:
         config (dict): Must contain a ``'type'`` key whose value matches a

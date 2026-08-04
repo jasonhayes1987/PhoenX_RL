@@ -1,7 +1,6 @@
 
 class AdaptiveKL():
-    """
-    Keeps track of a KL penalty coefficient `beta` that is adjusted
+    """Keeps track of a KL penalty coefficient `beta` that is adjusted
     after each update so the observed KL divergence hovers near `target_kl`.
     """
     def __init__(
@@ -13,16 +12,18 @@ class AdaptiveKL():
         scale_down=0.5,
         kl_tolerance_high=1.5,
         kl_tolerance_low=0.5):
-        """
+        """Initializes the AdaptiveKL object.
+        
         Args:
             initial_beta (float): initial KL penalty
             target_kl (float): desired KL divergence
+            beta_max (float): maximum value of beta
             scale_up (float): factor by which to increase beta if KL is too high
             scale_down (float): factor by which to reduce beta if KL is too low
             kl_tolerance_high (float): if observed KL > target_kl * kl_tolerance_high,
-                                       we consider that "too high"
+                                   we consider that "too high"
             kl_tolerance_low (float): if observed KL < target_kl * kl_tolerance_low,
-                                      we consider that "too low"
+                                  we consider that "too low"
         """
         self.initial_beta = initial_beta
         self.beta = initial_beta
@@ -34,8 +35,7 @@ class AdaptiveKL():
         self.kl_tolerance_low = kl_tolerance_low
 
     def step(self, observed_kl):
-        """
-        Update beta based on how the observed KL compares to target_kl.
+        """Update beta based on how the observed KL compares to target_kl.
         Typically called after each PPO update (once you can measure KL).
         """
         # If KL is way above target, raise beta

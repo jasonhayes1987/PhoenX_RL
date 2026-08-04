@@ -1,5 +1,6 @@
-"""This module holds the Agent base class and all RL agents as subclasses  It also 
-provides helper functions for loading any subclass of type Agent."""
+"""This module holds the Agent base class and all RL agents as subclasses  It also
+provides helper functions for loading any subclass of type Agent.
+"""
 
 # imports
 from abc import ABC, abstractmethod
@@ -106,8 +107,7 @@ class Agent(ABC):
             self.logger.error(f"Error in Agent init: {e}", exc_info=True)
 
     def _setup_save_dir(self, save_dir: str):
-        """
-        Setup the save directory for the agent.
+        """Setup the save directory for the agent.
         If save_dir doesn't end with the agent's name, append it.
         
         Args:
@@ -139,8 +139,7 @@ class Agent(ABC):
     #     raise NotImplementedError("Subclasses must implement apply_parameters.")
 
     def clone(self, device: Optional[str | T.device] = None) -> 'Agent':
-        """
-        Create a deep copy of the agent, optionally moving it to a new device.
+        """Create a deep copy of the agent, optionally moving it to a new device.
         
         Args:
             device (str or T.device, optional): Target device for the cloned agent. If None, uses the current device.
@@ -351,7 +350,8 @@ class Agent(ABC):
     def _context_forward(self, states, goals, branches, dones):
         """Rolling-window inference for causal-transformer trunks: keep the
         last ``context_length`` observations per env and run the heads on the
-        window's final position."""
+        window's final position.
+        """
         from phoenx.obs_utils import tree_detach_clone, tree_stack
         window = int(getattr(self, 'context_length', 16))
         if self._ctx_obs is None:
@@ -379,7 +379,8 @@ class Agent(ABC):
 
     def _advance_rollout_window(self) -> None:
         """Mark the current hidden as the next learn window's initial hidden
-        (called at the end of an on-policy learn: the rollout buffer resets)."""
+        (called at the end of an on-policy learn: the rollout buffer resets).
+        """
         if self.model.is_temporal:
             self._rollout_start_hidden = (
                 self.model.detach_hidden(self._hidden) if self._hidden is not None else None
@@ -485,7 +486,8 @@ class Agent(ABC):
         """Shim: map legacy per-model checkpoint files (``policy.pt``,
         ``value.pt``, ``critic.pt``, ``critic_b.pt`` and their ``target_*``
         variants) onto a composite ``ModularModel``. Returns True if any
-        legacy file was found and applied."""
+        legacy file was found and applied.
+        """
         prefix = "target_" if attr_name.startswith("target") else ""
         found = False
         for role in model.branches.keys():
@@ -597,8 +599,7 @@ class Reinforce(Agent):
         device: str = None,
         **kwargs,
     ):
-        """
-        Reinforce Agent.
+        """Reinforce Agent.
 
         Args:
             roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
@@ -661,8 +662,7 @@ class Reinforce(Agent):
         context: str = 'train',
         **kwargs: Any
     ) -> T.Tensor:
-        """
-        Select an action based on the current policy.
+        """Select an action based on the current policy.
         Returns actions that are already scaled to the environment's action space.
 
         Args:
@@ -673,7 +673,6 @@ class Reinforce(Agent):
         Returns:
             T.Tensor: actions.
         """
-        
         if context == 'train':
             outputs = self._rollout_forward(
                 states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
@@ -937,8 +936,7 @@ class ActorCritic(Agent):
         context: str = 'train',
         **kwargs: Any
     ) -> T.Tensor:
-        """
-        Select an action based on the current policy.
+        """Select an action based on the current policy.
         Returns actions that are already scaled to the environment's action space.
 
         Args:
@@ -949,7 +947,6 @@ class ActorCritic(Agent):
         Returns:
             T.Tensor: actions.
         """
-        
         if context == 'train':
             outputs = self._rollout_forward(
                 states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
@@ -1331,8 +1328,7 @@ class ActorCritic(Agent):
         return config
 
 class PPO(Agent):
-    """
-    Proximal Policy Optimization (PPO) agent implementation.
+    """Proximal Policy Optimization (PPO) agent implementation.
 
     Attributes:
         policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
@@ -1405,8 +1401,8 @@ class PPO(Agent):
         device: str | T.device | None = None,
         **kwargs: Any
     ) -> None:
-        """
-        Initialize the PPO agent.
+        """Initialize the PPO agent.
+
         Args:
             roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
             trunk: Optional shared fusion SubNetwork (identity when None).
@@ -1487,8 +1483,7 @@ class PPO(Agent):
         context: str = 'train',
         **kwargs: Any
     ) -> Action:
-        """
-        Select an action based on the current policy.
+        """Select an action based on the current policy.
         Returns actions that are already scaled to the environment's action space.
 
         Args:
@@ -1524,8 +1519,7 @@ class PPO(Agent):
         return Action(actions, raw_actions=raw_actions, log_probs=log_probs)
 
     def learn(self, step:int, sample:dict, learning_epochs:int, mini_batch_size:int, **kwargs: Any)->dict:
-        """
-        Perform learning updates using the collected trajectory.
+        """Perform learning updates using the collected trajectory.
 
         Args:
             step (int): Current step.
@@ -2074,8 +2068,7 @@ class PPO(Agent):
         return learn_metrics
 
     def get_config(self):
-        """
-        Get the current configuration of the PPO agent.
+        """Get the current configuration of the PPO agent.
 
         Returns:
             dict: Configuration dictionary.
@@ -2187,8 +2180,7 @@ class DDPG(Agent):
         warmup: int | None = None,
         **kwargs: Any,
     ) -> Action:
-        """
-        Select an action based on the current policy.
+        """Select an action based on the current policy.
 
         Args:
             states: T.Tensor | np.ndarray: The current states.
@@ -2200,7 +2192,6 @@ class DDPG(Agent):
         Returns:
             Action: actions.
         """
-        
         # Temporal models always run the forward (to advance the recurrent /
         # context stream) and attach the pre-step hidden for R2D2 storage.
         pol_outputs = None
@@ -2663,8 +2654,7 @@ class TD3(Agent):
         warmup: int | None = None,
         **kwargs: Any,
     ) -> Action:
-        """
-        Select an action based on the current policy.
+        """Select an action based on the current policy.
 
         Args:
             states: T.Tensor | np.ndarray: The current states.
@@ -2676,7 +2666,6 @@ class TD3(Agent):
         Returns:
             Action: actions.
         """
-        
         # Temporal models always run the forward (to advance the recurrent /
         # context stream) and attach the pre-step hidden for R2D2 storage.
         pol_outputs = None
@@ -3182,8 +3171,7 @@ class SAC(Agent):
         warmup: int | None = None,
         **kwargs: Any,
     ) -> Action:
-        """
-        Select an action based on the current policy.
+        """Select an action based on the current policy.
 
         Args:
             states: T.Tensor | np.ndarray: The current states.

@@ -20,8 +20,7 @@ def compute_n_step_return(
     device:
     T.device|str|None = None
 ) -> T.Tensor:
-    """
-    Compute N-step returns for a batch of sequences.
+    """Compute N-step returns for a batch of sequences.
 
     Args:
         rewards: Tensor of rewards [batch_size, N].
@@ -47,8 +46,7 @@ def compute_td_error(
     gamma: float,
     bootstrap_truncations: bool
     ) -> T.Tensor:
-    """
-    Compute TD errors for a batch of trajectories.
+    """Compute TD errors for a batch of trajectories.
     
     Args:
         rewards: Tensor of rewards [batch_size, num_envs].
@@ -73,8 +71,7 @@ def compute_monte_carlo_returns(
     gamma:float,
     device:T.device|str|None = None
 ) -> T.Tensor:
-    """
-    Compute discounted returns for each step in a trajectory.
+    """Compute discounted returns for each step in a trajectory.
     
     Args:
         rewards: Tensor of rewards [batch_size, num_envs].
@@ -101,8 +98,7 @@ def compute_gae(
     gae_lambda:float,
     device:T.device|str|None = None
     ) -> T.Tensor:
-    """
-    Compute Generalized Advantage Estimation (GAE) for a batch of TD errors.
+    """Compute Generalized Advantage Estimation (GAE) for a batch of TD errors.
     
     Args:
         td_errors: Tensor of TD errors [timesteps, num_envs].
@@ -139,8 +135,7 @@ def compute_advantages_and_returns(
     bootstrap_truncations: bool,
     device:T.device|str|None = None
 ) -> tuple[T.Tensor, T.Tensor, T.Tensor]:
-    """
-    Compute advantages and returns for a batch of trajectories.
+    """Compute advantages and returns for a batch of trajectories.
 
     Args:
         rewards: Tensor of rewards [batch_size, num_envs].
@@ -177,8 +172,7 @@ def compute_q_retrace(
     *,
     device: T.device | str | None = None
 ) -> tuple[T.Tensor, dict[str, T.Tensor]]:
-    """
-    Computes target Q values as sum of weighted TD errors using importance sampling ratios across the n-step window.
+    """Computes target Q values as sum of weighted TD errors using importance sampling ratios across the n-step window.
 
     Args:
         rewards: Tensor of rewards [batch_size, n_step_length].
@@ -266,8 +260,7 @@ def setup_auto_entropy(policy, *, target_entropy_scale=0.98,
 
 @T.no_grad()
 def soft_update(current_module, target_module, tau: float) -> None:
-    """
-    Soft update a module's parameters and buffers to target_module.
+    """Soft update a module's parameters and buffers to target_module.
 
     Parameters and buffers are matched BY NAME (not by position), so the
     target may be a subset of the current module (e.g. a branch-subset clone

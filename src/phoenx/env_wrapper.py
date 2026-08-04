@@ -436,8 +436,7 @@ class VectorNStepReward(VectorWrapper):
         return next_states, rewards, terminations, truncations, infos
 
     def _build_trajectories(self, dones: T.Tensor | None = None):
-        """
-        Produces tensors of shape (num_valid_envs, n, *) where num_valid_envs is the
+        """Produces tensors of shape (num_valid_envs, n, *) where num_valid_envs is the
         number of envs with length > 0.
           - pad_mode "repeat" (states / next_states / actions): positions beyond
             `length` repeat the most recent valid entry.
@@ -790,8 +789,7 @@ def wrap_env(vec_env, wrappers):
     return SyncVectorEnv(envs)
 
 class EnvWrapper:
-    """
-    Abstract base class for environment wrappers.
+    """Abstract base class for environment wrappers.
 
     This class defines the required interface for custom environment wrappers.
     """
@@ -927,8 +925,7 @@ class EnvWrapper:
 
     @property
     def config(self):
-        """
-        Get the configuration of the wrapper.
+        """Get the configuration of the wrapper.
 
         Returns:
             dict: Configuration dictionary.
@@ -949,8 +946,7 @@ class EnvWrapper:
 
     @abstractmethod
     def reset(self):
-        """
-        Reset the environment to an initial state.
+        """Reset the environment to an initial state.
 
         Returns:
             Any: Initial observation of the environment.
@@ -959,8 +955,7 @@ class EnvWrapper:
     
     @abstractmethod
     def step(self, action) -> Observation:
-        """
-        Take an action in the environment.
+        """Take an action in the environment.
 
         Args:
             action: The action to be taken.
@@ -972,8 +967,7 @@ class EnvWrapper:
 
     @abstractmethod
     def _initialize_env(self):
-        """
-        Initialize the environment.
+        """Initialize the environment.
 
         Returns:
             Any: The initialized environment.
@@ -981,8 +975,7 @@ class EnvWrapper:
         pass
 
     def clone(self, num_envs:int=1, **kwargs) -> 'EnvWrapper':
-        """
-        Create a new instance of the environment wrapper with the passed parameters.
+        """Create a new instance of the environment wrapper with the passed parameters.
 
         Args:
             **kwargs: Additional keyword arguments to pass to the environment wrapper to override original values.
@@ -996,8 +989,7 @@ class EnvWrapper:
 
     @abstractmethod
     def format_actions(self, actions: np.ndarray | T.Tensor):
-        """
-        Format actions for the environment.
+        """Format actions for the environment.
 
         Args:
             actions: Actions to format.
@@ -1011,8 +1003,7 @@ class EnvWrapper:
     @property
     @abstractmethod
     def observation_space(self):
-        """
-        Get the observation space of the environment.
+        """Get the observation space of the environment.
 
         Returns:
             gym.Space: The observation space.
@@ -1022,8 +1013,7 @@ class EnvWrapper:
     @property
     @abstractmethod
     def action_space(self):
-        """
-        Get the action space of the environment.
+        """Get the action space of the environment.
 
         Returns:
             gym.Space: The action space.
@@ -1032,8 +1022,7 @@ class EnvWrapper:
 
     @property
     def single_action_space(self):
-        """
-        Get the single action space for vectorized environments.
+        """Get the single action space for vectorized environments.
 
         Returns:
             gym.Space: The single action space.
@@ -1042,8 +1031,7 @@ class EnvWrapper:
 
     @property
     def single_observation_space(self):
-        """
-        Get the single observation space for vectorized environments.
+        """Get the single observation space for vectorized environments.
 
         Returns:
             gym.Space: The single observation space.
@@ -1052,8 +1040,7 @@ class EnvWrapper:
 
     @abstractmethod
     def to_json(self) -> str:
-        """
-        Serialize the environment wrapper configuration to JSON.
+        """Serialize the environment wrapper configuration to JSON.
 
         Returns:
             str: JSON string representing the environment configuration.
@@ -1062,8 +1049,7 @@ class EnvWrapper:
 
     @classmethod
     def from_json(cls, json_string: str):
-        """
-        Create an environment wrapper instance from a JSON string.
+        """Create an environment wrapper instance from a JSON string.
 
         This method will delegate to the appropriate subclass's `from_json` method
         based on the type specified in the JSON.
@@ -1094,8 +1080,7 @@ class EnvWrapper:
 
 
 class GymnasiumWrapper(EnvWrapper):
-    """
-    Wrapper for Gymnasium environments with additional utilities.
+    """Wrapper for Gymnasium environments with additional utilities.
 
     This wrapper supports initialization, resetting, stepping, rendering,
     and JSON-based serialization of Gymnasium environments.
@@ -1126,10 +1111,8 @@ class GymnasiumWrapper(EnvWrapper):
         
 
     def _initialize_env(self):
-        """
-        Initialize the Gymnasium environments.
+        """Initialize the Gymnasium environments.
 
-        
         Returns:
             gym.VectorEnv: The initialized Gymnasium vectorized environment.
         """
@@ -1256,15 +1239,13 @@ class GymnasiumWrapper(EnvWrapper):
             return actions.ravel()
     
     def close(self):
-        """
-        Close the environment.
+        """Close the environment.
         """
         self.env.close()
     
     @property
     def observation_space(self):
-        """
-        Get the observation space of the environment.
+        """Get the observation space of the environment.
 
         Returns:
             gym.Space: The observation space.
@@ -1273,8 +1254,7 @@ class GymnasiumWrapper(EnvWrapper):
     
     @property
     def action_space(self):
-        """
-        Get the action space of the environment.
+        """Get the action space of the environment.
 
         Returns:
             gym.Space: The action space.
@@ -1283,8 +1263,7 @@ class GymnasiumWrapper(EnvWrapper):
     
     @property
     def single_action_space(self):
-        """
-        Get the single action space for vectorized environments.
+        """Get the single action space for vectorized environments.
 
         Returns:
             gym.Space: The single action space.
@@ -1293,8 +1272,7 @@ class GymnasiumWrapper(EnvWrapper):
 
     @property
     def single_observation_space(self):
-        """
-        Get the single observation space for vectorized environments.
+        """Get the single observation space for vectorized environments.
 
         Returns:
             gym.Space: The single observation space.
@@ -1303,8 +1281,7 @@ class GymnasiumWrapper(EnvWrapper):
 
     @property
     def finite_horizon(self)->bool:
-        """
-        Returns True if the environment has a finite horizon.
+        """Returns True if the environment has a finite horizon.
         Finite horizon is determined by checking if the base environment spec contains has
         a max_episode_steps attribute that is not None, or if the environment is wrapped in a 
         TimeLimit wrapper.
@@ -1323,8 +1300,7 @@ class GymnasiumWrapper(EnvWrapper):
     
     @property
     def config(self):
-        """
-        Get the configuration of the wrapper.
+        """Get the configuration of the wrapper.
 
         Returns:
             dict: Configuration dictionary.
@@ -1347,8 +1323,7 @@ class GymnasiumWrapper(EnvWrapper):
         # }
     
     def to_json(self):
-        """
-        Serialize the wrapper configuration to JSON.
+        """Serialize the wrapper configuration to JSON.
 
         Returns:
             str: JSON string representing the configuration.
@@ -1357,8 +1332,7 @@ class GymnasiumWrapper(EnvWrapper):
 
     @classmethod
     def from_json(cls, json_env_spec):
-        """
-        Create a Gymnasium wrapper instance from a JSON string.
+        """Create a Gymnasium wrapper instance from a JSON string.
 
         Args:
             json_env_spec (str): JSON string representing the configuration.
@@ -1560,15 +1534,13 @@ class EnvPoolWrapper(EnvWrapper):
             return actions.ravel()
     
     def close(self):
-        """
-        Close the environment.
+        """Close the environment.
         """
         self.env.close()
     
     @property
     def observation_space(self):
-        """
-        Get the observation space of the environment.
+        """Get the observation space of the environment.
 
         Returns:
             gym.Space: The observation space.
@@ -1577,8 +1549,7 @@ class EnvPoolWrapper(EnvWrapper):
     
     @property
     def action_space(self):
-        """
-        Get the action space of the environment.
+        """Get the action space of the environment.
 
         Returns:
             gym.Space: The action space.
@@ -1587,8 +1558,7 @@ class EnvPoolWrapper(EnvWrapper):
     
     @property
     def single_action_space(self):
-        """
-        Get the single action space for vectorized environments.
+        """Get the single action space for vectorized environments.
 
         Returns:
             gym.Space: The single action space.
@@ -1597,8 +1567,7 @@ class EnvPoolWrapper(EnvWrapper):
 
     @property
     def single_observation_space(self):
-        """
-        Get the single observation space for vectorized environments.
+        """Get the single observation space for vectorized environments.
 
         Returns:
             gym.Space: The single observation space.
@@ -1614,8 +1583,7 @@ class EnvPoolWrapper(EnvWrapper):
     
     @property
     def config(self):
-        """
-        Get the configuration of the wrapper.
+        """Get the configuration of the wrapper.
 
         Returns:
             dict: Configuration dictionary.
@@ -1640,8 +1608,7 @@ class EnvPoolWrapper(EnvWrapper):
         # }
     
     def to_json(self):
-        """
-        Serialize the wrapper configuration to JSON.
+        """Serialize the wrapper configuration to JSON.
 
         Returns:
             str: JSON string representing the configuration.
@@ -1650,8 +1617,7 @@ class EnvPoolWrapper(EnvWrapper):
 
     @classmethod
     def from_json(cls, json_env_spec):
-        """
-        Create a EnvPool wrapper instance from a JSON string.
+        """Create a EnvPool wrapper instance from a JSON string.
 
         Args:
             json_env_spec (str): JSON string representing the configuration.
@@ -1788,8 +1754,7 @@ class IsaacSimWrapper(EnvWrapper):
         distance_threshold:float|None=None,
         enable_cameras:bool=False,
     ):
-        """
-        Wrapper for Isaac Sim environments.
+        """Wrapper for Isaac Sim environments.
 
         This wrapper supports initialization, resetting, stepping, rendering,
         and JSON-based serialization of Isaac Sim environments.
@@ -1817,8 +1782,7 @@ class IsaacSimWrapper(EnvWrapper):
 
 
     def _initialize_env(self):
-        """
-        Initialize the Isaac Sim environment with unique seeds for each environment.
+        """Initialize the Isaac Sim environment with unique seeds for each environment.
         """
         import importlib
 
@@ -1869,8 +1833,7 @@ class IsaacSimWrapper(EnvWrapper):
 
         
     def format_actions(self, actions: np.ndarray | T.Tensor):
-        """
-        Format actions for Isaac Sim environment.
+        """Format actions for Isaac Sim environment.
         
         Args:
             actions: Actions to format.

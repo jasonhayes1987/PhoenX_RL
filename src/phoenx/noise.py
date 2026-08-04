@@ -6,8 +6,7 @@ import numpy as np
 from .torch_utils import get_device
 
 class Noise(ABC):
-    """
-    Base class for noise processes.
+    """Base class for noise processes.
     """
 
     def __init__(self, device=None):
@@ -15,8 +14,7 @@ class Noise(ABC):
 
     @abstractmethod
     def __call__(self, shape: tuple) -> T.Tensor:
-        """
-        Generate noise based on the specific implementation.
+        """Generate noise based on the specific implementation.
 
         Args:
             shape (tuple): Shape of the noise to generate.
@@ -25,8 +23,7 @@ class Noise(ABC):
 
     @abstractmethod
     def get_config(self) -> dict:
-        """
-        Retrieve the configuration of the noise process.
+        """Retrieve the configuration of the noise process.
 
         Returns:
             dict: Configuration details.
@@ -35,8 +32,7 @@ class Noise(ABC):
 
     @abstractmethod
     def clone(self, device: Optional[str | T.device] = None) -> 'Noise':
-        """
-        Clone the noise process.
+        """Clone the noise process.
 
         Returns:
             Noise: A new instance of the same noise process.
@@ -45,8 +41,7 @@ class Noise(ABC):
 
     @classmethod
     def create_instance(cls, noise_type: str, **kwargs) -> 'Noise':
-        """
-        Creates an instance of the requested noise class.
+        """Creates an instance of the requested noise class.
 
         Args:
             noise_type (str): Name of the noise class to instantiate.
@@ -73,8 +68,7 @@ class Noise(ABC):
             raise ValueError(f"{noise_type} is not a recognized noise class")
 
 class UniformNoise(Noise):
-    """
-    Uniform noise generator.
+    """Uniform noise generator.
     """
     def __init__(self, shape, minval=0, maxval=1, device=None):
         super().__init__(device)
@@ -86,8 +80,7 @@ class UniformNoise(Noise):
         self.noise_gen = uniform.Uniform(low=self.minval, high=self.maxval)
 
     def __call__(self, shape: tuple=None) -> T.Tensor:
-        """
-        Generate uniform noise.
+        """Generate uniform noise.
 
         Returns:
             T.Tensor: Generated noise.
@@ -97,8 +90,7 @@ class UniformNoise(Noise):
         return self.noise_gen.sample(shape)
 
     def get_config(self) -> dict:
-        """
-        Retrieve the configuration of the UniformNoise.
+        """Retrieve the configuration of the UniformNoise.
 
         Returns:
             dict: Configuration details.
@@ -114,8 +106,7 @@ class UniformNoise(Noise):
         }
     
     def clone(self, device: Optional[str | T.device] = None) -> 'UniformNoise':
-        """
-        Clone the UniformNoise instance.
+        """Clone the UniformNoise instance.
 
         Returns:
             UniformNoise: A new instance with the same configuration.
@@ -128,8 +119,7 @@ class UniformNoise(Noise):
         return UniformNoise(self.shape, self.minval.item(), self.maxval.item(), device)
 
 class NormalNoise(Noise):
-    """
-    Normal (Gaussian) noise generator.
+    """Normal (Gaussian) noise generator.
     """
     def __init__(self, mean=0.0, stddev=1.0, device=None):
         super().__init__(device)
@@ -138,14 +128,12 @@ class NormalNoise(Noise):
         self.reset_noise_gen()
 
     def reset_noise_gen(self) -> None:
-        """
-        Reset the noise generator to the original mean and standard deviation.
+        """Reset the noise generator to the original mean and standard deviation.
         """
         self.noise_gen = normal.Normal(loc=self.mean, scale=self.stddev)
 
     def __call__(self, shape: Optional[tuple[int, ...]]=(1,1)) -> T.Tensor:
-        """
-        Generate normal noise.
+        """Generate normal noise.
         
         Args:
             shape (Optional[Tuple[int, ...]]): Shape for the noise tensor (e.g., (batch_size, action_dim)).
@@ -171,8 +159,7 @@ class NormalNoise(Noise):
         self.reset_noise_gen()
 
     def get_config(self) -> dict:
-        """
-        Retrieve the configuration of the NormalNoise.
+        """Retrieve the configuration of the NormalNoise.
 
         Returns:
             dict: Configuration details.
@@ -187,8 +174,7 @@ class NormalNoise(Noise):
         }
     
     def clone(self, device: Optional[str | T.device] = None) -> 'NormalNoise':
-        """
-        Clone the NormalNoise instance.
+        """Clone the NormalNoise instance.
 
         Returns:
             NormalNoise: A new instance with the same configuration.

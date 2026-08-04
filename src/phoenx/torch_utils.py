@@ -8,8 +8,7 @@ import numpy as np
 
 
 def move_to_device(obj, device: T.device | str, visited=None) -> object:
-    """
-    Recursively move all tensors and custom objects with device attributes to the specified device.
+    """Recursively move all tensors and custom objects with device attributes to the specified device.
     
     Args:
         obj: Object to move (can be tensor, module, custom object, list, dict, etc.).
@@ -124,8 +123,7 @@ def move_to_device(obj, device: T.device | str, visited=None) -> object:
     return obj
 
 def verify_device(obj, expected_device: str | T.device, verbose=False, indent=0, visited=None):
-    """
-    Recursively verifies that all tensors and objects with device attributes are on the expected device.
+    """Recursively verifies that all tensors and objects with device attributes are on the expected device.
     
     Args:
         obj: Object to check (can be tensor, module, custom object, list, dict, etc.).
@@ -292,8 +290,7 @@ def verify_device(obj, expected_device: str | T.device, verbose=False, indent=0,
     return stats
 
 def get_device(device_spec: Optional[str | T.device] = None) -> T.device:
-    """
-    Convert any valid device specification to a torch.device object.
+    """Convert any valid device specification to a torch.device object.
     
     Args:
         device_spec: Can be a string ('cuda', 'cpu'), a torch.device object, 
@@ -302,7 +299,6 @@ def get_device(device_spec: Optional[str | T.device] = None) -> T.device:
     Returns:
         torch.device: The corresponding device object
     """
-
     if isinstance(device_spec, str):
         return T.device('cuda' if device_spec == 'cuda' and T.cuda.is_available() else 'cpu')
     elif isinstance(device_spec, T.device):
@@ -311,8 +307,7 @@ def get_device(device_spec: Optional[str | T.device] = None) -> T.device:
         return T.device('cuda' if T.cuda.is_available() else 'cpu')
 
 def set_seed(seed: int):
-    """
-    Set the random seed for reproducibility in PyTorch and NumPy.
+    """Set the random seed for reproducibility in PyTorch and NumPy.
 
     Args:
         seed (int): The seed to set for all random number generators.
@@ -327,8 +322,7 @@ def VarianceScaling_(
     mode: str = 'fan_in', 
     distribution: str = 'normal'
 ):
-    """
-    Apply variance scaling initialization to a tensor.
+    """Apply variance scaling initialization to a tensor.
 
     Args:
         tensor (torch.Tensor): The tensor to initialize.
@@ -367,8 +361,7 @@ def VarianceScaling_(
             )
     
 def get_optimizer_by_name(name: str):
-    """
-    Retrieve an optimizer class by name.
+    """Retrieve an optimizer class by name.
 
     Args:
         name (str): Name of the optimizer (e.g., 'Adam', 'SGD').

@@ -1,12 +1,11 @@
-"General utility functions"
+"""General utility functions"""
 
 import torch as T
 import numpy as np
 
 
 def flatten_dict(d: dict, parent_key: str = '', sep: str = '_') -> dict:
-    """
-    Flatten a nested dictionary.
+    """Flatten a nested dictionary.
 
     Args:
         d (dict): The dictionary to flatten.

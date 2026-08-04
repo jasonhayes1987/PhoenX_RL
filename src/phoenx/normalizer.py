@@ -11,8 +11,7 @@ def create_normalizer(config: dict) -> 'BaseNormalizer':
     return NORMALIZER_CLASSES[normalizer_type](**config['config'])
 
 class BaseNormalizer:
-    """
-    Base Normalizer class.
+    """Base Normalizer class.
 
     Attributes:
         num_features (int): Number of features to normalize.
@@ -69,8 +68,7 @@ class BaseNormalizer:
                 setattr(self, key, value)
 
     def add(self, new_data: T.Tensor) -> None:
-        """
-        Update local statistics with new data.
+        """Update local statistics with new data.
 
         Args:
             new_data (T.Tensor): New data to update local statistics.
@@ -102,8 +100,7 @@ class BaseNormalizer:
             self.logger.debug(f"Normalizer add: step={self.step}, data={new_data}, data_shape={new_data.shape}, local_cnt={self.local_cnt}, local_mean={self.local_mean}, local_M2={self.local_M2}, running_cnt={self.running_cnt}")
 
     def update(self) -> None:
-        """
-        Update running statistics based on local statistics.
+        """Update running statistics based on local statistics.
         """
         if self.local_cnt.item() == 0:
             return
@@ -140,8 +137,7 @@ class BaseNormalizer:
         self.local_M2.zero_()
 
     def denormalize(self, v: T.Tensor) -> T.Tensor:
-        """
-        Denormalize a tensor using running statistics.
+        """Denormalize a tensor using running statistics.
 
         Args:
             v (T.Tensor): Input tensor to denormalize.
@@ -162,8 +158,7 @@ class BaseNormalizer:
         return self
 
     def get_config(self) -> dict:
-        """
-        Retrieve the configuration and state of the normalizer.
+        """Retrieve the configuration and state of the normalizer.
 
         Returns:
             dict: Configuration and state of the normalizer.
@@ -181,8 +176,7 @@ class BaseNormalizer:
         }
 
     def save(self, file_path: str) -> None:
-        """
-        Save the current state of the normalizer to a file.
+        """Save the current state of the normalizer to a file.
 
         Args:
             file_path (str): Path to save the state.
@@ -202,8 +196,7 @@ class BaseNormalizer:
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'BaseNormalizer':
-        """
-        Load a BaseNormalizer state from a file.
+        """Load a BaseNormalizer state from a file.
 
         Args:
             config (dict): Configuration of the normalizer.
@@ -212,7 +205,6 @@ class BaseNormalizer:
         Returns:
             BaseNormalizer: A BaseNormalizer instance with the loaded state.
         """
-
         norm_type = config['type']
         if norm_type not in NORMALIZER_CLASSES:
             raise ValueError(f"Invalid normalizer type: {norm_type}")
@@ -246,8 +238,7 @@ class BaseNormalizer:
         self.running_std = T.as_tensor(state['running_std'], device=self.device)
 
 class RunningNorm(BaseNormalizer):
-    """
-    Normalizes data using running statistics (mean and standard deviation).
+    """Normalizes data using running statistics (mean and standard deviation).
 
     Attributes:
         num_features (int): Number of features to normalize.
@@ -270,8 +261,7 @@ class RunningNorm(BaseNormalizer):
                          name=name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
-        """
-        Normalize a tensor using running statistics.
+        """Normalize a tensor using running statistics.
 
         Args:
             v (T.Tensor): Input tensor to normalize.
@@ -299,8 +289,7 @@ class RunningNorm(BaseNormalizer):
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'RunningNorm':
-        """
-        Load a RunningNorm state from a file.
+        """Load a RunningNorm state from a file.
 
         Args:
             config (dict): Configuration of the normalizer.
@@ -309,7 +298,6 @@ class RunningNorm(BaseNormalizer):
         Returns:
             RunningNorm: A RunningNorm instance with the loaded state.
         """
-
         device = get_device(config['device'])
         state = T.load(state_path, map_location='cpu', weights_only=False)
         normalizer = RunningNorm(
@@ -332,8 +320,7 @@ class RunningNorm(BaseNormalizer):
         return normalizer
 
 class BatchNorm(BaseNormalizer):
-    """
-    Normalizes data using batch statistics (mean and standard deviation).
+    """Normalizes data using batch statistics (mean and standard deviation).
 
     Attributes:
         num_features (int): Number of features to normalize.
@@ -356,8 +343,7 @@ class BatchNorm(BaseNormalizer):
                          name=name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
-        """
-        Normalize a tensor using batch statistics during training, running statistics during evaluation.
+        """Normalize a tensor using batch statistics during training, running statistics during evaluation.
         """
         if v.device != self.device:
             v = v.to(self.device)
@@ -382,8 +368,7 @@ class BatchNorm(BaseNormalizer):
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'BatchNorm':
-        """
-        Load a BatchNorm state from a file.
+        """Load a BatchNorm state from a file.
 
         Args:
             config (dict): Configuration of the normalizer.
@@ -392,7 +377,6 @@ class BatchNorm(BaseNormalizer):
         Returns:
             BatchNorm: A BatchNorm instance with the loaded state.
         """
-
         device = get_device(config['device'])
         state = T.load(state_path, map_location='cpu', weights_only=False)
         normalizer = BatchNorm(
@@ -415,8 +399,7 @@ class BatchNorm(BaseNormalizer):
         return normalizer
 
 class RewardNorm(BaseNormalizer):
-    """
-    Normalizes rewards using running return standard deviation.
+    """Normalizes rewards using running return standard deviation.
     """
     def __init__(
         self,
@@ -442,8 +425,7 @@ class RewardNorm(BaseNormalizer):
         self.returns = None
 
     def add(self, rewards: T.Tensor, dones: T.Tensor) -> T.Tensor:
-        """
-        Add rewards to returns and update running statistics.
+        """Add rewards to returns and update running statistics.
         """
         if rewards.device != self.device:
             rewards = rewards.to(self.device)
@@ -467,8 +449,7 @@ class RewardNorm(BaseNormalizer):
         self.returns[dones] = 0.0
 
     def normalize(self, rewards: T.Tensor) -> T.Tensor:
-        """
-        Normalize rewards using running return standard deviation.
+        """Normalize rewards using running return standard deviation.
         """
         if rewards.device != self.device:
             rewards = rewards.to(self.device)
@@ -490,8 +471,7 @@ class RewardNorm(BaseNormalizer):
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'RewardNorm':
-        """
-        Load a RewardNorm state from a file.
+        """Load a RewardNorm state from a file.
 
         Args:
             config (dict): Configuration of the normalizer.
@@ -500,7 +480,6 @@ class RewardNorm(BaseNormalizer):
         Returns:
             RewardNorm: A RewardNorm instance with the loaded state.
         """
-
         device = get_device(config['device'])
         state = T.load(state_path, map_location='cpu', weights_only=False)
         normalizer = RewardNorm(

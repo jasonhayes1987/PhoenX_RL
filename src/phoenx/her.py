@@ -1,5 +1,4 @@
-"""
-Hindsight Experience Replay (HER) — pluggable relabeler.
+"""Hindsight Experience Replay (HER) — pluggable relabeler.
 
 A buffer-agnostic strategy object that converts completed episodes into
 hindsight-relabeled samples. Supports both off-policy buffers (ReplayBuffer /
@@ -83,8 +82,7 @@ from .torch_utils import get_device
 # ============================================================================
 
 class AchievedGoalPool:
-    """
-    FIFO ring buffer of achieved goals from past episodes.
+    """FIFO ring buffer of achieved goals from past episodes.
 
     Required only by strategy='random'. The buffer's HER hook calls
     `pool.add(achieved_goals)` whenever an episode completes, populating the
@@ -204,8 +202,7 @@ class HindsightRelabeler:
         self,
         episode: Dict[str, T.Tensor],
     ) -> Union[Dict[str, T.Tensor], List[Dict[str, T.Tensor]], None]:
-        """
-        Relabel one completed episode.
+        """Relabel one completed episode.
 
         Args:
             episode: Dict of (T_ep, *feat) tensors representing a single completed
@@ -252,8 +249,7 @@ class HindsightRelabeler:
         episode: Dict[str, T.Tensor],
         T_ep: int,
     ) -> Tuple[T.Tensor, T.Tensor]:
-        """
-        For each step t in the episode, sample k goals (or 1 for 'final').
+        """For each step t in the episode, sample k goals (or 1 for 'final').
 
         Returns:
             starts: (M,) int64 step indices into [0, T_ep) — where each window starts.
@@ -312,11 +308,10 @@ class HindsightRelabeler:
         episode: Dict[str, T.Tensor],
         T_ep: int,
     ) -> Dict[str, T.Tensor]:
-        """
-        Build (M, N, *feat) N-step windows matching VectorNStepReward's padding:
-          state-like fields: repeat-padded (clamp out-of-range to last valid step)
-          reward-like fields: zero-padded (gather + T.where mask)
-          trajectory_lengths: count of valid steps per window
+        """Build (M, N, *feat) N-step windows matching VectorNStepReward's padding:
+        state-like fields: repeat-padded (clamp out-of-range to last valid step)
+        reward-like fields: zero-padded (gather + T.where mask)
+        trajectory_lengths: count of valid steps per window
         """
         M = int(starts.shape[0])
         N = self.N
@@ -413,8 +408,7 @@ class HindsightRelabeler:
         episode: Dict[str, T.Tensor],
         T_ep: int,
     ) -> T.Tensor:
-        """
-        Pick K goals total — one per relabeled copy.
+        """Pick K goals total — one per relabeled copy.
 
         Returns: (K, *goal_dim) tensor. K = 1 for 'final', K = num_goals otherwise.
                  (0, *goal_dim) if no goals can be sampled (e.g. empty 'random' pool).
@@ -446,8 +440,7 @@ class HindsightRelabeler:
         episode: Dict[str, T.Tensor],
         T_ep: int,
     ) -> List[Dict[str, T.Tensor]]:
-        """
-        Build K full trajectory dicts. Each dict shares its state/action arrays
+        """Build K full trajectory dicts. Each dict shares its state/action arrays
         with the original episode (same shape (T_ep, *feat) as on-policy rollouts).
         Only desired_goals (broadcast new goal) and rewards (recomputed under it)
         differ — plus terminations if `relabel_terminations` is on.
@@ -501,8 +494,7 @@ class HindsightRelabeler:
 
     @staticmethod
     def _resolve_compute_reward(env: EnvWrapper):
-        """
-        Walks EnvWrapper.env → ... → SyncVectorEnv → envs[0].unwrapped looking
+        """Walks EnvWrapper.env → ... → SyncVectorEnv → envs[0].unwrapped looking
         for compute_reward(achieved, desired, info). Falls back to
         env.get_base_env() if that yields something exposing it directly
         (e.g. IsaacSim envs).
