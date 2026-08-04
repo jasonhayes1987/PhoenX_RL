@@ -161,3 +161,4 @@ node_modules/
 *.npz
 src/app/wandb_api_key
 tools/check_docstring_only_diff.py
+AGENTS.md

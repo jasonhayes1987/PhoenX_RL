@@ -51,4 +51,8 @@ nav:
       - Noise (phoenx.noise): api/noise.md
       - Schedulers (phoenx.schedulers): api/schedulers.md
       - Builder (phoenx.builder): api/builder.md
+      - RL Callbacks (phoenx.rl_callbacks): api/rl_callbacks.md
+      - Agent Utils (phoenx.agent_utils): api/agent_utils.md
+      - Adaptive KL (phoenx.adaptive_kl): api/adaptive_kl.md
+      - Distributions (phoenx.distributions): api/distributions.md
   - Changelog: changelog.md
