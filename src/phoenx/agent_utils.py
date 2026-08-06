@@ -1,17 +1,22 @@
-import json
-from math import e
-from pathlib import Path
-from typing import Dict, Any, List, Optional
-import numpy as np
+"""Return estimators and shared update helpers used by the agents.
+
+These are the stateless numeric pieces the agents in ``phoenx.rl_agents`` call
+during an update: N-step and Monte Carlo returns, TD errors, GAE, and the
+Retrace-corrected Q target. Alongside them sit a few helpers that act on
+modules and optimizers rather than raw tensors — auto-entropy setup, Polyak
+averaging, and gradient-norm reporting.
+
+Conventions:
+    - per-timestep tensors are laid out ``[timesteps, num_envs]``, and N-step
+      windows are ``[batch_size, N]``;
+    - ``device`` arguments are resolved through ``torch_utils.get_device``, so
+      ``None`` selects the framework default;
+    - the ``compute_*`` functions return new tensors and leave their inputs
+      untouched, while ``soft_update`` writes into the target module in place.
+"""
+
 import torch as T
-import torch.nn as nn
 from torch.optim import Optimizer
-from .models import ActorModel, ContinuousCritic, ValueModel, StochasticContinuousPolicy, StochasticDiscretePolicy, select_policy_model, select_critic_model
-from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, NStepReward, VectorNStepReward
-from .buffer import Buffer, ReplayBuffer, PrioritizedReplayBuffer
-from .noise import Noise, NormalNoise, UniformNoise
-from .normalizer import BaseNormalizer, RunningNorm, BatchNorm, RewardNorm
-from .schedulers import ScheduleWrapper
 from .torch_utils import get_device
 
 def compute_n_step_return(
@@ -25,7 +30,6 @@ def compute_n_step_return(
     Args:
         rewards: Tensor of rewards [batch_size, N].
         gamma: Discount factor.
-        N: Number of steps for the return.
         device: Device for tensor operations.
 
     Returns:
@@ -47,7 +51,7 @@ def compute_td_error(
     bootstrap_truncations: bool
     ) -> T.Tensor:
     """Compute TD errors for a batch of trajectories.
-    
+
     Args:
         rewards: Tensor of rewards [batch_size, num_envs].
         values: Tensor of values [batch_size, num_envs].
@@ -72,12 +76,12 @@ def compute_monte_carlo_returns(
     device:T.device|str|None = None
 ) -> T.Tensor:
     """Compute discounted returns for each step in a trajectory.
-    
+
     Args:
         rewards: Tensor of rewards [batch_size, num_envs].
         gamma: Discount factor.
         device: Device for tensor operations.
-    
+
     Returns:
         Tensor of discounted returns [batch_size, num_envs].
     """
@@ -99,15 +103,17 @@ def compute_gae(
     device:T.device|str|None = None
     ) -> T.Tensor:
     """Compute Generalized Advantage Estimation (GAE) for a batch of TD errors.
-    
+
     Args:
         td_errors: Tensor of TD errors [timesteps, num_envs].
         terminations: Tensor of termination flags [timesteps, num_envs].
         truncations: Tensor of truncation flags [timesteps, num_envs].
         gamma: Discount factor.
         gae_lambda: GAE lambda parameter.
-        # bootstrap_truncations: Whether to bootstrap the returns on truncated episodes.
         device: Device for tensor operations.
+
+    Returns:
+        Tensor of advantages [timesteps, num_envs].
     """
     device = get_device(device)
     timesteps, num_envs = td_errors.shape
@@ -242,12 +248,31 @@ def compute_q_retrace(
         # "done_window_final_cum_c": done_window_final_cum_c,
         # "done_window_max_leakage": done_window_max_leakage,
     }
-    
+
     return q_retrace, metrics
 
 def setup_auto_entropy(policy, *, target_entropy_scale=0.98,
                       lr=3e-4, device=None):
-    """Build target_entropy / log_alpha / optimizer for auto-tuned entropy."""
+    """Build the target entropy, log-alpha, and optimizer for entropy tuning.
+
+    The target depends on the policy's action distribution: continuous
+    distributions target ``-num_actions`` and discrete ones ``log(num_actions)``,
+    each scaled by ``target_entropy_scale``.
+
+    Args:
+        policy (torch.nn.Module): Policy exposing ``distribution`` and
+            ``num_actions``, from which the target entropy is derived.
+        target_entropy_scale (float): Fraction of the reference entropy to aim
+            for.
+        lr (float): Learning rate for the log-alpha optimizer.
+        device (torch.device | str | None): Device the log-alpha parameter is
+            allocated on.
+
+    Returns:
+        target_entropy (float): Entropy the policy is tuned toward.
+        log_alpha (torch.Tensor): Learnable log-alpha, requiring grad.
+        optimizer (torch.optim.Adam): Optimizer that updates ``log_alpha``.
+    """
     if policy.distribution in ("normal", "beta", "kumaraswamy"):
         target_entropy = target_entropy_scale * -float(policy.num_actions)
     else:  # discrete
@@ -267,9 +292,10 @@ def soft_update(current_module, target_module, tau: float) -> None:
     of a ModularModel used as a target network).
 
     Args:
-        current_module: The module to update from
-        target_module: The target module to update
-        tau: The interpolation factor
+        current_module (torch.nn.Module): Module to read parameters from.
+        target_module (torch.nn.Module): Module updated in place; may hold a
+            subset of ``current_module``'s named parameters.
+        tau: Interpolation factor, where ``1.0`` copies outright.
     """
     cur_params = dict(current_module.named_parameters())
     for name, tp in target_module.named_parameters():
@@ -282,6 +308,18 @@ def soft_update(current_module, target_module, tau: float) -> None:
             tbuf.copy_(cur_buf[name])
 
 def grad_norm_from_optimizer(optimizer: Optimizer) -> float:
+    """Compute the global L2 norm of the gradients an optimizer owns.
+
+    Only parameters carrying a populated ``.grad`` contribute, so calling this
+    before ``backward`` — or after ``zero_grad(set_to_none=True)`` — reports
+    zero rather than raising.
+
+    Args:
+        optimizer: Optimizer whose ``param_groups`` are scanned.
+
+    Returns:
+        Global gradient L2 norm, or ``0.0`` when no parameter carries one.
+    """
     total_sq = None
     for group in optimizer.param_groups:
         for p in group["params"]:
