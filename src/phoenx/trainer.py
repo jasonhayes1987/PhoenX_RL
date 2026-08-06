@@ -26,7 +26,7 @@ import torch as T
 from .torch_utils import set_seed
 from .rl_callbacks import Callback, WandbCallback, load as build_callback
 from .rl_agents import Agent, HasTargetNetworks, build_agent
-from .env_wrapper import EnvWrapper, Observation
+from .env_wrapper import Action, EnvWrapper, Observation
 from .obs_utils import flatten_obs, tree_index, tree_to
 from .buffer import Buffer, PrioritizedReplayBuffer
 from .her import HindsightRelabeler
@@ -692,7 +692,7 @@ class Trainer:
         states: np.ndarray|T.Tensor,
         goals: np.ndarray|T.Tensor|None=None,
         context: str = 'train',
-    )->T.Tensor:
+    )->Action:
         """Select an action from the current policy.
 
         Args:
@@ -701,8 +701,7 @@ class Trainer:
             context: ``"train"`` or ``"test"`` forwarded to ``agent.act``.
 
         Returns:
-            Value returned by ``agent.act`` (typically an ``Action`` dataclass;
-                the signature annotates ``T.Tensor``).
+            Value returned by ``agent.act`` (``Action`` dataclass).
         """
         return self.agent.act(
             states,
