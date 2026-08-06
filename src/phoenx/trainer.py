@@ -1,3 +1,13 @@
+"""Train and evaluate agents against Gymnasium / Isaac environments.
+
+``Trainer`` owns the outer loop: reset, step, optional learn, logging, and
+checkpointing. ``TrainingSchedule`` decides how long to run and when to call
+``learn``; ``SuccessCriterion`` turns episode outcomes into a success flag for
+logging. Together they are the object graph that
+[build_trainer_from_config][phoenx.builder.build_trainer_from_config] assembles
+from YAML.
+"""
+
 from collections import deque
 import json
 import random
@@ -25,6 +35,20 @@ from .logging_config import get_logger
 
 @dataclass
 class TrainingSchedule:
+    """When to stop a run and how often the agent should learn.
+
+    Attributes:
+        stop_unit: Whether ``stop_units`` counts timesteps or episodes.
+        stop_units: Training length in ``stop_unit`` units.
+        learn_every_unit: Whether ``learn_every`` counts timesteps or episodes.
+        learn_every: Progress between consecutive ``learn`` calls.
+        updates_per_learn: Gradient updates performed per ``learn`` call.
+        batch_size: Transitions drawn per update when ``updates_per_learn > 1``.
+        mini_batch_size: Mini-batch size forwarded to ``agent.learn``.
+        learning_epochs: Epochs forwarded to ``agent.learn``.
+        warmup_steps: Environment steps collected before the first learn.
+        seed: Optional RNG seed; ``None`` draws a random seed at run start.
+    """
     # Training Length
     stop_unit: Literal["timestep", "episode"] = "timestep" # Train length unit
     stop_units: int = 1_000_000 # Train length
@@ -41,6 +65,15 @@ class TrainingSchedule:
     seed: int | None = None # Seed
 
     def is_done(self, *, step: int, episodes: int) -> bool:
+        """Return whether the run has reached its configured length.
+
+        Args:
+            step: Cumulative environment steps so far.
+            episodes: Cumulative completed episodes so far.
+
+        Returns:
+            ``True`` when progress in ``stop_unit`` meets ``stop_units``.
+        """
         if self.stop_unit == "timestep":
             return step >= self.stop_units
         return episodes >= self.stop_units
@@ -51,6 +84,18 @@ class TrainingSchedule:
         episodes: int,
         last_learn_at: int,
     ) -> bool:
+        """Return whether it is time for another ``learn`` call.
+
+        Args:
+            step: Cumulative environment steps so far.
+            episodes: Cumulative completed episodes so far.
+            last_learn_at: Progress (in ``learn_every_unit``) at the previous
+                learn gate.
+
+        Returns:
+            ``False`` during warmup; otherwise ``True`` when progress has
+                advanced by at least ``learn_every`` since ``last_learn_at``.
+        """
         if step < self.warmup_steps:
             return False
         progress = {
@@ -60,6 +105,11 @@ class TrainingSchedule:
         return progress >= last_learn_at + self.learn_every
 
     def get_config(self) -> dict:
+        """Return a JSON-safe dict of the schedule fields.
+
+        Returns:
+            Mapping of constructor field names to their current values.
+        """
         return {
             "stop_unit": self.stop_unit,
             "stop_units": self.stop_units,
@@ -78,30 +128,40 @@ class TrainingSchedule:
 class SuccessCriterion:
     """Defines what counts as a successful episode.
 
-    metric:
-        "info_flag": env reports success (e.g. gymnasium-robotics 'is_success')
-        "goal_distance": ||achieved - desired|| <= threshold
-        "episode_reward": episode reward >= threshold
+    Attributes:
+        metric: How success is decided. ``"info_flag"`` reads an env info key
+            (default ``is_success``); ``"goal_distance"`` checks
+            ``||achieved - desired|| <= threshold``; ``"episode_reward"``
+            checks ``episode_reward >= threshold``.
+        threshold: Cutoff required for ``goal_distance`` and
+            ``episode_reward``; unused for ``info_flag``.
+        info_key: Info-dict key used when ``metric="info_flag"``.
     """
     metric: Literal["info_flag", "goal_distance", "episode_reward"]
     threshold: float | None = None
     info_key: str = "is_success"
 
     def __post_init__(self):
+        """Validate that threshold-dependent metrics supply a threshold.
+
+        Raises:
+            ValueError: If ``metric`` is ``goal_distance`` or
+                ``episode_reward`` and ``threshold`` is ``None``.
+        """
         if self.metric in ("goal_distance", "episode_reward") and self.threshold is None:
             raise ValueError(f"metric '{self.metric}' requires a threshold")
 
     def evaluate(self, obs: Observation, env_idx: int, episode_reward: float) -> bool | None:
-        """Evaluates the success criterion for the given observation and environment index.
-        Returns True/False or None if the metric is not logged.
+        """Evaluate success for one finished environment index.
 
         Args:
-            obs: Observation to evaluate.
-            env_idx: Environment index.
-            episode_reward: Episode reward.
+            obs: Terminal observation for the finished episode.
+            env_idx: Parallel-env index that just completed.
+            episode_reward: Cumulative extrinsic reward for that episode.
 
         Returns:
-            True/False or None if the metric is not logged.
+            ``True`` / ``False`` when the metric can be computed, or ``None``
+                when the required fields are missing from ``obs``.
         """
         if self.metric == "episode_reward":
             return episode_reward >= self.threshold
@@ -117,6 +177,11 @@ class SuccessCriterion:
         return bool(flag[env_idx]) if hasattr(flag, "__getitem__") else bool(flag)
 
     def get_config(self) -> dict:
+        """Return a JSON-safe dict of the criterion fields.
+
+        Returns:
+            Mapping of constructor field names to their current values.
+        """
         return {
             "metric": self.metric,
             "threshold": self.threshold,
@@ -124,6 +189,13 @@ class SuccessCriterion:
         }
 
 class Trainer:
+    """Outer training / evaluation loop for a wired agent, env, and schedule.
+
+    Steps the environment, records into the buffer, calls ``agent.learn`` on the
+    schedule's cadence, drives callbacks and optional rendering, and checkpoints
+    when the running average reward improves.
+    """
+
     def __init__(
         self,
         agent:Agent,
@@ -136,7 +208,19 @@ class Trainer:
         log_level: str = 'INFO',
         save_dir: str = 'models/',
     ):
-        
+        """Wire the agent, environment, schedule, and optional run services.
+
+        Args:
+            agent: Policy / critic stack that acts and learns.
+            env: Vectorized environment wrapper to step.
+            schedule: Stop length, learn cadence, and batch sizes.
+            success_criterion: Optional episode-success evaluator for logging.
+            buffer: Replay or rollout buffer used during training.
+            renderer: Optional episode renderer / video writer.
+            callbacks: Optional list of train/test lifecycle callbacks.
+            log_level: Logger level name (e.g. ``"INFO"``).
+            save_dir: Directory for checkpoints and renderer output.
+        """
         self.agent = agent
         self.env = env
         self.schedule = schedule
@@ -170,9 +254,7 @@ class Trainer:
         self._resume_rng = None
 
     def _initialize_callbacks(self):
-        """Initialize and configure callbacks for logging and monitoring.
-
-        """
+        """Initialize and configure callbacks for logging and monitoring."""
         try:
             if self.callbacks:
                 for callback in self.callbacks:
@@ -184,11 +266,12 @@ class Trainer:
             raise ValueError(f"Error initializing callbacks: {e}")
 
     def _initialize_run(self, context: Literal["train", "test"], **kwargs: Any):
-        """Initializes the environment, seeds, and tracking variables for training.
+        """Initialize env, seed, model modes, and run-tracking counters.
 
         Args:
-            context (Literal["train", "test"]): Context of the run.
-            **kwargs: Additional keyword arguments for the run.
+            context: ``"train"`` or ``"test"``; selects model/normalizer mode
+                and which callback begin hooks fire.
+            **kwargs: Extra keys merged into the config passed to callbacks.
         """
         if self._initialized:
             return
@@ -323,7 +406,7 @@ class Trainer:
     #         env = getattr(env, 'env', None)
 
     def _iter_normalizers(self):
-        """Yields (name, normalizer) for every normalizer the agent actually has."""
+        """Yield ``(name, normalizer)`` for every normalizer the agent has."""
         for name in ("state_normalizer", "goal_normalizer",
                     "reward_normalizer", "advantage_normalizer"):
             norm = getattr(self.agent, name, None)
@@ -331,8 +414,15 @@ class Trainer:
                 yield name, norm
 
     def _apply_per_update(self, sample: dict, learn_metrics: dict) -> None:
-        """If using a PrioritizedReplayBuffer, push TD errors back as priorities
-        and (optionally) collect PER diagnostics for logging.
+        """Push TD errors into a prioritized buffer and collect PER metrics.
+
+        No-op unless ``self.buffer`` is a ``PrioritizedReplayBuffer``. Pops
+        ``td_errors`` from ``learn_metrics`` so a per-sample tensor never
+        reaches scalar loggers.
+
+        Args:
+            sample: Batch returned by ``buffer.sample``, including ``indices``.
+            learn_metrics: Metrics dict from ``agent.learn``; mutated in place.
         """
         # Pop so a per-sample tensor never leaks into wandb scalar logs.
         td_errors = learn_metrics.pop("td_errors", None)
@@ -352,6 +442,15 @@ class Trainer:
         learn_metrics.update(self._collect_per_metrics(sample, indices))
 
     def _collect_per_metrics(self, sample: dict, indices: T.Tensor) -> dict:
+        """Build scalar PER diagnostics for the latest sampled indices.
+
+        Args:
+            sample: Sampled batch carrying ``weights`` and ``probs``.
+            indices: Buffer indices of the samples just trained on.
+
+        Returns:
+            Mapping of ``PER/...`` scalar metric names to float values.
+        """
         # pb = self.buffer  # PrioritizedReplayBuffer
         actual_size = min(self.buffer.samples_added, self.buffer.buffer_size)
         valid = T.arange(actual_size, device=self.buffer.device)
@@ -379,7 +478,15 @@ class Trainer:
         }
 
     def set_normalizers(self, context: Literal["train", "test"]):
-        """Sets the normalizers to train or eval mode."""
+        """Set every agent normalizer to train or eval mode.
+
+        Args:
+            context: ``"train"`` calls ``norm.train()``; ``"test"`` calls
+                ``norm.eval()``.
+
+        Raises:
+            ValueError: If ``context`` is not ``"train"`` or ``"test"``.
+        """
         if context not in ("train", "test"):
             raise ValueError(f"Invalid context: {context}")
         for _, norm in self._iter_normalizers():
@@ -391,10 +498,10 @@ class Trainer:
         #     im.set_normalizers_mode(context)
 
     def add_to_normalizers(self, obs: Observation):
-        """Add relavent data from obs to the normalizers.
+        """Feed relevant fields from ``obs`` into the agent normalizers.
 
         Args:
-            obs: Observation to feed.
+            obs: Observation whose states, goals, and rewards are accumulated.
         """
         for name, norm in self._iter_normalizers():
             if name == "state_normalizer":
@@ -414,7 +521,7 @@ class Trainer:
         #     im.add_to_normalizers(obs)
 
     def update_normalizers(self):
-        """Updates the normalizers."""
+        """Recompute running statistics on every agent normalizer."""
         for _, norm in self._iter_normalizers():
             norm.update()
 
@@ -425,13 +532,13 @@ class Trainer:
 
     def normalize_observation(
         self, obs: Observation)->Observation:
-        """Normalizes the observation for the agent.
+        """Return a copy of ``obs`` with normalized states, goals, and rewards.
 
         Args:
-            obs (Observation): Observation to normalize.
-        
+            obs: Observation to normalize.
+
         Returns:
-            Observation: Normalized observation.
+            New ``Observation`` with normalized fields; other fields unchanged.
         """
         states = obs.states
         goals = obs.goals
@@ -449,6 +556,12 @@ class Trainer:
         return replace(obs, states=states, goals=goals, ach_goals=ach_goals, rewards=rewards)
 
     def update_schedulers(self):
+        """Step every attached schedule by ``env.num_envs``.
+
+        Covers agent entropy / noise / temperature schedules, intrinsic-reward
+        schedulers (including composite components), and per-module LR
+        schedulers on the composite model.
+        """
         schedulers = [
             getattr(self.agent, name, None)
             for name in ("entropy_schedule", "noise_schedule", "target_noise_schedule")
@@ -473,13 +586,19 @@ class Trainer:
                 s.step(self.env.num_envs)
 
     def step(self, training: bool = True):
-        """Performs a single step of training/testing.
-        
+        """Advance every parallel env by one step; optionally record to buffer.
+
+        Selects an action, steps the env, updates episode trackers, and builds
+        per-episode logs when any env finishes. During training, transitions
+        are written to the buffer and a best-checkpoint save may fire.
+
         Args:
-        training: bool: Whether the step is for training or testing.
-        
+            training: When ``True``, record into the buffer and allow
+                best-model checkpointing; when ``False``, evaluation only.
+
         Returns:
-        dict: A dictionary containing the step metrics.
+            result (dict): Mapping with ``step_log`` (per-step scalars) and
+                ``episode_logs`` (one dict per finished env this step).
         """
         step_log = {}
         episode_logs = []
@@ -574,15 +693,16 @@ class Trainer:
         goals: np.ndarray|T.Tensor|None=None,
         context: str = 'train',
     )->T.Tensor:
-        """Select an action based on the current policy.
+        """Select an action from the current policy.
 
         Args:
-            states: np.ndarray | T.Tensor: The current states.
-            goals: np.ndarray | T.Tensor | None: The current goals.
-            context: str: The context of the action (train, test).
-        
+            states: Current states (possibly already normalized).
+            goals: Optional goal tensor for goal-conditioned policies.
+            context: ``"train"`` or ``"test"`` forwarded to ``agent.act``.
+
         Returns:
-            T.Tensor: actions.
+            Value returned by ``agent.act`` (typically an ``Action`` dataclass;
+                the signature annotates ``T.Tensor``).
         """
         return self.agent.act(
             states,
@@ -595,8 +715,16 @@ class Trainer:
 
     @staticmethod
     def _shuffle_sample(sample: dict) -> dict:
-        """Apply one consistent random permutation across every tensor (or
-        dict-of-tensors) in a sampled batch.
+        """Apply one random permutation across every tensor in a sampled batch.
+
+        Dict-of-tensors values are permuted leaf-wise with the same index order
+        so batch alignment is preserved.
+
+        Args:
+            sample: Batch mapping whose leading dim is the batch axis.
+
+        Returns:
+            New mapping with every tensor (or dict-of-tensors) permuted alike.
         """
         ref = sample.get("states")
         if ref is None:
@@ -615,10 +743,17 @@ class Trainer:
         return {k: _permute(v) for k, v in sample.items()}
 
     def learn(self)->dict:
-        """Calls Agent.learn() schedule.update times, passing samples from the buffer.
-        
+        """Sample from the buffer and call ``agent.learn`` per the schedule.
+
+        Draws ``updates_per_learn * batch_size`` transitions when the buffer
+        is ready. With a single update the whole sample is passed through;
+        with multiple updates the sample is shuffled and sliced into
+        ``batch_size`` chunks. Each update runs
+        ``_apply_per_update`` for prioritized replay.
+
         Returns:
-            dict: A dictionary containing the learn metrics.
+            Metrics dict from the last ``agent.learn`` call, or ``{}`` when
+                the buffer is not yet ready.
         """
         learn_metrics = {}
         total_samples = self.schedule.updates_per_learn * self.schedule.batch_size
@@ -654,7 +789,12 @@ class Trainer:
         return learn_metrics
 
     def train(self):
-        """Trains Agent following the Schedule."""
+        """Run the training loop until ``schedule.is_done``.
+
+        Steps the env, learns on the schedule's cadence, soft-updates target
+        networks when present, drives callbacks, and optionally renders
+        episodes. Closes the env when finished.
+        """
         self._initialize_run(context="train")
         # Initialize Rich Console
         console = Console()
@@ -757,7 +897,15 @@ class Trainer:
         self.env.close()
 
     def test(self, unit: Literal["timestep", "episode"] = "episode", units: int = 1):
-        """Tests Agent following the Schedule."""
+        """Run an evaluation loop for a fixed number of timesteps or episodes.
+
+        Overwrites ``schedule.stop_unit`` / ``stop_units`` for this call, then
+        steps without learning until that budget is exhausted.
+
+        Args:
+            unit: Whether ``units`` counts timesteps or episodes.
+            units: Evaluation length in ``unit`` units.
+        """
         # Update schedule for testing
         self.schedule.stop_unit = unit
         self.schedule.stop_units = units
@@ -825,6 +973,11 @@ class Trainer:
 
         The env is serialized exactly once here (as its ``{"type", "config"}``
         spec); no sub-component re-embeds it.
+
+        Returns:
+            Mapping with ``agent``, ``env``, ``schedule``, and optional
+                ``success_criterion``, ``buffer``, ``renderer``, ``callbacks``,
+                plus ``log_level`` and ``save_dir``.
         """
         return {
             'agent': self.agent.get_config(),
@@ -839,7 +992,11 @@ class Trainer:
         }
 
     def _trainer_state(self) -> dict:
-        """Training counters/progress needed to resume seamlessly."""
+        """Return training counters needed to resume a run.
+
+        Returns:
+            Mapping of internal counter / history fields for ``trainer_state.pt``.
+        """
         return {
             "_step": self._step,
             "_best_reward": self._best_reward,
@@ -853,7 +1010,11 @@ class Trainer:
 
     @staticmethod
     def _rng_state() -> dict:
-        """Snapshot torch / numpy / python RNG (plus CUDA if available)."""
+        """Snapshot torch / numpy / python RNG (plus CUDA if available).
+
+        Returns:
+            Mapping with ``torch``, ``numpy``, ``python``, and optional ``cuda``.
+        """
         state = {
             "torch": T.get_rng_state(),
             "numpy": np.random.get_state(),
@@ -867,13 +1028,17 @@ class Trainer:
         """Persist the full run under ``run_dir`` (defaults to ``self.save_dir``).
 
         Writes one JSON config (the architecture of the whole tree) plus ``.pt``
-        state files mirroring the object tree::
+        state files mirroring the object tree:
 
             <run_dir>/config.json        # entire run tree, env serialized once
             <run_dir>/agent/             # weights + optimizers + normalizers + IM
             <run_dir>/trainer_state.pt   # step / episode / best-reward counters
             <run_dir>/rng.pt             # torch / numpy / python RNG
             <run_dir>/buffer.pt          # optional replay tensors (save_buffer=True)
+
+        Args:
+            run_dir: Destination directory; defaults to ``self.save_dir``.
+            save_buffer: When ``True``, also write ``buffer.pt``.
         """
         run_dir = Path(run_dir) if run_dir is not None else Path(self.save_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -901,12 +1066,14 @@ class Trainer:
         load_buffer: bool = False,
         log_level: str | None = None,
     ) -> "Trainer":
-        """Rebuild a fully wired Trainer from a directory written by :meth:`save`.
+        """Rebuild a fully wired Trainer from a directory written by ``save``.
+
+        See [Trainer.save][phoenx.trainer.Trainer.save] for the on-disk layout.
 
         Args:
             run_dir: Directory containing ``config.json`` and the state files.
             env: Optional live env to reuse instead of rebuilding from config.
-            load_weights: Restore model weights (False = architecture only).
+            load_weights: Restore model weights (``False`` = architecture only).
             load_buffer: Also restore the replay buffer from ``buffer.pt``.
             log_level: Logger level for the rebuilt Trainer.
 
@@ -967,7 +1134,17 @@ class Trainer:
 
     @staticmethod
     def _build_buffer(buffer_config: dict | None, env: EnvWrapper) -> Buffer | None:
-        """Reconstruct a buffer from its saved ``{"type", "config"}`` block."""
+        """Reconstruct a buffer from its saved ``{"type", "config"}`` block.
+
+        Args:
+            buffer_config: Serialized buffer spec, or ``None`` / empty to skip.
+            env: Live environment injected into the buffer (and any hindsight
+                relabeler) instead of rebuilding from config.
+
+        Returns:
+            Rebuilt ``Buffer`` instance, or ``None`` when ``buffer_config`` is
+                empty.
+        """
         if not buffer_config:
             return None
         kwargs = dict(buffer_config.get("config", {}))
