@@ -9,6 +9,10 @@ from . import wandb_support
 
 _CALLBACK_REGISTRY: dict[str, type] = {}
 
+# Bounds the interactive prompt inside wandb.login()'s credential fallback so a
+# training run can never block indefinitely waiting on stdin.
+_WANDB_LOGIN_TIMEOUT = 30
+
 
 # Decorator For Third Party Callbacks
 def register_callback(name: str | None = None):
@@ -64,7 +68,7 @@ class Callback():
         if register:
             _CALLBACK_REGISTRY[cls.__name__] = cls
     
-    def on_train_begin(self, models, logs=None):
+    def on_train_begin(self, logs, models):
         pass
 
     def on_train_end(self, logs=None):
@@ -101,7 +105,7 @@ class Callback():
         pass
 
     @classmethod
-    def load(cls, config):
+    def load(cls, config: dict) -> 'Callback':
 
         return cls(**config)
 
@@ -113,26 +117,40 @@ class WandbCallback(Callback):
     Args:
         project_name (str): Name of the W&B project.
         run_name (str, optional): Name of the specific W&B run.
-        chkpt_freq (int): Frequency of saving checkpoints.
-        _sweep (bool): Whether this run is part of a W&B sweep.
     """
 
-    def __init__(self, project_name: str, run_name: str = None, _sweep: bool = False):
-        # super().__init__()
+    def __init__(self, project_name: str, run_name: str = None):
         self.project_name = project_name
         self.run_name = run_name
-        # self.chkpt_freq = chkpt_freq
-        # self._sweep = _sweep
         self.save_dir = None
-        # self.model_type = None
         self.initialized = False
 
     def _ensure_wandb_login(self) -> None:
+        """Ensure a W&B session is authenticated before a run starts.
+
+        Resolution order:
+            1. If a run is already active (``wandb.run is not None``), do nothing.
+            2. The ``WANDB_API_KEY`` environment variable, if set.
+            3. A ``wandb_api_key`` file next to this module, if it exists and is
+               non-empty; its contents are also written back to
+               ``WANDB_API_KEY`` so subsequent calls see it.
+            4. If neither explicit source yields a key, fall back to wandb's own
+               credential resolution (a cached ``wandb login`` in
+               ``~/.netrc``/``~/_netrc``, a settings file, or a bounded
+               interactive prompt) via a plain ``wandb.login(relogin=False,
+               timeout=_WANDB_LOGIN_TIMEOUT)`` call.
+
+        Raises:
+            ValueError: If no credentials can be resolved from any of the
+                sources above, i.e. the fallback ``wandb.login`` call returns a
+                falsy value or raises (older wandb releases raise
+                ``wandb.errors.UsageError`` instead of returning ``False``).
+        """
         if wandb.run is not None:
             return
         api_key = os.getenv("WANDB_API_KEY")
+        key_path = Path(__file__).with_name("wandb_api_key")
         if not api_key:
-            key_path = Path(__file__).with_name("wandb_api_key")
             if key_path.exists():
                 api_key = key_path.read_text(encoding="utf-8").strip()
                 if api_key:
@@ -140,8 +158,21 @@ class WandbCallback(Callback):
 
         if api_key:
             wandb.login(key=api_key, relogin=False)
-        else:
-            raise ValueError("WANDB_API_KEY not found. Please set the WANDB_API_KEY environment variable or create a wandb_api_key file in the app directory.")
+            return
+
+        no_credentials = (
+            "WANDB_API_KEY not found and no cached wandb credentials could be "
+            "resolved. Set the WANDB_API_KEY environment variable, run "
+            f"`wandb login`, or create a key file at {key_path}."
+        )
+
+        try:
+            logged_in = wandb.login(relogin=False, timeout=_WANDB_LOGIN_TIMEOUT)
+        except Exception as exc:
+            raise ValueError(no_credentials) from exc
+
+        if not logged_in:
+            raise ValueError(no_credentials)
 
     def initialize_run(self, logs: dict, models: list[T.nn.Module] = None, run_number: Optional[int] = None, run_name_prefix:Optional[str] = None, tags: list[str]=[], job_type: str="train"):
         # Set save dir
@@ -167,7 +198,6 @@ class WandbCallback(Callback):
 
     def on_train_begin(self, logs: dict, run_number: Optional[int] = None, models: Optional[list[T.nn.Module]] = None):
         self._ensure_wandb_login()
-        # if not self._sweep:
         if not self.initialized:
             self.initialize_run(logs, models, run_number, run_name_prefix="train", tags=["train"], job_type="train")
             
@@ -219,18 +249,12 @@ class WandbCallback(Callback):
             logs = {}
         wandb.log(logs, step=step)
 
-    # def _config(self, agent):
-    #     """Configures callback internal state for wandb integration."""
-    #     self.model_type = type(agent).__name__
-    #     self.save_dir = agent.save_dir
-
     def get_config(self):
         return {
             'type': "WandbCallback",
             'config': {
                 'project_name': self.project_name,
                 'run_name': self.run_name,
-                # '_sweep': self._sweep
             }
         }
 

@@ -72,8 +72,16 @@ bundled examples under `phoenx/examples/configs/`; otherwise
 
 Console entry points: `phoenx-train` and `phoenx-test`.
 `python -m phoenx.cli.train` also works.
+
+The bundled examples enable `WandbCallback`. Authenticate before training —
+checked in this order: set the `WANDB_API_KEY` environment variable; place a
+`wandb_api_key` file next to the installed `phoenx` package (in a clone that
+is `src/phoenx/wandb_api_key`); or run `wandb login` so credentials are cached
+in `~/.netrc` / `~/_netrc`. Prefer the env var or `wandb login`: the key file
+holds a live credential, and while `src/phoenx/wandb_api_key` is gitignored, an
+installed (non-clone) copy sits outside any repository that could ignore it.
 <!-- TODO(docs-writer): document what appears during training — console output,
-     where checkpoints/logs are written, W&B integration if enabled. -->
+     where checkpoints/logs are written. -->
 
 ## Evaluate a trained agent
 

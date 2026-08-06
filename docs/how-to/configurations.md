@@ -19,6 +19,12 @@ All four use relative `save_dir` values (for example `./Trained_Models/...`)
 and are portable as-is. List the names at runtime with
 `phoenx.builder.available_example_configs()`.
 
+Each of those examples lists `WandbCallback` under `callbacks`. Authenticate
+before a run (precedence order): `WANDB_API_KEY`, a `wandb_api_key` file next
+to the installed `phoenx` package, or a prior `wandb login`. Prefer the env
+var or `wandb login` — the key file holds a live credential. Details:
+[Getting Started](getting-started.md#train-an-agent).
+
 ## How `--config` is resolved
 
 `phoenx.builder.load_config` resolves the value in this order:
