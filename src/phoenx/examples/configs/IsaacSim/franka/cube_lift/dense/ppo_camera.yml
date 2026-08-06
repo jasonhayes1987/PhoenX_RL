@@ -9,10 +9,10 @@
 #   rgb    : (N, 84, 84, 3) uint8   table-view TiledCamera frames
 #
 # Notes vs. the state-only ppo.yml:
-#   - num_envs 256 (camera rendering + uint8 rollout storage; the state-only
+#   - num_envs 1024 (camera rendering + uint8 rollout storage; the state-only
 #     run used 4096). Rollout buffer VRAM for images:
-#       24 steps * 256 envs * 84*84*3 bytes * 2 (states+next) ~= 260 MB.
-#   - learn cadence preserved per-env: learn_every = 24 * 256 = 6144 steps.
+#       24 steps * 1024 envs * 84*84*3 bytes * 2 (states+next) ~= 1.04 GB.
+#   - learn cadence preserved per-env: learn_every = 24 * 1024 = 24576 steps.
 #   - enable_cameras: true is REQUIRED (Kit app tiled rendering).
 #   - To force vision to carry the object location (the true test), switch the
 #     env cfg class to FrankaCubeLiftCameraBlindEnvCfg and change the state
@@ -29,7 +29,7 @@ schedule:
   stop_unit: timestep
   stop_units: &stop_units 200000000
   learn_every_unit: timestep
-  learn_every: 12288            # 24 rollout steps * 512 envs
+  learn_every: 24576            # 24 rollout steps * 1024 envs
   mini_batch_size: 1536
   learning_epochs: 5
   seed: &seed 42
