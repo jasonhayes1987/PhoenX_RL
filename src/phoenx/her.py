@@ -5,24 +5,24 @@ hindsight-relabeled samples. Supports both off-policy buffers (ReplayBuffer /
 PrioritizedReplayBuffer) which consume N-step windows, and on-policy buffers
 (TrajectoryBuffer) which consume full trajectories.
 
-==============================================================================
-Output formats
-==============================================================================
+Output formats:
 
-`output_format='n_step'` — for off-policy buffers
+``output_format='n_step'`` — for off-policy buffers
     Per-step goal sampling: for each step t in the original episode, sample k
-    goals according to `strategy`. This yields M ≈ T_ep * k independent
+    goals according to ``strategy``. This yields M ≈ T_ep * k independent
     (state, action, goal) samples. Each becomes the start of an N-step window
     rebuilt from the original episode, with rewards recomputed under the
     relabeled goal.
 
     Returns a single Dict[str, Tensor] with leading dims (M, N, *feat) — the
     same layout VectorNStepReward._build_trajectories produces:
-        repeat-padded: states, actions, next_states, *_achieved_goals, desired_goals
-        zero-padded:   rewards, intrinsic_rewards, terminations, truncations
-        trajectory_lengths: (M,) int64
 
-`output_format='flat'` — for on-policy buffers
+    - repeat-padded: states, actions, next_states, *_achieved_goals,
+      desired_goals
+    - zero-padded: rewards, intrinsic_rewards, terminations, truncations
+    - trajectory_lengths: (M,) int64
+
+``output_format='flat'`` — for on-policy buffers
     Per-trajectory goal sampling: sample k goals once per episode; each goal
     relabels ALL T_ep steps. Yields k coherent relabeled trajectories that
     each look structurally identical to a freshly collected on-policy rollout
@@ -30,40 +30,41 @@ Output formats
     no special agent handling required.
 
     Returns List[Dict[str, Tensor]] with each dict's tensors of shape
-    (T_ep, *feat). The caller extends `completed_trajectories` with it.
+    (T_ep, *feat). The caller extends ``completed_trajectories`` with it.
 
-==============================================================================
-Strategies (Andrychowicz et al. 2017)
-==============================================================================
+Strategies:
 
-`'final'`   - Final achieved goal of the episode. k = 1 always.
-              Available in both output formats.
-`'future'`  - For each step t, sample k goals from achieved goals in [t, T_ep).
-              Inherently per-step → only available in n_step mode.
-`'episode'` - Sample k goals from achieved goals anywhere in the episode.
-              In n_step mode: per-step; in flat mode: per-trajectory.
-`'random'`  - Sample k goals from an external `AchievedGoalPool` of goals from
-              past episodes. The pool is fed by the buffer on each completed
-              episode (see ReplayBuffer / TrajectoryBuffer integration).
+- ``'final'`` — Final achieved goal of the episode. k = 1 always.
+  Available in both output formats.
+- ``'future'`` — For each step t, sample k goals from achieved goals in
+  ``[t, T_ep)`` (or ``(t, T_ep)`` when ``future_lo='exclusive'``).
+  Inherently per-step → only available in n_step mode.
+- ``'episode'`` — Sample k goals from achieved goals anywhere in the episode.
+  In n_step mode: per-step; in flat mode: per-trajectory.
+- ``'random'`` — Sample k goals from an external ``AchievedGoalPool`` of goals
+  from past episodes. The pool is fed by the buffer on each completed
+  episode (see ReplayBuffer / TrajectoryBuffer integration).
 
-==============================================================================
-Usage examples
-==============================================================================
+Examples:
+    Off-policy with PRB (DDPG/TD3/SAC):
 
-Off-policy with PRB (DDPG/TD3/SAC):
-    relabeler = HindsightRelabeler(
-        env, strategy='future', num_goals=4,
-        output_format='n_step', N=N,
-    )
-    buffer = PrioritizedReplayBuffer(env, buffer_size=1_000_000, N=N,
-                                     relabeler=relabeler)
+        relabeler = HindsightRelabeler(
+            env, strategy='future', num_goals=4,
+            output_format='n_step', N=N,
+        )
+        buffer = PrioritizedReplayBuffer(
+            env, buffer_size=1_000_000, N=N, hindsight=relabeler,
+        )
 
-On-policy with TrajectoryBuffer (PPO/A2C):
-    relabeler = HindsightRelabeler(
-        env, strategy='final',
-        output_format='flat',
-    )
-    buffer = TrajectoryBuffer(env, buffer_size=2048, relabeler=relabeler)
+    On-policy with TrajectoryBuffer (PPO/A2C):
+
+        relabeler = HindsightRelabeler(
+            env, strategy='final',
+            output_format='flat',
+        )
+        buffer = TrajectoryBuffer(
+            env, buffer_size=2048, hindsight=relabeler,
+        )
 """
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple, Union
@@ -96,6 +97,13 @@ class AchievedGoalPool:
         goal_dim: Tuple[int, ...],
         device: T.device,
     ):
+        """Allocate an empty ring buffer for achieved goals.
+
+        Args:
+            capacity: Maximum number of goals retained.
+            goal_dim: Shape of a single goal tensor after the batch dim.
+            device: Device that stores the ring buffer.
+        """
         self.capacity = capacity
         self.device = device
         self.buffer = T.zeros((capacity, *goal_dim), dtype=T.float32, device=device)
@@ -103,7 +111,11 @@ class AchievedGoalPool:
         self.idx = 0
 
     def add(self, goals: T.Tensor) -> None:
-        """Append a batch of achieved goals; wraps FIFO when full."""
+        """Append a batch of achieved goals; wraps FIFO when full.
+
+        Args:
+            goals: Batch of achieved goals with leading batch dim.
+        """
         B = goals.shape[0]
         if B == 0:
             return
@@ -124,7 +136,13 @@ class AchievedGoalPool:
         self.size = min(self.size + B, self.capacity)
 
     def sample(self, n: int) -> T.Tensor:
-        """Sample n goals uniformly with replacement. Caller must check size > 0."""
+        """Sample n goals uniformly with replacement.
+
+        Caller must ensure ``size > 0`` before calling.
+
+        Args:
+            n: Number of goals to draw.
+        """
         idx = T.randint(0, self.size, (n,), device=self.device)
         return self.buffer[idx]
 
@@ -152,6 +170,30 @@ class HindsightRelabeler:
         future_lo: str = "inclusive",
         goal_pool: AchievedGoalPool | None = None,
     ):
+        """Configure the relabeler strategy and output format.
+
+        Args:
+            env: Goal-conditioned env wrapper exposing ``compute_reward``
+                somewhere on its stack.
+            strategy: Goal-sampling strategy: ``"final"``, ``"future"``,
+                ``"episode"``, or ``"random"``.
+            num_goals: Goals sampled per step (n_step) or per episode (flat).
+                Ignored for ``strategy="final"`` (always one goal).
+            output_format: ``"n_step"`` for off-policy windows or ``"flat"``
+                for on-policy trajectories. ``"future"`` cannot pair with
+                ``"flat"``.
+            N: Window length required when ``output_format="n_step"``
+                (``N >= 1``).
+            gamma: Discount factor stored for config / logging.
+            device: Device for sampling and window tensors; ``None`` resolves
+                through ``torch_utils.get_device``.
+            relabel_terminations: When ``True``, mark the first achievement of
+                the relabeled goal as a termination.
+            future_lo: For ``strategy="future"``, ``"inclusive"`` samples from
+                ``[t, T_ep)`` (SB3-style) and ``"exclusive"`` from
+                ``(t, T_ep)`` (HER paper).
+            goal_pool: Required when ``strategy="random"``; ignored otherwise.
+        """
         # --- Validate config -------------------------------------------------
         if strategy not in self._VALID_STRATEGIES:
             raise ValueError(
@@ -212,10 +254,11 @@ class HindsightRelabeler:
                 Optional: intrinsic_rewards.
 
         Returns:
-            - output_format='n_step': single Dict of (M, N, *feat) tensors ready
-              for buffer.add(**result). None if no windows can be built.
-            - output_format='flat': List[Dict] of (T_ep, *feat) trajectory dicts,
-              one per relabeled copy. Empty list if no goals could be sampled.
+            For ``output_format='n_step'``, a single dict of ``(M, N, *feat)``
+            tensors ready for ``buffer.add(**result)``, or ``None`` if no
+            windows can be built. For ``output_format='flat'``, a list of
+            ``(T_ep, *feat)`` trajectory dicts (one per relabeled copy), or an
+            empty list if no goals could be sampled.
         """
         ep_states = episode["states"]
         if isinstance(ep_states, dict):
@@ -308,10 +351,18 @@ class HindsightRelabeler:
         episode: Dict[str, T.Tensor],
         T_ep: int,
     ) -> Dict[str, T.Tensor]:
-        """Build (M, N, *feat) N-step windows matching VectorNStepReward's padding:
-        state-like fields: repeat-padded (clamp out-of-range to last valid step)
-        reward-like fields: zero-padded (gather + T.where mask)
-        trajectory_lengths: count of valid steps per window
+        """Build ``(M, N, *feat)`` N-step windows matching VectorNStepReward padding.
+
+        State-like fields are repeat-padded (clamp out-of-range indices to the
+        last valid step). Reward-like fields are zero-padded via gather plus a
+        ``T.where`` mask. ``trajectory_lengths`` counts valid steps per window.
+
+        Args:
+            starts: ``(M,)`` int64 step indices into ``[0, T_ep)`` where each
+                window begins.
+            new_goals: ``(M, *goal_dim)`` relabeled goals, one per window.
+            episode: Completed episode dict of ``(T_ep, *feat)`` tensors.
+            T_ep: Episode length in steps.
         """
         M = int(starts.shape[0])
         N = self.N
@@ -440,10 +491,18 @@ class HindsightRelabeler:
         episode: Dict[str, T.Tensor],
         T_ep: int,
     ) -> List[Dict[str, T.Tensor]]:
-        """Build K full trajectory dicts. Each dict shares its state/action arrays
-        with the original episode (same shape (T_ep, *feat) as on-policy rollouts).
-        Only desired_goals (broadcast new goal) and rewards (recomputed under it)
-        differ — plus terminations if `relabel_terminations` is on.
+        """Build K full trajectory dicts from per-trajectory goals.
+
+        Each dict shares its state/action arrays with the original episode
+        (same shape ``(T_ep, *feat)`` as on-policy rollouts). Only
+        ``desired_goals`` (broadcast new goal) and ``rewards`` (recomputed
+        under it) differ — plus ``terminations`` if ``relabel_terminations``
+        is on.
+
+        Args:
+            new_goals: ``(K, *goal_dim)`` goals, one per relabeled copy.
+            episode: Completed episode dict of ``(T_ep, *feat)`` tensors.
+            T_ep: Episode length in steps.
         """
         K = int(new_goals.shape[0])
         dev = self.device
@@ -494,10 +553,15 @@ class HindsightRelabeler:
 
     @staticmethod
     def _resolve_compute_reward(env: EnvWrapper):
-        """Walks EnvWrapper.env → ... → SyncVectorEnv → envs[0].unwrapped looking
-        for compute_reward(achieved, desired, info). Falls back to
-        env.get_base_env() if that yields something exposing it directly
-        (e.g. IsaacSim envs).
+        """Locate ``compute_reward`` on the env wrapper stack.
+
+        Walks ``EnvWrapper.env`` → … → ``SyncVectorEnv`` → ``envs[0].unwrapped``
+        looking for ``compute_reward(achieved, desired, info)``. Falls back to
+        ``env.get_base_env()`` when that yields something exposing it directly
+        (e.g. Isaac Sim envs).
+
+        Args:
+            env: Environment wrapper whose stack is searched.
         """
         try:
             base = env.get_base_env() if hasattr(env, "get_base_env") else None

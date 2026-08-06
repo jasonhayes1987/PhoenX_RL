@@ -1,3 +1,12 @@
+"""Exploration noise processes for continuous-action agents.
+
+Off-policy actors (DDPG, TD3) add sampled noise to deterministic actions
+during training. ``Noise`` is the abstract interface; ``UniformNoise`` and
+``NormalNoise`` are the concrete generators. Instances are built by name
+through ``Noise.create_instance``, and ``get_config`` / ``clone`` support
+checkpointing and device moves.
+"""
+
 from typing import Optional
 from abc import ABC, abstractmethod
 import torch as T
@@ -6,10 +15,19 @@ import numpy as np
 from .torch_utils import get_device
 
 class Noise(ABC):
-    """Base class for noise processes.
+    """Abstract exploration-noise process.
+
+    Subclasses implement ``__call__`` to sample a tensor of a requested shape,
+    plus ``get_config`` and ``clone`` for serialization and device moves.
     """
 
     def __init__(self, device=None):
+        """Bind the noise process to a torch device.
+
+        Args:
+            device (torch.device | str | None): Device for sampled tensors;
+                ``None`` resolves through ``torch_utils.get_device``.
+        """
         self.device = get_device(device)
 
     @abstractmethod
@@ -17,7 +35,7 @@ class Noise(ABC):
         """Generate noise based on the specific implementation.
 
         Args:
-            shape (tuple): Shape of the noise to generate.
+            shape: Shape of the noise to generate.
         """
         raise NotImplementedError("Subclasses must implement reset.")
 
@@ -26,7 +44,7 @@ class Noise(ABC):
         """Retrieve the configuration of the noise process.
 
         Returns:
-            dict: Configuration details.
+            Configuration details.
         """
         raise NotImplementedError("Subclasses must implement get_config.")
 
@@ -34,8 +52,12 @@ class Noise(ABC):
     def clone(self, device: Optional[str | T.device] = None) -> 'Noise':
         """Clone the noise process.
 
+        Args:
+            device: Optional device for the clone; ``None`` keeps the current
+                device.
+
         Returns:
-            Noise: A new instance of the same noise process.
+            A new instance of the same noise process.
         """
         raise NotImplementedError("Subclasses must implement clone.")
 
@@ -44,11 +66,11 @@ class Noise(ABC):
         """Creates an instance of the requested noise class.
 
         Args:
-            noise_type (str): Name of the noise class to instantiate.
-            kwargs: Parameters for the noise class.
+            noise_type: Name of the noise class to instantiate.
+            kwargs (dict): Constructor keyword arguments for the noise class.
 
         Returns:
-            Noise: An instance of the requested noise class.
+            An instance of the requested noise class.
 
         Raises:
             ValueError: If the noise class is not recognized.
@@ -68,9 +90,23 @@ class Noise(ABC):
             raise ValueError(f"{noise_type} is not a recognized noise class")
 
 class UniformNoise(Noise):
-    """Uniform noise generator.
+    """Uniform exploration noise over ``[minval, maxval]``.
+
+    Each ``__call__`` draws an independent sample from
+    ``torch.distributions.Uniform``. The default sample shape is fixed at
+    construction; callers may override it per call.
     """
     def __init__(self, shape, minval=0, maxval=1, device=None):
+        """Create a uniform noise generator.
+
+        Args:
+            shape (tuple): Default sample shape used when ``__call__`` is given
+                no shape.
+            minval (float): Inclusive lower bound of the uniform interval.
+            maxval (float): Exclusive upper bound of the uniform interval.
+            device (torch.device | str | None): Device for sampled tensors;
+                ``None`` resolves through ``torch_utils.get_device``.
+        """
         super().__init__(device)
         self.shape = shape
         # self.device = T.device("cuda" if device == 'cuda' and T.cuda.is_available() else "cpu")
@@ -82,8 +118,11 @@ class UniformNoise(Noise):
     def __call__(self, shape: tuple=None) -> T.Tensor:
         """Generate uniform noise.
 
+        Args:
+            shape: Sample shape; ``None`` uses the shape fixed at construction.
+
         Returns:
-            T.Tensor: Generated noise.
+            Sampled noise tensor.
         """
         if shape is None:
             shape = self.shape
@@ -93,7 +132,7 @@ class UniformNoise(Noise):
         """Retrieve the configuration of the UniformNoise.
 
         Returns:
-            dict: Configuration details.
+            Configuration details.
         """
         return {
             'type': 'UniformNoise',
@@ -108,8 +147,12 @@ class UniformNoise(Noise):
     def clone(self, device: Optional[str | T.device] = None) -> 'UniformNoise':
         """Clone the UniformNoise instance.
 
+        Args:
+            device: Optional device for the clone; ``None`` keeps the current
+                device.
+
         Returns:
-            UniformNoise: A new instance with the same configuration.
+            A new instance with the same configuration.
         """
         if device:
             device = get_device(device)
@@ -119,34 +162,46 @@ class UniformNoise(Noise):
         return UniformNoise(self.shape, self.minval.item(), self.maxval.item(), device)
 
 class NormalNoise(Noise):
-    """Normal (Gaussian) noise generator.
+    """Independent Gaussian exploration noise.
+
+    Samples from ``torch.distributions.Normal`` with fixed mean and standard
+    deviation. The distribution is rebuilt after unpickling via
+    ``__setstate__``.
     """
     def __init__(self, mean=0.0, stddev=1.0, device=None):
+        """Create a Gaussian noise generator.
+
+        Args:
+            mean (float): Mean of the normal distribution.
+            stddev (float): Standard deviation of the normal distribution.
+            device (torch.device | str | None): Device for sampled tensors;
+                ``None`` resolves through ``torch_utils.get_device``.
+        """
         super().__init__(device)
         self.mean = T.tensor(mean, dtype=T.float32, device=self.device)
         self.stddev = T.tensor(stddev, dtype=T.float32, device=self.device)
         self.reset_noise_gen()
 
     def reset_noise_gen(self) -> None:
-        """Reset the noise generator to the original mean and standard deviation.
-        """
+        """Rebuild the underlying ``Normal`` from the stored mean and stddev."""
         self.noise_gen = normal.Normal(loc=self.mean, scale=self.stddev)
 
     def __call__(self, shape: Optional[tuple[int, ...]]=(1,1)) -> T.Tensor:
         """Generate normal noise.
-        
+
         Args:
-            shape (Optional[Tuple[int, ...]]): Shape for the noise tensor (e.g., (batch_size, action_dim)).
-            Defaults to (1,1) for single-sample.
+            shape: Sample shape (e.g. ``(batch_size, action_dim)``). Defaults
+                to ``(1, 1)``.
 
         Returns:
-            T.Tensor: Generated noise.
+            Sampled noise tensor.
         """
         if isinstance(shape, (np.ndarray, T.Tensor)):
            shape = tuple(shape)
         return self.noise_gen.sample(shape)
 
     def __getstate__(self):
+        """Return picklable state with the unpicklable ``noise_gen`` removed."""
         # Only the numpy arrays are serialized
         state = self.__dict__.copy()
         # Remove the noise generator since it can't be pickled
@@ -154,6 +209,11 @@ class NormalNoise(Noise):
         return state
 
     def __setstate__(self, state):
+        """Restore instance state and recreate the noise generator.
+
+        Args:
+            state (dict): Instance ``__dict__`` without ``noise_gen``.
+        """
         self.__dict__.update(state)
         # Recreate the noise generator after deserialization
         self.reset_noise_gen()
@@ -162,7 +222,7 @@ class NormalNoise(Noise):
         """Retrieve the configuration of the NormalNoise.
 
         Returns:
-            dict: Configuration details.
+            Configuration details.
         """
         return {
             'type': 'NormalNoise',
@@ -176,8 +236,12 @@ class NormalNoise(Noise):
     def clone(self, device: Optional[str | T.device] = None) -> 'NormalNoise':
         """Clone the NormalNoise instance.
 
+        Args:
+            device: Optional device for the clone; ``None`` keeps the current
+                device.
+
         Returns:
-            NormalNoise: A new instance with the same configuration.
+            A new instance with the same configuration.
         """
         if device:
             device = get_device(device)

@@ -1,3 +1,15 @@
+"""Bounded continuous action distributions used by the policy heads.
+
+Policies that output continuous actions need densities over a box, not over
+unconstrained reals. ``SquashedNormal`` maps a Gaussian through tanh onto
+``[low, high]``; ``ScaledBeta`` and ``ScaledKumaraswamy`` affine-scale unit-
+interval bases onto the same box. ``BoundedIndependent`` reinterprets the
+trailing batch dims as event dims while forwarding the ``*_with_z``,
+``log_prob_from_z``, and ``z_from_action`` helpers those bases expose, so
+agents can train with reparameterized samples and exact log-densities
+without summing by hand.
+"""
+
 import math
 import numpy as np
 import torch as T
@@ -21,15 +33,7 @@ def stable_log1m_tanh_sq(z: T.Tensor) -> T.Tensor:
 
 
 class SquashedNormal(TransformedDistribution):
-    """Squashed Normal distribution over [low, high] for continuous actions.
-
-    Args:
-        base_dist (Normal): The base normal distribution.
-        low (T.Tensor | np.ndarray): The lower bound of the action space.
-        high (T.Tensor | np.ndarray): The upper bound of the action space.
-        mc_samples (int): The number of Monte Carlo samples for entropy calculation.
-        epsilon (float): The epsilon value for numerical stability.
-    """
+    """Squashed Normal distribution over ``[low, high]`` for continuous actions."""
     def __init__(
         self,
         base_dist: Normal,
@@ -38,6 +42,15 @@ class SquashedNormal(TransformedDistribution):
         mc_samples:int = 8,
         epsilon:float = 1e-6
     ):
+        """Build a tanh-squashed normal mapped onto ``[low, high]``.
+
+        Args:
+            base_dist: Base ``Normal`` over unconstrained ``z``.
+            low: Lower bound of the action space.
+            high: Upper bound of the action space.
+            mc_samples: Monte Carlo samples used by [entropy][phoenx.distributions.SquashedNormal.entropy].
+            epsilon: Clamp margin when inverting actions near the bounds.
+        """
         device=base_dist.loc.device
         self.low = T.as_tensor(low, dtype=T.float32, device=device)
         self.high = T.as_tensor(high, dtype=T.float32, device=device)
@@ -53,7 +66,7 @@ class SquashedNormal(TransformedDistribution):
         super().__init__(base_dist, transforms)
 
     def rsample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
-        """Reparameterized sample with gradients flowing through both bouded action and raw action(z).
+        """Reparameterized sample with gradients flowing through both bounded action and raw action(z).
 
         Args:
             sample_shape (T.Size): The shape of the sample.
@@ -133,14 +146,7 @@ class SquashedNormal(TransformedDistribution):
 
 
 class ScaledBeta(TransformedDistribution):
-    """Beta distribution Scaled to [low, high] bounds.
-
-    Args:
-        base_dist (Beta): The base beta distribution.
-        low (T.Tensor | np.ndarray): The lower bound of the action space.
-        high (T.Tensor | np.ndarray): The upper bound of the action space.
-        epsilon (float): The epsilon value for numerical stability.
-    """
+    """Beta distribution scaled to ``[low, high]`` bounds."""
     def __init__(
         self,
         base_dist: Beta,
@@ -148,6 +154,14 @@ class ScaledBeta(TransformedDistribution):
         high:T.Tensor | np.ndarray,
         epsilon:float = 1e-6
     ):
+        """Build a Beta distribution affine-scaled onto ``[low, high]``.
+
+        Args:
+            base_dist: Base ``Beta`` over the unit interval.
+            low: Lower bound of the action space.
+            high: Upper bound of the action space.
+            epsilon: Clamp margin when inverting actions near the bounds.
+        """
         device = base_dist.concentration0.device
         self.low = T.as_tensor(low, dtype=T.float32, device=device)
         self.high = T.as_tensor(high, dtype=T.float32, device=device)
@@ -158,7 +172,7 @@ class ScaledBeta(TransformedDistribution):
         super().__init__(base_dist, transforms)
 
     def rsample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
-        """Reparameterized sample with gradients flowing through both bouded action and raw action(z).
+        """Reparameterized sample with gradients flowing through both bounded action and raw action(z).
 
         Args:
             sample_shape (T.Size): The shape of the sample.
@@ -222,14 +236,7 @@ class ScaledBeta(TransformedDistribution):
 
 
 class ScaledKumaraswamy(TransformedDistribution):
-    """Kumaraswamy distribution scaled to [low, high] bounds.
-
-    Args:
-        base_dist (Kumaraswamy): The base kumaraswamy distribution.
-        low (T.Tensor | np.ndarray): The lower bound of the action space.
-        high (T.Tensor | np.ndarray): The upper bound of the action space.
-        epsilon (float): The epsilon value for numerical stability.
-    """
+    """Kumaraswamy distribution scaled to ``[low, high]`` bounds."""
     def __init__(
         self,
         base_dist: Kumaraswamy,
@@ -237,6 +244,14 @@ class ScaledKumaraswamy(TransformedDistribution):
         high:T.Tensor | np.ndarray,
         epsilon:float = 1e-6
     ):
+        """Build a Kumaraswamy distribution affine-scaled onto ``[low, high]``.
+
+        Args:
+            base_dist: Base ``Kumaraswamy`` over the unit interval.
+            low: Lower bound of the action space.
+            high: Upper bound of the action space.
+            epsilon: Clamp margin when inverting actions near the bounds.
+        """
         device = base_dist.concentration0.device
         self.low = T.as_tensor(low, dtype=T.float32, device=device)
         self.high = T.as_tensor(high, dtype=T.float32, device=device)
@@ -262,23 +277,57 @@ class ScaledKumaraswamy(TransformedDistribution):
 
 
 class BoundedIndependent(Independent):
-    """Independent wrapper that forwards the z-interface of the bounded
-    distributions (SquashedNormal, ScaledBeta, ScaledKumaraswamy),
-    applying the same event-dim reduction to
-    log_prob_from_z that Independent applies to log_prob.
+    """``Independent`` wrapper that forwards the bounded z-interface.
+
+    Wraps ``SquashedNormal``, ``ScaledBeta``, or ``ScaledKumaraswamy`` and
+    applies the same event-dim reduction to ``log_prob_from_z`` that
+    ``Independent`` applies to ``log_prob``.
     """
     def rsample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        """Reparameterized sample of bounded action and raw ``z``.
+
+        Args:
+            sample_shape (torch.Size): Extra leading sample dimensions.
+
+        Returns:
+            Bounded action and the pre-transform sample ``z``.
+        """
         return self.base_dist.rsample_with_z(sample_shape)
 
     def sample_with_z(self, sample_shape=T.Size()) -> tuple[T.Tensor, T.Tensor]:
+        """Sample bounded action and raw ``z`` without gradients.
+
+        Args:
+            sample_shape (torch.Size): Extra leading sample dimensions.
+
+        Returns:
+            Bounded action and the pre-transform sample ``z``.
+        """
         return self.base_dist.sample_with_z(sample_shape)
 
     def log_prob_from_z(self, z: T.Tensor) -> T.Tensor:
+        """Log-density of the bounded action from raw ``z``, summed over event dims.
+
+        Args:
+            z: Pre-transform sample from the base distribution.
+
+        Returns:
+            Log-density with the rightmost ``reinterpreted_batch_ndims`` summed.
+        """
         lp = self.base_dist.log_prob_from_z(z)
         return _sum_rightmost(lp, self.reinterpreted_batch_ndims)
 
     def mean_with_z(self) -> tuple[T.Tensor, T.Tensor]:
+        """Deterministic mean action and its raw base mean ``z``."""
         return self.base_dist.mean_with_z()
 
     def z_from_action(self, actions: T.Tensor) -> T.Tensor:
+        """Invert a bounded action to the pre-transform sample ``z``.
+
+        Args:
+            actions: Bounded actions to invert.
+
+        Returns:
+            Pre-transform sample ``z``.
+        """
         return self.base_dist.z_from_action(actions)

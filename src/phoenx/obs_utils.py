@@ -103,7 +103,7 @@ def flatten_leading(obs: ObsLike, n_dims: int = 2) -> ObsLike:
 
 
 def unflatten_leading(obs: ObsLike, dims: Tuple[int, ...]) -> ObsLike:
-    """Inverse of :func:`flatten_leading`: ``(A*B, *feat) -> (*dims, *feat)``."""
+    """Inverse of ``flatten_leading``: ``(A*B, *feat) -> (*dims, *feat)``."""
     return tree_map(lambda x: x.reshape(*dims, *x.shape[1:]), obs)
 
 
