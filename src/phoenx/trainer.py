@@ -556,6 +556,7 @@ class Trainer:
         if done_episodes.numel() > 0 and training:
             if avg_reward > self._best_reward:
                 self._best_reward = avg_reward
+                episode_logs[-1]['best'] = True
                 self.save()
 
 
