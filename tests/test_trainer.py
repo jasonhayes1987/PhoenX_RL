@@ -3,9 +3,7 @@
 
 Pins the one-line fix that sets ``episode_logs[-1]['best'] = True`` whenever a
 completed training episode pushes the running average reward above the
-previous best. Before that line existed, ``WandbCallback.on_train_epoch_end``
-(``logs.get("best", False)``) could never see a truthy flag, so the
-best-checkpoint W&B artifact alias never fired.
+previous best.
 
 ``Trainer.step`` is driven directly through minimal stand-in ``agent``/``env``/
 ``buffer`` objects that script a fixed reward/termination per call, rather
