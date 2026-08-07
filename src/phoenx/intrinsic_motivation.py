@@ -1,29 +1,28 @@
-"""intrinsic_motivation.py
+"""Pluggable intrinsic-motivation modules for exploration bonuses.
 
-Pluggable intrinsic motivation framework for PhoenX RL.
+Concrete subclasses sit under ``IntrinsicMotivation`` (itself a ``Model``):
 
-Class hierarchy:
-    IntrinsicMotivation (ABC, inherits from Model)
-        ├── ICM                      (Pathak et al. 2017)
-        ├── RND                      (Burda et al. 2018)
-        ├── EpisodicNovelty          (k-NN component of NGU; Badia et al. 2020)
-        └── CompositeIntrinsicMotivation
+- ``ICM`` — Intrinsic Curiosity Module (Pathak et al., 2017): forward-model
+  prediction error in a learned feature space, shaped by an inverse-dynamics
+  head so features encode controllable aspects of the observation.
+- ``RND`` — Random Network Distillation (Burda et al., 2018): squared error
+  between a frozen random target network and a trained predictor.
+- ``EpisodicNovelty`` — the k-NN episodic component of NGU (Badia et al.,
+  2020): per-env memory of embeddings with a kernel-summed inverse-distance
+  bonus, cleared on episode end.
+- ``CompositeIntrinsicMotivation`` — wraps several modules and merges their
+  per-step rewards with a named combination rule.
 
-Designed to drop into the existing PhoenX agent / trainer surface:
-    - .compute_intrinsic_reward(states, next_states, actions) -> Tensor
-    - .train(states, next_states, actions) -> loss Tensor
-    - .reward_weight / .reward_scheduler / .extrinsic_threshold / ._use_extrinsic
-    - .save(folder) / .load(folder, env=...)
+Trainer integration is additive. Modules expose ``compute_learn_reward`` /
+``compute_rollout_reward`` (batch intrinsic bonuses), ``train`` (one update
+step), ``on_episode_end`` (stateful hooks such as episodic memory reset),
+``set_normalizers_mode``, and ``save`` / ``load``. Shared knobs include
+``reward_weight``, an optional ``reward_scheduler``, and
+``extrinsic_threshold`` for intrinsic-only warmup.
 
-New hooks (additive — wired through Trainer):
-    - .on_episode_end(env_indices)        # stateful subclasses (EpisodicNovelty)
-    - .add_to_normalizers(...)            # internal normalizer feeding
-    - .update_normalizers()               # internal normalizer flush-to-running-stats
-    - .set_normalizers_mode(context)      # train/eval mode propagation
-
-Combination rules for CompositeIntrinsicMotivation:
-    additive_combination, multiplicative_combination,
-    ngu_combination, max_combination, weighted_sum_combination
+Combination rules used by ``CompositeIntrinsicMotivation`` (selected by
+string name): ``additive_combination``, ``multiplicative_combination``,
+``max_combination``, and ``ngu_combination``.
 """
 
 from abc import abstractmethod
@@ -49,27 +48,34 @@ _REGISTRY: dict[str, type] = {}
 
 
 def register_intrinsic_motivation(cls):
-    """Decorator: register an IntrinsicMotivation subclass for save/load."""
+    """Register an ``IntrinsicMotivation`` subclass for save/load dispatch.
+
+    Args:
+        cls (type): Subclass to register under ``cls.__name__``.
+
+    Returns:
+        registered (type): The same class, unchanged, so the decorator can
+            wrap a class body.
+    """
     _REGISTRY[cls.__name__] = cls
     return cls
 
 class IntrinsicMotivation(Model):
-    """Abstract base for any module that produces intrinsic rewards.
+    """Abstract base for modules that produce intrinsic rewards.
 
-    Inherits from Model so subclasses get _build_layer / _init_weights /
-    _init_optimizer / device handling for free. The base itself has no
-    networks — it only deletes the empty `self.layers` ModuleDict that
-    Model creates and provides shared bookkeeping.
+    Inherits from ``Model`` so subclasses reuse ``_build_layer``,
+    ``_init_weights``, ``_init_optimizer``, and device handling. The base
+    itself builds no networks — it strips the empty ``layers`` ModuleDict
+    that ``Model`` creates and provides shared bookkeeping.
 
-    Common attributes (every subclass has these — the agent code reads them):
-        reward_weight        : float scaling on the intrinsic reward
-        reward_scheduler     : optional decay schedule for reward_weight
-        extrinsic_threshold  : agent step below which extrinsic reward is
-                               suppressed (intrinsic-only warmup)
-        _use_extrinsic       : flag the agent flips based on the threshold
-
-    Optional self-managed normalizers (RND uses both; ICM typically uses neither):
-        intrinsic_reward_normalizer    : RewardNorm over intrinsic rewards
+    Attributes:
+        reward_weight: Scalar multiplier on the intrinsic reward.
+        reward_scheduler: Optional schedule that scales ``reward_weight``.
+        extrinsic_threshold: Agent step below which extrinsic reward is
+            suppressed (intrinsic-only warmup).
+        reward_normalizer: Optional ``RewardNorm`` over intrinsic rewards.
+        is_online: When True, the module expects per-step rollout updates
+            (e.g. episodic memory) rather than only learn-time bonuses.
     """
 
     def __init__(
@@ -83,6 +89,22 @@ class IntrinsicMotivation(Model):
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
+        """Configure shared intrinsic-motivation bookkeeping.
+
+        Args:
+            env: Environment wrapper used for observation/action shapes.
+            optimizer_params: Optimizer config forwarded to ``Model``; may be
+                ``None`` when the subclass builds no optimizer.
+            reward_weight: Base scale on intrinsic rewards.
+            reward_scheduler: Optional decay/schedule applied to
+                ``reward_weight``.
+            extrinsic_threshold: Steps of intrinsic-only warmup before
+                extrinsic reward is restored.
+            reward_normalizer: Optional running normalizer for intrinsic
+                rewards.
+            log_level: Logger level name (e.g. ``'info'``).
+            device: Torch device, or ``None`` for the framework default.
+        """
         self.logger = get_logger(self.__class__.__name__, level=log_level.upper())
         # Model.__init__ wants (env, layers, optimizer_params, device)
         super().__init__(env, [], optimizer_params or {}, device=device)
@@ -118,17 +140,26 @@ class IntrinsicMotivation(Model):
 
     @abstractmethod
     def train(self, states, next_states, actions=None) -> T.Tensor:
-        """One training step. Return scalar loss tensor."""
+        """Run one training step and return a scalar loss.
+
+        Args:
+            states (torch.Tensor): Batch of states.
+            next_states (torch.Tensor): Batch of next states.
+            actions (torch.Tensor | None): Batch of actions when the module
+                conditions on them.
+
+        Returns:
+            Scalar loss tensor.
+        """
         ...
 
     @abstractmethod
     def get_config(self) -> dict:
-        """Serializable config (excluding tensor state)."""
+        """Return a JSON-serializable config excluding tensor state."""
         ...
         
     def use_extrinsic_reward(self, step: int) -> bool:
-        """Return True if extrinsic reward should be used at the given step, False otherwise.
-        """
+        """Return whether extrinsic reward should be used at ``step``."""
         return step >= self.extrinsic_threshold
 
     def compute_learn_reward(
@@ -138,15 +169,20 @@ class IntrinsicMotivation(Model):
         actions: T.Tensor | None = None,
         **kwargs: Any,
     ) -> T.Tensor:
-        """Return learn reward of shape (batch,) — defaults to zero reward. Subclasses can override.
-        
+        """Return learn-time intrinsic reward of shape ``(batch,)``.
+
+        The base implementation returns zeros; subclasses override.
+
         Args:
-            states: Tensor of shape (batch, state_dim).
-            next_states: Tensor of shape (batch, state_dim).
-            actions: Tensor of shape (batch, action_dim).
+            states: Batch of states, shape ``(batch, *state_dim)``.
+            next_states: Batch of next states, shape ``(batch, *state_dim)``.
+            actions: Batch of actions, shape ``(batch, *action_dim)``, or
+                ``None`` when unused.
+            **kwargs: Extra keyword arguments forwarded by callers; ignored
+                by the base implementation.
 
         Returns:
-            Tensor of shape (batch,) containing the learn reward for each state.
+            Per-sample learn reward of shape ``(batch,)``.
         """
         return T.zeros(states.shape[0], device=self.device, dtype=T.float32)
 
@@ -157,27 +193,31 @@ class IntrinsicMotivation(Model):
         actions: T.Tensor | None = None,
         env_indices: T.Tensor | None = None,
     ) -> T.Tensor:
-        """Return rollout reward of shape (batch,) — defaults to zero reward. Subclasses can override.
-        
+        """Return rollout-time intrinsic reward of shape ``(batch,)``.
+
+        The base implementation returns zeros; subclasses override.
+
         Args:
-            states: Tensor of shape (batch, state_dim).
-            next_states: Tensor of shape (batch, state_dim).
-            actions: Tensor of shape (batch, action_dim).
-            env_indices: Tensor of shape (batch,) containing the environment indices.
+            states: Batch of states, shape ``(batch, *state_dim)``.
+            next_states: Batch of next states, shape ``(batch, *state_dim)``.
+            actions: Batch of actions, shape ``(batch, *action_dim)``, or
+                ``None`` when unused.
+            env_indices: Parallel-env indices of shape ``(batch,)``, or
+                ``None`` when a single env is assumed.
 
         Returns:
-            Tensor of shape (batch,) containing the rollout reward for each state.
+            Per-sample rollout reward of shape ``(batch,)``.
         """
         return T.zeros(states.shape[0], device=self.device, dtype=T.float32)
 
     def on_episode_end(self, env_indices: T.Tensor) -> None:
-        """Called by the Trainer for each parallel env that just terminated/truncated.
+        """Handle episode boundaries for the given parallel env indices.
+
+        Called by the Trainer for each parallel env that just terminated or
+        truncated. The base implementation is a no-op.
 
         Args:
-            env_indices: 1-D Long tensor of env indices that finished this step.
-
-        Returns:
-            None
+            env_indices: 1-D long tensor of env indices that finished.
         """
         pass
 
@@ -201,16 +241,21 @@ class IntrinsicMotivation(Model):
     #         self.intrinsic_reward_normalizer.update()
 
     def set_normalizers_mode(self, context: Literal['train', 'eval']) -> None:
+        """Set attached reward normalizers to train or eval mode.
+
+        Args:
+            context: ``'train'`` or ``'eval'``.
+        """
         for n in [self.reward_normalizer]:
             if n is None:
                 continue
             n.train() if context == 'train' else n.eval()
 
     def _feed_reward_normalizer(self, reward: T.Tensor) -> None:
-        """Feed reward to reward normalizer and update if present.
+        """Feed a reward batch into ``reward_normalizer`` and update it.
 
         Args:
-            reward: Tensor to feed.
+            reward: Reward tensor to feed.
         """
         if self.reward_normalizer is not None:
             dones = T.zeros(reward.shape, dtype=T.bool, device=self.device)
@@ -218,30 +263,51 @@ class IntrinsicMotivation(Model):
             self.reward_normalizer.update()
 
     def _normalize_reward(self, intrinsic_reward: T.Tensor) -> T.Tensor:
-        """Normalize intrinsic reward through the reward_normalizer if present, else identity.
+        """Normalize an intrinsic reward through ``reward_normalizer`` if set.
 
         Args:
-            intrinsic_reward: Tensor to normalize.
+            intrinsic_reward: Reward tensor to normalize.
 
         Returns:
-            Normalized tensor or original tensor if no normalizer is present.
+            Normalized tensor, or the input unchanged when no normalizer is
+            present.
         """
         if self.reward_normalizer is not None:
             return self.reward_normalizer.normalize(intrinsic_reward)
         return intrinsic_reward
 
     def _scaled_reward_weight(self) -> float:
+        """Return ``reward_weight`` scaled by the optional reward scheduler."""
         w = self.reward_weight
         if self.reward_scheduler is not None:
             w *= self.reward_scheduler.get_factor()
         return w
 
     def _forward_submodel(self, x: T.Tensor, submodel: T.nn.ModuleDict) -> T.Tensor:
+        """Run ``x`` sequentially through every layer in ``submodel``.
+
+        Args:
+            x: Input tensor.
+            submodel: Ordered ``ModuleDict`` of layers.
+
+        Returns:
+            Output of the last layer.
+        """
         for _, layer in submodel.items():
             x = layer(x)
         return x
 
     def save(self, folder) -> None:
+        """Persist weights, config, and optional normalizer state under ``folder``.
+
+        Writes ``folder/intrinsic_motivation/pytorch_model.pt`` and
+        ``config.json``, tagging ``config['type']`` with the class name so
+        ``load`` can dispatch. When a reward normalizer is present its state
+        is saved alongside.
+
+        Args:
+            folder (str | pathlib.Path): Parent directory for the save tree.
+        """
         model_dir = Path(folder) / 'intrinsic_motivation'
         model_dir.mkdir(parents=True, exist_ok=True)
         T.save(self.state_dict(), model_dir / 'pytorch_model.pt')
@@ -256,6 +322,18 @@ class IntrinsicMotivation(Model):
 
     @classmethod
     def create_instance(cls, im_type: str, **kwargs) -> 'IntrinsicMotivation':
+        """Construct a concrete intrinsic-motivation module by type name.
+
+        Args:
+            im_type: One of ``'ICM'``, ``'RND'``, or ``'EpisodicNovelty'``.
+            **kwargs (Any): Forwarded to the subclass constructor.
+
+        Returns:
+            A new ``ICM``, ``RND``, or ``EpisodicNovelty`` instance.
+
+        Raises:
+            ValueError: If ``im_type`` is not a known concrete type.
+        """
         if im_type == 'ICM':
             return ICM(**kwargs)
         elif im_type == 'RND':
@@ -267,7 +345,20 @@ class IntrinsicMotivation(Model):
 
     @classmethod
     def load(cls, folder: str | Path, env: EnvWrapper | None = None) -> 'IntrinsicMotivation':
-        """Dispatches to the correct subclass based on the saved 'type' field."""
+        """Load a saved module, dispatching on the config ``type`` field.
+
+        Args:
+            folder: Parent directory that contains ``intrinsic_motivation/``.
+            env: Optional live env to reuse; when ``None``, the env is rebuilt
+                from the saved config.
+
+        Returns:
+            Restored subclass instance registered under the saved type name.
+
+        Raises:
+            FileNotFoundError: If ``config.json`` is missing.
+            ValueError: If the saved type is not in the registry.
+        """
         model_dir = Path(folder) / 'intrinsic_motivation'
         config_path = model_dir / 'config.json'
         if not config_path.is_file():
@@ -281,26 +372,44 @@ class IntrinsicMotivation(Model):
 
     @classmethod
     def _load_impl(cls, folder, config, env) -> 'IntrinsicMotivation':
-        """Each subclass implements its own load. Default raises."""
+        """Subclass hook that rebuilds an instance from a saved config.
+
+        Args:
+            folder (str | pathlib.Path): Parent save directory.
+            config (dict): Parsed ``config.json`` contents.
+            env (EnvWrapper | None): Optional live env to reuse.
+
+        Returns:
+            Restored instance of ``cls``.
+
+        Raises:
+            NotImplementedError: Always, until a subclass overrides this.
+        """
         raise NotImplementedError(f"{cls.__name__} must implement _load_impl")
 
 @register_intrinsic_motivation
 class ICM(IntrinsicMotivation):
-    """Intrinsic Curiosity Module (Pathak et al. 2017).
+    """Intrinsic Curiosity Module (Pathak et al., 2017).
 
-    Three sub-networks:
-        encoder  φ : s -> features        (optional; if absent, raw obs are used)
-        inverse  g : (φ(s), φ(s')) -> â   (predicts action; supplies gradient
-                                           that shapes φ to encode controllable
-                                           features only)
-        forward  f : (φ(s), a) -> φ̂(s')   (predicts next features; its squared
-                                           error in feature space *is* the
-                                           intrinsic reward)
+    Three optional/required sub-networks:
 
-    Loss:
-        L = (1 - β) * L_inv  +  β * L_fwd
-    Intrinsic reward:
-        r_i = (η/2) * || f(φ(s), a) - φ(s') ||²
+    - encoder ``φ``: maps observations to features (optional; raw obs used
+      when absent);
+    - inverse ``g``: predicts the action from ``(φ(s), φ(s'))``, shaping ``φ``
+      toward controllable features;
+    - forward ``f``: predicts ``φ(s')`` from ``(φ(s), a)``; squared error in
+      feature space is the intrinsic reward.
+
+    Training loss is ``(1 - β) * L_inv + β * L_fwd``. The intrinsic reward is
+    ``r_i = (η/2) * ||f(φ(s), a) - φ(s')||²`` with ``η`` from
+    ``reward_weight`` (and its scheduler).
+
+    Attributes:
+        model_configs: Layer configs for encoder / inverse / forward nets.
+        beta: Mixing weight between inverse and forward losses.
+        encoder: Optional feature encoder ``ModuleDict``.
+        inverse_model: Inverse-dynamics ``ModuleDict``.
+        forward_model: Forward-dynamics ``ModuleDict``.
     """
 
     def __init__(
@@ -316,6 +425,22 @@ class ICM(IntrinsicMotivation):
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
+        """Build encoder, inverse, and forward networks for ICM.
+
+        Args:
+            env: Environment wrapper used for observation/action shapes.
+            model_configs: Mapping with keys ``'inverse_model'`` and
+                ``'forward_model'``, and optionally ``'encoder'``. Each value
+                has ``layer_config`` and ``output_layer`` lists.
+            optimizer_params: Optimizer configuration for ICM parameters.
+            reward_weight: Base scale on the forward-model error reward.
+            reward_scheduler: Optional schedule applied to ``reward_weight``.
+            beta: Weight of the forward loss versus the inverse loss.
+            extrinsic_threshold: Intrinsic-only warmup steps.
+            reward_normalizer: Optional normalizer over intrinsic rewards.
+            log_level: Logger level name.
+            device: Torch device, or ``None`` for the framework default.
+        """
         try:
             super().__init__(
                 env=env,
@@ -361,6 +486,7 @@ class ICM(IntrinsicMotivation):
             raise
 
     def _init_model(self) -> None:
+        """Build ICM submodules from ``model_configs`` and materialize LazyLinear."""
         for name, cfg in self.model_configs.items():
             module = T.nn.ModuleDict()
             for i, layer_info in enumerate(cfg['layer_config']):
@@ -407,11 +533,32 @@ class ICM(IntrinsicMotivation):
             self._forward_submodel(T.cat([s, a_in], dim=-1), self.forward_model)
 
     def _embed(self, state: T.Tensor) -> T.Tensor:
+        """Encode ``state`` when an encoder is present; otherwise return it.
+
+        Args:
+            state: Observation batch.
+
+        Returns:
+            Feature batch (encoder output or raw observations).
+        """
         if self._use_encoder:
             return self._forward_submodel(state, self.encoder)
         return state
 
     def _full_forward(self, states, next_states, actions):
+        """Run inverse and forward heads for a transition batch.
+
+        Args:
+            states (torch.Tensor): Batch of states.
+            next_states (torch.Tensor): Batch of next states.
+            actions (torch.Tensor): Batch of actions.
+
+        Returns:
+            pred_a (torch.Tensor): Inverse-model action prediction.
+            pred_ns (torch.Tensor): Forward-model next-feature prediction.
+            encoded_ns (torch.Tensor): Embedded next states (detached target
+                for the forward loss when training).
+        """
         encoded_s = self._embed(states)
         encoded_ns = self._embed(next_states)
         pred_a = self._forward_submodel(
@@ -433,15 +580,16 @@ class ICM(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         **kwargs: Any,
     ) -> T.Tensor:
-        """Compute learn reward for a batch of states, next states, and actions.
+        """Compute ICM learn reward from forward-model feature error.
 
         Args:
-            states: Tensor of shape (batch, state_dim).
-            next_states: Tensor of shape (batch, state_dim).
-            actions: Tensor of shape (batch, action_dim).
+            states: Batch of states, shape ``(batch, *state_dim)``.
+            next_states: Batch of next states, shape ``(batch, *state_dim)``.
+            actions: Batch of actions, shape ``(batch, *action_dim)``.
+            **kwargs: Extra keyword arguments ignored by ICM.
 
         Returns:
-            Tensor of shape (batch,) containing the learn reward for each state.
+            Per-sample intrinsic reward of shape ``(batch,)``.
         """
         with T.no_grad():
             _, pred_ns, encoded_ns = self._full_forward(states, next_states, actions)
@@ -455,6 +603,16 @@ class ICM(IntrinsicMotivation):
             return 0.5 * self._scaled_reward_weight() * err
 
     def train(self, states, next_states, actions=None) -> T.Tensor:
+        """Update ICM networks on a transition batch.
+
+        Args:
+            states (torch.Tensor): Batch of states.
+            next_states (torch.Tensor): Batch of next states.
+            actions (torch.Tensor | None): Batch of actions.
+
+        Returns:
+            Scalar combined inverse/forward loss.
+        """
         # Set mode of models and normalizers to train
         if self._use_encoder:
             self.encoder.train()
@@ -484,6 +642,7 @@ class ICM(IntrinsicMotivation):
         return loss
 
     def get_config(self) -> dict:
+        """Return a JSON-serializable ICM configuration."""
         return {
             'env': self.env.to_json(),
             'model_configs': self.model_configs,
@@ -500,6 +659,16 @@ class ICM(IntrinsicMotivation):
 
     @classmethod
     def _load_impl(cls, folder, config, env):
+        """Rebuild an ICM instance from a saved config and weights.
+
+        Args:
+            folder (str | pathlib.Path): Parent save directory.
+            config (dict): Parsed ``config.json`` contents.
+            env (EnvWrapper | None): Optional live env to reuse.
+
+        Returns:
+            Restored ``ICM`` with loaded ``state_dict``.
+        """
         from .normalizer import RewardNorm
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
@@ -529,26 +698,28 @@ class ICM(IntrinsicMotivation):
 
 @register_intrinsic_motivation
 class RND(IntrinsicMotivation):
-    """Random Network Distillation (Burda et al. 2018).
+    """Random Network Distillation (Burda et al., 2018).
 
-    Two networks of identical architecture:
-        target     f̂_φ : s -> R^k    (random init, FROZEN forever)
-        predictor  f_θ : s -> R^k    (trained to match target on visited states)
+    Two networks of matching output dimension:
 
-    Intrinsic reward (per state s):
-        r_i(s) = || f_θ(s) - f̂_φ(s) ||²
+    - target ``f̂_φ``: randomly initialized and frozen forever;
+    - predictor ``f_θ``: trained to match the target on visited states.
 
-    Predictor training loss is the same quantity averaged over a minibatch.
-    Both networks see normalized observations — this is essential. Without
-    obs normalization the random target tends to collapse to a near-constant
-    function on the data distribution and the predictor learns nothing.
+    Intrinsic reward per next state is
+    ``r_i(s') = ||f_θ(s') - f̂_φ(s')||²``; training minimizes the same
+    quantity averaged over a minibatch. Observation normalization is
+    essential in practice — without it the frozen target tends to collapse
+    toward a near-constant function.
 
-    `model_configs` has two keys mirroring ICM's structure:
-        {'target':    {'layer_config': [...], 'output_layer': [...]},
-         'predictor': {'layer_config': [...], 'output_layer': [...]}}
-    The two configs should match in shape (same output dim) but the predictor
-    is allowed to be deeper / wider — the canonical setup uses identical nets.
-    Default output dim if 'units' is absent: 512 (the NGU/RND default).
+    ``model_configs`` mirrors ICM's structure with keys ``'target'`` and
+    ``'predictor'``, each holding ``layer_config`` and ``output_layer``.
+    Default output dim when ``units`` is absent is ``DEFAULT_OUTPUT_DIM``
+    (512, the NGU/RND default).
+
+    Attributes:
+        model_configs: Layer configs for target and predictor nets.
+        target: Frozen random target ``ModuleDict``.
+        predictor: Trainable predictor ``ModuleDict``.
     """
 
     DEFAULT_OUTPUT_DIM = 512
@@ -565,6 +736,21 @@ class RND(IntrinsicMotivation):
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
+        """Build frozen target and trainable predictor networks for RND.
+
+        Args:
+            env: Environment wrapper used for observation shapes.
+            model_configs: Mapping with ``'target'`` and ``'predictor'``
+                entries, each containing ``layer_config`` and
+                ``output_layer``.
+            optimizer_params: Optimizer configuration for predictor params.
+            reward_weight: Base scale on the prediction-error reward.
+            reward_scheduler: Optional schedule applied to ``reward_weight``.
+            extrinsic_threshold: Intrinsic-only warmup steps.
+            reward_normalizer: Optional normalizer over intrinsic rewards.
+            log_level: Logger level name.
+            device: Torch device, or ``None`` for the framework default.
+        """
         try:
             super().__init__(
                 env=env,
@@ -603,6 +789,7 @@ class RND(IntrinsicMotivation):
             raise
 
     def _init_model(self) -> None:
+        """Build target/predictor ModuleDicts and materialize LazyLinear."""
         for name in ('target', 'predictor'):
             cfg = self.model_configs[name]
             module = T.nn.ModuleDict()
@@ -625,7 +812,15 @@ class RND(IntrinsicMotivation):
             self._forward_submodel(dummy, self.predictor)
 
     def _embed(self, x: T.Tensor):
-        """Return (target_embedding, predictor_embedding) for a state batch."""
+        """Return ``(target_embedding, predictor_embedding)`` for a state batch.
+
+        Args:
+            x: Observation batch.
+
+        Returns:
+            target_embedding (torch.Tensor): Frozen target output.
+            predictor_embedding (torch.Tensor): Predictor output.
+        """
         with T.no_grad():
             t_out = self._forward_submodel(x, self.target)
         p_out = self._forward_submodel(x, self.predictor)
@@ -638,15 +833,16 @@ class RND(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         **kwargs: Any,
     ) -> T.Tensor:
-        """Compute learn reward for a batch of states, next states, and actions.
+        """Compute RND learn reward from predictor/target mismatch on next states.
 
         Args:
-            states: Tensor of shape (batch, state_dim).
-            next_states: Tensor of shape (batch, state_dim).
-            actions: Tensor of shape (batch, action_dim).
+            states: Batch of states (unused; kept for API uniformity).
+            next_states: Batch of next states scored by RND.
+            actions: Unused; kept for API uniformity.
+            **kwargs: Extra keyword arguments ignored by RND.
 
         Returns:
-            Tensor of shape (batch,) containing the learn reward for each state.
+            Per-sample intrinsic reward of shape ``(batch,)``.
         """
         with T.no_grad():
             t_out, p_out = self._embed(next_states)
@@ -663,6 +859,16 @@ class RND(IntrinsicMotivation):
             return self._scaled_reward_weight() * err
 
     def train(self, states, next_states, actions=None) -> T.Tensor:
+        """Update the RND predictor on a batch of next states.
+
+        Args:
+            states (torch.Tensor): Batch of states (unused).
+            next_states (torch.Tensor): Batch of next states to distill.
+            actions (torch.Tensor | None): Unused; kept for API uniformity.
+
+        Returns:
+            Scalar mean squared prediction error.
+        """
         # Set mode of models and normalizers to train
         self.predictor.train()
         self.set_normalizers_mode('train')
@@ -682,6 +888,7 @@ class RND(IntrinsicMotivation):
 
     # ----------------------------- save / load
     def get_config(self) -> dict:
+        """Return a JSON-serializable RND configuration."""
         return {
             'env': self.env.to_json(),
             'model_configs': self.model_configs,
@@ -697,6 +904,16 @@ class RND(IntrinsicMotivation):
 
     @classmethod
     def _load_impl(cls, folder, config, env):
+        """Rebuild an RND instance from a saved config and weights.
+
+        Args:
+            folder (str | pathlib.Path): Parent save directory.
+            config (dict): Parsed ``config.json`` contents.
+            env (EnvWrapper | None): Optional live env to reuse.
+
+        Returns:
+            Restored ``RND`` with loaded ``state_dict``.
+        """
         from .normalizer import RewardNorm
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
@@ -725,25 +942,31 @@ class RND(IntrinsicMotivation):
 
 @register_intrinsic_motivation
 class EpisodicNovelty(IntrinsicMotivation):
-    """Episodic novelty signal from NGU (Badia et al. 2020).
+    """Episodic novelty signal from NGU (Badia et al., 2020).
 
-    Per-env episodic memory M_i (one per parallel env). At each step we:
-      1. Embed s_{t+1} via an encoder φ trained by inverse dynamics
-         (so φ encodes only controllable features — same trick as ICM).
-      2. Query M_i for the k nearest neighbors of φ(s_{t+1}).
-      3. Compute the novelty bonus from kernel-summed inverse distances:
+    Maintains a per-env episodic memory ``M_i``. At each rollout step it:
 
-            α_epi = 1 / sqrt( Σ_{f_j ∈ N_k}  K(φ(s_{t+1}), f_j)  +  c )
+    1. Embeds ``s_{t+1}`` with an encoder ``φ`` trained by inverse dynamics
+       (controllable features only — the same trick as ICM).
+    2. Queries ``M_i`` for the k nearest neighbors of ``φ(s_{t+1})``.
+    3. Forms the novelty bonus from kernel-summed inverse distances
+       ``α_epi = 1 / sqrt(Σ K(φ(s_{t+1}), f_j) + c)`` with
+       ``K(x, y) = ε / (d(x,y)² / d̄² + ε)``.
+    4. Appends ``φ(s_{t+1})`` to ``M_i``.
 
-         where K(x, y) = ε / ( d(x,y)² / d̄² + ε )
-         and d̄ is a running mean of squared distances (paper-default).
+    On episode end, ``M_i`` is cleared for env ``i``. Training jointly updates
+    ``φ`` and an inverse-dynamics head ``g(φ(s), φ(s')) → â``.
 
-      4. Append φ(s_{t+1}) to M_i.
-
-    On episode end, M_i is cleared for env i.
-
-    Training: encoder φ is trained jointly with an inverse dynamics head
-    g(φ(s), φ(s')) -> â, identical to ICM's encoder/inverse pair.
+    Attributes:
+        memory_size: Cap on embeddings stored per parallel env.
+        k: Number of nearest neighbors used in the kernel sum.
+        kernel_epsilon: ``ε`` in the inverse-distance kernel.
+        cluster_distance: ``c`` added under the square root.
+        max_similarity: Square root of the kernel-sum cap; the bonus is
+            zeroed once the summed similarity exceeds its square.
+        running_mean_decay: EMA decay for the mean squared distance ``d̄``.
+        encoder: Feature encoder ``ModuleDict``.
+        inverse_model: Inverse-dynamics ``ModuleDict``.
     """
 
     def __init__(
@@ -764,6 +987,27 @@ class EpisodicNovelty(IntrinsicMotivation):
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
+        """Build encoder/inverse nets and per-env episodic memories.
+
+        Args:
+            env: Environment wrapper; ``num_envs`` sizes the memory list.
+            model_configs: Mapping with ``'encoder'`` and ``'inverse_model'``
+                entries (``layer_config`` / ``output_layer``).
+            optimizer_params: Optimizer configuration for network params.
+            memory_size: Maximum embeddings retained per parallel env.
+            k: Neighbor count for the episodic kernel.
+            kernel_epsilon: Softening constant ``ε`` in the kernel.
+            cluster_distance: Additive constant ``c`` under the square root.
+            max_similarity: Square root of the summed-similarity cap; the
+                bonus becomes zero once the kernel sum exceeds its square.
+            running_mean_decay: EMA decay for mean squared neighbor distance.
+            reward_weight: Base scale on the episodic bonus.
+            reward_scheduler: Optional schedule applied to ``reward_weight``.
+            extrinsic_threshold: Intrinsic-only warmup steps.
+            reward_normalizer: Optional normalizer over intrinsic rewards.
+            log_level: Logger level name.
+            device: Torch device, or ``None`` for the framework default.
+        """
         try:
             super().__init__(
                 env=env,
@@ -818,6 +1062,7 @@ class EpisodicNovelty(IntrinsicMotivation):
             raise
 
     def _init_model(self) -> None:
+        """Build encoder and inverse-model ModuleDicts and materialize LazyLinear."""
         for name in ('encoder', 'inverse_model'):
             cfg = self.model_configs[name]
             module = T.nn.ModuleDict()
@@ -843,11 +1088,28 @@ class EpisodicNovelty(IntrinsicMotivation):
             self._forward_submodel(T.cat([phi, phi], dim=-1), self.inverse_model)
 
     def _embed(self, x: T.Tensor) -> T.Tensor:
+        """Encode observations with the episodic encoder.
+
+        Args:
+            x: Observation batch.
+
+        Returns:
+            Embedding batch from the encoder.
+        """
         return self._forward_submodel(x, self.encoder)
 
     def _knn_bonus(self, embeddings: T.Tensor, env_indices: T.Tensor) -> T.Tensor:
-        """For each row i, query memory[env_indices[i]] for k-NN of embeddings[i]
-        and return the per-row bonus α_epi.
+        """Compute per-row episodic novelty bonuses via k-NN kernel sums.
+
+        For each row ``i``, query ``memory[env_indices[i]]`` for the k nearest
+        neighbors of ``embeddings[i]`` and return the corresponding ``α_epi``.
+
+        Args:
+            embeddings: Embedding batch of shape ``(batch, embed_dim)``.
+            env_indices: Parallel-env indices of shape ``(batch,)``.
+
+        Returns:
+            Per-sample bonuses of shape ``(batch,)``.
         """
         bonuses = T.zeros(embeddings.shape[0], device=self.device)
         for i in range(embeddings.shape[0]):
@@ -878,6 +1140,12 @@ class EpisodicNovelty(IntrinsicMotivation):
         return bonuses
 
     def _append_to_memory(self, embeddings: T.Tensor, env_indices: T.Tensor) -> None:
+        """Append embeddings to the matching per-env episodic memories.
+
+        Args:
+            embeddings: Embedding batch to store (moved to CPU).
+            env_indices: Parallel-env indices of shape ``(batch,)``.
+        """
         emb_cpu = embeddings.detach().cpu()
         for i in range(emb_cpu.shape[0]):
             env_i = int(env_indices[i].item()) if env_indices is not None else 0
@@ -894,16 +1162,17 @@ class EpisodicNovelty(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         env_indices: T.Tensor | None = None,
     ) -> T.Tensor:
-        """Compute rollout reward for a batch of states, next states, and actions.
+        """Compute rollout episodic novelty and append embeddings to memory.
 
         Args:
-            states: Tensor of shape (batch, state_dim).
-            next_states: Tensor of shape (batch, state_dim).
-            actions: Tensor of shape (batch, action_dim).
-            env_indices: Tensor of shape (batch,) containing the environment indices.
+            states: Batch of states (unused; kept for API uniformity).
+            next_states: Batch of next states embedded for the bonus.
+            actions: Unused; kept for API uniformity.
+            env_indices: Parallel-env indices of shape ``(batch,)``. When
+                ``None``, indices ``0..batch-1`` are assumed.
 
         Returns:
-            Tensor of shape (batch,) containing the rollout reward for each state.
+            Per-sample rollout reward of shape ``(batch,)``.
         """
         with T.no_grad():
             if env_indices is None:
@@ -922,6 +1191,16 @@ class EpisodicNovelty(IntrinsicMotivation):
             return self._scaled_reward_weight() * bonus
 
     def train(self, states, next_states, actions=None) -> T.Tensor:
+        """Update encoder and inverse-dynamics head on a transition batch.
+
+        Args:
+            states (torch.Tensor): Batch of states.
+            next_states (torch.Tensor): Batch of next states.
+            actions (torch.Tensor | None): Batch of actions.
+
+        Returns:
+            Scalar inverse-dynamics loss.
+        """
         self.encoder.train()
         self.inverse_model.train()
         self.optimizer.zero_grad()
@@ -943,11 +1222,16 @@ class EpisodicNovelty(IntrinsicMotivation):
         return loss
 
     def on_episode_end(self, env_indices: T.Tensor) -> None:
-        """Clear episodic memory for envs that just finished."""
+        """Clear episodic memory for envs that just finished.
+
+        Args:
+            env_indices: 1-D tensor of finished parallel-env indices.
+        """
         for i in env_indices.flatten().tolist():
             self._memories[int(i)] = T.zeros((0, self.embed_dim), dtype=T.float32)
 
     def get_config(self) -> dict:
+        """Return a JSON-serializable EpisodicNovelty configuration."""
         return {
             'env': self.env.to_json(),
             'model_configs': self.model_configs,
@@ -969,6 +1253,16 @@ class EpisodicNovelty(IntrinsicMotivation):
 
     @classmethod
     def _load_impl(cls, folder, config, env):
+        """Rebuild an EpisodicNovelty instance from a saved config and weights.
+
+        Args:
+            folder (str | pathlib.Path): Parent save directory.
+            config (dict): Parsed ``config.json`` contents.
+            env (EnvWrapper | None): Optional live env to reuse.
+
+        Returns:
+            Restored ``EpisodicNovelty`` with loaded ``state_dict``.
+        """
         from .normalizer import RewardNorm
         model_dir = Path(folder) / 'intrinsic_motivation'
         env_wrapper = env if env is not None else EnvWrapper.from_json(config['env'])
@@ -1004,7 +1298,18 @@ class EpisodicNovelty(IntrinsicMotivation):
 
 def additive_combination(rewards: List[T.Tensor],
                          weights: Sequence[float] | None = None) -> T.Tensor:
-    """R = Σ_i w_i * r_i.  weights default to 1.0 each."""
+    """Combine rewards as a weighted sum ``Σ_i w_i * r_i``.
+
+    Args:
+        rewards: Per-module reward tensors of matching shape.
+        weights: Optional per-module weights; defaults to ``1.0`` each.
+
+    Returns:
+        Combined reward tensor.
+
+    Raises:
+        ValueError: If ``rewards`` is empty.
+    """
     if not rewards:
         raise ValueError("Empty rewards list")
     if weights is None:
@@ -1016,7 +1321,19 @@ def additive_combination(rewards: List[T.Tensor],
 
 
 def multiplicative_combination(rewards: List[T.Tensor]) -> T.Tensor:
-    """R = ∏_i r_i.  Useful when you want every signal to fire."""
+    """Combine rewards as a product ``∏_i r_i``.
+
+    Useful when every signal must fire for the bonus to stay large.
+
+    Args:
+        rewards: Per-module reward tensors of matching shape.
+
+    Returns:
+        Combined reward tensor.
+
+    Raises:
+        ValueError: If ``rewards`` is empty.
+    """
     if not rewards:
         raise ValueError("Empty rewards list")
     out = rewards[0]
@@ -1026,7 +1343,17 @@ def multiplicative_combination(rewards: List[T.Tensor]) -> T.Tensor:
 
 
 def max_combination(rewards: List[T.Tensor]) -> T.Tensor:
-    """R = max_i r_i.  Strongest single signal wins per step."""
+    """Combine rewards by taking the per-step maximum across modules.
+
+    Args:
+        rewards: Per-module reward tensors of matching shape.
+
+    Returns:
+        Combined reward tensor.
+
+    Raises:
+        ValueError: If ``rewards`` is empty.
+    """
     if not rewards:
         raise ValueError("Empty rewards list")
     stacked = T.stack(rewards, dim=0)
@@ -1034,8 +1361,20 @@ def max_combination(rewards: List[T.Tensor]) -> T.Tensor:
 
 
 def ngu_combination(rewards: List[T.Tensor], L: float = 5.0) -> T.Tensor:
-    """NGU's reward: r = α_epi * clip(α_lifelong, 1, L)
-    Expects rewards in order: [episodic, lifelong].
+    """Combine episodic and lifelong rewards as in NGU.
+
+    Computes ``r = α_epi * clip(α_lifelong, 1, L)``. Expects ``rewards`` in
+    order ``[episodic, lifelong]``.
+
+    Args:
+        rewards: Exactly two tensors: episodic then lifelong novelty.
+        L: Upper clamp for the lifelong factor.
+
+    Returns:
+        Combined NGU-style reward tensor.
+
+    Raises:
+        ValueError: If ``rewards`` does not contain exactly two tensors.
     """
     if len(rewards) != 2:
         raise ValueError("ngu_combination expects exactly 2 rewards: [episodic, lifelong]")
@@ -1054,12 +1393,17 @@ _COMBINATION_RULES: dict[str, Callable] = {
 
 @register_intrinsic_motivation
 class CompositeIntrinsicMotivation(IntrinsicMotivation):
-    """Wraps a list of IntrinsicMotivation modules and combines their per-step
-    intrinsic rewards according to a combination rule.
+    """Combine several intrinsic-motivation modules under one interface.
 
-    The composite has no networks of its own and no optimizer — every child
-    manages its own training. Its `train()` calls each child's `train()` and
-    returns the sum of losses (for logging only).
+    The composite owns no networks and no optimizer — every child manages its
+    own training. ``train`` calls each child's ``train`` and returns the sum
+    of detached losses (for logging). Per-step rewards are merged with a named
+    combination rule (``additive``, ``multiplicative``, ``max``, or ``ngu``).
+
+    Attributes:
+        combination_rule: String key into the combination-rule registry.
+        combination_kwargs: Extra kwargs for the rule (e.g. ``weights``).
+        components: Child ``IntrinsicMotivation`` modules.
     """
 
     def __init__(
@@ -1074,6 +1418,21 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         log_level: str = 'info',
         device: str | T.device | None = None,
     ):
+        """Wrap child modules and select a reward combination rule.
+
+        Args:
+            env: Environment wrapper shared with the children.
+            components: Child intrinsic-motivation modules to combine.
+            combination_rule: One of ``'additive'``, ``'multiplicative'``,
+                ``'max'``, or ``'ngu'``.
+            combination_kwargs: Extra kwargs for the rule (e.g. ``weights``
+                for additive combination).
+            reward_weight: Outer scale applied after combining children.
+            reward_scheduler: Optional schedule applied to ``reward_weight``.
+            extrinsic_threshold: Intrinsic-only warmup steps.
+            log_level: Logger level name.
+            device: Torch device, or ``None`` for the framework default.
+        """
         try:
             super().__init__(
                 env=env,
@@ -1102,10 +1461,11 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             raise
 
     def _split_components(self) -> tuple[list[IntrinsicMotivation], list[IntrinsicMotivation]]:
-        """Splits components into online and parametric components.
+        """Split children into online (rollout) and parametric (learn) groups.
 
         Returns:
-            tuple of lists: (online components, parametric components)
+            Pair of lists of ``(index, component)``: online first, then
+            parametric.
         """
         online, parametric = [], []
         for i, c in enumerate(self.components):
@@ -1116,13 +1476,14 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         return online, parametric
 
     def _weights_for(self, components: list[tuple[int, IntrinsicMotivation]]) -> list[float]:
-        """Returns weights for list of components.
+        """Select per-component weights from ``combination_kwargs`` by index.
 
         Args:
-            components: List of tuples: (index, component)
+            components: List of ``(index, component)`` pairs.
 
         Returns:
-            List of weights for each component.
+            Weight list aligned with ``components``, or ``None`` when no
+            weights were configured.
         """
         weights = self.combination_kwargs.get('weights')
         if weights is None:
@@ -1136,17 +1497,19 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         env_indices: T.Tensor | None = None,
     ) -> T.Tensor:
-        """Compute rollout intrinsic reward for a batch of states, next state, and actions
-        across all intrinsic motivations in the composite.
+        """Combine rollout rewards from online child modules.
 
         Args:
-            states: Tensor of shape (batch, state_dim).
-            next_states: Tensor of shape (batch, state_dim).
-            actions: Tensor of shape (batch, action_dim).
-            env_indices: Tensor of shape (batch,) containing the environment indices.
+            states: Batch of states, shape ``(batch, *state_dim)``.
+            next_states: Batch of next states, shape ``(batch, *state_dim)``.
+            actions: Batch of actions, shape ``(batch, *action_dim)``, or
+                ``None``.
+            env_indices: Parallel-env indices of shape ``(batch,)``, or
+                ``None``.
 
         Returns:
-            Tensor of shape (batch,) containing the rollout reward for each state.
+            Combined rollout reward of shape ``(batch,)``, or zeros when no
+            online children are present.
         """
         rule = _COMBINATION_RULES[self.combination_rule]
         online, _ = self._split_components()
@@ -1167,18 +1530,23 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         actions: T.Tensor | None = None,
         rollout_rewards: T.Tensor | None = None,
     ) -> T.Tensor:
-        """Compute learn reward for a batch of states, next states, and actions
-        across all intrinsic motivations in the composite and adds to them the rollout rewards
-        if provided.
+        """Combine learn rewards from parametric children with rollout rewards.
 
         Args:
-            states: Tensor of shape (batch, state_dim).
-            next_states: Tensor of shape (batch, state_dim).
-            actions: Tensor of shape (batch, action_dim).
-            rollout_rewards: Tensor of shape (batch,) containing the rollout reward for each state.
+            states: Batch of states, shape ``(batch, *state_dim)``.
+            next_states: Batch of next states, shape ``(batch, *state_dim)``.
+            actions: Batch of actions, shape ``(batch, *action_dim)``, or
+                ``None``.
+            rollout_rewards: Optional precomputed online/rollout rewards to
+                merge with parametric learn rewards.
 
         Returns:
-            Tensor of shape (batch,) containing the learn reward for each state.
+            Combined learn reward of shape ``(batch,)``, scaled by the
+            composite ``reward_weight``.
+
+        Raises:
+            RuntimeError: If neither parametric nor rollout rewards are
+                available to combine.
         """
         rule = _COMBINATION_RULES[self.combination_rule]
         online, parametric = self._split_components()
@@ -1206,6 +1574,16 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         return self._scaled_reward_weight() * final_rewards
 
     def train(self, states, next_states, actions=None) -> T.Tensor:
+        """Train every child and return the sum of detached losses.
+
+        Args:
+            states (torch.Tensor): Batch of states.
+            next_states (torch.Tensor): Batch of next states.
+            actions (torch.Tensor | None): Batch of actions.
+
+        Returns:
+            Scalar sum of child losses (detached; for logging).
+        """
         total = T.tensor(0.0, device=self.device)
         for c in self.components:
             loss = c.train(states, next_states, actions)
@@ -1213,10 +1591,22 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         return total
 
     def on_episode_end(self, env_indices: T.Tensor) -> None:
+        """Forward episode-end handling to every child module.
+
+        Args:
+            env_indices: 1-D tensor of finished parallel-env indices.
+        """
         for c in self.components:
             c.on_episode_end(env_indices)
 
     def set_normalizers_mode(self, context: Literal['train', 'test']) -> None:
+        """Propagate normalizer mode to every child module.
+
+        Args:
+            context: Mode string forwarded to each child
+                (``'train'`` / ``'test'`` here; children typically expect
+                ``'train'`` / ``'eval'``).
+        """
         for c in self.components:
             c.set_normalizers_mode(context)
 
@@ -1225,6 +1615,11 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
     #     return any(c.is_online for c in self.components)
 
     def save(self, folder) -> None:
+        """Save each child under its own subdirectory plus a composite config.
+
+        Args:
+            folder (str | pathlib.Path): Parent directory for the save tree.
+        """
         comp_root = Path(folder) / 'intrinsic_motivation'
         comp_root.mkdir(parents=True, exist_ok=True)
         # Save each component to its own subdirectory
@@ -1244,6 +1639,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             json.dump(config, f)
 
     def get_config(self) -> dict:
+        """Return a JSON-serializable composite configuration."""
         return {
             'env': self.env.to_json(),
             'components': [c.get_config() for c in self.components],
@@ -1257,6 +1653,16 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
 
     @classmethod
     def _load_impl(cls, folder, config, env):
+        """Rebuild a composite from saved child directories and config.
+
+        Args:
+            folder (str | pathlib.Path): Parent save directory.
+            config (dict): Parsed composite ``config.json`` contents.
+            env (EnvWrapper | None): Optional live env forwarded to children.
+
+        Returns:
+            Restored ``CompositeIntrinsicMotivation``.
+        """
         comp_root = Path(folder) / 'intrinsic_motivation'
 
         sched = (ScheduleWrapper(**config['im_reward_scheduler'])

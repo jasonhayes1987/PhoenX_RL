@@ -28,11 +28,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Google-style docstrings completed for `phoenx.schedulers`, `phoenx.noise`,
   `phoenx.distributions`, `phoenx.builder`, `phoenx.her`, `phoenx.trainer`,
   `phoenx.rl_callbacks`, `phoenx.normalizer`, `phoenx.buffer`,
-  `phoenx.adaptive_kl`, and `phoenx.agent_utils`. `her.py`'s module docstring
-  also lost the `===` banner rows that mkdocstrings rendered as literal `=`
-  characters on the HER page, and two of its usage examples were simply wrong:
-  buffers take `hindsight=`, not `relabeler=`, and `strategy='future'` samples
-  `[t, T_ep)` or `(t, T_ep)` depending on `future_lo`.
+  `phoenx.adaptive_kl`, `phoenx.agent_utils`, and `phoenx.intrinsic_motivation`.
+  `her.py`'s module docstring also lost the `===` banner rows that mkdocstrings
+  rendered as literal `=` characters on the HER page, and two of its usage
+  examples were simply wrong: buffers take `hindsight=`, not `relabeler=`, and
+  `strategy='future'` samples `[t, T_ep)` or `(t, T_ep)` depending on
+  `future_lo`. The `intrinsic_motivation` module docstring was rewritten: it
+  previously opened with its own filename as the summary line and used
+  box-drawing characters to sketch the class hierarchy.
 - Docstring cross-references in those modules now use Markdown and
   mkdocs-autorefs (`[load_config][phoenx.builder.load_config]`) rather than
   Sphinx roles. mkdocstrings renders docstring bodies as Markdown, so
