@@ -66,6 +66,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `src/phoenx/gym_helper.py` (180 lines), unreferenced anywhere in the repo. It predates `her.py`: a hardcoded table mapping Gymnasium spec IDs to per-env `desired_goal` / `achieved_goal` / reward callables, which `HindsightRelabeler` replaced by resolving `compute_reward` off the env stack and reading the goal keys out of the dict observation. The table had also rotted past the pinned dependencies — under `gymnasium==1.2.0` and `gymnasium-robotics` 1.4.0, five of its six keys (`CarRacing-v2`, `FetchReach-v2`, `FetchPickAndPlace-v2`, `FetchPush-v2`, `FetchSlide-v2`) are no longer registered, so `get_her_goal_functions` would `KeyError` on everything but `Reacher-v4`. The neighboring `get_goal_envs` built an empty list and never returned it, so it could only ever have returned `None`.
 
 ### Fixed
+- `CompositeIntrinsicMotivation` silently dropped its `reward_scheduler` on
+  reload. Its `_load_impl` read `config['im_reward_scheduler']`, a key nothing
+  in the package has ever written — `get_config` serializes the schedule under
+  `reward_scheduler`, which is what `ICM`, `RND`, and `EpisodicNovelty` all read
+  back. A reloaded composite therefore came back with `reward_scheduler=None`,
+  so `_scaled_reward_weight()` stopped applying the decay and
+  `Trainer._step_schedulers` had nothing to advance: a resumed run used an
+  undecayed intrinsic reward weight and raised nothing. Child schedulers were
+  unaffected, since each child loads through its own `_load_impl`. Note that
+  `ScheduleWrapper.get_config()` does not persist `last_epoch`, so a restored
+  schedule restarts from step 0 — true for every subclass, and unchanged here.
+  A new parametrized regression test covers all four classes, since the
+  existing round-trip tests never constructed a module with a scheduler at all.
 - Rank-mode prioritized sampling could not reach recently added windows.
   `PrioritizedReplayBuffer._maybe_resort` rebuilt the `sorted_indices` cache
   only when it was `None`, `_sample_rank` pinned the rank support to whatever

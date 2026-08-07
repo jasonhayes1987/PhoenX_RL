@@ -1665,8 +1665,8 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         """
         comp_root = Path(folder) / 'intrinsic_motivation'
 
-        sched = (ScheduleWrapper(**config['im_reward_scheduler'])
-                 if config.get('im_reward_scheduler') else None)
+        sched = (ScheduleWrapper(**config['reward_scheduler'])
+                 if config.get('reward_scheduler') else None)
 
         # Load each component recursively via the base `load` dispatcher
         components = []

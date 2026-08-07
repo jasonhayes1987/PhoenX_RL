@@ -1493,6 +1493,113 @@ class TestCompositeIntrinsicMotivation:
 
 
 # =============================================================================
+# reward_scheduler save/load round-trip (regression, all four classes)
+# =============================================================================
+class TestRewardSchedulerRoundtrip:
+    """Regression coverage: ``reward_scheduler`` must survive save/load.
+
+    Every concrete ``IntrinsicMotivation`` subclass serializes its optional
+    ``reward_scheduler`` under the ``'reward_scheduler'`` key in
+    ``get_config()``. Each ``_load_impl`` must read that same key back. A
+    mismatch (reading a different, never-written key) makes the reloaded
+    module silently fall back to ``reward_scheduler=None``, which in turn
+    makes ``_scaled_reward_weight()`` skip the schedule's decay entirely on
+    a resumed run — with no exception raised anywhere.
+    """
+
+    @pytest.mark.parametrize(
+        "kind", ["ICM", "RND", "EpisodicNovelty", "CompositeIntrinsicMotivation"]
+    )
+    def test_reward_scheduler_survives_save_load(self, discrete_env, tmp_path, kind):
+        """A save/load round trip must preserve ``reward_scheduler`` exactly.
+
+        Builds ``kind`` with a real ``ScheduleWrapper``, saves it to
+        ``tmp_path``, reloads it via ``IntrinsicMotivation.load``, and
+        checks that the reloaded module has a non-``None`` scheduler whose
+        config matches the original, and that
+        ``_scaled_reward_weight()`` — the value a training loop actually
+        consumes — agrees before and after the round trip.
+
+        Args:
+            discrete_env: Vector CartPole env fixture.
+            tmp_path: Pytest tmp directory for the save tree.
+            kind: Which registered intrinsic-motivation class to exercise.
+        """
+        sched = ScheduleWrapper(
+            schedule_type="linear",
+            steps=100,
+            start_value=1.0,
+            end_value=0.1,
+        )
+        batch = _random_batch(discrete_env, batch=NUM_ENVS)
+        env_indices = T.arange(NUM_ENVS, dtype=T.long)
+
+        if kind == "ICM":
+            module = ICM(
+                env=discrete_env,
+                model_configs=icm_configs(),
+                optimizer_params=OPT_PARAMS,
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+            # Materialize LazyLinear layers before saving.
+            _ = module.compute_learn_reward(**batch)
+        elif kind == "RND":
+            module = RND(
+                env=discrete_env,
+                model_configs=rnd_configs(output_dim=16),
+                optimizer_params=OPT_PARAMS,
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+            _ = module.compute_learn_reward(**batch)
+        elif kind == "EpisodicNovelty":
+            module = EpisodicNovelty(
+                env=discrete_env,
+                model_configs=episodic_configs(),
+                optimizer_params=OPT_PARAMS,
+                memory_size=32,
+                k=2,
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+            _ = module.compute_rollout_reward(**batch, env_indices=env_indices)
+        else:  # CompositeIntrinsicMotivation
+            icm = ICM(
+                env=discrete_env,
+                model_configs=icm_configs(),
+                optimizer_params=OPT_PARAMS,
+                device=DEVICE,
+            )
+            epi = EpisodicNovelty(
+                env=discrete_env,
+                model_configs=episodic_configs(),
+                optimizer_params=OPT_PARAMS,
+                memory_size=32,
+                k=2,
+                device=DEVICE,
+            )
+            _ = icm.compute_learn_reward(**batch)
+            _ = epi.compute_rollout_reward(**batch, env_indices=env_indices)
+            module = CompositeIntrinsicMotivation(
+                env=discrete_env,
+                components=[icm, epi],
+                combination_rule="additive",
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+
+        module.save(tmp_path)
+        loaded = IntrinsicMotivation.load(tmp_path, env=discrete_env)
+
+        assert loaded.reward_scheduler is not None, (
+            f"{kind}: reward_scheduler was lost on save/load round trip"
+        )
+        assert loaded.reward_scheduler.get_config() == sched.get_config()
+        assert pytest.approx(loaded._scaled_reward_weight()) == module._scaled_reward_weight()
+
+
+# =============================================================================
 # IntrinsicMotivation base class behavior (through subclasses)
 # =============================================================================
 class TestIntrinsicMotivationBase:
