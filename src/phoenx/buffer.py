@@ -1,5 +1,13 @@
+"""Experience storage for off-policy and on-policy training.
+
+Off-policy paths use ``ReplayBuffer`` / ``PrioritizedReplayBuffer`` (circular
+N-step windows, optional R2D2 stored state and HER). On-policy paths use
+``RolloutBuffer`` / ``TrajectoryBuffer`` (fixed-horizon rollouts or
+completed-episode lists). ``SumTree`` backs proportional prioritized sampling.
+"""
+
 from typing import Optional, Tuple, List, Any, Dict
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 import torch as T
 import numpy as np
 import gymnasium as gym
@@ -14,10 +22,16 @@ from .torch_utils import get_device
 
 
 class SumTree:
-    """Binary sum tree for priority-based sampling.
-    """
- 
+    """Binary sum tree for priority-based sampling."""
+
     def __init__(self, capacity: int, device: T.device):
+        """Allocate a flat heap array sized to the next power of two.
+
+        Args:
+            capacity: Requested leaf capacity; rounded up to a power of two
+                for the tree layout.
+            device: Device that stores the tree tensor.
+        """
         if capacity <= 0:
             raise ValueError(f"SumTree capacity must be positive, got {capacity}")
  
@@ -32,7 +46,15 @@ class SumTree:
         self.max_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
  
     def update(self, data_indices: T.Tensor, priorities: T.Tensor) -> None:
-        """Write priorities at data indices and propagate sums up to root."""
+        """Write priorities at data indices and propagate sums up to root.
+
+        Priorities are clamped to a floor of ``1e-6``. ``max_priority`` tracks
+        the largest value seen.
+
+        Args:
+            data_indices: Leaf / buffer indices to update.
+            priorities: Priority values written at those leaves.
+        """
         # Floor priorities to avoid creating zero-probability leaves.
         priorities = T.clamp(priorities, min=1e-6)
         if priorities.numel() > 0:
@@ -54,7 +76,15 @@ class SumTree:
             indices = parents
  
     def get(self, p_values: T.Tensor) -> Tuple[T.Tensor, T.Tensor]:
-        """Map cumulative-priority values to (data_index, leaf_priority) pairs."""
+        """Map cumulative-priority values to data indices and leaf priorities.
+
+        Args:
+            p_values: Cumulative-priority probes in ``[0, total_priority]``.
+
+        Returns:
+            data_indices: Buffer indices corresponding to the selected leaves.
+            priorities: Stored priorities at those leaves.
+        """
         tree_indices = self._traverse(p_values)
         # Defensive clamp — shouldn't be needed if the tree is well-formed.
         tree_indices = T.clamp(tree_indices, 0, self.tree.size(0) - 1)
@@ -63,11 +93,17 @@ class SumTree:
         return data_indices, priorities
  
     def _traverse(self, p_values: T.Tensor) -> T.Tensor:
-        """Vectorized batch descent.
- 
-        At each level every batch element is at some node `idx`; read its
-        left child's stored sum and decide left vs. right based on whether `p`
-        fits in the left subtree.
+        """Vectorized batch descent from root to leaf.
+
+        At each level every batch element is at some node ``idx``; read its
+        left child's stored sum and decide left vs. right based on whether
+        ``p`` fits in the left subtree.
+
+        Args:
+            p_values: Cumulative-priority probes (mutated via a local clone).
+
+        Returns:
+            Tree node indices of the selected leaves.
         """
         idx = T.zeros_like(p_values, dtype=T.long)
         p = p_values.clone()
@@ -85,12 +121,21 @@ class SumTree:
  
     @property
     def total_priority(self) -> float:
-        """Total priority lives at the root."""
+        """Sum of all leaf priorities (stored at the root)."""
         return self.tree[0].item()
 
-class Buffer:
-    """Base class for replay buffers with N-step functionality.
-    """
+    def reset(self) -> None:
+        """Zero all stored priorities and restore ``max_priority`` to ``1.0``.
+
+        Called by ``PrioritizedReplayBuffer.reset`` so a cleared buffer does
+        not keep sampling stale leaves from the previous contents.
+        """
+        self.tree.zero_()
+        self.max_priority = T.tensor(1.0, dtype=T.float32, device=self.device)
+
+class Buffer(ABC):
+    """Abstract base for experience buffers with optional HER episode bookkeeping."""
+
     def __init__(
         self,
         env: EnvWrapper,
@@ -98,6 +143,17 @@ class Buffer:
         hindsight: HindsightRelabeler | None = None,
         device: Optional[str] = None
     ):
+        """Store env specs, optional HER episode buffers, and device.
+
+        Args:
+            env: Wrapped environment whose observation / action spaces size
+                the storage tensors.
+            buffer_size: Capacity in stored transitions or windows (subclass-
+                dependent layout).
+            hindsight: Optional HER relabeler; when set, allocates per-env
+                episode accumulators for ``_her_step``.
+            device: Torch device string; ``None`` resolves via ``get_device``.
+        """
         self.env = env
         self.buffer_size = buffer_size
         self.hindsight = hindsight
@@ -148,6 +204,10 @@ class Buffer:
         Only applies to multi-modal dict storage (flat observations keep the
         legacy float32 storage). Casting (rather than reallocating) preserves
         any content restored by ``load_state``.
+
+        Args:
+            states (Any): Incoming observation batch (tensor or dict of
+                tensors) whose dtypes are trusted over the space metadata.
         """
         if self._storage_dtypes_synced:
             return
@@ -176,20 +236,55 @@ class Buffer:
         }
 
     @abstractmethod
-    def add(self, states, actions, rewards, next_states, dones):
-        """Add a transition to the buffer, including trajectory metadata.
-        Abstract method to be implemented by subclasses.
+    def add(self, *args: Any, **kwargs: Any) -> None:
+        """Add a transition (or window) to the buffer.
+
+        Abstract; concrete subclasses define the real signature:
+        ``ReplayBuffer.add`` / ``PrioritizedReplayBuffer.add`` take
+        ``(states, actions, rewards, next_states, terminations, truncations,
+        raw_actions=None, log_probs=None, intrinsic_rewards=None,
+        state_achieved_goals=None, next_state_achieved_goals=None,
+        desired_goals=None, trajectory_lengths=None, initial_hidden=None)``;
+        ``RolloutBuffer.add`` / ``TrajectoryBuffer.add`` take the same
+        transition fields through ``desired_goals``, then ``first_steps`` in
+        place of ``trajectory_lengths`` and ``initial_hidden``.
+
+        Args:
+            *args (Any): Positional transition fields; see the concrete
+                subclass signature.
+            **kwargs (Any): Keyword transition fields; see the concrete
+                subclass signature.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def sample(self, batch_size: int) -> Tuple[T.Tensor, ...]:
+    def sample(self, *args: Any, **kwargs: Any) -> Any:
         """Sample a batch of transitions from the buffer.
-        Abstract method to be implemented by subclasses.
+
+        Abstract; concrete subclasses define the real signature:
+        ``ReplayBuffer.sample`` / ``PrioritizedReplayBuffer.sample`` take
+        ``(samples)``; ``RolloutBuffer.sample`` / ``TrajectoryBuffer.sample``
+        take ``(**kwargs)`` (ignored) and return everything stored so far.
+
+        Args:
+            *args (Any): Positional arguments; see the concrete subclass
+                signature.
+            **kwargs (Any): Keyword arguments; see the concrete subclass
+                signature.
+
+        Returns:
+            Subclass-defined batch structure (a dict, or a list of
+                trajectory dicts).
         """
         raise NotImplementedError
 
     def get_config(self) -> Dict[str, Any]:
+        """Return a serializable ``{'type', 'config'}`` mapping for this buffer.
+
+        Returns:
+            Mapping with ``type`` set to the class name and ``config`` holding
+                ``env``, ``buffer_size``, ``hindsight``, and ``device``.
+        """
         return {
             'type': self.__class__.__name__,
             'config': {
@@ -202,6 +297,20 @@ class Buffer:
 
     @classmethod
     def create_instance(cls, buffer_type: str, **kwargs) -> 'Buffer':
+        """Construct a concrete buffer by class-name string.
+
+        Args:
+            buffer_type: One of ``"ReplayBuffer"``,
+                ``"PrioritizedReplayBuffer"``, ``"RolloutBuffer"``, or
+                ``"TrajectoryBuffer"``.
+            **kwargs (Any): Forwarded to the concrete constructor.
+
+        Returns:
+            New buffer instance of the requested type.
+
+        Raises:
+            ValueError: If ``buffer_type`` is not a known subclass name.
+        """
         buffer_types = {
             "ReplayBuffer": ReplayBuffer,
             "PrioritizedReplayBuffer": PrioritizedReplayBuffer,
@@ -214,12 +323,15 @@ class Buffer:
             raise ValueError(f"{buffer_type} is not a subclass of Buffer")
 
     def save_state(self, path) -> None:
-        """Persist the stored transitions + counters (optional resume data).
+        """Persist stored transitions and counters for optional resume.
 
         Generic over subclasses: every tensor attribute (including dict-of-
         tensor storage for multi-modal observations) and every int/float/bool
-        counter is dumped. The SumTree of a prioritized buffer is handled
+        counter is dumped. The ``SumTree`` of a prioritized buffer is handled
         explicitly since it is a nested object rather than a bare tensor.
+
+        Args:
+            path (str | Path): Destination file path; parent dirs are created.
         """
         from pathlib import Path
         path = Path(path)
@@ -241,7 +353,14 @@ class Buffer:
         T.save({"tensors": tensors, "scalars": scalars, "extra": extra}, path)
 
     def load_state(self, path, load_weights: bool = True) -> None:
-        """Restore transitions + counters written by :meth:`save_state`."""
+        """Restore transitions and counters written by ``save_state``.
+
+        Args:
+            path (str | Path): Checkpoint path previously written by
+                ``save_state``.
+            load_weights: Accepted for API symmetry with agents; ignored
+                (buffers have no separate weight tensors beyond storage).
+        """
         ckpt = T.load(str(path), map_location=self.device, weights_only=False)
         for key, value in ckpt.get("tensors", {}).items():
             if isinstance(value, dict):
@@ -257,8 +376,8 @@ class Buffer:
             sum_tree.max_priority = extra["sum_tree_max_priority"].to(self.device)
 
 class ReplayBuffer(Buffer):
-    """Off-Policy replay buffer with N-step sequence sampling.
-    """
+    """Off-policy circular buffer of N-step transition windows."""
+
     def __init__(
         self,
         env: EnvWrapper,
@@ -267,6 +386,18 @@ class ReplayBuffer(Buffer):
         hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None,
     ):
+        """Allocate ``(buffer_size, N, ...)`` storage for off-policy windows.
+
+        Requires ``VectorNStepReward`` on ``env``. When ``hindsight`` is set,
+        it must use ``output_format='n_step'`` with matching ``N``.
+
+        Args:
+            env: Wrapped env; must expose n-step trajectory windows.
+            buffer_size: Maximum number of N-step windows retained.
+            N: Window length stored along the second axis.
+            hindsight: Optional HER relabeler (``n_step`` output only).
+            device: Torch device; ``None`` resolves via ``get_device``.
+        """
         # If using hindsigh relabeling, check to make sure goal key is specified, output format is n_step
         # and N values matches Buffer N value
         if hindsight is not None:
@@ -319,13 +450,18 @@ class ReplayBuffer(Buffer):
         actions: Action,
         prev_dones: T.Tensor,
         ) -> None:
-        """Record a transition into the buffer.
+        """Record one env step: store any ready n-step window, then HER bookkeeping.
+
+        When ``cur_observation.n_step_trajectory`` is set, unpacks it into
+        ``add``. If HER is enabled, delegates to ``_her_step``.
 
         Args:
-            cur_observation: Observation: The observation of the current state.
-            prev_observation: Observation: The observation of the previous state.
-            actions: Action: The actions taken.
-            prev_dones: T.Tensor: The previous dones of the environments.
+            cur_observation: Current-step observation (may carry an n-step
+                trajectory dict from ``VectorNStepReward``).
+            prev_observation: Observation from the previous step.
+            actions: Actions taken from ``prev_observation``.
+            prev_dones: Per-env done flags from the previous step (episode
+                boundaries for HER accumulation).
         """
         self.env_steps += self.env.num_envs
         if cur_observation.n_step_trajectory is not None:
@@ -337,7 +473,18 @@ class ReplayBuffer(Buffer):
         self._her_step(cur_observation, prev_observation, actions, prev_dones)
 
     def _her_step(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
-        """Adds trajectory data to the episodes buffers and adds relabeled completed trajectories to the buffer.
+        """Accumulate per-env episode steps and add HER-relabeled windows on done.
+
+        On ``prev_dones[i]``, stacks the env's episode buffer, optionally
+        feeds the goal pool, calls ``hindsight.relabel_episode``, and
+        ``add``s any relabeled n-step batch. Otherwise appends the current
+        step into that env's episode buffer.
+
+        Args:
+            cur_observation: Current-step observation and rewards.
+            prev_observation: Previous-step observation (states / goals).
+            actions: Actions taken from ``prev_observation``.
+            prev_dones: Per-env done flags; ``True`` closes that env's episode.
         """
         zero_ir = T.zeros((), dtype=T.float32, device=self.device)
         for i in range(self.env.num_envs):
@@ -402,6 +549,30 @@ class ReplayBuffer(Buffer):
         trajectory_lengths: T.Tensor | None = None,
         initial_hidden: Dict[str, T.Tensor] | None = None,
     ) -> None:
+        """Write a batch of N-step windows into the circular store.
+
+        Indices wrap with ``samples_added % buffer_size``. Optional
+        ``initial_hidden`` allocates R2D2 storage on first use; later adds
+        without it zero that slot. Detaches tensors before writing.
+
+        Args:
+            states: Window states ``(B, N, ...)`` (or dict of tensors).
+            actions: Window actions ``(B, N, ...)``.
+            rewards: Window rewards ``(B, N)``.
+            next_states: Window next-states ``(B, N, ...)``.
+            terminations: Window termination flags ``(B, N)``.
+            truncations: Window truncation flags ``(B, N)``.
+            raw_actions: Optional pre-squash / raw actions.
+            log_probs: Optional action log-probabilities ``(B, N)``.
+            intrinsic_rewards: Optional intrinsic rewards ``(B, N)``.
+            state_achieved_goals: Required when the env has a goal key.
+            next_state_achieved_goals: Required when the env has a goal key.
+            desired_goals: Required when the env has a goal key.
+            trajectory_lengths: Valid length of each window (partial at
+                episode ends), shape ``(B,)``.
+            initial_hidden: Optional R2D2 recurrent state at each window's
+                first step (dict of tensors with leading batch dim ``B``).
+        """
         batch_size = obs_batch_size(states)
         start_idx = self.samples_added % self.buffer_size
         end_idx = (self.samples_added + batch_size) % self.buffer_size
@@ -489,13 +660,17 @@ class ReplayBuffer(Buffer):
         self.samples_added += batch_size
 
     def sample(self, samples: int) -> Dict[str, T.Tensor]:
-        """Returns a dictionary of n-step sequences sampled from the buffer.
-        
+        """Uniformly sample n-step windows and return cloned tensors.
+
+        Draws indices from ``[0, min(samples_added, buffer_size))``. Does not
+        mutate storage. Goal keys are ``None`` when the env has no goal space.
+
         Args:
-            samples: int: The number of samples to draw from the buffer.
-        
+            samples: Number of windows to draw.
+
         Returns:
-            Dict[str, T.Tensor]: A dictionary containing the sampled n-step sequences.
+            Dict of cloned batch tensors (states, actions, rewards, …),
+                optionally including ``initial_hidden`` and goal fields.
         """
         size = min(self.samples_added, self.buffer_size)
         if size == 0:
@@ -533,7 +708,11 @@ class ReplayBuffer(Buffer):
         return sample
     
     def reset(self) -> None:
-        """Reset the buffer to all zeros and the counter to zero.
+        """Zero transition storage and counters; leave ``initial_hidden`` untouched.
+
+        Stale R2D2 state is unreachable: ``samples_added`` resets to 0 so
+        ``sample`` only indexes freshly written slots, and ``add`` zeroes
+        ``initial_hidden`` entries written without stored state.
         """
         tree_zero_(self.states)
         self.actions.zero_()
@@ -554,11 +733,19 @@ class ReplayBuffer(Buffer):
             self.next_state_achieved_goals.zero_()
 
     def is_ready(self, samples: int) -> bool:
-        """Check if the buffer is ready to sample.
+        """Return whether at least ``samples`` windows have been added.
+
+        Args:
+            samples: Minimum ``samples_added`` required before learning.
         """
         return self.samples_added >= samples
     
     def get_config(self) -> Dict[str, Any]:
+        """Extend the base config with the N-step window length.
+
+        Returns:
+            Base ``get_config`` mapping with ``config['N']`` set.
+        """
         config = super().get_config()
         config['type'] = self.__class__.__name__
         config['config'].update({
@@ -571,7 +758,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
  
     Samples transitions with probability proportional to (|δ| + ε)^α and
     corrects the resulting bias with importance weights (N · P)^(-β). β is
-    annealed from `beta_start` toward 1.0 over `beta_iter` gradient steps.
+    annealed from ``beta_start`` toward 1.0 over ``update_beta`` calls.
     """
  
     def __init__(
@@ -589,6 +776,26 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None,
     ):
+        """Configure priority mode, IS-weight beta schedule, and backing store.
+
+        Args:
+            env: Wrapped env (same constraints as ``ReplayBuffer``).
+            buffer_size: Maximum number of N-step windows retained.
+            alpha: Exponent on ``(|td_error| + epsilon)`` for priorities;
+                also the rank-PMF exponent when ``priority='rank'``.
+            beta_start: Initial importance-sampling exponent β.
+            beta_iter: Number of ``update_beta`` calls to reach β = 1.0.
+            beta_update_freq: Call ``update_beta`` every this many
+                ``sample`` invocations.
+            priority: ``"proportional"`` (sum-tree) or ``"rank"``.
+            sort_freq: For rank mode, force a resort of the sorted-index
+                cache once this many samples have been added since the last
+                sort (checked on each ``sample`` / ``_maybe_resort`` call).
+            epsilon: Floor added inside ``(|δ| + ε)^α``.
+            N: N-step window length (forwarded to ``ReplayBuffer``).
+            hindsight: Optional HER relabeler.
+            device: Torch device; ``None`` resolves via ``get_device``.
+        """
         if priority not in ("proportional", "rank"):
             raise ValueError(
                 f"Invalid priority type: {priority!r} (must be 'proportional' or 'rank')"
@@ -631,13 +838,16 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         actions: Action,
         prev_dones: T.Tensor,
         ) -> None:
-        """Record a transition into the buffer.
+        """Record one env step via ``add`` (with priorities) and optional HER.
+
+        Same flow as ``ReplayBuffer.record``, but ``add`` also seeds priorities.
 
         Args:
-            cur_observation: Observation: The observation of the current state.
-            prev_observation: Observation: The observation of the previous state.
-            actions: Action: The actions taken.
-            prev_dones: T.Tensor: The previous dones of the environments.
+            cur_observation: Current-step observation (may carry an n-step
+                trajectory dict).
+            prev_observation: Observation from the previous step.
+            actions: Actions taken from ``prev_observation``.
+            prev_dones: Per-env done flags from the previous step.
         """
         self.env_steps += self.env.num_envs
         if cur_observation.n_step_trajectory is not None:
@@ -665,7 +875,27 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         trajectory_lengths: T.Tensor | None = None,
         initial_hidden: Dict[str, T.Tensor] | None = None,
     ) -> None:
+        """Store windows via ``ReplayBuffer.add``, then seed max priority.
 
+        New entries receive the current max priority (sum-tree or rank array)
+        so they are sampled until ``update_priorities`` revises them.
+
+        Args:
+            states: Window states ``(B, N, ...)``.
+            actions: Window actions ``(B, N, ...)``.
+            rewards: Window rewards ``(B, N)``.
+            next_states: Window next-states ``(B, N, ...)``.
+            terminations: Window termination flags ``(B, N)``.
+            truncations: Window truncation flags ``(B, N)``.
+            raw_actions: Optional pre-squash / raw actions.
+            log_probs: Optional action log-probabilities.
+            intrinsic_rewards: Optional intrinsic rewards.
+            state_achieved_goals: Required when the env has a goal key.
+            next_state_achieved_goals: Required when the env has a goal key.
+            desired_goals: Required when the env has a goal key.
+            trajectory_lengths: Valid length of each window, shape ``(B,)``.
+            initial_hidden: Optional R2D2 recurrent state at window starts.
+        """
         batch_size = obs_batch_size(states)
         self._samples_since_sort += batch_size
         start_idx = self.samples_added % self.buffer_size
@@ -702,15 +932,18 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.priorities[indices] = self.max_priority_rank.expand(batch_size)
  
     def sample(self, samples: int) -> Dict[str, T.Tensor]:
-        """Sample a batch weighted by priority.
+        """Sample a batch weighted by priority and anneal β when due.
+
+        Every ``beta_update_freq``-th call runs ``update_beta``. Returns the
+        usual transition fields plus ``indices``, ``weights`` (IS weights
+        normalized so max == 1), and ``probs``.
 
         Args:
-            samples: int: The number of samples to draw from the buffer.
- 
-        Returns a dict with the standard transition fields plus:
-            indices : buffer indices, needed for update_priorities() later
-            weights : importance-sampling weights, normalized so max == 1
-            probs   : sampling probabilities (priority / total)
+            samples: Requested batch size (capped at current buffer size).
+
+        Returns:
+            Dict of cloned batch tensors including ``indices``, ``weights``,
+                and ``probs`` for the subsequent ``update_priorities`` call.
         """
         size = min(self.samples_added, self.buffer_size)
         if size == 0:
@@ -764,7 +997,18 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     def _sample_proportional(
         self, samples: int, size: int
     ) -> Tuple[T.Tensor, T.Tensor, T.Tensor]:
+        """Stratified sum-tree sampling with importance-sampling weights.
 
+        Args:
+            samples: Number of draws.
+            size: Current filled buffer size (unused when the tree is empty;
+                used only for the uniform fallback and IS weight formula).
+
+        Returns:
+            indices: Selected buffer indices.
+            probs: Sampling probabilities ``priority / total``.
+            weights: IS weights ``(size * probs)^(-beta)``, max-normalized.
+        """
         total = self.sum_tree.total_priority
         if total <= 0.0:
             # Tree is empty or all-zero — fall back to uniform.
@@ -789,11 +1033,19 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     def _sample_rank(
         self, samples: int, size: int
     ) -> Tuple[T.Tensor, T.Tensor, T.Tensor]:
-        """Stratified-segments rank-based sampling
+        """Stratified rank-based sampling with importance-sampling weights.
+
+        Args:
+            samples: Number of draws (also the number of rank segments).
+            size: Current filled buffer size; ``_maybe_resort`` guarantees
+                the sorted cache covers exactly this many entries.
+
+        Returns:
+            indices: Selected buffer indices.
+            probs: Rank probabilities ``(rank+1)^(-alpha) / Z``.
+            weights: IS weights ``(size * probs)^(-beta)``, max-normalized.
         """
         self._maybe_resort(size)
-        # pin size to sorted size to avoid OOB error
-        size = min(size, self.sorted_indices.numel())
         seg_starts, seg_ends = self._get_segments(size, samples)
 
         seg_widths = (seg_ends - seg_starts).float()
@@ -808,13 +1060,21 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         return indices, probs, weights
 
     def _maybe_resort(self, size: int) -> None:
-        """Resort priorities[:size] if the cache is stale.
+        """Resort ``priorities[:size]`` when the cache is missing or stale.
 
-        Two trigger conditions:
-          1. sorted_indices is None (first sample, or sort_freq).
-          2. sorted_indices.numel() != size (buffer size changed).
+        Triggers on any of: no cache yet (``sorted_indices is None``), a
+        coverage mismatch (``sorted_indices.numel() != size``, e.g. after
+        growth or a ``reset``), or staleness (``_samples_since_sort >=
+        sort_freq``). Post-condition: ``sorted_indices.numel() == size``.
+
+        Args:
+            size: Number of leading priority entries to sort.
         """
-        needs_resort = self.sorted_indices is None
+        needs_resort = (
+            self.sorted_indices is None
+            or self.sorted_indices.numel() != size
+            or self._samples_since_sort >= self.sort_freq
+        )
 
         if needs_resort:
             self.sorted_indices = T.argsort(self.priorities[:size], descending=True)
@@ -823,7 +1083,16 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     def _get_segments(
         self, size: int, samples: int
     ) -> Tuple[T.Tensor, T.Tensor]:
-        """Return cached (seg_starts, seg_ends), recomputing if (size, samples) changed."""
+        """Return cached ``(seg_starts, seg_ends)``, recomputing if needed.
+
+        Args:
+            size: Rank support size.
+            samples: Number of equal-probability segments.
+
+        Returns:
+            seg_starts: Inclusive start ranks per segment.
+            seg_ends: Exclusive end ranks per segment.
+        """
         key = (size, samples)
         if self._seg_cache_key != key:
             self._compute_segments(size, samples)
@@ -831,8 +1100,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         return self._seg_starts, self._seg_ends
 
     def _compute_segments(self, size: int, k: int) -> None:
-        """Compute k equal-probability segment boundaries over rank distribution
-        P(r) = (r+1)^(-α) / Z for r = 0..size-1.
+        """Compute k equal-probability segment boundaries over the rank PMF.
+
+        Uses ``P(r) = (r+1)^(-α) / Z`` for ``r = 0..size-1`` and stores
+        ``_seg_starts``, ``_seg_ends``, and ``_rank_Z``.
+
+        Args:
+            size: Rank support size.
+            k: Number of segments (typically the sample count).
         """
         ranks_one_indexed = T.arange(1, size + 1, dtype=T.float32, device=self.device)
         pmf = ranks_one_indexed.pow(-self.alpha)
@@ -860,9 +1135,15 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         self.beta = self.beta_start + progress * (1.0 - self.beta_start)
  
     def update_priorities(self, indices: T.Tensor, td_errors: T.Tensor) -> None:
-        """Recompute priorities from new TD errors for previously-sampled transitions.
- 
-        Stores p = (|δ| + ε)^α
+        """Recompute priorities from TD errors for previously sampled indices.
+
+        Stores ``p = (|δ| + ε)^α``. NaN priorities are replaced by the batch
+        mean of valid entries (or ``ε^α`` if none).
+
+        Args:
+            indices: Buffer indices returned by the last ``sample``.
+            td_errors: TD errors aligned with ``indices`` (flattened if needed
+                by the caller).
         """
         if not isinstance(indices, T.Tensor):
             indices = T.tensor(indices, device=self.device, dtype=T.long)
@@ -889,10 +1170,43 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             self.max_priority_rank = T.maximum(
                 self.max_priority_rank, priorities.max()
             )
-            if self._samples_since_sort >= self.sort_freq:
-                self.sorted_indices = None  # invalidate sort cache
- 
+
+    def reset(self) -> None:
+        """Zero transition storage and all prioritized-sampling state.
+
+        Calls ``ReplayBuffer.reset`` for the transition tensors, then clears
+        whichever priority backend is active so a cleared buffer does not
+        keep sampling stale leaves / ranks from before the reset: the
+        ``SumTree`` in proportional mode, or ``priorities``,
+        ``sorted_indices``, ``max_priority_rank``, and the segment cache in
+        rank mode. Also zeros ``_samples_since_sort``.
+
+        Deliberately leaves ``beta``, ``_sample_calls``, and
+        ``_beta_updates`` untouched: the β-annealing schedule tracks
+        gradient steps, not buffer contents, so it should not restart just
+        because the buffer was cleared.
+        """
+        super().reset()
+        self._samples_since_sort = 0
+        if self.priority == "proportional":
+            self.sum_tree.reset()
+        else:  # rank
+            self.priorities.zero_()
+            self.sorted_indices = None
+            self.max_priority_rank = T.tensor(1.0, dtype=T.float32, device=self.device)
+            self._seg_cache_key = (-1, -1)
+            self._seg_starts = None
+            self._seg_ends = None
+            self._rank_Z = T.tensor(0.0, dtype=T.float32, device=self.device)
+
     def get_config(self) -> Dict[str, Any]:
+        """Extend the replay config with PER hyperparameters.
+
+        Returns:
+            Parent config plus ``alpha``, ``beta_start``, ``beta_iter``,
+                ``beta_update_freq``, ``priority``, ``sort_freq``, and
+                ``epsilon``.
+        """
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
@@ -907,8 +1221,8 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         return config
 
 class RolloutBuffer(Buffer):
-    """On-Policy buffer for storing rollouts.
-    """
+    """On-policy buffer storing fixed-horizon rollouts per environment."""
+
     def __init__(
         self,
         env: EnvWrapper,
@@ -916,6 +1230,15 @@ class RolloutBuffer(Buffer):
         hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None
     ):
+        """Allocate ``(buffer_size, num_envs, ...)`` rollout tensors.
+
+        Args:
+            env: Wrapped environment (``num_envs`` sizes the second axis).
+            buffer_size: Horizon length (timesteps) stored per env.
+            hindsight: Optional HER relabeler (unused by this class's
+                ``record`` / ``add`` path; subclasses may use it).
+            device: Torch device; ``None`` resolves via ``get_device``.
+        """
         super().__init__(env, buffer_size, hindsight, device)
         self.cur_idx = T.zeros((env.num_envs,), dtype=T.long, device=self.device)
 
@@ -938,13 +1261,16 @@ class RolloutBuffer(Buffer):
             self.next_state_achieved_goals = T.zeros((buffer_size, env.num_envs, *self.goal_space_shape), dtype=T.float32, device=self.device)
 
     def record(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
-        """Record a transition into the buffer.
+        """Unpack one vectorized step into ``add``.
+
+        Passes ``prev_dones`` as ``first_steps`` so post-episode bootstrap
+        steps can be masked out at sample time.
 
         Args:
-            cur_observation: Observation: The observation of the current state.
-            prev_observation: Observation: The observation of the previous state.
-            actions: Action: The actions taken.
-            prev_dones: T.Tensor: The previous dones of the environments.
+            cur_observation: Current-step observation and rewards.
+            prev_observation: Previous-step observation (states / goals).
+            actions: Actions taken from ``prev_observation``.
+            prev_dones: Per-env done flags from the previous step.
         """
         self.add(
             states=prev_observation.states,
@@ -978,7 +1304,24 @@ class RolloutBuffer(Buffer):
         desired_goals: T.Tensor|None = None,
         first_steps: T.Tensor|None = None,
     ) -> None:
+        """Write one timestep for every env at ``cur_idx``, then increment.
 
+        Args:
+            states: Per-env states at this step.
+            actions: Per-env actions.
+            rewards: Per-env rewards.
+            next_states: Per-env next states.
+            terminations: Per-env termination flags.
+            truncations: Per-env truncation flags.
+            raw_actions: Optional raw actions.
+            log_probs: Optional action log-probabilities.
+            intrinsic_rewards: Optional intrinsic rewards.
+            state_achieved_goals: Required when the env has a goal key.
+            next_state_achieved_goals: Required when the env has a goal key.
+            desired_goals: Required when the env has a goal key.
+            first_steps: Per-env mask marking the first step after a done
+                (phantom / bootstrap step); defaults to all-False.
+        """
         # Ensure actions are 2d tensors
         if actions.ndim == 1:
             actions = actions.unsqueeze(-1)
@@ -1022,8 +1365,19 @@ class RolloutBuffer(Buffer):
         self.cur_idx += 1
 
     def sample(self, **kwargs: Any) -> Dict[str, T.Tensor]:
-        """Returns a dictionary of all buffer tensors up to the current index of each environment.
-        Current index values will match across all tensors because all rollouts are of same length.
+        """Return all stored timesteps up to ``cur_idx``, then reset indices.
+
+        Slices ``[:max(cur_idx)]`` for every env (rollouts share length).
+        Includes ``first_steps`` and ``valid_indices`` (flattened non-phantom
+        positions). Clears ``cur_idx`` / ``first_steps`` via ``reset`` but
+        does not zero the underlying data tensors.
+
+        Args:
+            **kwargs: Ignored; accepted for interface symmetry with
+                off-policy ``sample(samples=...)``.
+
+        Returns:
+            Dict of cloned rollout tensors plus ``valid_indices``.
         """
         idx = int(self.cur_idx.max().item())
         if idx <= 0:
@@ -1062,24 +1416,27 @@ class RolloutBuffer(Buffer):
         return sample
 
     def reset(self) -> None:
-        """Reset the current index of each environment to zero."""
+        """Zero per-env write indices and the ``first_steps`` mask."""
         self.cur_idx.zero_()
         self.first_steps.zero_()
 
     def is_ready(self, **kwargs: Any) -> bool:
-        """Check if the buffer is ready to sample. Always returns True.
+        """Always ``True``; on-policy rollouts are sampled when the trainer asks.
+
+        Args:
+            **kwargs: Ignored; accepted for interface symmetry.
         """
         return True
     
     def get_config(self) -> Dict[str, Any]:
-        """Get buffer config."""
+        """Return the base buffer config with this class's ``type``."""
         config = super().get_config()
         config['type'] = self.__class__.__name__
         return config
 
 class TrajectoryBuffer(RolloutBuffer):
-    """On-Policy buffer for storing completedtrajectories
-    """
+    """On-policy buffer that collects completed episode trajectories."""
+
     def __init__(
         self,
         env: EnvWrapper,
@@ -1087,6 +1444,17 @@ class TrajectoryBuffer(RolloutBuffer):
         hindsight: HindsightRelabeler | None = None,
         device: Optional[str] = None
     ):
+        """Allocate rollout storage plus a list of completed trajectories.
+
+        When ``hindsight`` is set, it must use ``output_format='flat'``.
+
+        Args:
+            env: Wrapped environment.
+            buffer_size: Max timesteps retained per env while an episode is
+                in progress (same layout as ``RolloutBuffer``).
+            hindsight: Optional HER relabeler (``flat`` output only).
+            device: Torch device string; ``None`` resolves via ``get_device``.
+        """
         # Check hindisght if None to make sure correct
         if hindsight is not None:
             if env.goal_key is None:
@@ -1100,13 +1468,13 @@ class TrajectoryBuffer(RolloutBuffer):
 
 
     def record(self, cur_observation: Observation, prev_observation: Observation, actions: Action, prev_dones: T.Tensor) -> None:
-        """Record a transition into the buffer.
+        """Unpack one vectorized step into ``TrajectoryBuffer.add``.
 
         Args:
-            cur_observation: Observation: The observation of the current state.
-            prev_observation: Observation: The observation of the previous state.
-            actions: Action: The actions taken.
-            prev_dones: T.Tensor: The previous dones of the environments.
+            cur_observation: Current-step observation and rewards.
+            prev_observation: Previous-step observation (states / goals).
+            actions: Actions taken from ``prev_observation``.
+            prev_dones: Per-env done flags from the previous step.
         """
         self.add(
             states=prev_observation.states,
@@ -1140,6 +1508,28 @@ class TrajectoryBuffer(RolloutBuffer):
         desired_goals: T.Tensor|None = None,
         first_steps: T.Tensor|None = None,
     ) -> None:
+        """Write a step, then harvest finished episodes into the trajectory list.
+
+        After ``RolloutBuffer.add``, any env whose latest stored step is done
+        contributes a trajectory of non-phantom steps to
+        ``completed_trajectories`` (and optional HER flat copies), then that
+        env's ``cur_idx`` is reset to 0.
+
+        Args:
+            states: Per-env states at this step.
+            actions: Per-env actions.
+            rewards: Per-env rewards.
+            next_states: Per-env next states.
+            terminations: Per-env termination flags.
+            truncations: Per-env truncation flags.
+            raw_actions: Optional raw actions.
+            log_probs: Optional action log-probabilities.
+            intrinsic_rewards: Optional intrinsic rewards.
+            state_achieved_goals: Required when the env has a goal key.
+            next_state_achieved_goals: Required when the env has a goal key.
+            desired_goals: Required when the env has a goal key.
+            first_steps: Per-env phantom-step mask (see ``RolloutBuffer.add``).
+        """
         super().add(
             states,
             actions,
@@ -1204,12 +1594,23 @@ class TrajectoryBuffer(RolloutBuffer):
                 self.completed_trajectories.extend(self.hindsight.relabel_episode(trajectory))
 
     def sample(self, **kwargs: Any) -> List[Dict[str, T.Tensor]]:
-        """Returns a list of completed trajectories."""
+        """Return and clear the list of completed trajectories.
+
+        Does not reset in-progress per-env write indices.
+
+        Args:
+            **kwargs: Ignored; accepted for interface symmetry.
+
+        Returns:
+            Shallow copy of ``completed_trajectories`` collected since the
+                last sample (list is then emptied).
+        """
         trajectories = self.completed_trajectories[:]
         # Clear trajectories
         self.completed_trajectories = []
         return trajectories
 
     def reset(self) -> None:
+        """Clear write indices and discard any completed trajectories."""
         super().reset()
         self.completed_trajectories = []

@@ -27,6 +27,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Google-style docstrings completed for `phoenx.schedulers`, `phoenx.noise`,
   `phoenx.distributions`, `phoenx.builder`, `phoenx.her`, `phoenx.trainer`,
+  `phoenx.rl_callbacks`, `phoenx.normalizer`, `phoenx.buffer`,
   `phoenx.adaptive_kl`, and `phoenx.agent_utils`. `her.py`'s module docstring
   also lost the `===` banner rows that mkdocstrings rendered as literal `=`
   characters on the HER page, and two of its usage examples were simply wrong:
@@ -52,6 +53,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The newly bundled Isaac camera config had its `save_dir` rewritten from an absolute path on the author's machine to a relative `./Trained_Models/...` path, so every shipped example is now portable.
 - The bundled Isaac camera example's `env.config.cfg` now points at `phoenx.examples.isaac.custom_franka_cube_lift_cfg:FrankaCubeLiftCameraBlindEnvCfg`. It previously used a `Configs.IsaacSim...` prefix that raised `ModuleNotFoundError: No module named 'Configs'`.
 - Tests no longer depend on the untracked `configs/` tree. `TestCanonicalConfig`'s Isaac camera test reads the packaged copy via `importlib.resources`, while the multi-modal config and `test_roundtrip.py`'s legacy-schema SAC config moved to `tests/fixtures/`.
+- `Buffer` is now a real ABC (`class Buffer(ABC)`). It previously imported `abstractmethod` but never `ABC`, so the base was directly instantiable and its declared `add`/`sample` signatures matched no concrete subclass. Direct instantiation now raises `TypeError`. In-repo callers are unaffected (`Buffer.create_instance` and all concrete subclasses are unchanged), but any out-of-repo code that subclassed without implementing `add`/`sample`, or that instantiated `Buffer` directly, will break.
 
 ### Removed
 - Twelve unused import statements from `src/phoenx/agent_utils.py`: `json`, `math.e`, `pathlib.Path`, `typing.{Dict, Any, List, Optional}`, `numpy`, `torch.nn`, and the relative imports of `.models`, `.env_wrapper`, `.buffer`, `.noise`, `.normalizer`, and `.schedulers`. Nothing the module defines referenced any of them. This is API-visible rather than purely internal: the six relative imports re-exported roughly two dozen names, so code doing `from phoenx.agent_utils import ScheduleWrapper` (or reaching `agent_utils.np`) was leaning on a re-export that no longer exists and should import from the owning module instead.
@@ -61,6 +63,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `src/phoenx/gym_helper.py` (180 lines), unreferenced anywhere in the repo. It predates `her.py`: a hardcoded table mapping Gymnasium spec IDs to per-env `desired_goal` / `achieved_goal` / reward callables, which `HindsightRelabeler` replaced by resolving `compute_reward` off the env stack and reading the goal keys out of the dict observation. The table had also rotted past the pinned dependencies — under `gymnasium==1.2.0` and `gymnasium-robotics` 1.4.0, five of its six keys (`CarRacing-v2`, `FetchReach-v2`, `FetchPickAndPlace-v2`, `FetchPush-v2`, `FetchSlide-v2`) are no longer registered, so `get_her_goal_functions` would `KeyError` on everything but `Reacher-v4`. The neighboring `get_goal_envs` built an empty list and never returned it, so it could only ever have returned `None`.
 
 ### Fixed
+- Rank-mode prioritized sampling could not reach recently added windows.
+  `PrioritizedReplayBuffer._maybe_resort` rebuilt the `sorted_indices` cache
+  only when it was `None`, `_sample_rank` pinned the rank support to whatever
+  that cache covered, and the only invalidation lived in `update_priorities` —
+  so up to `sort_freq` (default 1000) of the newest windows were unsampleable,
+  and an agent that sampled without ever reporting TD errors never refreshed
+  the ordering at all; importance-sampling weights were also computed against
+  the pinned support rather than the true buffer size. `_maybe_resort` now also
+  triggers on a coverage mismatch (`sorted_indices.numel() != size`) and on
+  staleness (`_samples_since_sort >= sort_freq`), guaranteeing
+  `sorted_indices.numel() == size` on exit. Rank mode remains opt-in
+  (`priority` defaults to `"proportional"`).
+- `PrioritizedReplayBuffer.reset` left prioritized state stale. It inherited
+  `ReplayBuffer.reset` unchanged, so the sum tree kept old priorities and
+  `_sample_proportional` drew leaf indices across the whole capacity, which
+  `sample` then clamped into the small valid region — piling an entire batch
+  onto the last valid index. `SumTree.max_priority` and `max_priority_rank`
+  also ratcheted upward permanently. New `SumTree.reset()` (zeros the tree,
+  restores `max_priority` to 1.0) and new `PrioritizedReplayBuffer.reset()`
+  clear the sum tree, or `priorities` / `sorted_indices` / `max_priority_rank`
+  / the segment cache in rank mode, and zero `_samples_since_sort`. They
+  deliberately do not reset `beta`, `_sample_calls`, or `_beta_updates`,
+  because the β-annealing schedule tracks gradient steps rather than buffer
+  contents. This bug was latent — nothing in `src/` calls `reset()` on an
+  off-policy buffer today.
+- Covering all three buffer fixes above, eleven new tests in
+  `tests/test_buffer.py` pin rank coverage and wraparound, cache refresh
+  without `update_priorities`, rank probabilities against the true buffer
+  size, `Buffer` abstractness, reset clearing priority state, and post-reset
+  sampling spread; the fast subset went from `441 passed, 23 deselected` to
+  `452 passed, 23 deselected`.
 - The bundled Isaac camera example set `learn_every: 12288`, sized for the 512
   envs an earlier revision used, while the file itself requests
   `num_envs: 1024` — so it learned twice per rollout instead of once. It is now

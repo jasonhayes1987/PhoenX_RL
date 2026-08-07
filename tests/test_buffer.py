@@ -731,6 +731,298 @@ class TestPrioritizedRank:
         assert sample["weights"].max().item() == pytest.approx(1.0, abs=1e-5)
         assert T.all(sample["weights"] > 0)
 
+    def test_growth_beyond_first_sort_reaches_new_region(self, discrete_env):
+        """Regression for the rank-mode resort bug: growing the buffer past the
+        size that was cached at the first sort must make the newly added
+        indices reachable on the next sample, not stuck behind the stale
+        cache's coverage.
+
+        Pre-fix, ``_sample_rank`` pinned its rank support to
+        ``sorted_indices.numel()`` (the size at the *first* sort), so indices
+        16..31 would be structurally unreachable -- ``counts[initial:]`` would
+        be exactly zero every round, not merely rare. This makes the failure
+        deterministic rather than probabilistic.
+        """
+        T.manual_seed(41)
+        initial, grown = 16, 32
+        buf = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=grown, priority="rank", device=DEVICE,
+            beta_update_freq=10_000,
+        )
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=initial))
+        buf.sample(8)  # forces the first sort over the initial 16 entries
+        assert buf.sorted_indices.numel() == initial
+
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=grown - initial))
+        new_region = T.arange(initial, grown, device=DEVICE)
+        # Give the newly added region the highest priority so it should
+        # dominate sampling once it becomes reachable at all.
+        buf.update_priorities(
+            new_region, T.full((grown - initial,), 100.0, device=DEVICE)
+        )
+
+        counts = T.zeros(grown, device=DEVICE)
+        for _ in range(50):
+            counts += T.bincount(buf.sample(grown)["indices"], minlength=grown).float()
+        assert counts[initial:].sum().item() > 0
+
+    def test_cache_refreshes_on_growth_without_update_priorities(self, discrete_env):
+        """The sorted-index cache must refresh on the next ``sample`` once the
+        buffer has grown past its last coverage, even if ``update_priorities``
+        is never called -- pre-fix, the only cache invalidation lived inside
+        ``update_priorities``, so an agent that never reports TD errors would
+        never refresh the ordering at all.
+        """
+        T.manual_seed(43)
+        buf = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=64, priority="rank", device=DEVICE,
+            sort_freq=8, beta_update_freq=10_000,
+        )
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=4))
+        buf.sample(4)  # forces the first sort, cache covers size 4
+        assert buf.sorted_indices.numel() == 4
+
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=10))  # +10, past sort_freq=8
+        samples_added = buf.samples_added
+        buf.sample(4)
+        assert buf.sorted_indices.numel() == samples_added
+
+    def test_wraparound_relies_on_staleness_trigger_once_size_saturates(self, discrete_env):
+        """Once ``samples_added`` exceeds ``buffer_size``, ``size`` saturates
+        permanently at ``buffer_size`` and the coverage-mismatch trigger in
+        ``_maybe_resort`` (``sorted_indices.numel() != size``) can never fire
+        again -- only the staleness trigger (``_samples_since_sort >=
+        sort_freq``) can still refresh the ordering. This test fills a
+        rank-mode buffer past capacity so the circular store wraps, then
+        proves the staleness trigger alone still keeps the sort fresh and
+        that drawn indices stay in bounds.
+        """
+        T.manual_seed(61)
+        buffer_size, sort_freq = 8, 4
+        buf = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=buffer_size, priority="rank", device=DEVICE,
+            sort_freq=sort_freq, beta_update_freq=10_000,
+        )
+        # Fill past capacity so the circular buffer wraps and samples_added
+        # permanently exceeds buffer_size.
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=buffer_size))
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=5))
+        assert buf.samples_added == buffer_size + 5
+
+        first = buf.sample(buffer_size)
+        size = min(buf.samples_added, buf.buffer_size)
+        assert size == buffer_size
+        assert buf.sorted_indices.numel() == size
+        assert bool(T.all((first["indices"] >= 0) & (first["indices"] < buffer_size)))
+        assert buf._samples_since_sort == 0
+
+        # Advance exactly to sort_freq again WITHOUT calling
+        # update_priorities. samples_added keeps growing but size is pinned
+        # at buffer_size forever, so numel() == size will never mismatch
+        # again -- only the staleness check can still trigger a resort.
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=sort_freq))
+        assert buf._samples_since_sort == sort_freq
+
+        # Write a fully-known, distinguishable priority ordering directly
+        # (bypassing update_priorities' own cache-invalidation side effect)
+        # so the resort -- if it happens -- is verifiable, not just present.
+        buf.priorities[:buffer_size] = T.arange(
+            buffer_size, dtype=T.float32, device=DEVICE
+        )
+        expected_order = T.argsort(buf.priorities[:buffer_size], descending=True)
+
+        second = buf.sample(buffer_size)
+        assert buf._samples_since_sort == 0
+        assert T.equal(buf.sorted_indices, expected_order)
+        assert bool(T.all((second["indices"] >= 0) & (second["indices"] < buffer_size)))
+
+    def test_rank_Z_and_probs_use_true_size_after_growth(self, discrete_env):
+        """Pin rank-mode ``probs`` / ``_rank_Z`` to the true current size,
+        not a smaller size cached at an earlier, smaller fill level.
+
+        Chooses option (a) from the review over option (b): ``weights`` are
+        max-normalized, so for a fixed set of drawn ``probs`` the constant
+        scalar ``size`` inside ``(size * probs).pow(-beta)`` is identical
+        across every element of the batch and cancels exactly in the ratio
+        ``weights / weights.max()`` -- no assertion built purely on the
+        normalized ``weights`` output can distinguish the true size from a
+        smaller pinned one. ``_rank_Z`` (and the un-normalized ``probs`` it
+        feeds) are not divided by anything of their own scale, so a wrong
+        support size changes their absolute value detectably.
+        """
+        T.manual_seed(47)
+        alpha = 0.7
+        initial, grown = 10, 25
+        buf = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=grown, priority="rank", device=DEVICE,
+            alpha=alpha, beta_update_freq=10_000,
+        )
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=initial))
+        buf.sample(4)  # caches sorted_indices / segments / _rank_Z at size=initial
+        assert buf.sorted_indices.numel() == initial
+
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=grown - initial))
+        true_size = min(buf.samples_added, buf.buffer_size)
+        assert true_size == grown
+
+        sample = buf.sample(6)
+
+        expected_Z_true = T.arange(
+            1, true_size + 1, dtype=T.float32, device=DEVICE
+        ).pow(-alpha).sum()
+        expected_Z_stale = T.arange(
+            1, initial + 1, dtype=T.float32, device=DEVICE
+        ).pow(-alpha).sum()
+        # The stale (smaller) support's Z must be meaningfully different
+        # from the true one, or a tight equality check against the true
+        # value below would pass by coincidence rather than by pinning size.
+        assert expected_Z_true.item() != pytest.approx(expected_Z_stale.item(), rel=1e-3)
+        assert buf._rank_Z.item() == pytest.approx(expected_Z_true.item(), rel=1e-5)
+
+        # Recover the rank drawn for each returned index via the inverse of
+        # the sorted-index permutation, then check `probs` against the
+        # analytic rank-PMF formula evaluated at the true size.
+        inverse = T.empty_like(buf.sorted_indices)
+        inverse[buf.sorted_indices] = T.arange(true_size, device=DEVICE)
+        ranks_used = inverse[sample["indices"]]
+        expected_probs = (ranks_used.float() + 1.0).pow(-alpha) / expected_Z_true
+        assert T.allclose(sample["probs"], expected_probs, rtol=1e-4, atol=1e-6)
+
+
+# =============================================================================
+# PrioritizedReplayBuffer - reset() clearing priority state
+# =============================================================================
+class TestPrioritizedReset:
+    """Regression tests for ``PrioritizedReplayBuffer.reset``.
+
+    Pre-fix, ``PrioritizedReplayBuffer`` inherited ``ReplayBuffer.reset``
+    unchanged, so it zeroed transition storage but left the SumTree /
+    priorities / sorted-index cache / max-priority seeds untouched.
+    """
+
+    @pytest.mark.parametrize("priority", ["proportional", "rank"])
+    def test_reset_clears_priority_state_but_not_beta(self, discrete_env, priority):
+        """reset() must zero all priority bookkeeping and reseed max-priority
+        back to 1.0, while leaving the beta-annealing schedule (``beta``,
+        ``_sample_calls``, ``_beta_updates``) untouched -- it tracks gradient
+        steps, not buffer contents, so it must not restart on a buffer clear.
+        """
+        buf = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=32, priority=priority, device=DEVICE,
+            beta_start=0.4, beta_iter=10, beta_update_freq=1,
+        )
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=32))
+        buf.update_priorities(
+            T.arange(32, device=DEVICE), T.abs(T.randn(32, device=DEVICE)) + 1.0
+        )
+        for _ in range(5):
+            buf.sample(8)
+        # Confirm annealing actually progressed, so "unchanged after reset"
+        # below is a meaningful assertion rather than a no-op.
+        assert buf.beta != pytest.approx(0.4)
+        beta_before = buf.beta
+        sample_calls_before = buf._sample_calls
+        beta_updates_before = buf._beta_updates
+        if priority == "rank":
+            # Confirm the segment cache actually populated, so asserting it
+            # is cleared below is meaningful rather than a no-op.
+            assert buf._seg_starts is not None
+            assert buf._seg_ends is not None
+            assert buf._rank_Z.item() != pytest.approx(0.0)
+
+        buf.reset()
+
+        assert buf.samples_added == 0
+        assert buf._samples_since_sort == 0
+        assert buf.beta == pytest.approx(beta_before)
+        assert buf._sample_calls == sample_calls_before
+        assert buf._beta_updates == beta_updates_before
+
+        if priority == "proportional":
+            assert buf.sum_tree.total_priority == pytest.approx(0.0)
+            assert T.all(buf.sum_tree.tree == 0)
+            assert buf.sum_tree.max_priority.item() == pytest.approx(1.0)
+        else:
+            assert T.all(buf.priorities == 0)
+            assert buf.sorted_indices is None
+            assert buf.max_priority_rank.item() == pytest.approx(1.0)
+            assert buf._seg_cache_key == (-1, -1)
+            assert buf._seg_starts is None
+            assert buf._seg_ends is None
+            assert buf._rank_Z.item() == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("priority", ["proportional", "rank"])
+    def test_post_reset_sampling_spreads_across_valid_region(self, discrete_env, priority):
+        """Pre-fix, a stale priority cache after reset kept referencing the old
+        (larger) buffer's indices. A small post-reset refill would then have
+        its highest-priority entries point at now-invalid indices beyond the
+        new valid region, which ``sample`` clamps to ``size - 1`` -- piling
+        nearly every draw onto that single last slot instead of spreading
+        across the refill.
+        """
+        T.manual_seed(53)
+        old_size, new_size = 64, 8
+        buf = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=old_size, priority=priority, device=DEVICE,
+            beta_update_freq=10_000,
+        )
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=old_size))
+        # Concentrate priority on the region that will fall OUTSIDE the small
+        # post-reset refill, so a stale cache's top entries reference indices
+        # well beyond it.
+        upper = T.arange(new_size, old_size, device=DEVICE)
+        buf.update_priorities(upper, T.full((upper.numel(),), 100.0, device=DEVICE))
+        buf.sample(old_size)  # populates the rank cache; harmless for proportional
+
+        buf.reset()
+
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=new_size))
+        counts = T.zeros(new_size, device=DEVICE)
+        for _ in range(50):
+            counts += T.bincount(buf.sample(new_size)["indices"], minlength=new_size).float()
+        total = counts.sum().item()
+        last_bin_share = counts[new_size - 1].item() / total
+        # A correctly reset buffer spreads roughly uniformly over `new_size`
+        # slots (~1/new_size share each); a stale one piles the vast majority
+        # of draws onto the clamp target. 0.5 sits far from both regimes, so
+        # this is not sensitive to sampling noise.
+        assert last_bin_share < 0.5, f"pileup on last index: {counts.tolist()}"
+        assert int((counts > 0).sum().item()) > 1
+
+    @pytest.mark.parametrize("priority", ["proportional", "rank"])
+    def test_save_load_state_round_trips_priorities(self, discrete_env, priority, tmp_path):
+        """save_state/load_state must round-trip the priority backend (the
+        SumTree, or the rank priorities array) and not just plain transition
+        storage -- untested before, and now load-bearing since reset()
+        depends on the same fields being consistent with each other.
+        """
+        buf = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=32, priority=priority, device=DEVICE,
+        )
+        buf.add(**make_nstep_batch(discrete_env, N=1, B=32))
+        buf.update_priorities(
+            T.arange(32, device=DEVICE), T.abs(T.randn(32, device=DEVICE)) + 0.1
+        )
+        path = tmp_path / "per_buffer.pt"
+        buf.save_state(path)
+
+        restored = PrioritizedReplayBuffer(
+            env=discrete_env, buffer_size=32, priority=priority, device=DEVICE,
+        )
+        restored.load_state(path)
+
+        assert restored.samples_added == buf.samples_added
+        if priority == "proportional":
+            assert T.allclose(restored.sum_tree.tree, buf.sum_tree.tree)
+            assert restored.sum_tree.max_priority.item() == pytest.approx(
+                buf.sum_tree.max_priority.item()
+            )
+        else:
+            assert T.allclose(restored.priorities, buf.priorities)
+            assert restored.max_priority_rank.item() == pytest.approx(
+                buf.max_priority_rank.item()
+            )
+
 
 # =============================================================================
 # RolloutBuffer
@@ -862,6 +1154,17 @@ class TestBufferFactory:
     def test_create_instance_unknown_raises(self, discrete_env):
         with pytest.raises(ValueError, match="not a subclass of Buffer"):
             Buffer.create_instance("Nope", env=discrete_env, buffer_size=10)
+
+
+class TestBufferAbstract:
+    """``Buffer`` declares ``add``/``sample`` as abstractmethods on an ABC; it
+    must not be directly instantiable."""
+
+    def test_direct_instantiation_raises_typeerror(self):
+        """ABCMeta blocks instantiation in ``object.__new__`` before
+        ``__init__`` ever runs, so invalid constructor args are fine here."""
+        with pytest.raises(TypeError):
+            Buffer(env=None, buffer_size=10)
 
 
 class TestHindsightValidation:

@@ -1,3 +1,12 @@
+"""Observation and reward normalizers for training.
+
+Provides running and batch feature normalizers, return-based reward
+normalization, a stateless image scaler, and a per-key dict normalizer.
+The trainer accumulates samples via ``add``, merges them into running
+statistics with ``update``, and applies ``normalize`` when building
+model inputs.
+"""
+
 import torch as T
 import numpy as np
 from .torch_utils import get_device
@@ -5,27 +14,33 @@ from .logging_config import get_logger
 
 
 def create_normalizer(config: dict) -> 'BaseNormalizer':
+    """Build a normalizer from a ``{type, config}`` mapping.
+
+    Looks up ``config['type']`` in ``NORMALIZER_CLASSES`` and constructs it
+    with ``**config['config']``.
+
+    Args:
+        config: Mapping with ``type`` (class name string) and ``config``
+            (constructor kwargs for that class).
+
+    Returns:
+        New normalizer instance of the requested type.
+
+    Raises:
+        ValueError: If ``config['type']`` is not in ``NORMALIZER_CLASSES``.
+    """
     normalizer_type = config['type']
     if normalizer_type not in NORMALIZER_CLASSES:
         raise ValueError(f"Invalid normalizer type: {normalizer_type}")
     return NORMALIZER_CLASSES[normalizer_type](**config['config'])
 
 class BaseNormalizer:
-    """Base Normalizer class.
+    """Base class for Welford-style running mean/variance normalizers.
 
-    Attributes:
-        num_features (int): Number of features to normalize.
-        clip_value (float): Value to clip normalized values.
-        epsilon (float): Small constant to prevent division by zero.
-        min_std (float): Floor for the running std used in normalization.
-            Guards against near-constant features early in training whose
-            tiny std would otherwise catastrophically amplify later drift
-            (RSL-RL's EmpiricalNormalization uses the same guard). The
-            default (1e-4) preserves the historical behavior; noisy sim
-            states (e.g. IsaacSim proprioception) should use ~1e-2.
-        device (str): Device to run the normalizer on ('cpu' or 'cuda').
-        log_level (str): Log level for the normalizer.
-        **kwargs: Additional keyword arguments.
+    Local statistics accumulate via ``add``; ``update`` merges them into
+    running mean/variance/std and resets the local accumulators. Subclasses
+    implement ``normalize``. The ``training`` flag is set by ``train`` /
+    ``eval`` and is consulted by subclasses such as ``BatchNorm``.
     """
     def __init__(
         self,
@@ -38,6 +53,27 @@ class BaseNormalizer:
         name: str | None = None,
         **kwargs
     ):
+        """Initialize local and running statistics buffers.
+
+        Args:
+            num_features: Feature dimension tracked by the running stats.
+            clip_value: Absolute clip bound applied after normalization
+                (subclass-dependent).
+            epsilon: Small constant added inside the std computation to
+                avoid division by zero.
+            min_std: Floor for running std used in normalization. Guards
+                against near-constant features early in training whose tiny
+                std would otherwise amplify later drift (same idea as
+                RSL-RL ``EmpiricalNormalization``). Default ``1e-4``
+                preserves historical behavior; noisy sim states (e.g. Isaac
+                Sim proprioception) typically want ``~1e-2``.
+            device: Device for statistics tensors; ``None`` selects the
+                framework default via ``get_device``.
+            log_level: Logger level name (e.g. ``'INFO'``).
+            name: Logger / display name; defaults to the class name.
+            **kwargs (Any): Extra attributes set on ``self`` via
+                ``setattr``.
+        """
         self.name = name if name else self.__class__.__name__
         self.logger = get_logger(self.name, level=log_level.upper())
         self.kwargs = kwargs
@@ -68,10 +104,14 @@ class BaseNormalizer:
                 setattr(self, key, value)
 
     def add(self, new_data: T.Tensor) -> None:
-        """Update local statistics with new data.
+        """Accumulate ``new_data`` into local (not yet running) statistics.
+
+        Uses a Welford-style online update of local mean and ``M2``. Does not
+        modify running mean/variance; call ``update`` to merge.
 
         Args:
-            new_data (T.Tensor): New data to update local statistics.
+            new_data: Batch of samples with leading batch dim and trailing
+                feature dim ``num_features``.
         """
         self.step += 1
         batch = new_data.to(self.device)
@@ -100,8 +140,7 @@ class BaseNormalizer:
             self.logger.debug(f"Normalizer add: step={self.step}, data={new_data}, data_shape={new_data.shape}, local_cnt={self.local_cnt}, local_mean={self.local_mean}, local_M2={self.local_M2}, running_cnt={self.running_cnt}")
 
     def update(self) -> None:
-        """Update running statistics based on local statistics.
-        """
+        """Merge local statistics into running mean/variance/std and reset local."""
         if self.local_cnt.item() == 0:
             return
 
@@ -137,31 +176,35 @@ class BaseNormalizer:
         self.local_M2.zero_()
 
     def denormalize(self, v: T.Tensor) -> T.Tensor:
-        """Denormalize a tensor using running statistics.
+        """Invert running-mean/std normalization.
 
         Args:
-            v (T.Tensor): Input tensor to denormalize.
+            v: Normalized tensor to map back to the original scale.
 
         Returns:
-            T.Tensor: Denormalized tensor.
+            ``v * running_std + running_mean`` on ``self.device``.
         """
         if v.device != self.device:
             v = v.to(self.device)
         return (v * self.running_std) + self.running_mean
 
     def train(self):
+        """Set ``training`` to ``True`` and return ``self``."""
         self.training = True
         return self
 
     def eval(self):
+        """Set ``training`` to ``False`` and return ``self``."""
         self.training = False
         return self
 
     def get_config(self) -> dict:
-        """Retrieve the configuration and state of the normalizer.
+        """Return a serializable ``{type, config}`` mapping for this normalizer.
 
         Returns:
-            dict: Configuration and state of the normalizer.
+            Mapping with ``type`` set to the class name and ``config`` holding
+                constructor fields (``num_features``, ``epsilon``,
+                ``clip_value``, ``min_std``, ``device``, ``name``).
         """
         return {
             'type': self.__class__.__name__,
@@ -176,10 +219,10 @@ class BaseNormalizer:
         }
 
     def save(self, file_path: str) -> None:
-        """Save the current state of the normalizer to a file.
+        """Save step counters and local/running statistics to ``file_path``.
 
         Args:
-            file_path (str): Path to save the state.
+            file_path: Destination path for ``torch.save``.
         """
         T.save({
             'step': self.step,
@@ -196,14 +239,21 @@ class BaseNormalizer:
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'BaseNormalizer':
-        """Load a BaseNormalizer state from a file.
+        """Dispatch load to the concrete class named by ``config['type']``.
+
+        Accepts the nested ``get_config`` / save format
+        (``{'type': ..., 'config': {...}}``).
 
         Args:
-            config (dict): Configuration of the normalizer.
-            state_path (str): Path to load the state from.
+            config: constructor kwargs.
+            state_path: Path to a ``torch.save`` statistics file.
 
         Returns:
-            BaseNormalizer: A BaseNormalizer instance with the loaded state.
+            Concrete normalizer instance with statistics restored from
+                ``state_path``.
+
+        Raises:
+            ValueError: If ``config['type']`` is not in ``NORMALIZER_CLASSES``.
         """
         norm_type = config['type']
         if norm_type not in NORMALIZER_CLASSES:
@@ -214,18 +264,26 @@ class BaseNormalizer:
         return NORMALIZER_CLASSES[norm_type].load(inner, state_path)
 
     def save_state(self, path) -> None:
-        """Persist running/local statistics to ``path`` (creates parent dirs)."""
+        """Persist running/local statistics to ``path`` (creates parent dirs).
+
+        Args:
+            path (str | Path): Destination file path.
+        """
         from pathlib import Path
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.save(str(path))
 
     def load_state(self, path, load_weights: bool = True) -> None:
-        """Restore running/local statistics in-place from :meth:`save_state`.
+        """Restore running/local statistics in-place from ``save_state``.
 
         The architecture is unchanged; only the accumulated statistics are
         overwritten. ``load_weights`` is accepted for interface symmetry with
         the other components and is ignored (a normalizer has no weights).
+
+        Args:
+            path (str | Path): Path previously written by ``save_state``.
+            load_weights: Ignored; present for API symmetry with agents.
         """
         state = T.load(str(path), map_location='cpu', weights_only=False)
         self.step = state['step']
@@ -238,13 +296,10 @@ class BaseNormalizer:
         self.running_std = T.as_tensor(state['running_std'], device=self.device)
 
 class RunningNorm(BaseNormalizer):
-    """Normalizes data using running statistics (mean and standard deviation).
+    """Normalize features with running mean and standard deviation.
 
-    Attributes:
-        num_features (int): Number of features to normalize.
-        clip_value (float): Value to clip normalized values.
-        epsilon (float): Small constant to prevent division by zero.
-        device (str): Device to run the normalizer on ('cpu' or 'cuda').
+    ``normalize`` always uses running statistics (independent of the
+    ``training`` flag). Call ``add`` then ``update`` to refresh those stats.
     """
     def __init__(
         self,
@@ -256,18 +311,29 @@ class RunningNorm(BaseNormalizer):
         name: str | None = None,
         **kwargs
     ):
+        """Construct a running-mean/std feature normalizer.
+
+        Args:
+            num_features: Feature dimension to track.
+            clip_value: Absolute clip bound after ``(x - mean) / std``.
+            epsilon: Stability constant for the std computation.
+            device: Device for statistics tensors.
+            log_level: Logger level name.
+            name: Logger / display name; defaults to the class name.
+            **kwargs (Any): Forwarded to ``BaseNormalizer``.
+        """
         super().__init__(num_features=num_features, clip_value=clip_value,
                          epsilon=epsilon, device=device, log_level=log_level,
                          name=name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
-        """Normalize a tensor using running statistics.
+        """Z-score ``v`` with running mean/std and clip to ``clip_value``.
 
         Args:
-            v (T.Tensor): Input tensor to normalize.
+            v: Input tensor with trailing feature dim ``num_features``.
 
         Returns:
-            T.Tensor: Normalized tensor.
+            Clipped normalized tensor as float on ``self.device``.
         """
         if v.device != self.device:
             v = v.to(self.device)
@@ -283,20 +349,26 @@ class RunningNorm(BaseNormalizer):
         return norms
 
     def get_config(self) -> dict:
+        """Return config with ``type`` set to ``RunningNorm``.
+
+        Returns:
+            Mapping from ``BaseNormalizer.get_config`` with updated ``type``.
+        """
         config = super().get_config()
         config['type'] = self.__class__.__name__
         return config
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'RunningNorm':
-        """Load a RunningNorm state from a file.
+        """Reconstruct a ``RunningNorm`` and load statistics from disk.
 
         Args:
-            config (dict): Configuration of the normalizer.
-            state_path (str): Path to load the state from.
+            config: Flat constructor kwargs (inner ``config`` from
+                ``get_config``).
+            state_path: Path to a ``torch.save`` statistics file.
 
         Returns:
-            RunningNorm: A RunningNorm instance with the loaded state.
+            Instance with local and running statistics restored.
         """
         device = get_device(config['device'])
         state = T.load(state_path, map_location='cpu', weights_only=False)
@@ -320,13 +392,12 @@ class RunningNorm(BaseNormalizer):
         return normalizer
 
 class BatchNorm(BaseNormalizer):
-    """Normalizes data using batch statistics (mean and standard deviation).
+    """Normalize with batch statistics in train mode, running stats in eval.
 
-    Attributes:
-        num_features (int): Number of features to normalize.
-        clip_value (float): Value to clip normalized values.
-        epsilon (float): Small constant to prevent division by zero.
-        device (str): Device to run the normalizer on ('cpu' or 'cuda').
+    While ``training`` is ``True``, ``normalize`` uses the current batch
+    mean/variance (and still clips). In eval mode it uses running mean/std
+    without clipping. Running stats are still maintained via ``add`` /
+    ``update`` for the eval path.
     """
     def __init__(
         self,
@@ -338,12 +409,30 @@ class BatchNorm(BaseNormalizer):
         name: str | None = None,
         **kwargs
     ):
+        """Construct a batch/running hybrid feature normalizer.
+
+        Args:
+            num_features: Feature dimension to track.
+            clip_value: Absolute clip bound in train-mode normalization.
+            epsilon: Stability constant for the train-mode std computation.
+            device: Device for statistics tensors.
+            log_level: Logger level name.
+            name: Logger / display name; defaults to the class name.
+            **kwargs (Any): Forwarded to ``BaseNormalizer``.
+        """
         super().__init__(num_features=num_features, clip_value=clip_value,
                          epsilon=epsilon, device=device, log_level=log_level,
                          name=name, **kwargs)
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
-        """Normalize a tensor using batch statistics during training, running statistics during evaluation.
+        """Normalize ``v`` with batch stats (train) or running stats (eval).
+
+        Args:
+            v: Input tensor with trailing feature dim ``num_features``.
+
+        Returns:
+            Normalized tensor as float on ``self.device``. Train mode clips
+                to ``clip_value``; eval mode does not.
         """
         if v.device != self.device:
             v = v.to(self.device)
@@ -362,20 +451,26 @@ class BatchNorm(BaseNormalizer):
         return norms
 
     def get_config(self) -> dict:
+        """Return config with ``type`` set to ``BatchNorm``.
+
+        Returns:
+            Mapping from ``BaseNormalizer.get_config`` with updated ``type``.
+        """
         config = super().get_config()
         config['type'] = self.__class__.__name__
         return config
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'BatchNorm':
-        """Load a BatchNorm state from a file.
+        """Reconstruct a ``BatchNorm`` and load statistics from disk.
 
         Args:
-            config (dict): Configuration of the normalizer.
-            state_path (str): Path to load the state from.
+            config: Flat constructor kwargs (inner ``config`` from
+                ``get_config``).
+            state_path: Path to a ``torch.save`` statistics file.
 
         Returns:
-            BatchNorm: A BatchNorm instance with the loaded state.
+            Instance with local and running statistics restored.
         """
         device = get_device(config['device'])
         state = T.load(state_path, map_location='cpu', weights_only=False)
@@ -399,7 +494,12 @@ class BatchNorm(BaseNormalizer):
         return normalizer
 
 class RewardNorm(BaseNormalizer):
-    """Normalizes rewards using running return standard deviation.
+    """Normalize rewards by the running standard deviation of discounted returns.
+
+    Maintains per-env discounted returns ``R_t = gamma * R_{t-1} + r_t``,
+    feeds those returns into the base local/running statistics, and scales
+    raw rewards by ``1 / running_std`` (no mean subtraction). Episode ends
+    reset the corresponding env's return to zero.
     """
     def __init__(
         self,
@@ -411,6 +511,17 @@ class RewardNorm(BaseNormalizer):
         name: str | None = None,
         **kwargs
     ):
+        """Construct a return-std reward normalizer.
+
+        Args:
+            gamma: Discount factor for the per-env return tracker.
+            clip_value: Absolute clip bound after reward scaling.
+            epsilon: Stability constant for the std computation.
+            device: Device for statistics and return tensors.
+            log_level: Logger level name.
+            name: Logger / display name; defaults to the class name.
+            **kwargs (Any): Forwarded to ``BaseNormalizer``.
+        """
         super().__init__(
             clip_value = clip_value,
             epsilon = epsilon,
@@ -424,8 +535,16 @@ class RewardNorm(BaseNormalizer):
         self.num_envs = None
         self.returns = None
 
-    def add(self, rewards: T.Tensor, dones: T.Tensor) -> T.Tensor:
-        """Add rewards to returns and update running statistics.
+    def add(self, rewards: T.Tensor, dones: T.Tensor):
+        """Update discounted returns and feed them into local statistics.
+
+        Lazily allocates a per-env return buffer from ``rewards.shape[0]``.
+        After the Welford update, returns for done envs are zeroed.
+
+        Args:
+            rewards: Per-env rewards for the current step.
+            dones: Boolean mask of finished envs (trainer passes
+                terminations OR truncations).
         """
         if rewards.device != self.device:
             rewards = rewards.to(self.device)
@@ -449,7 +568,13 @@ class RewardNorm(BaseNormalizer):
         self.returns[dones] = 0.0
 
     def normalize(self, rewards: T.Tensor) -> T.Tensor:
-        """Normalize rewards using running return standard deviation.
+        """Scale rewards by running return std and clip.
+
+        Args:
+            rewards: Raw reward tensor to scale.
+
+        Returns:
+            ``clamp(rewards / running_std, ±clip_value)`` as float.
         """
         if rewards.device != self.device:
             rewards = rewards.to(self.device)
@@ -462,6 +587,12 @@ class RewardNorm(BaseNormalizer):
         return norms
 
     def get_config(self) -> dict:
+        """Return config including ``gamma``.
+
+        Returns:
+            Mapping from ``BaseNormalizer.get_config`` with ``type``
+                ``RewardNorm`` and ``gamma`` added under ``config``.
+        """
         config = super().get_config()
         config['type'] = self.__class__.__name__
         config['config'].update({
@@ -471,14 +602,14 @@ class RewardNorm(BaseNormalizer):
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'RewardNorm':
-        """Load a RewardNorm state from a file.
+        """Reconstruct a ``RewardNorm`` and load statistics from disk.
 
         Args:
-            config (dict): Configuration of the normalizer.
-            state_path (str): Path to load the state from.
+            config: Flat constructor kwargs including ``gamma``.
+            state_path: Path to a ``torch.save`` statistics file.
 
         Returns:
-            RewardNorm: A RewardNorm instance with the loaded state.
+            Instance with local and running statistics restored.
         """
         device = get_device(config['device'])
         state = T.load(state_path, map_location='cpu', weights_only=False)
@@ -499,172 +630,14 @@ class RewardNorm(BaseNormalizer):
 
         return normalizer
         
-class SharedNormalizer:
-    def __init__(self, size, eps=1e-2, clip_range=5.0):
-        self.size = size
-        self.eps = eps
-        self.clip_range = clip_range
-
-        # self.lock = manager.Lock()
-        self.lock = threading.Lock()
-
-        # Create shared memory blocks
-        total_byte_size = np.prod(self.size) * np.float32().itemsize
-        self.shared_local_sum = shared_memory.SharedMemory(create=True, size=total_byte_size)
-        self.shared_local_sum_sq = shared_memory.SharedMemory(create=True, size=total_byte_size)
-        self.shared_local_cnt = shared_memory.SharedMemory(create=True, size=np.float32().itemsize)
-
-        self.local_sum = np.ndarray(self.size, dtype=np.float32, buffer=self.shared_local_sum.buf)
-        self.local_sum_sq = np.ndarray(self.size, dtype=np.float32, buffer=self.shared_local_sum_sq.buf)
-        self.local_cnt = np.ndarray(1, dtype=np.int32, buffer=self.shared_local_cnt.buf)
-
-        # Initiate shared arrays to zero
-        self.local_sum.fill(0)
-        self.local_sum_sq.fill(0)
-        self.local_cnt.fill(0)
-
-        self.running_mean = np.zeros(self.size, dtype=np.float32)
-        self.running_std = np.ones(self.size, dtype=np.float32)
-        self.running_sum = np.zeros(self.size, dtype=np.float32)
-        self.running_sum_sq = np.zeros(self.size, dtype=np.float32)
-        self.running_cnt = np.zeros(1, dtype=np.int32)
-
-    def normalize(self, v):
-        clip_range = self.clip_range
-        return np.clip((v - self.running_mean) / self.running_std,
-                       -clip_range, clip_range).astype(np.float32)
-    
-    def update_local_stats(self, new_data):
-        # print('SharedNormalizer update_local_stats fired...')
-        try:
-            with self.lock:
-                # print('SharedNormalizer update_local_stats lock acquired...')
-                # print(f'data: {new_data}')
-                # print('previous local stats')
-                # print(f'local sum: {self.local_sum}')
-                # print(f'local sum sq: {self.local_sum_sq}')
-                # print(f'local_cnt: {self.local_cnt}')
-                self.local_sum += new_data#.sum(axis=1)
-                self.local_sum_sq += (np.square(new_data))#.sum(axis=1)
-                self.local_cnt += 1 #new_data.shape[0]
-                # print('new local values')
-                # print(f'local sum: {self.local_sum}')
-                # print(f'local sum sq: {self.local_sum_sq}')
-                # print(f'local_cnt: {self.local_cnt}')
-        except Exception as e:
-            print(f"Error during update: {e}")
-    
-    def update_global_stats(self):
-        with self.lock:
-            # make copies of local stats
-            local_cnt = self.local_cnt.copy()
-            local_sum = self.local_sum.copy()
-            local_sum_sq = self.local_sum_sq.copy()
-            
-            # Zero out local stats
-            self.local_cnt[...] = 0
-            self.local_sum[...] = 0
-            self.local_sum_sq[...] = 0
-            
-            # Add local stats to global stats
-            self.running_cnt += local_cnt
-            self.running_sum += local_sum
-            self.running_sum_sq += local_sum_sq
-
-            # Calculate new mean, sum_sq, and std
-            self.running_mean = self.running_sum / self.running_cnt
-            tmp = self.running_sum_sq / self.running_cnt -\
-                np.square(self.running_sum / self.running_cnt)
-            self.running_std = np.sqrt(np.maximum(np.square(self.eps), tmp))
-
-    def get_config(self):
-        return {
-            "params":{
-                'size':self.size,
-                'eps':self.eps,
-                'clip_range':self.clip_range,
-            },
-            "state":{
-                'local_sum':self.local_sum,
-                'local_sum_sq':self.local_sum_sq,
-                'local_cnt':self.local_cnt,
-                'running_mean':self.running_mean,
-                'running_std':self.running_std,
-                'running_sum':self.running_sum,
-                'running_sum_sq':self.running_sum_sq,
-                'running_cnt':self.running_cnt,
-            },
-        }
-
-
-    def save_state(self, file_path):
-        np.savez(
-            file_path,
-            local_sum=self.local_sum,
-            local_sum_sq=self.local_sum_sq,
-            local_cnt=self.local_cnt,
-            running_mean=self.running_mean,
-            running_std=self.running_std,
-            running_sum=self.running_sum,
-            running_sum_sq=self.running_sum_sq,
-            running_cnt=self.running_cnt,
-        )
-
-    def cleanup(self):
-        # Close and unlink shared memory blocks
-        try:
-            if self.shared_local_sum:
-                self.shared_local_sum.unlink()
-                self.shared_local_sum.close()
-                self.shared_local_sum = None
-        except FileNotFoundError as e:
-            print(f"Shared local sum already cleaned up: {e}")
-        try:
-            if self.shared_local_sum_sq:
-                self.shared_local_sum_sq.unlink()
-                self.shared_local_sum_sq.close()
-                self.shared_local_sum_sq = None
-        except FileNotFoundError as e:
-            print(f"Shared local sum sq already cleaned up: {e}")
-        try:
-            if self.shared_local_cnt:
-                self.shared_local_cnt.unlink()
-                self.shared_local_cnt.close()
-                self.shared_local_cnt = None
-        except FileNotFoundError as e:
-            print(f"Shared local sum cnt already cleaned up: {e}")
-
-        print("SharedNormalizer resources have been cleaned up.")
-
-    def __del__(self):
-        self.cleanup()
-
-
-    @classmethod
-    def load_state(cls, file_path):
-        with np.load(file_path) as data:
-            normalizer = cls(size=data['running_mean'].shape)
-            normalizer.local_sum = data['local_sum']
-            normalizer.local_sum_sq = data['local_sum_sq']
-            normalizer.local_cnt = data['local_cnt']
-            normalizer.running_mean = data['running_mean']
-            normalizer.running_std = data['running_std']
-            normalizer.running_sum = data['running_sum']
-            normalizer.running_sum_sq = data['running_sum_sq']
-            normalizer.running_cnt = data['running_cnt']
-        return normalizer
-    
-    @classmethod
-    def create_instance(cls, **kwargs) -> 'SharedNormalizer':
-        return cls(**kwargs)
 
 class ImageScale(BaseNormalizer):
     """Stateless image scaler: casts to float and divides by ``scale``.
 
-    Intended for per-key use inside a :class:`DictNormalizer` on image
-    modalities stored as 0-255 values. (Models auto-scale raw ``uint8``
-    inputs themselves; use this when image data reaches the model as floats
-    in the 0-255 range.)
+    Intended for per-key use inside a ``DictNormalizer`` on image modalities
+    stored as 0-255 values. Models auto-scale raw ``uint8`` inputs themselves;
+    use this when image data reaches the model as floats in the 0-255 range.
+    ``add`` / ``update`` are no-ops.
     """
 
     def __init__(
@@ -675,23 +648,60 @@ class ImageScale(BaseNormalizer):
         name: str | None = None,
         **kwargs,
     ):
+        """Construct a stateless divisor scaler.
+
+        Args:
+            scale: Divisor applied in ``normalize`` (default ``255.0``).
+            device: Device tensors are moved to before scaling.
+            log_level: Logger level name.
+            name: Logger / display name; defaults to the class name.
+            **kwargs (Any): Forwarded to ``BaseNormalizer``.
+        """
         super().__init__(num_features=1, clip_value=float('inf'), device=device,
                          log_level=log_level, name=name, **kwargs)
         self.scale = scale
 
     def add(self, *args, **kwargs) -> None:
+        """No-op; image scaling does not track statistics.
+
+        Args:
+            *args (Any): Ignored.
+            **kwargs (Any): Ignored.
+        """
         pass  # stateless
 
     def update(self) -> None:
+        """No-op; image scaling does not track statistics."""
         pass  # stateless
 
     def normalize(self, v: T.Tensor) -> T.Tensor:
+        """Cast ``v`` to float on ``self.device`` and divide by ``scale``.
+
+        Args:
+            v: Image tensor (typically values in ``[0, scale]``).
+
+        Returns:
+            Scaled float tensor.
+        """
         return v.to(self.device).float() / self.scale
 
     def denormalize(self, v: T.Tensor) -> T.Tensor:
+        """Multiply by ``scale`` (inverse of ``normalize``).
+
+        Args:
+            v: Scaled tensor to map back toward the original range.
+
+        Returns:
+            ``v * scale`` on ``self.device``.
+        """
         return v.to(self.device) * self.scale
 
     def get_config(self) -> dict:
+        """Return ``{type, config}`` with ``scale``, ``device``, and ``name``.
+
+        Returns:
+            Serialisable constructor mapping for this scaler.
+        """
         return {
             'type': self.__class__.__name__,
             'config': {
@@ -703,16 +713,25 @@ class ImageScale(BaseNormalizer):
 
     @classmethod
     def load(cls, config: dict, state_path: str) -> 'ImageScale':
+        """Build from ``config``; ``state_path`` is ignored (stateless).
+
+        Args:
+            config: Flat kwargs; reads ``scale`` and ``device``.
+            state_path: Unused; accepted for interface symmetry.
+
+        Returns:
+            New ``ImageScale`` instance.
+        """
         return ImageScale(scale=config.get('scale', 255.0), device=config.get('device'))
 
 
 class DictNormalizer(BaseNormalizer):
-    """Per-key normalizer for Dict (multi-modal) observations.
+    """Per-key normalizer for dict (multi-modal) observations.
 
     Routes each observation key to its own child normalizer; keys without an
     entry pass through unchanged.
 
-    Config example::
+    Config example:
 
         state_normalizer:
           type: DictNormalizer
@@ -730,6 +749,19 @@ class DictNormalizer(BaseNormalizer):
         name: str | None = None,
         **kwargs,
     ):
+        """Build child normalizers from a per-key config mapping.
+
+        Each ``per_key`` value is a ``{type, config}`` dict passed to
+        ``create_normalizer``. Missing ``config.device`` defaults to
+        ``device``.
+
+        Args:
+            per_key: Mapping from observation key to normalizer config.
+            device: Default device forwarded into child configs.
+            log_level: Logger level name.
+            name: Logger / display name; defaults to the class name.
+            **kwargs (Any): Forwarded to ``BaseNormalizer``.
+        """
         super().__init__(num_features=1, device=device, log_level=log_level,
                          name=name, **kwargs)
         self.normalizers: dict[str, BaseNormalizer] = {}
@@ -740,33 +772,63 @@ class DictNormalizer(BaseNormalizer):
             self.normalizers[key] = create_normalizer(cfg)
 
     def add(self, new_data: dict) -> None:
+        """Call each child's ``add`` for keys present in ``new_data``.
+
+        Args:
+            new_data: Observation dict; only configured keys are forwarded.
+        """
         for key, norm in self.normalizers.items():
             if key in new_data:
                 norm.add(new_data[key])
 
     def update(self) -> None:
+        """Call ``update`` on every child normalizer."""
         for norm in self.normalizers.values():
             norm.update()
 
     def normalize(self, data: dict) -> dict:
+        """Normalize each key that has a child; pass other keys through.
+
+        Args:
+            data: Observation dict to normalize.
+
+        Returns:
+            New dict with the same keys; configured keys replaced by their
+                child's ``normalize`` output.
+        """
         return {
             key: (self.normalizers[key].normalize(value) if key in self.normalizers else value)
             for key, value in data.items()
         }
 
     def train(self):
+        """Set this normalizer and every child to train mode.
+
+        Returns:
+            normalizer (DictNormalizer): This instance, for chaining.
+        """
         super().train()
         for norm in self.normalizers.values():
             norm.train()
         return self
 
     def eval(self):
+        """Set this normalizer and every child to eval mode.
+
+        Returns:
+            normalizer (DictNormalizer): This instance, for chaining.
+        """
         super().eval()
         for norm in self.normalizers.values():
             norm.eval()
         return self
 
     def get_config(self) -> dict:
+        """Return ``{type, config}`` including each child's ``get_config``.
+
+        Returns:
+            Serialisable mapping with ``per_key``, ``device``, and ``name``.
+        """
         return {
             'type': self.__class__.__name__,
             'config': {
@@ -777,7 +839,11 @@ class DictNormalizer(BaseNormalizer):
         }
 
     def save_state(self, path) -> None:
-        """Save every child normalizer's statistics into one ``.pt`` file."""
+        """Save every child normalizer's statistics into one ``.pt`` file.
+
+        Args:
+            path (str | Path): Destination path for the combined state dict.
+        """
         from pathlib import Path
         import tempfile, os
         path = Path(path)
@@ -792,6 +858,15 @@ class DictNormalizer(BaseNormalizer):
         T.save(state, path)
 
     def load_state(self, path, load_weights: bool = True) -> None:
+        """Restore each child's statistics from a combined ``.pt`` file.
+
+        Unknown keys in the file are skipped. ``load_weights`` is accepted for
+        API symmetry and ignored by children that have no weights.
+
+        Args:
+            path (str | Path): Path previously written by ``save_state``.
+            load_weights: Forwarded unused; present for interface symmetry.
+        """
         state = T.load(str(path), map_location='cpu', weights_only=False)
         import tempfile, os
         for key, child_state in state.items():
