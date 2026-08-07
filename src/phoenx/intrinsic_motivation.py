@@ -1404,6 +1404,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         combination_rule: String key into the combination-rule registry.
         combination_kwargs: Extra kwargs for the rule (e.g. ``weights``).
         components: Child ``IntrinsicMotivation`` modules.
+        is_online: ``True`` when any child component is online.
     """
 
     def __init__(
@@ -1449,6 +1450,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             self.combination_rule = combination_rule
             self.combination_kwargs = combination_kwargs or {}
             self.components: List[IntrinsicMotivation] = components
+            self.is_online = any(c.is_online for c in components)
 
             # Register components so .to(device), .state_dict() etc. propagate
             for i, c in enumerate(components):
@@ -1460,7 +1462,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
                               exc_info=True)
             raise
 
-    def _split_components(self) -> tuple[list[IntrinsicMotivation], list[IntrinsicMotivation]]:
+    def _split_components(self) -> tuple[list[tuple[int, IntrinsicMotivation]], list[tuple[int, IntrinsicMotivation]]]:
         """Split children into online (rollout) and parametric (learn) groups.
 
         Returns:
@@ -1475,7 +1477,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
                 parametric.append((i, c))
         return online, parametric
 
-    def _weights_for(self, components: list[tuple[int, IntrinsicMotivation]]) -> list[float]:
+    def _weights_for(self, components: list[tuple[int, IntrinsicMotivation]]) -> list[float] | None:
         """Select per-component weights from ``combination_kwargs`` by index.
 
         Args:
@@ -1599,20 +1601,14 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         for c in self.components:
             c.on_episode_end(env_indices)
 
-    def set_normalizers_mode(self, context: Literal['train', 'test']) -> None:
+    def set_normalizers_mode(self, context: Literal['train', 'eval']) -> None:
         """Propagate normalizer mode to every child module.
 
         Args:
-            context: Mode string forwarded to each child
-                (``'train'`` / ``'test'`` here; children typically expect
-                ``'train'`` / ``'eval'``).
+            context: ``'train'`` or ``'eval'``, forwarded to each child.
         """
         for c in self.components:
             c.set_normalizers_mode(context)
-
-    # @property
-    # def is_online(self) -> bool:
-    #     return any(c.is_online for c in self.components)
 
     def save(self, folder) -> None:
         """Save each child under its own subdirectory plus a composite config.

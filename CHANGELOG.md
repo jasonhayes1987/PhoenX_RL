@@ -25,6 +25,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- `phoenx.intrinsic_motivation.CompositeIntrinsicMotivation` type annotations
+  corrected to match the docstrings written during the docstring pass:
+  `_split_components` now returns
+  `tuple[list[tuple[int, IntrinsicMotivation]], list[tuple[int, IntrinsicMotivation]]]`
+  (it returns `(index, component)` pairs, not bare components), `_weights_for`
+  now returns `list[float] | None` (it returns `None` when no `weights` are
+  configured), and `set_normalizers_mode` now takes `Literal['train', 'eval']`
+  to match the base class it forwards to instead of the nonexistent `'test'`.
+  `is_online` on the composite is now `True` when any child component is
+  online, rather than always `False`; nothing in the package currently reads
+  the composite's own `is_online` (only its children's, in
+  `_split_components`), so this changes no behavior today.
 - Google-style docstrings completed for `phoenx.schedulers`, `phoenx.noise`,
   `phoenx.distributions`, `phoenx.builder`, `phoenx.her`, `phoenx.trainer`,
   `phoenx.rl_callbacks`, `phoenx.normalizer`, `phoenx.buffer`,

@@ -1147,7 +1147,8 @@ class TestCompositeIntrinsicMotivation:
 
     def test_is_online_property(self, composite, composite_components):
         # EpisodicNovelty is online
-        
+        assert composite.is_online is True
+
         # Pure parametric composite (ICM + RND) is not online
         icm = composite_components[0]
         rnd = RND(
