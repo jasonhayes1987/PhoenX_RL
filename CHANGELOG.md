@@ -25,6 +25,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- Four dead commented lines in `Trainer.set_normalizers` that would have
+  propagated normalizer mode into the agent's intrinsic-motivation module are
+  deleted. They were inert for two independent reasons: `RewardNorm.normalize`
+  and `RewardNorm.add` never read `self.training`, so the mode flag does
+  nothing for the only normalizer an `IntrinsicMotivation` owns; and the
+  trainer computes intrinsic rewards only when `training` is true, so the
+  intrinsic path never runs during evaluation. `IntrinsicMotivation.set_normalizers_mode`
+  is kept, since it becomes meaningful if `RewardNorm` ever honours the flag.
 - `phoenx.intrinsic_motivation.CompositeIntrinsicMotivation` type annotations
   corrected to match the docstrings written during the docstring pass:
   `_split_components` now returns
@@ -76,8 +84,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `environment.yml`, superseded by `pyproject.toml`.
 - `RayWandbCallback` (Ray-distributed W&B logging callback in `src/phoenx/rl_callbacks.py`), the unused `convert_to_distributed_callbacks` helper in `src/phoenx/agent_utils.py`, and the co-occurrence sweep helpers `calculate_co_occurrence_matrix` and `plot_co_occurrence_heatmap` in `src/phoenx/wandb_support.py` (the latter was the plotly-based one). `phoenx` no longer imports `plotly` or `scipy.stats` anywhere.
 - `src/phoenx/gym_helper.py` (180 lines), unreferenced anywhere in the repo. It predates `her.py`: a hardcoded table mapping Gymnasium spec IDs to per-env `desired_goal` / `achieved_goal` / reward callables, which `HindsightRelabeler` replaced by resolving `compute_reward` off the env stack and reading the goal keys out of the dict observation. The table had also rotted past the pinned dependencies — under `gymnasium==1.2.0` and `gymnasium-robotics` 1.4.0, five of its six keys (`CarRacing-v2`, `FetchReach-v2`, `FetchPickAndPlace-v2`, `FetchPush-v2`, `FetchSlide-v2`) are no longer registered, so `get_her_goal_functions` would `KeyError` on everything but `Reacher-v4`. The neighboring `get_goal_envs` built an empty list and never returned it, so it could only ever have returned `None`.
+- `src/phoenx/ray_tune.py` (684 lines), unreferenced anywhere in the repo and
+  unable to run in the first place. Its whole import block is flat and
+  pre-package (`from schedulers import ScheduleWrapper`, `from models import
+  ActorModel, ...`, `from buffer import Buffer`, `from rl_callbacks import
+  WandbCallback`), so `import phoenx.ray_tune` raised `ModuleNotFoundError`
+  before reaching any sweep code, and one of those imports — `from icm import
+  ICM` — names a module that no longer exists at all, `icm.py` having become
+  `intrinsic_motivation.py`. Even with the imports repaired it would have
+  raised `TypeError`: it called `ScheduleWrapper({"type": ..., "params": ...})`,
+  passing a single positional dict to a constructor that takes
+  `schedule_type, steps, start_value, end_value`. Ray Tune sweep support will
+  be rebuilt from scratch when it is next needed. The `ray[tune,default]`
+  dependency is still declared in `pyproject.toml`, though nothing in the
+  package imports `ray` any more.
+- `src/phoenx/builders/her.py` (298 lines), a scratch script rather than a
+  builder. Its siblings in `phoenx.builders` export `build_*` functions; this
+  one executed work at import time — a `sys.path` insertion, `from agent_utils
+  import *` and `from icm import ICM` (neither resolvable), a hardcoded
+  `device='cuda'`, and a `gym.make('FetchPush-v4')` call at module level — so
+  importing it could only ever have failed. Nothing referenced it. It is
+  unrelated to `phoenx.her`, the live HER implementation that `buffer.py`,
+  `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- Intrinsic-motivation `reward_scheduler` progress was never restored on
+  reload. All four registered classes (`ICM`, `RND`, `EpisodicNovelty`,
+  `CompositeIntrinsicMotivation`) persisted the schedule through `get_config()`
+  into `config.json` alone, so a reloaded module rebuilt at step 0 and
+  silently re-applied the full undecayed intrinsic reward weight on a resumed
+  run. This completes the fix begun in commit `2f91896`, which restored the
+  schedule's existence after reload but not its progress. `IntrinsicMotivation`
+  now writes and reads `intrinsic_motivation/schedule_state.pt` (mirroring
+  `agent_state.pt`) via private helpers called from both save paths and once
+  from the load dispatcher after `_load_impl`. A missing `schedule_state.pt` is
+  a deliberate silent no-op, so checkpoints written before this change keep
+  loading with progress simply reset. New `tests/test_schedulers.py` pins
+  `ScheduleWrapper.get_state`/`set_state` across linear, cosine, and
+  exponential (plus the negative case that `get_config()` alone loses
+  progress), and three new tests in `tests/test_intrinsic_motivation.py` cover
+  stepped-schedule resume across all four classes, a composite child's
+  scheduler, and the missing-file back-compat no-op; the fast subset went from
+  `456 passed, 23 deselected` to `470 passed, 23 deselected`.
 - `CompositeIntrinsicMotivation` silently dropped its `reward_scheduler` on
   reload. Its `_load_impl` read `config['im_reward_scheduler']`, a key nothing
   in the package has ever written — `get_config` serializes the schedule under

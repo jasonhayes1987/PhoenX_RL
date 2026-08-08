@@ -1599,6 +1599,229 @@ class TestRewardSchedulerRoundtrip:
         assert loaded.reward_scheduler.get_config() == sched.get_config()
         assert pytest.approx(loaded._scaled_reward_weight()) == module._scaled_reward_weight()
 
+    @pytest.mark.parametrize(
+        "kind", ["ICM", "RND", "EpisodicNovelty", "CompositeIntrinsicMotivation"]
+    )
+    def test_reward_scheduler_resumes_after_reload(self, discrete_env, tmp_path, kind):
+        """A stepped ``reward_scheduler`` must resume mid-schedule after reload.
+
+        Unlike ``test_reward_scheduler_survives_save_load`` above (which never
+        advances the schedule, so both sides of its comparison sit at the
+        unstepped factor of ``1.0``), this steps the schedule well past its
+        start *before* saving. That makes the assertion provably non-vacuous:
+        the captured factor is asserted to differ from ``1.0`` before the
+        round trip even begins, then the post-reload factor and scaled
+        reward weight are asserted to match the pre-save values exactly.
+
+        Args:
+            discrete_env: Vector CartPole env fixture.
+            tmp_path: Pytest tmp directory for the save tree.
+            kind: Which registered intrinsic-motivation class to exercise.
+        """
+        sched = ScheduleWrapper(
+            schedule_type="linear",
+            steps=100,
+            start_value=1.0,
+            end_value=0.1,
+        )
+        batch = _random_batch(discrete_env, batch=NUM_ENVS)
+        env_indices = T.arange(NUM_ENVS, dtype=T.long)
+
+        if kind == "ICM":
+            module = ICM(
+                env=discrete_env,
+                model_configs=icm_configs(),
+                optimizer_params=OPT_PARAMS,
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+            # Materialize LazyLinear layers before saving.
+            _ = module.compute_learn_reward(**batch)
+        elif kind == "RND":
+            module = RND(
+                env=discrete_env,
+                model_configs=rnd_configs(output_dim=16),
+                optimizer_params=OPT_PARAMS,
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+            _ = module.compute_learn_reward(**batch)
+        elif kind == "EpisodicNovelty":
+            module = EpisodicNovelty(
+                env=discrete_env,
+                model_configs=episodic_configs(),
+                optimizer_params=OPT_PARAMS,
+                memory_size=32,
+                k=2,
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+            _ = module.compute_rollout_reward(**batch, env_indices=env_indices)
+        else:  # CompositeIntrinsicMotivation
+            icm = ICM(
+                env=discrete_env,
+                model_configs=icm_configs(),
+                optimizer_params=OPT_PARAMS,
+                device=DEVICE,
+            )
+            epi = EpisodicNovelty(
+                env=discrete_env,
+                model_configs=episodic_configs(),
+                optimizer_params=OPT_PARAMS,
+                memory_size=32,
+                k=2,
+                device=DEVICE,
+            )
+            _ = icm.compute_learn_reward(**batch)
+            _ = epi.compute_rollout_reward(**batch, env_indices=env_indices)
+            module = CompositeIntrinsicMotivation(
+                env=discrete_env,
+                components=[icm, epi],
+                combination_rule="additive",
+                reward_scheduler=sched,
+                device=DEVICE,
+            )
+
+        # Advance the schedule well past its unstepped start before saving.
+        sched.step(30)
+        factor_before = module.reward_scheduler.get_factor()
+        weight_before = module._scaled_reward_weight()
+        assert factor_before != pytest.approx(1.0), (
+            f"{kind}: test setup error — schedule factor is still at its "
+            "unstepped start, so this test would pass vacuously"
+        )
+
+        module.save(tmp_path)
+        loaded = IntrinsicMotivation.load(tmp_path, env=discrete_env)
+
+        factor_after = loaded.reward_scheduler.get_factor()
+        weight_after = loaded._scaled_reward_weight()
+
+        assert factor_after == pytest.approx(factor_before), (
+            f"{kind}: reward_scheduler did not resume its progress after reload "
+            f"(before={factor_before}, after={factor_after})"
+        )
+        assert weight_after == pytest.approx(weight_before)
+
+    def test_composite_child_scheduler_resumes_after_reload(self, discrete_env, tmp_path):
+        """A CHILD's own ``reward_scheduler`` must resume too, not just the composite's.
+
+        Gives one child (``ICM``) its own ``ScheduleWrapper`` while the
+        composite itself carries none, steps the child's schedule, saves the
+        composite, reloads it, and asserts the reloaded child's factor
+        matches the pre-save value. This is what proves the recursive
+        restore through ``IntrinsicMotivation.load``'s dispatcher — which
+        calls ``_load_schedule_state`` once per component directory as
+        ``CompositeIntrinsicMotivation._load_impl`` rebuilds each child via
+        that same dispatcher — actually reaches nested components.
+
+        Args:
+            discrete_env: Vector CartPole env fixture.
+            tmp_path: Pytest tmp directory for the save tree.
+        """
+        child_sched = ScheduleWrapper(
+            schedule_type="linear",
+            steps=100,
+            start_value=1.0,
+            end_value=0.1,
+        )
+        batch = _random_batch(discrete_env, batch=NUM_ENVS)
+        env_indices = T.arange(NUM_ENVS, dtype=T.long)
+
+        icm = ICM(
+            env=discrete_env,
+            model_configs=icm_configs(),
+            optimizer_params=OPT_PARAMS,
+            reward_scheduler=child_sched,
+            device=DEVICE,
+        )
+        epi = EpisodicNovelty(
+            env=discrete_env,
+            model_configs=episodic_configs(),
+            optimizer_params=OPT_PARAMS,
+            memory_size=32,
+            k=2,
+            device=DEVICE,
+        )
+        # Materialize LazyLinear layers on both children before saving.
+        _ = icm.compute_learn_reward(**batch)
+        _ = epi.compute_rollout_reward(**batch, env_indices=env_indices)
+
+        composite = CompositeIntrinsicMotivation(
+            env=discrete_env,
+            components=[icm, epi],
+            combination_rule="additive",
+            device=DEVICE,
+        )
+
+        child_sched.step(30)
+        child_factor_before = icm.reward_scheduler.get_factor()
+        assert child_factor_before != pytest.approx(1.0), (
+            "Test setup error — child schedule factor is still at its "
+            "unstepped start, so this test would pass vacuously"
+        )
+
+        composite.save(tmp_path)
+        loaded = IntrinsicMotivation.load(tmp_path, env=discrete_env)
+
+        loaded_icm = loaded.components[0]
+        assert isinstance(loaded_icm, ICM)
+        assert loaded_icm.reward_scheduler is not None
+        assert loaded_icm.reward_scheduler.get_factor() == pytest.approx(child_factor_before), (
+            "Composite reload did not resume a child component's own "
+            "reward_scheduler progress"
+        )
+
+    def test_missing_schedule_state_file_is_silent_noop(self, discrete_env, tmp_path):
+        """A checkpoint saved before this feature existed must still load cleanly.
+
+        Saves a module with a stepped ``reward_scheduler``, deletes the
+        ``schedule_state.pt`` file that ``_save_schedule_state`` wrote, then
+        reloads. Loading must succeed without raising, the scheduler must
+        still be present (rebuilt from ``config.json``), but its progress
+        must be reset to the start of the schedule since no progress file
+        was available to restore it. This pins the deliberate silent no-op
+        documented on ``IntrinsicMotivation._load_schedule_state``.
+
+        Args:
+            discrete_env: Vector CartPole env fixture.
+            tmp_path: Pytest tmp directory for the save tree.
+        """
+        sched = ScheduleWrapper(
+            schedule_type="linear",
+            steps=100,
+            start_value=1.0,
+            end_value=0.1,
+        )
+        batch = _random_batch(discrete_env, batch=NUM_ENVS)
+        module = ICM(
+            env=discrete_env,
+            model_configs=icm_configs(),
+            optimizer_params=OPT_PARAMS,
+            reward_scheduler=sched,
+            device=DEVICE,
+        )
+        _ = module.compute_learn_reward(**batch)
+
+        sched.step(30)
+        assert sched.get_factor() != pytest.approx(1.0), (
+            "Test setup error — schedule factor is still at its unstepped start"
+        )
+
+        module.save(tmp_path)
+        schedule_state_path = tmp_path / "intrinsic_motivation" / "schedule_state.pt"
+        assert schedule_state_path.exists()
+        schedule_state_path.unlink()
+
+        # Must not raise despite the missing progress file.
+        loaded = IntrinsicMotivation.load(tmp_path, env=discrete_env)
+
+        assert loaded.reward_scheduler is not None
+        assert loaded.reward_scheduler.get_factor() == pytest.approx(1.0), (
+            "Scheduler progress should have reset to the start of the "
+            "schedule when schedule_state.pt is absent"
+        )
+
 
 # =============================================================================
 # IntrinsicMotivation base class behavior (through subclasses)

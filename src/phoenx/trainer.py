@@ -491,11 +491,6 @@ class Trainer:
             raise ValueError(f"Invalid context: {context}")
         for _, norm in self._iter_normalizers():
             norm.train() if context == "train" else norm.eval()
-        
-        # # Set Intrinsic Motivation normalizers if present
-        # im = getattr(self.agent, 'intrinsic_motivation', None)
-        # if im is not None:
-        #     im.set_normalizers_mode(context)
 
     def add_to_normalizers(self, obs: Observation):
         """Feed relevant fields from ``obs`` into the agent normalizers.
@@ -515,20 +510,12 @@ class Trainer:
                 dones = T.logical_or(obs.terminations, obs.truncations)
                 norm.add(obs.rewards, dones)
 
-        # # Pass obs to Intrinsic Motivation if present
-        # im = getattr(self.agent, 'intrinsic_motivation', None)
-        # if im is not None:
-        #     im.add_to_normalizers(obs)
 
     def update_normalizers(self):
         """Recompute running statistics on every agent normalizer."""
         for _, norm in self._iter_normalizers():
             norm.update()
 
-        # # Update Intrinsic Motivation normalizers if present
-        # im = getattr(self.agent, 'intrinsic_motivation', None)
-        # if im is not None:
-        #     im.update_normalizers()
 
     def normalize_observation(
         self, obs: Observation)->Observation:

@@ -297,6 +297,41 @@ class IntrinsicMotivation(Model):
             x = layer(x)
         return x
 
+    def _save_schedule_state(self, model_dir: Path) -> None:
+        """Persist ``reward_scheduler`` progress alongside the saved module.
+
+        ``get_config`` already serializes the scheduler's constructor
+        arguments into ``config.json``; this writes the mutable progress
+        (e.g. ``last_epoch``) that ``get_config`` omits, so a reload resumes
+        mid-schedule instead of restarting at step 0.
+
+        Args:
+            model_dir (pathlib.Path): Directory the module's own files were
+                written to (the ``intrinsic_motivation`` subfolder).
+        """
+        if self.reward_scheduler is None:
+            return
+        state = self.reward_scheduler.get_state()
+        if state is not None:
+            T.save({'reward_scheduler': state}, model_dir / 'schedule_state.pt')
+
+    def _load_schedule_state(self, model_dir: Path) -> None:
+        """Restore ``reward_scheduler`` progress saved by ``_save_schedule_state``.
+
+        A missing ``schedule_state.pt`` is a silent no-op so checkpoints
+        written before this feature existed keep loading unchanged.
+
+        Args:
+            model_dir (pathlib.Path): Directory the module's own files were
+                loaded from (the ``intrinsic_motivation`` subfolder).
+        """
+        path = model_dir / 'schedule_state.pt'
+        if self.reward_scheduler is None or not path.is_file():
+            return
+        state = T.load(path, map_location=self.device, weights_only=False)
+        if state.get('reward_scheduler') is not None:
+            self.reward_scheduler.set_state(state['reward_scheduler'])
+
     def save(self, folder) -> None:
         """Persist weights, config, and optional normalizer state under ``folder``.
 
@@ -319,6 +354,7 @@ class IntrinsicMotivation(Model):
         if self.reward_normalizer is not None:
             self.reward_normalizer.save(
                 str(model_dir / 'reward_normalizer_state.pt'))
+        self._save_schedule_state(model_dir)
 
     @classmethod
     def create_instance(cls, im_type: str, **kwargs) -> 'IntrinsicMotivation':
@@ -368,7 +404,9 @@ class IntrinsicMotivation(Model):
         type_name = config.get('type')
         if type_name not in _REGISTRY:
             raise ValueError(f"Unknown intrinsic motivation type: {type_name}")
-        return _REGISTRY[type_name]._load_impl(folder, config, env)
+        instance = _REGISTRY[type_name]._load_impl(folder, config, env)
+        instance._load_schedule_state(model_dir)
+        return instance
 
     @classmethod
     def _load_impl(cls, folder, config, env) -> 'IntrinsicMotivation':
@@ -1633,6 +1671,7 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         config['component_dirs'] = component_dirs
         with open(comp_root / 'config.json', 'w', encoding='utf-8') as f:
             json.dump(config, f)
+        self._save_schedule_state(comp_root)
 
     def get_config(self) -> dict:
         """Return a JSON-serializable composite configuration."""
