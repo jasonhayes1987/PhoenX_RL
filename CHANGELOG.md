@@ -48,14 +48,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Google-style docstrings completed for `phoenx.schedulers`, `phoenx.noise`,
   `phoenx.distributions`, `phoenx.builder`, `phoenx.her`, `phoenx.trainer`,
   `phoenx.rl_callbacks`, `phoenx.normalizer`, `phoenx.buffer`,
-  `phoenx.adaptive_kl`, `phoenx.agent_utils`, and `phoenx.intrinsic_motivation`.
-  `her.py`'s module docstring also lost the `===` banner rows that mkdocstrings
-  rendered as literal `=` characters on the HER page, and two of its usage
-  examples were simply wrong: buffers take `hindsight=`, not `relabeler=`, and
-  `strategy='future'` samples `[t, T_ep)` or `(t, T_ep)` depending on
-  `future_lo`. The `intrinsic_motivation` module docstring was rewritten: it
-  previously opened with its own filename as the summary line and used
-  box-drawing characters to sketch the class hierarchy.
+  `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.intrinsic_motivation`,
+  and `phoenx.env_wrapper`. `her.py`'s module docstring also lost the `===`
+  banner rows that mkdocstrings rendered as literal `=` characters on the HER
+  page, and two of its usage examples were simply wrong: buffers take
+  `hindsight=`, not `relabeler=`, and `strategy='future'` samples `[t, T_ep)`
+  or `(t, T_ep)` depending on `future_lo`. The `intrinsic_motivation` module
+  docstring was rewritten: it previously opened with its own filename as the
+  summary line and used box-drawing characters to sketch the class hierarchy.
 - Docstring cross-references in those modules now use Markdown and
   mkdocs-autorefs (`[load_config][phoenx.builder.load_config]`) rather than
   Sphinx roles. mkdocstrings renders docstring bodies as Markdown, so
@@ -79,6 +79,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Buffer` is now a real ABC (`class Buffer(ABC)`). It previously imported `abstractmethod` but never `ABC`, so the base was directly instantiable and its declared `add`/`sample` signatures matched no concrete subclass. Direct instantiation now raises `TypeError`. In-repo callers are unaffected (`Buffer.create_instance` and all concrete subclasses are unchanged), but any out-of-repo code that subclassed without implementing `add`/`sample`, or that instantiated `Buffer` directly, will break.
 
 ### Removed
+- The dead single-env `NStepReward` wrapper (`src/phoenx/env_wrapper.py`), superseded roughly five months ago by `VectorNStepReward` and never reachable since: `EnvWrapper._find_nstep_wrapper` only matches `VectorNStepReward`, and `NStepReward` never gained the `set_action` / `set_intrinsic_motivation` methods the trainer and renderer call to feed it per-step data, so it could never receive an action. Nothing in the repo — no test, no bundled or committed config, no doc — ever referenced it by name. The only visible effect is on `WRAPPER_REGISTRY`: a hand-written YAML or an old saved run's `config.json` listing `{"type": "NStepReward"}` will now fail env construction with `ValueError: Unknown wrapper type 'NStepReward'` instead of silently building an inert wrapper. Use `{"type": "VectorNStepReward", "params": {"n": ...}}` instead.
+- `wrap_env` (`src/phoenx/env_wrapper.py`), which nothing in the repository called. It rebuilt a `SyncVectorEnv` from scratch — one fresh `gym.make(vec_env.spec.id)` per sub-env with the registry wrappers applied — duplicating what each adapter's own `_initialize_env` already does, and it silently skipped wrapper types missing from `WRAPPER_REGISTRY` where `_initialize_env` raises `ValueError`. It was never imported or referenced, so no configuration or call site changes.
 - Twelve unused import statements from `src/phoenx/agent_utils.py`: `json`, `math.e`, `pathlib.Path`, `typing.{Dict, Any, List, Optional}`, `numpy`, `torch.nn`, and the relative imports of `.models`, `.env_wrapper`, `.buffer`, `.noise`, `.normalizer`, and `.schedulers`. Nothing the module defines referenced any of them. This is API-visible rather than purely internal: the six relative imports re-exported roughly two dozen names, so code doing `from phoenx.agent_utils import ScheduleWrapper` (or reaching `agent_utils.np`) was leaning on a re-export that no longer exists and should import from the owning module instead.
 - The top-level `configs/` tree (32 files) is no longer tracked; `/configs/` is gitignored, anchored with a leading slash so it cannot also match the shipped `src/phoenx/examples/configs/`. It remains a personal working directory on the author's machine and is simply absent from a fresh clone.
 - `environment.yml`, superseded by `pyproject.toml`.
@@ -216,3 +218,4 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rich` is now declared as a runtime dependency. `src/phoenx/trainer.py` imports `rich.live`, `rich.table`, and `rich.console` at module scope for its live training and testing dashboards, but the package was never listed in `pyproject.toml`; the resulting `ModuleNotFoundError` had been masked by the `plotly` failure firing earlier in the import chain. Declaring and installing it takes the suite to 414 collected tests with no collection errors.
 - `pyproject.toml` was invalid TOML: the `envpool>=1.2.5` dependency entry was missing its closing quote, so the file could not be parsed.
 - `tests/test_learning_smoke.py::test_multimodal_ppo_learns_on_dict_obs` failed its `mean_action > 0.3` assertion (measuring 0.285) even though the policy had learned, because it sampled the deterministic action only at reset states. `MultiModalTestEnv` encodes the timestep in its observation, so the learned action ramps from 0.28 at `t=0` to 0.999 at `t=19`, making reset the weakest state in the episode. The test now rolls out one full deterministic episode and asserts the return exceeds 20.0 of a possible 40.0 (measured 34.3, random ~0).
+- The Isaac sparse-goal `distance_threshold` was effectively unusable by default: `IsaacSimWrapper` defaults it to `None` and forwards that `None` explicitly to `IsaacLabAdapter`, which never fell back to its own `0.05` default because an explicit keyword argument always wins. `HindsightRelabeler` construction then crashed inside `float(None)` while resolving the threshold, before its `compute_reward` was ever reached. `IsaacLabAdapter` now also defaults to `None`, `compute_reward` raises an actionable `ValueError` naming the `distance_threshold` argument (`env.config.distance_threshold` in a YAML config) when called with no threshold configured, and `HindsightRelabeler._resolve_distance_threshold` returns `None` instead of raising, so envs whose `distance_threshold` attribute is present but `None` now reach HER's existing reward-sign achievement check instead of crashing (envs with no such attribute at all always did). Note what this does *not* buy on the Isaac path: HER recomputes every relabeled reward through `compute_reward`, so an Isaac env with no threshold still cannot relabel — it now fails on the first relabeled episode with the actionable message instead of at relabeler construction with a `TypeError` from `float(None)`.

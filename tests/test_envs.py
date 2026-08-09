@@ -382,6 +382,12 @@ class TestIsaacLabAdapter:
         assert adapter.action_space is inner.action_space
         assert adapter.distance_threshold == 0.1
 
+    def test_default_distance_threshold_is_none(self):
+        """Unconfigured is explicit (None), not a silently-wrong 0.05 that
+        IsaacSimWrapper could never actually reach."""
+        adapter = IsaacLabAdapter(_FakeInnerEnv())
+        assert adapter.distance_threshold is None
+
     def test_reset_and_step_forwarded(self):
         inner = _FakeInnerEnv()
         adapter = IsaacLabAdapter(inner)
@@ -400,6 +406,15 @@ class TestIsaacLabAdapter:
         reward = adapter.compute_reward(achieved, desired)
         assert np.allclose(reward, [0.0, -1.0])  # within / outside threshold
         assert reward.dtype == np.float32
+
+    def test_compute_reward_raises_when_threshold_unset(self):
+        """An unconfigured threshold must fail loudly and name the argument
+        to fix, instead of comparing a NumPy array to None."""
+        adapter = IsaacLabAdapter(_FakeInnerEnv(), distance_threshold=None)
+        achieved = np.array([[0.0, 0.0]], dtype=np.float32)
+        desired = np.array([[0.0, 0.0]], dtype=np.float32)
+        with pytest.raises(ValueError, match="distance_threshold"):
+            adapter.compute_reward(achieved, desired)
 
     def test_spec_and_close_forwarded(self):
         inner = _FakeInnerEnv()

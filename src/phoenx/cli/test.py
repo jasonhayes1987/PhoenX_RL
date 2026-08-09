@@ -29,7 +29,7 @@ from phoenx.logging_config import configure_logging
 # Training-only wrappers that must not run during evaluation: they require a
 # per-step ``set_action`` call and only build n-step trajectories for the buffer.
 # They do not change the observation/action spaces, so dropping them is safe.
-_TRAIN_ONLY_WRAPPERS = {"VectorNStepReward", "NStepReward"}
+_TRAIN_ONLY_WRAPPERS = {"VectorNStepReward"}
 
 
 def build_eval_env(agent_dir: Path, env: str|None, num_envs: int|None, render_mode: str|None, seed: int|None) -> EnvWrapper:

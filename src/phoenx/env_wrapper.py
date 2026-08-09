@@ -1,3 +1,17 @@
+"""Gymnasium, EnvPool, and Isaac Lab environment adapters and helpers.
+
+Adapters under ``EnvWrapper`` (``GymnasiumWrapper``, ``EnvPoolWrapper``,
+``IsaacSimWrapper``) present a shared reset/step surface that returns
+``Observation``. ``Action`` is the caller-supplied counterpart for steps.
+Observation and action helpers
+(one-hot encoding, NumPy↔Torch conversion) sit alongside ``WRAPPER_REGISTRY``,
+which resolves the wrapper names a config may list. The ``VectorNStepReward``
+n-step collector attaches sliding trajectory windows to
+``info['n-step trajectory']`` for buffers that consume them. JSON helpers at
+the bottom serialize ``EnvSpec`` / ``WrapperSpec`` and ``GymnasiumWrapper``
+config for logging and checkpoints.
+"""
+
 import json
 import warnings
 from dataclasses import dataclass
@@ -29,6 +43,20 @@ if TYPE_CHECKING:
 
 @dataclass
 class Observation:
+    """Packed environment transition returned by adapter ``reset`` / ``step``.
+
+    Attributes:
+        states: Observation tensor (or multi-modal dict of tensors).
+        goals: Desired-goal tensor when goal-conditioned, else ``None``.
+        ach_goals: Achieved-goal tensor when goal-conditioned, else ``None``.
+        rewards: Step rewards; ``None`` on ``reset``.
+        intrinsic_rewards: Intrinsic rewards when an IM module is attached.
+        terminations: Episode termination flags; ``None`` on ``reset``.
+        truncations: Episode truncation flags; ``None`` on ``reset``.
+        n_step_trajectory: N-step window dict popped from infos when present.
+        infos: Raw info dict from the underlying env.
+    """
+
     states: T.Tensor
     goals: T.Tensor | None = None
     ach_goals: T.Tensor | None = None
@@ -41,190 +69,41 @@ class Observation:
 
 @dataclass
 class Action:
+    """Packed action batch passed into adapter ``step`` / ``VectorNStepReward``.
+
+    Attributes:
+        actions: Env-facing action tensor (after any squashing / discretization).
+        raw_actions: Pre-transform actions when the policy emits them separately.
+        log_probs: Per-env log-probabilities of ``actions``, or ``None``.
+        hidden: Recurrent state *before* this step's forward, flattened to
+            batch-first tensors via ``ModularModel.hidden_to_tensors``
+            (``None`` for feedforward agents). ``VectorNStepReward`` rings this
+            so each emitted n-step window carries the hidden at its first step
+            (R2D2 stored state).
+    """
+
     actions: T.Tensor
     raw_actions: T.Tensor | None = None
     log_probs: T.Tensor | None = None
-    #: Recurrent state BEFORE this step's forward, flattened to batch-first
-    #: tensors via ModularModel.hidden_to_tensors (None for feedforward agents).
-    #: Ringed by VectorNStepReward so each emitted n-step window carries the
-    #: exact hidden at its first step (R2D2 "stored state").
     hidden: dict | None = None
 
-class NStepReward(gym.Wrapper):
-    def __init__(self, env, n, discount=0.99):
-        """Initialize the wrapper with the environment and number of steps to track.
-
-        Args:
-            env (gym.Env): The Gymnasium environment to wrap.
-            n (int): The number of previous steps to include in the trajectory.
-            discount (float): The discount factor for the trajectory.
-        """
-        super().__init__(env)
-        self.env = env
-        self.n = n
-        self.n_states = deque(maxlen=self.n)
-        self.n_actions = deque(maxlen=self.n)
-        self.n_rewards = deque(maxlen=self.n)
-        self.n_next_states = deque(maxlen=self.n)
-        self.n_dones = deque(maxlen=self.n)
-        self.n_state_achieved_goals = deque(maxlen=self.n)
-        self.n_next_state_achieved_goals = deque(maxlen=self.n)
-        self.n_desired_goals = deque(maxlen=self.n)
-        self.current_state = None
-        self.step_count = 0
-        # self.rewards = deque(maxlen=self.n)
-        self.discount = discount
-
-    def reset(self, **kwargs):
-        """Reset the environment and clear the trajectory history.
-
-        Args:
-            **kwargs: Additional arguments for env.reset().
-
-        Returns:
-            tuple: (observation, info) from the environment reset.
-        """
-        #DEBUG
-        # print(f'n-step trajectory reset called')
-        # self.step_count = 0
-        # Capture current n-step trajectory info to return in info dict
-        trajectory = {
-            'states': np.array(self.n_states),
-            'actions': np.array(self.n_actions),
-            'rewards': np.array(self.n_rewards),
-            'next_states': np.array(self.n_next_states),
-            'dones': np.array(self.n_dones)
-        }
-        if isinstance(self.env.observation_space, gym.spaces.Dict):
-            trajectory['state_achieved_goals'] = np.array(self.n_state_achieved_goals)
-            trajectory['next_state_achieved_goals'] = np.array(self.n_next_state_achieved_goals)
-            trajectory['desired_goals'] = np.array(self.n_desired_goals)
-
-        state, info = self.env.reset(**kwargs)
-        #DEBUG
-        # print(f'n-step trajectory reset state:{state}, info:{info}')
-
-        self.n_states = deque(maxlen=self.n)
-        self.n_actions = deque(maxlen=self.n)
-        self.n_rewards = deque(maxlen=self.n)
-        self.n_next_states = deque(maxlen=self.n)
-        self.n_dones = deque(maxlen=self.n)
-        # self.rewards.clear()
-
-        action_shape = self.env.action_space.shape
-        # Add state achieved, next achieved, and desired goals if state is dict and has attrs
-        if isinstance(state, dict):
-            state_shape = self.env.observation_space['observation'].shape
-            goal_shape = self.env.observation_space['achieved_goal'].shape
-            self.n_state_achieved_goals = deque(maxlen=self.n)
-            self.n_next_state_achieved_goals = deque(maxlen=self.n)
-            self.n_desired_goals = deque(maxlen=self.n)
-            for _ in range(self.n):
-                self.n_state_achieved_goals.append(np.zeros(goal_shape))
-                self.n_next_state_achieved_goals.append(np.zeros(goal_shape))
-                self.n_desired_goals.append(np.zeros(goal_shape))
-        else:
-            state_shape = self.env.observation_space.shape
-
-        for _ in range(self.n):
-            self.n_states.append(np.zeros(state_shape))
-            self.n_actions.append(np.zeros(action_shape))
-            self.n_rewards.append(0)
-            self.n_next_states.append(np.zeros(state_shape))
-            self.n_dones.append(0)
-        
-        self.current_state = state
-        info['n-step trajectory'] = trajectory
-        #DEBUG
-        # print(f'n-step trajectory reset info:{info}')
-        return state, info
-
-    def step(self, action):
-        """Step the environment and update the n-step trajectory.
-
-        Args:
-            action: The action to take in the environment.
-
-        Returns:
-            tuple: (observation, reward, terminated, truncated, info) with updated info dict.
-        """
-        next_state, reward, terminated, truncated, info = self.env.step(action)
-        # self.rewards.append(reward)
-        # discounts = np.array([self.discount ** i for i in range(len(self.rewards))])
-        # rewards = np.array(self.rewards)
-        # reward = np.sum(rewards * discounts)
-        done = terminated or truncated
-        # done = terminated or truncated
-        self.step_count += 1
-        # If current step == 1, add state, action, and next state to every idx
-        if self.step_count == 1:
-            for _ in range(self.n):
-                if isinstance(self.env.observation_space, gym.spaces.Dict):
-                    self.n_states.append(self.current_state['observation'])
-                    self.n_actions.append(action)
-                    self.n_next_states.append(next_state['observation'])
-                    self.n_state_achieved_goals.append(self.current_state['achieved_goal'])
-                    self.n_next_state_achieved_goals.append(next_state['achieved_goal'])
-                    self.n_desired_goals.append(self.current_state['desired_goal'])
-                else:
-                    self.n_states.append(self.current_state)
-                    self.n_actions.append(action)
-                    self.n_next_states.append(next_state)
-        else:
-            # Append the current step's data to the trajectory
-            if isinstance(self.env.observation_space, gym.spaces.Dict):
-                self.n_states.append(self.current_state['observation'])
-                self.n_actions.append(action)
-                self.n_next_states.append(next_state['observation'])
-                self.n_state_achieved_goals.append(self.current_state['achieved_goal'])
-                self.n_next_state_achieved_goals.append(next_state['achieved_goal'])
-                self.n_desired_goals.append(self.current_state['desired_goal'])
-            else:
-                self.n_states.append(self.current_state)
-                self.n_actions.append(action)
-                self.n_next_states.append(next_state)
-            
-        self.n_rewards.append(reward)
-        self.n_dones.append(done)
-
-        # Update the current state
-        self.current_state = next_state
-
-        # Construct the trajectory dictionary
-        trajectory = {
-            'states': np.array(self.n_states),
-            'actions': np.array(self.n_actions),
-            'rewards': np.array(self.n_rewards),
-            'next_states': np.array(self.n_next_states),
-            'dones': np.array(self.n_dones)
-        }
-        if isinstance(self.env.observation_space, gym.spaces.Dict):
-            trajectory['state_achieved_goals'] = np.array(self.n_state_achieved_goals)
-            trajectory['next_state_achieved_goals'] = np.array(self.n_next_state_achieved_goals)
-            trajectory['desired_goals'] = np.array(self.n_desired_goals)
-        # # Add the trajectory to the info dictionary
-        info['n-step trajectory'] = trajectory
-        #DEBUG
-        # print(f'n-step trajectory step info:{info}')
-        return next_state, reward, terminated, truncated, info
-
-    @property
-    def observation_space(self):
-        return self.env.observation_space
-    
-    @property
-    def action_space(self):
-        return self.env.action_space
-
-    @property
-    def single_action_space(self):
-        return self.env.single_action_space
-
-    @property
-    def single_observation_space(self):
-        return self.env.single_observation_space
-
 class VectorNStepReward(VectorWrapper):
+    """Vectorized ring-buffer n-step trajectory collector.
+
+    Maintains a per-env ring of length ``n`` for states, actions, rewards,
+    terminations/truncations, optional goals, intrinsic rewards, and R2D2
+    stored recurrent state. Each ``step`` writes into ``info['n-step
+    trajectory']`` via ``_build_trajectories``: envs with ``length > 0`` emit
+    windows of shape ``(num_valid, n, *)``, with repeat-padding for
+    states/actions and zero-padding for rewards/flags. On terminal steps,
+    trailing sub-windows are flushed so every in-episode step becomes an
+    anchor. Autoreset: envs whose previous step was done skip the write
+    (``prev_done``), matching Gymnasium vector autoreset semantics. Call
+    ``set_action`` before ``step`` so raw actions, log-probs, and hidden
+    state are recorded; optionally ``set_intrinsic_motivation`` for rollout
+    intrinsic rewards.
+    """
+
     def __init__(
         self,
         env: VectorEnv,
@@ -236,6 +115,20 @@ class VectorNStepReward(VectorWrapper):
         name: str | None = None,
         **kwargs
     ):
+        """Allocate per-env ring pointers; buffers are sized on the first step.
+
+        Args:
+            env: Vector environment to wrap.
+            n: Ring length (max trajectory window size).
+            obs_key: Dict key for the agent observation, or ``None`` to use
+                the full observation (minus goal keys when set).
+            goal_key: Dict key for desired goals, or ``None`` if unused.
+            ach_goal_key: Dict key for achieved goals, or ``None`` if unused.
+            log_level: Logger level name (uppercased).
+            name: Logger name; defaults to the class name.
+            **kwargs (Any): Extra attributes set on ``self`` (e.g. diagnostic
+                knobs such as ``_diag_freq``).
+        """
         super().__init__(env)
         self.name = name if name else self.__class__.__name__
         self.logger = get_logger(self.name, level=log_level.upper())
@@ -289,17 +182,32 @@ class VectorNStepReward(VectorWrapper):
         self._env_idx_nx1 = self._env_idx.unsqueeze(1).expand(self.num_envs, self.n)
 
     def set_action(self, action: Action) -> None:
-        """Sets the action data for the current step.
+        """Store the ``Action`` for the upcoming ``step`` write.
 
         Args:
-            action: The action to set.
+            action: Actions, optional raw actions / log-probs / hidden state.
         """
         self.current_action = action
 
     def set_intrinsic_motivation(self, intrinsic_motivation: "IntrinsicMotivation") -> None:
+        """Attach an intrinsic-motivation module for per-step rollout rewards.
+
+        Args:
+            intrinsic_motivation: Module whose ``compute_rollout_reward`` is
+                called inside ``step``, or any object with that API.
+        """
         self.intrinsic_motivation = intrinsic_motivation
     
     def reset(self, **kwargs):
+        """Reset the vector env and clear ring pointers.
+
+        Args:
+            **kwargs (Any): Forwarded to ``env.reset``.
+
+        Returns:
+            states (Any): Observation batch from the underlying ``reset``.
+            infos (dict): Info dict with an empty ``n-step trajectory`` entry.
+        """
         states, infos = self.env.reset(**kwargs)
         self.head.zero_()
         self.length.zero_()
@@ -309,9 +217,15 @@ class VectorNStepReward(VectorWrapper):
         return states, infos
 
     def _alloc_like(self, sample) -> T.Tensor | dict:
-        """(num_envs, *tail) -> (num_envs, n, *tail) pre-allocated buffer.
+        """Allocate a ``(num_envs, n, *tail)`` zero buffer matching ``sample``.
 
         Dict observations allocate per key, preserving each modality's dtype.
+
+        Args:
+            sample (Any): Tensor or dict-of-tensors with leading ``num_envs``.
+
+        Returns:
+            Zero-initialized buffer tree on ``self.device``.
         """
         def _alloc(t: T.Tensor) -> T.Tensor:
             tail = tuple(t.shape[1:])
@@ -319,7 +233,15 @@ class VectorNStepReward(VectorWrapper):
         return tree_map(_alloc, sample)
 
     def _extract_state(self, states):
-        """Select the per-step observation payload (tensor or non-goal dict)."""
+        """Select the per-step observation payload (tensor or non-goal dict).
+
+        Args:
+            states (Any): Raw observation batch (array, tensor, or dict).
+
+        Returns:
+            Tensor or dict-of-tensors on ``self.device``, excluding goal keys
+            when ``obs_key`` is unset.
+        """
         if self.obs_key is not None:
             payload = states[self.obs_key]
         elif isinstance(states, dict):
@@ -330,6 +252,23 @@ class VectorNStepReward(VectorWrapper):
         return tree_map(lambda v: T.as_tensor(v, device=self.device), payload)
 
     def step(self, actions: T.Tensor):
+        """Step the vector env, append to rings, and emit trajectory infos.
+
+        Lazily allocates buffers on the first call. Skips advancing the ring
+        for envs that terminated on the previous step (autoreset). Writes
+        ``infos['n-step trajectory']`` from ``_build_trajectories``, then
+        clears head/length for newly done envs.
+
+        Args:
+            actions: Action batch for the underlying vector env.
+
+        Returns:
+            next_states (Any): Next observation batch.
+            rewards (torch.Tensor): Env rewards as a device tensor.
+            terminations (torch.Tensor): Termination flags.
+            truncations (torch.Tensor): Truncation flags.
+            infos (dict): Infos including ``n-step trajectory``.
+        """
         self._step += 1
         next_states, rewards, terminations, truncations, infos = self.env.step(actions)
 
@@ -436,11 +375,23 @@ class VectorNStepReward(VectorWrapper):
         return next_states, rewards, terminations, truncations, infos
 
     def _build_trajectories(self, dones: T.Tensor | None = None):
-        """Produces tensors of shape (num_valid_envs, n, *) where num_valid_envs is the
-        number of envs with length > 0.
-          - pad_mode "repeat" (states / next_states / actions): positions beyond
-            `length` repeat the most recent valid entry.
-          - pad_mode 0 (rewards / terminations / truncations): zero-filled.
+        """Gather per-env ring windows into a batched trajectory dict.
+
+        Emits tensors of shape ``(num_valid_envs, n, *)`` for envs with
+        ``length > 0``. Positions beyond each env's ``length`` use
+        repeat-padding for states / next_states / actions (and goal /
+        log-prob fields) and zero-padding for rewards / terminations /
+        truncations / intrinsic rewards. When ``dones`` marks terminals,
+        also appends flushed tail windows so every in-episode step is an
+        anchor. Returns ``None`` when no env has data.
+
+        Args:
+            dones: Per-env done flags for the current step; when any are
+                true, terminal tails are flushed into the returned dict.
+
+        Returns:
+            Trajectory dict with leading dim ``num_valid`` (plus flushed
+            tails), or ``None`` if every env has ``length == 0``.
         """
         valid = self.length > 0
         if not bool(valid.any()):
@@ -618,24 +569,72 @@ class VectorNStepReward(VectorWrapper):
         }
 
 class OneHotObservationWrapper(gym.ObservationWrapper):
+    """Map a Discrete observation to a float32 one-hot ``Box`` vector."""
+
     def __init__(self, env):
+        """Replace a Discrete observation space with a one-hot ``Box``.
+
+        Args:
+            env (gym.Env): Environment whose observation space must be Discrete.
+        """
         super().__init__(env)
         assert isinstance(self.observation_space, gym.spaces.Discrete), "Observation space must be Discrete."
         self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.observation_space.n,), dtype=np.float32)
     
     def observation(self, obs):
+        """Encode a discrete index as a one-hot float32 vector.
+
+        Args:
+            obs (Any): Integer Discrete observation.
+
+        Returns:
+            one_hot (np.ndarray): Float32 vector of length ``n`` with a single 1.
+        """
         one_hot = np.zeros(self.observation_space.shape[0], dtype=np.float32)
         one_hot[obs] = 1.0
         return one_hot
 
 class NumpyToTorch(VectorWrapper):
+    """Convert vector-env observations and actions between NumPy and Torch."""
+
     def __init__(self, env, device=None):
+        """Wrap a vector env and store the Torch device for conversions.
+
+        Args:
+            env (VectorEnv): Vector environment to wrap.
+            device (torch.device | str | None): Device for ``to_torch``; ``None``
+                leaves device selection to ``to_torch``.
+        """
         super().__init__(env)
         self.device = device
+
     def reset(self, *, seed=None, options=None):
+        """Reset with NumPy options; return Torch observation and info.
+
+        Args:
+            seed (int | None): Seed forwarded to ``env.reset``.
+            options (Any): Options converted via ``to_numpy`` before reset.
+
+        Returns:
+            observation (Any): Observation batch as Torch tensors.
+            info (Any): Info tree as Torch tensors.
+        """
         obs, info = self.env.reset(seed=seed, options=to_numpy(options))
         return to_torch(obs, self.device), to_torch(info, self.device)
+
     def step(self, actions):
+        """Step with NumPy actions; return Torch transition fields.
+
+        Args:
+            actions (Any): Action batch converted via ``to_numpy`` before step.
+
+        Returns:
+            observation (Any): Next observation as Torch tensors.
+            reward (Any): Rewards as Torch tensors.
+            terminated (Any): Termination flags as Torch tensors.
+            truncated (Any): Truncation flags as Torch tensors.
+            info (Any): Info tree as Torch tensors.
+        """
         obs, reward, terminated, truncated, info = self.env.step(to_numpy(actions))
         return (
             to_torch(obs, self.device),
@@ -644,21 +643,56 @@ class NumpyToTorch(VectorWrapper):
             to_torch(truncated, self.device),
             to_torch(info, self.device),
         )
+
     def render(self):
+        """Forward ``render`` to the wrapped vector env.
+
+        Returns:
+            frame (Any): Render output from the underlying env.
+        """
         return self.env.render()
 
 class VectorOneHotObservation(VectorWrapper):
     """Vectorized one-hot encoding for Discrete observation spaces."""
+
     def __init__(self, env):
+        """Require a Discrete ``single_observation_space`` and cache ``n``.
+
+        Args:
+            env (VectorEnv): Vector env whose single observation space is Discrete.
+        """
         super().__init__(env)
         assert isinstance(self.single_observation_space, gym.spaces.Discrete)
         self._n = self.single_observation_space.n
 
     def reset(self, **kwargs):
+        """Reset and one-hot encode the observation batch.
+
+        Args:
+            **kwargs (Any): Forwarded to ``env.reset``.
+
+        Returns:
+            observation (np.ndarray): One-hot float32 array of shape
+                ``(batch, n)``.
+            info (Any): Info from the underlying ``reset``.
+        """
         obs, info = self.env.reset(**kwargs)
         return self._encode(obs), info
 
     def step(self, actions):
+        """Step and one-hot encode the next observation batch.
+
+        Args:
+            actions (Any): Action batch for the underlying vector env.
+
+        Returns:
+            observation (np.ndarray): One-hot float32 array of shape
+                ``(batch, n)``.
+            reward (Any): Rewards from the underlying ``step``.
+            terminated (Any): Termination flags.
+            truncated (Any): Truncation flags.
+            info (Any): Info from the underlying ``step``.
+        """
         obs, rew, term, trunc, info = self.env.step(actions)
         return self._encode(obs), rew, term, trunc, info
 
@@ -703,10 +737,6 @@ WRAPPER_REGISTRY = {
             "shape": 84
         }
     },
-    "NStepReward": {
-        "cls": NStepReward,
-        "default_params": {"n": 1}
-    },
     "VectorNStepReward": {
         "cls": VectorNStepReward,
         "vector_aware": True,
@@ -722,71 +752,6 @@ WRAPPER_REGISTRY = {
     "default_params": {}
 }
 }
-
-# def atari_wrappers(env):
-#     """
-#     Wrap an Atari environment with preprocessing and frame stacking.
-
-#     This function applies standard Atari preprocessing, including converting to grayscale,
-#     resizing, scaling, and stacking multiple consecutive frames for better temporal
-#     context.
-
-#     Args:
-#         env (gym.Env): The original Atari environment.
-
-#     Returns:
-#         gym.Env: The wrapped environment with preprocessing and frame stacking applied.
-#     """
-#     env = AtariPreprocessing(
-#         env,
-#         frame_skip=1,
-#         grayscale_obs=True,
-#         scale_obs=True,
-#         screen_size=84
-#     )
-#     env = FrameStackObservation(env, stack_size=4)
-#     return env
-
-def wrap_env(vec_env, wrappers):
-    wrapper_list = []
-    for wrapper in wrappers:
-        if wrapper['type'] in WRAPPER_REGISTRY:
-            # print(f'wrapper type:{wrapper["type"]}')
-            # Use a copy of default_params to avoid modifying the registry
-            default_params = WRAPPER_REGISTRY[wrapper['type']]["default_params"].copy()
-            
-            if wrapper['type'] == "ResizeObservation":
-                # Ensure shape is a tuple for ResizeObservation
-                default_params['shape'] = (default_params['shape'], default_params['shape']) if isinstance(default_params['shape'], int) else default_params['shape']
-            
-            # print(f'default params:{default_params}')
-            override_params = wrapper.get("params", {})
-            
-            if wrapper['type'] == "ResizeObservation":
-                # Ensure override_params shape is a tuple
-                if 'shape' in override_params:
-                    override_params['shape'] = (override_params['shape'], override_params['shape']) if isinstance(override_params['shape'], int) else override_params['shape']
-            
-            # print(f'override params:{override_params}')
-            final_params = {**default_params, **override_params}
-            # print(f'final params:{final_params}')
-            
-            def wrapper_factory(env, cls=WRAPPER_REGISTRY[wrapper['type']]["cls"], params=final_params):
-                return cls(env, **params)
-            
-            wrapper_list.append(wrapper_factory)
-    
-    # Define apply_wrappers outside the loop
-    def apply_wrappers(env):
-        for wrapper in wrapper_list:
-            env = wrapper(env)
-            # print(f'length of obs space:{len(env.observation_space.shape)}')
-            # print(f'env obs space shape:{env.observation_space.shape}')
-        return env
-    
-    # print(f'wrapper list:{wrapper_list}')
-    envs = [lambda: apply_wrappers(gym.make(vec_env.spec.id, render_mode="rgb_array")) for _ in range(vec_env.num_envs)]    
-    return SyncVectorEnv(envs)
 
 class EnvWrapper:
     """Abstract base class for environment wrappers.
@@ -805,6 +770,22 @@ class EnvWrapper:
         render_mode:str|None=None,
         seed:int|None=None
     ):
+        """Store environment id, vectorization size, goal keys, and seed.
+
+        Args:
+            cfg: Environment id or config string passed to the concrete adapter.
+            num_envs: Number of parallel environments to create.
+            obs_key: Dict-observation key for the agent state. When unset,
+                remaining non-goal keys become multi-modal observations;
+                required only for a list of per-step dicts.
+            goal_key: Dict key for the desired goal, or ``None`` if unused.
+            ach_goal_key: Dict key for the achieved goal, or ``None`` if unused.
+            wrappers: Optional list of wrapper specs, each a dict with ``type``
+                and optional ``params``.
+            render_mode: Gymnasium render mode forwarded at construction, or
+                ``None`` for no rendering.
+            seed: RNG seed; when ``None``, a random 31-bit seed is drawn.
+        """
         self.env_id = cfg
         self.num_envs = num_envs
         self.obs_key = obs_key
@@ -820,13 +801,16 @@ class EnvWrapper:
         self,
         states: np.ndarray | T.Tensor | dict | list[dict]
     )->tuple[T.Tensor, T.Tensor | None, T.Tensor | None]:
-        """Extract the states and goals from the passed states argument and returns them as Tensors.
-        
+        """Split observations, goals, and achieved goals into tensors on device.
+
         Args:
-            states (np.ndarray | T.Tensor | dict | list[dict]): States to extract from.
-        
+            states: Raw env observation: array, tensor, dict, or list of dicts.
+
         Returns:
-            tuple: Tuple of states, goals, and achieved goals as Tensors.
+            Observations as a tensor or, for multi-modal dicts, a dict of
+                tensors on the active device.
+            Goal tensor, or ``None`` when ``goal_key`` is unset.
+            Achieved-goal tensor, or ``None`` when ``ach_goal_key`` is unset.
         """
         device = get_device()
         if isinstance(states, list):
@@ -925,10 +909,11 @@ class EnvWrapper:
 
     @property
     def config(self):
-        """Get the configuration of the wrapper.
+        """Build a JSON-serializable config dict for this wrapper.
 
         Returns:
-            dict: Configuration dictionary.
+            config (dict): Mapping with ``type`` (class name) and a nested
+                ``config`` of constructor kwargs.
         """
         return {
             "type": self.__class__.__name__,
@@ -949,7 +934,7 @@ class EnvWrapper:
         """Reset the environment to an initial state.
 
         Returns:
-            Any: Initial observation of the environment.
+            observation (Observation): Initial observation of the environment.
         """
         pass
     
@@ -958,30 +943,33 @@ class EnvWrapper:
         """Take an action in the environment.
 
         Args:
-            action: The action to be taken.
+            action (Any): Action batch for the (vectorized) environment.
 
         Returns:
-            Observation: A dataclass containing the current state, transition state, rewards, terminations, truncations, additional info, current goals, transition goals, current achieved goals, transition achieved goals.
+            Observation dataclass with states, optional goals, rewards,
+                terminations, truncations, and infos.
         """
         pass
 
     @abstractmethod
     def _initialize_env(self):
-        """Initialize the environment.
+        """Initialize the underlying environment instance.
 
         Returns:
-            Any: The initialized environment.
+            env (Any): The initialized backend environment.
         """
         pass
 
     def clone(self, num_envs:int=1, **kwargs) -> 'EnvWrapper':
-        """Create a new instance of the environment wrapper with the passed parameters.
+        """Create a new wrapper instance from this one's JSON config.
 
         Args:
-            **kwargs: Additional keyword arguments to pass to the environment wrapper to override original values.
+            num_envs: Number of parallel environments for the clone.
+            **kwargs (Any): Constructor kwargs that override values from the
+                serialized config before reconstruction.
 
         Returns:
-            EnvWrapper: A new instance of the environment wrapper with the passed parameters.
+            New ``EnvWrapper`` instance built via ``from_json``.
         """
         config = json.loads(self.to_json())
         config['config'].update(num_envs=num_envs, **kwargs)
@@ -993,10 +981,9 @@ class EnvWrapper:
 
         Args:
             actions: Actions to format.
-            testing (bool): Whether in testing mode (default: False).
 
         Returns:
-            Any: Formatted actions.
+            formatted (Any): Actions reshaped or converted for ``step``.
         """
         pass
     
@@ -1006,7 +993,7 @@ class EnvWrapper:
         """Get the observation space of the environment.
 
         Returns:
-            gym.Space: The observation space.
+            space (gymnasium.spaces.Space): The (vector) observation space.
         """
         pass
     
@@ -1016,25 +1003,26 @@ class EnvWrapper:
         """Get the action space of the environment.
 
         Returns:
-            gym.Space: The action space.
+            space (gymnasium.spaces.Space): The (vector) action space.
         """
         pass
 
     @property
     def single_action_space(self):
-        """Get the single action space for vectorized environments.
+        """Get the single-env action space for vectorized environments.
 
         Returns:
-            gym.Space: The single action space.
+            space (gymnasium.spaces.Space): Action space of one sub-environment.
         """
         pass
 
     @property
     def single_observation_space(self):
-        """Get the single observation space for vectorized environments.
+        """Get the single-env observation space for vectorized environments.
 
         Returns:
-            gym.Space: The single observation space.
+            space (gymnasium.spaces.Space): Observation space of one
+                sub-environment.
         """
         pass
 
@@ -1043,7 +1031,7 @@ class EnvWrapper:
         """Serialize the environment wrapper configuration to JSON.
 
         Returns:
-            str: JSON string representing the environment configuration.
+            JSON string representing the environment configuration.
         """
         pass
 
@@ -1051,17 +1039,18 @@ class EnvWrapper:
     def from_json(cls, json_string: str):
         """Create an environment wrapper instance from a JSON string.
 
-        This method will delegate to the appropriate subclass's `from_json` method
-        based on the type specified in the JSON.
+        Delegates to the subclass ``from_json`` matching the ``type`` field in
+        the JSON (``gymnasium``, ``envpool``, or ``isaacsim``).
 
         Args:
-            json_string (str): JSON string representing the environment configuration.
+            json_string: JSON string representing the environment configuration.
 
         Returns:
-            EnvWrapper: A new environment wrapper instance.
+            wrapper (EnvWrapper): A new environment wrapper instance.
 
         Raises:
-            ValueError: If the type in the JSON is not recognized or if instantiation fails.
+            ValueError: If the type in the JSON is not recognized or if
+                instantiation fails.
         """
         config = json.loads(json_string)
         try:
@@ -1096,6 +1085,24 @@ class GymnasiumWrapper(EnvWrapper):
         render_mode:str|None=None,
         seed:int|None=None
     ):
+        """Build a Gymnasium vector env and apply configured wrappers.
+
+        Args:
+            cfg: Gymnasium environment id passed to ``gym.make_vec``.
+            num_envs: Number of parallel environments to create.
+            obs_key: Dict-observation key for the agent state. When unset,
+                remaining non-goal keys become multi-modal observations;
+                required only for a list of per-step dicts.
+            goal_key: Dict key for the desired goal, or ``None`` if unused.
+            ach_goal_key: Dict key for the achieved goal, or ``None`` if unused.
+            wrappers: Optional list of wrapper specs, each a dict with ``type``
+                and optional ``params``, applied as single-env or vector-aware
+                wrappers.
+            render_mode: Gymnasium render mode forwarded to ``make_vec``, or
+                ``None`` for no rendering.
+            seed: RNG seed; when ``None``, a random 31-bit seed is drawn by
+                the base class.
+        """
         super().__init__(cfg, num_envs, obs_key, goal_key, ach_goal_key, wrappers, render_mode, seed)
         # self.env_id = cfg
         # self.num_envs = num_envs
@@ -1111,10 +1118,15 @@ class GymnasiumWrapper(EnvWrapper):
         
 
     def _initialize_env(self):
-        """Initialize the Gymnasium environments.
+        """Create the Gymnasium vector env, apply wrappers, and torch-cast outputs.
+
+        Resolves each entry in ``self.wrappers`` from ``WRAPPER_REGISTRY`` or
+        built-in Gymnasium wrapper modules, builds a sync vector env via
+        ``gym.make_vec``, then wraps it with ``NumpyToTorch``.
 
         Returns:
-            gym.VectorEnv: The initialized Gymnasium vectorized environment.
+            env (gymnasium.vector.VectorEnv): Initialized vectorized environment
+                with torch observation conversion.
         """
         single_wrappers = []
         vector_wrappers = []
@@ -1173,16 +1185,26 @@ class GymnasiumWrapper(EnvWrapper):
         return vec_env
 
     def render_frame(self)->np.ndarray:
-        """Renders a frame from the environment.
-        
+        """Render one frame from the first sub-environment.
+
         Returns:
-            np.ndarray: The rendered frame.
+            RGB or other render array from ``env.render()`` index ``0``.
         """
         frame = self.env.render()        
         return frame[0]
         
 
     def reset(self, seed:int|None=None):
+        """Reset the vector env and return an ``Observation``.
+
+        Args:
+            seed: Seed for ``env.reset`` and the action space; defaults to
+                ``self.seed`` when omitted.
+
+        Returns:
+            observation (Observation): Initial states, optional goals, and
+                infos; may attach ``n_step_trajectory`` when present in infos.
+        """
         if seed is not None:
             effective_seed = seed
         else:
@@ -1205,6 +1227,15 @@ class GymnasiumWrapper(EnvWrapper):
         return observation
 
     def step(self, action)->Observation:
+        """Step the vector env and pack the transition into an ``Observation``.
+
+        Args:
+            action (Any): Action batch accepted by the underlying vector env.
+
+        Returns:
+            Observation with states, rewards, terminations, truncations, and
+                infos; may attach ``n_step_trajectory`` when present in infos.
+        """
         states, rewards, terminations, truncations, infos = self.env.step(action)
 
         # Separate observations, goals, and achieved goals 
@@ -1225,10 +1256,27 @@ class GymnasiumWrapper(EnvWrapper):
         return observation
 
     def sample_observation(self):
+        """Sample a random action and step once, returning the ``Observation``.
+
+        Returns:
+            observation (Observation): Result of ``step`` on a sampled action.
+        """
         actions = self.action_space.sample()
         return self.step(actions)
     
     def format_actions(self, actions: np.ndarray | T.Tensor):
+        """Convert actions to NumPy and reshape for the action space.
+
+        Box actions become ``(num_envs, action_dim)``; Discrete or MultiDiscrete
+        actions are raveled to 1-D.
+
+        Args:
+            actions: Action array or tensor to format.
+
+        Returns:
+            formatted (numpy.ndarray): Actions shaped for the vector env, or
+                ``None`` when the action space type is not handled.
+        """
         if isinstance(actions, T.Tensor):
             actions = actions.cpu().numpy()
         if isinstance(self.action_space, gym.spaces.Box):
@@ -1239,8 +1287,7 @@ class GymnasiumWrapper(EnvWrapper):
             return actions.ravel()
     
     def close(self):
-        """Close the environment.
-        """
+        """Close the underlying Gymnasium environment."""
         self.env.close()
     
     @property
@@ -1248,7 +1295,7 @@ class GymnasiumWrapper(EnvWrapper):
         """Get the observation space of the environment.
 
         Returns:
-            gym.Space: The observation space.
+            space (gymnasium.spaces.Space): The vector observation space.
         """
         return self.env.observation_space
     
@@ -1257,34 +1304,35 @@ class GymnasiumWrapper(EnvWrapper):
         """Get the action space of the environment.
 
         Returns:
-            gym.Space: The action space.
+            space (gymnasium.spaces.Space): The vector action space.
         """
         return self.env.action_space
     
     @property
     def single_action_space(self):
-        """Get the single action space for vectorized environments.
+        """Get the single-env action space for vectorized environments.
 
         Returns:
-            gym.Space: The single action space.
+            space (gymnasium.spaces.Space): Action space of one sub-environment.
         """
         return self.env.single_action_space
 
     @property
     def single_observation_space(self):
-        """Get the single observation space for vectorized environments.
+        """Get the single-env observation space for vectorized environments.
 
         Returns:
-            gym.Space: The single observation space.
+            space (gymnasium.spaces.Space): Observation space of one
+                sub-environment.
         """
         return self.env.single_observation_space
 
     @property
     def finite_horizon(self)->bool:
-        """Returns True if the environment has a finite horizon.
-        Finite horizon is determined by checking if the base environment spec contains has
-        a max_episode_steps attribute that is not None, or if the environment is wrapped in a 
-        TimeLimit wrapper.
+        """Return whether the environment has a finite episode horizon.
+
+        True when the base env spec sets ``max_episode_steps``, or when a
+        ``TimeLimit`` wrapper is present in the wrap stack.
         """
         base_env = self.get_base_env()
         if hasattr(base_env, 'spec') and base_env.spec is not None:
@@ -1300,10 +1348,10 @@ class GymnasiumWrapper(EnvWrapper):
     
     @property
     def config(self):
-        """Get the configuration of the wrapper.
+        """Build a JSON-serializable config with type ``gymnasium``.
 
         Returns:
-            dict: Configuration dictionary.
+            config (dict): Parent config with ``type`` set to ``"gymnasium"``.
         """
         config = super().config
         config['type'] = "gymnasium"
@@ -1326,7 +1374,7 @@ class GymnasiumWrapper(EnvWrapper):
         """Serialize the wrapper configuration to JSON.
 
         Returns:
-            str: JSON string representing the configuration.
+            json_string (str): JSON encoding of ``self.config``.
         """
         return json.dumps(self.config)
 
@@ -1335,10 +1383,14 @@ class GymnasiumWrapper(EnvWrapper):
         """Create a Gymnasium wrapper instance from a JSON string.
 
         Args:
-            json_env_spec (str): JSON string representing the configuration.
+            json_env_spec (str): JSON string with a nested ``config`` object of
+                constructor kwargs.
 
         Returns:
-            GymnasiumWrapper: A new Gymnasium wrapper instance.
+            wrapper (GymnasiumWrapper): A new Gymnasium wrapper instance.
+
+        Raises:
+            ValueError: If construction from the parsed config fails.
         """
         config = json.loads(json_env_spec)
         config = config['config']
@@ -1349,7 +1401,15 @@ class GymnasiumWrapper(EnvWrapper):
 
 class EnvPoolAdapter(VectorEnv):
     """Adapts an EnvPool gymnasium env to be compatible with the VectorWrapper chain."""
+
     def __init__(self, envpool_env, num_envs: int):
+        """Store the EnvPool env and batch its spaces for ``num_envs``.
+
+        Args:
+            envpool_env (Any): EnvPool gymnasium environment from
+                ``envpool.make_gymnasium``.
+            num_envs: Number of parallel sub-environments.
+        """
         self._env = envpool_env
         self.num_envs = num_envs
         self.single_observation_space = envpool_env.observation_space
@@ -1358,23 +1418,64 @@ class EnvPoolAdapter(VectorEnv):
         self.action_space = utils.batch_space(envpool_env.action_space, num_envs)
 
     def reset(self, *, seed=None, options=None):
+        """Reset the EnvPool env and return observation and info.
+
+        Args:
+            seed (Any): Accepted for VectorEnv API compatibility; not forwarded
+                to EnvPool ``reset``.
+            options (Any): Accepted for VectorEnv API compatibility; unused.
+
+        Returns:
+            obs_info (tuple): ``(observation, info)`` from the underlying env.
+        """
         obs, info = self._env.reset()
         return obs, info
 
     def step(self, actions):
+        """Step the EnvPool env with the given action batch.
+
+        Args:
+            actions (Any): Action batch accepted by the EnvPool env.
+
+        Returns:
+            step_result (Any): ``(obs, rewards, terminations, truncations,
+                infos)`` from the underlying env.
+        """
         return self._env.step(actions)
 
     def render(self, **kwargs):
+        """Forward render kwargs to the EnvPool env.
+
+        Args:
+            **kwargs (Any): Keyword arguments passed to ``env.render``.
+
+        Returns:
+            frame (Any): Render output from the underlying env.
+        """
         return self._env.render(**kwargs)
 
     def close(self):
+        """Close the underlying EnvPool environment."""
         self._env.close()
 
     @property
     def spec(self):
+        """Return the EnvPool env ``spec`` attribute if present.
+
+        Returns:
+            spec (Any): Env spec object, or ``None`` when absent.
+        """
         return getattr(self._env, 'spec', None)
 
 class EnvPoolWrapper(EnvWrapper):
+    """Wrapper for EnvPool vectorized environments with PhoenX utilities.
+
+    Builds an EnvPool gymnasium env via ``envpool.make_gymnasium``, maps a
+    subset of Gymnasium wrappers to EnvPool constructor kwargs, adapts the
+    result through ``EnvPoolAdapter``, then applies vector-aware wrappers and
+    ``NumpyToTorch``.
+    """
+
     WRAPPER_TO_ENVPOOL_PARAM = {
         "AtariPreprocessing": lambda p: {
             "frame_skip": p.get("frame_skip", 4),
@@ -1405,6 +1506,27 @@ class EnvPoolWrapper(EnvWrapper):
         render_mode: str | None = None,
         seed: int | None = None
     ):
+        """Build an EnvPool vector env and apply configured wrappers.
+
+        Args:
+            cfg: EnvPool task id passed as ``task_id`` to
+                ``envpool.make_gymnasium``.
+            num_envs: Number of parallel environments to create.
+            obs_key: Dict-observation key for the agent state. When unset,
+                remaining non-goal keys become multi-modal observations;
+                required only for a list of per-step dicts.
+            goal_key: Dict key for the desired goal, or ``None`` if unused.
+            ach_goal_key: Dict key for the achieved goal, or ``None`` if unused.
+            num_threads: EnvPool worker thread count; defaults to ``num_envs``
+                when ``None``.
+            wrappers: Optional list of wrapper specs, each a dict with ``type``
+                and optional ``params``. Mapped types become EnvPool kwargs;
+                vector-aware registry or gymnasium vector wrappers wrap the
+                adapter; other types raise ``ValueError``.
+            render_mode: Render mode forwarded to EnvPool when set, or ``None``.
+            seed: RNG seed; when ``None``, a random 31-bit seed is drawn by
+                the base class.
+        """
         super().__init__(cfg, num_envs, obs_key, goal_key, ach_goal_key, wrappers, render_mode, seed)
         # self.env_id = cfg
         # self.num_envs = num_envs
@@ -1420,6 +1542,22 @@ class EnvPoolWrapper(EnvWrapper):
         self.env = self._initialize_env()
 
     def _initialize_env(self):
+        """Create the EnvPool env, adapt it, apply wrappers, and torch-cast outputs.
+
+        Resolves each entry in ``self.wrappers`` via ``WRAPPER_TO_ENVPOOL_PARAM``,
+        ``WRAPPER_REGISTRY`` (vector-aware only), or ``gymnasium.wrappers.vector``,
+        builds the env with ``envpool.make_gymnasium``, wraps it in
+        ``EnvPoolAdapter``, then applies remaining vector wrappers and
+        ``NumpyToTorch``.
+
+        Returns:
+            env (Any): Initialized vectorized environment with torch observation
+                conversion.
+
+        Raises:
+            ValueError: If a wrapper type is neither EnvPool-mapped nor
+                vector-aware.
+        """
         envpool_kwargs = {
             "task_id": self.env_id,
             "num_envs": self.num_envs,
@@ -1463,15 +1601,26 @@ class EnvPoolWrapper(EnvWrapper):
         return env
 
     def render_frame(self)->np.ndarray:
-        """Renders a frame from the environment.
-        
+        """Render one frame from the first sub-environment.
+
         Returns:
-            np.ndarray: The rendered frame.
+            RGB or other render array from ``env.render()`` index ``0``.
         """
         frame = self.env.render()        
         return frame[0]
         
     def reset(self, seed:int|None=None):
+        """Reset the vector env and return an ``Observation``.
+
+        Args:
+            seed: Defaults to ``self.seed`` when omitted; reseeds
+                ``self.env.action_space`` only (EnvPool is seeded at
+                construction and the adapter does not forward this seed).
+
+        Returns:
+            observation (Observation): Initial states, optional goals, and
+                infos; may attach ``n_step_trajectory`` when present in infos.
+        """
         if seed is not None:
             effective_seed = seed
         else:
@@ -1494,6 +1643,15 @@ class EnvPoolWrapper(EnvWrapper):
         return observation
 
     def step(self, action)->Observation:
+        """Step the vector env and pack the transition into an ``Observation``.
+
+        Args:
+            action (Any): Action batch accepted by the underlying vector env.
+
+        Returns:
+            Observation with states, rewards, terminations, truncations, and
+                infos; may attach ``n_step_trajectory`` when present in infos.
+        """
         states, rewards, terminations, truncations, infos = self.env.step(action)
 
         # Separate observations, goals, and achieved goals 
@@ -1514,6 +1672,15 @@ class EnvPoolWrapper(EnvWrapper):
         return observation
 
     def sample_observation(self):
+        """Sample a random action, step once, and return states and goals only.
+
+        Unlike a full ``step`` result, the returned ``Observation`` omits
+        rewards, terminations, truncations, and infos.
+
+        Returns:
+            observation (Observation): States and optional goals from one
+                sampled step.
+        """
         actions = self.action_space.sample()
         observation = self.step(actions)
         obs, goals, ach_goals = self.extract_states_goals(observation.states)
@@ -1524,6 +1691,18 @@ class EnvPoolWrapper(EnvWrapper):
         )
     
     def format_actions(self, actions: np.ndarray | T.Tensor):
+        """Convert actions to NumPy and reshape for the action space.
+
+        Box actions become ``(num_envs, action_dim)``; Discrete or MultiDiscrete
+        actions are raveled to 1-D.
+
+        Args:
+            actions: Action array or tensor to format.
+
+        Returns:
+            formatted (numpy.ndarray): Actions shaped for the vector env, or
+                ``None`` when the action space type is not handled.
+        """
         if isinstance(actions, T.Tensor):
             actions = actions.cpu().numpy()
         if isinstance(self.action_space, gym.spaces.Box):
@@ -1534,8 +1713,7 @@ class EnvPoolWrapper(EnvWrapper):
             return actions.ravel()
     
     def close(self):
-        """Close the environment.
-        """
+        """Close the underlying EnvPool environment."""
         self.env.close()
     
     @property
@@ -1543,7 +1721,7 @@ class EnvPoolWrapper(EnvWrapper):
         """Get the observation space of the environment.
 
         Returns:
-            gym.Space: The observation space.
+            space (gymnasium.spaces.Space): The vector observation space.
         """
         return self.env.observation_space
     
@@ -1552,30 +1730,36 @@ class EnvPoolWrapper(EnvWrapper):
         """Get the action space of the environment.
 
         Returns:
-            gym.Space: The action space.
+            space (gymnasium.spaces.Space): The vector action space.
         """
         return self.env.action_space
     
     @property
     def single_action_space(self):
-        """Get the single action space for vectorized environments.
+        """Get the single-env action space for vectorized environments.
 
         Returns:
-            gym.Space: The single action space.
+            space (gymnasium.spaces.Space): Action space of one sub-environment.
         """
         return self.env.single_action_space
 
     @property
     def single_observation_space(self):
-        """Get the single observation space for vectorized environments.
+        """Get the single-env observation space for vectorized environments.
 
         Returns:
-            gym.Space: The single observation space.
+            space (gymnasium.spaces.Space): Observation space of one
+                sub-environment.
         """
         return self.env.single_observation_space
 
     @property
     def finite_horizon(self) -> bool:
+        """Return whether the environment has a finite episode horizon.
+
+        True when the env ``spec`` sets ``max_episode_steps`` to a non-``None``
+        value; otherwise False.
+        """
         spec = getattr(self.env, 'spec', None)
         if spec and hasattr(spec, 'max_episode_steps'):
             return spec.max_episode_steps is not None
@@ -1583,10 +1767,11 @@ class EnvPoolWrapper(EnvWrapper):
     
     @property
     def config(self):
-        """Get the configuration of the wrapper.
+        """Build a JSON-serializable config with type ``envpool``.
 
         Returns:
-            dict: Configuration dictionary.
+            config (dict): Parent config with ``type`` set to ``"envpool"`` and
+                ``num_threads`` added under the nested ``config``.
         """
         config = super().config
         config['type'] = "envpool"
@@ -1611,19 +1796,23 @@ class EnvPoolWrapper(EnvWrapper):
         """Serialize the wrapper configuration to JSON.
 
         Returns:
-            str: JSON string representing the configuration.
+            json_string (str): JSON encoding of ``self.config``.
         """
         return json.dumps(self.config)
 
     @classmethod
     def from_json(cls, json_env_spec):
-        """Create a EnvPool wrapper instance from a JSON string.
+        """Create an EnvPool wrapper instance from a JSON string.
 
         Args:
-            json_env_spec (str): JSON string representing the configuration.
+            json_env_spec (str): JSON string with a nested ``config`` object of
+                constructor kwargs.
 
         Returns:
-            EnvPoolWrapper: A new EnvPool wrapper instance.
+            wrapper (EnvPoolWrapper): A new EnvPool wrapper instance.
+
+        Raises:
+            ValueError: If construction from the parsed config fails.
         """
         config = json.loads(json_env_spec)
         config = config['config']
@@ -1636,10 +1825,15 @@ _NEXT_STEP_ENV_CLS = None # cached after first build
 
 def _get_next_step_env_cls():
     """Lazily build the NextStep ManagerBasedRLEnv subclass.
+
     Deferred until after the Omniverse app is launched, because importing
     ``isaaclab.envs`` (ManagerBasedRLEnv -> mdp -> controllers) requires a
     running Kit app. Keeping this out of module scope means non-Isaac runs
     never import or boot Isaac Sim.
+
+    Returns:
+        cls (type): Cached ``NextStepManagerBasedRLEnv`` subclass of
+            Isaac Lab ``ManagerBasedRLEnv``.
     """
     global _NEXT_STEP_ENV_CLS
     if _NEXT_STEP_ENV_CLS is not None:
@@ -1693,23 +1887,36 @@ def _get_next_step_env_cls():
 
     
 class IsaacLabAdapter(VectorEnv):
-    """Adapts an Isaac Lab ``ManagerBasedRLEnv`` to the gymnasium ``VectorWrapper``
-    chain (e.g. :class:`VectorNStepReward`), which requires a ``VectorEnv``.
+    """Adapts Isaac Lab ``ManagerBasedRLEnv`` to the gymnasium ``VectorEnv`` API.
 
-    ``ManagerBasedRLEnv`` is vectorized but deliberately does *not* inherit from
-    ``gymnasium.vector.VectorEnv``. It does already expose ``num_envs`` and
-    goal-conditioned ``Dict`` observation spaces (one key per observation group),
-    so this adapter just forwards ``reset``/``step`` and the spaces.
+    Required by the gymnasium ``VectorWrapper`` chain (for example
+    ``VectorNStepReward``). ``ManagerBasedRLEnv`` is vectorized but deliberately
+    does *not* inherit from ``gymnasium.vector.VectorEnv``. It already exposes
+    ``num_envs`` and goal-conditioned ``Dict`` observation spaces (one key per
+    observation group), so this adapter forwards ``reset``/``step`` and the
+    spaces.
 
     It also supplies the goal reward used by Hindsight Experience Replay. Isaac
     Lab manager-based envs compute rewards through their ``RewardManager`` and
     expose no goal-conditioned reward function, so HER (which resolves
-    ``compute_reward`` via :meth:`EnvWrapper.get_base_env`) needs one here. The
+    ``compute_reward`` via ``EnvWrapper.get_base_env``) needs one here. The
     online ``RewardManager`` term should match this sparse reward so collected
     and relabeled transitions share the same scale.
     """
 
-    def __init__(self, env, distance_threshold: float = 0.05):
+    def __init__(self, env, distance_threshold: float | None = None):
+        """Store the Isaac Lab env and the sparse-goal distance threshold.
+
+        Args:
+            env (Any): Isaac Lab ``ManagerBasedRLEnv`` (or NextStep subclass)
+                to adapt.
+            distance_threshold: Max L2 distance for a successful goal in
+                ``compute_reward``. ``None`` leaves the sparse goal reward
+                unconfigured, which makes ``compute_reward`` raise. HER
+                relabeling recomputes rewards through that call, so it cannot
+                run against this adapter without a real threshold; it fails on
+                the first relabeled episode rather than at construction.
+        """
         self._env = env
         self.num_envs = env.num_envs
         self.single_observation_space = env.single_observation_space
@@ -1719,28 +1926,90 @@ class IsaacLabAdapter(VectorEnv):
         self.distance_threshold = distance_threshold
 
     def reset(self, *, seed=None, options=None):
+        """Reset the Isaac Lab env, forwarding ``seed`` only.
+
+        Args:
+            seed (Any): Seed forwarded to ``env.reset``.
+            options (Any): Accepted for VectorEnv API compatibility; unused.
+
+        Returns:
+            reset_result (Any): Return value of the underlying ``env.reset``.
+        """
         return self._env.reset(seed=seed)
 
     def step(self, action):
+        """Step the Isaac Lab env with the given action batch.
+
+        Args:
+            action (Any): Action batch accepted by the underlying env.
+
+        Returns:
+            step_result (Any): Return value of the underlying ``env.step``.
+        """
         return self._env.step(action)
 
     def compute_reward(self, achieved_goal, desired_goal, info=None):
-        """Sparse goal reward: 0 if within ``distance_threshold`` else -1 (batched)."""
+        """Sparse goal reward: 0 if within ``distance_threshold`` else -1 (batched).
+
+        Args:
+            achieved_goal (Any): Achieved goal array, shape ``(..., goal_dim)``.
+            desired_goal (Any): Desired goal array, same trailing dim as
+                ``achieved_goal``.
+            info (Any): Unused; accepted for HER / gymnasium reward callables.
+
+        Returns:
+            reward (numpy.ndarray): Per-env sparse rewards as float32.
+
+        Raises:
+            ValueError: If ``distance_threshold`` is ``None``, i.e. never set
+                via the ``distance_threshold`` argument to ``IsaacSimWrapper``
+                / ``IsaacLabAdapter`` (``env.config.distance_threshold`` in a
+                YAML config).
+        """
+        if self.distance_threshold is None:
+            raise ValueError(
+                "IsaacLabAdapter.compute_reward requires a numeric distance_threshold, "
+                "but none was configured (it is None). Set the distance_threshold "
+                "argument passed to IsaacSimWrapper / IsaacLabAdapter -- in a YAML "
+                "config this is env.config.distance_threshold."
+            )
         d = np.linalg.norm(np.asarray(achieved_goal) - np.asarray(desired_goal), axis=-1)
         return -(d > self.distance_threshold).astype(np.float32)
 
     def render(self, **kwargs):
+        """Forward render kwargs to the Isaac Lab env.
+
+        Args:
+            **kwargs (Any): Keyword arguments passed to ``env.render``.
+
+        Returns:
+            frame (Any): Render output from the underlying env.
+        """
         return self._env.render(**kwargs)
 
     def close(self):
+        """Close the underlying Isaac Lab environment."""
         self._env.close()
 
     @property
     def spec(self):
+        """Return the Isaac Lab env ``spec`` attribute if present.
+
+        Returns:
+            spec (Any): Env spec object, or ``None`` when absent.
+        """
         return getattr(self._env, 'spec', None)
 
 
 class IsaacSimWrapper(EnvWrapper):
+    """Wrapper for Isaac Lab / Isaac Sim manager-based RL environments.
+
+    Launches the Kit app when needed, builds a NextStep-mode
+    ``ManagerBasedRLEnv`` from a ``module:Class`` config id, adapts it through
+    ``IsaacLabAdapter``, and applies registered vector wrappers. Supports reset,
+    step, serialization, and optional camera-enabled rendering.
+    """
+
     def __init__(
         self,
         cfg:str,
@@ -1754,12 +2023,26 @@ class IsaacSimWrapper(EnvWrapper):
         distance_threshold:float|None=None,
         enable_cameras:bool=False,
     ):
-        """Wrapper for Isaac Sim environments.
-
-        This wrapper supports initialization, resetting, stepping, rendering,
-        and JSON-based serialization of Isaac Sim environments.
+        """Build an Isaac Sim env, adapt it, and optionally bound the action space.
 
         Args:
+            cfg: Isaac Lab env config id as ``module.path:ConfigClassName``.
+            num_envs: Number of parallel environments; written to
+                ``cfg.scene.num_envs``.
+            obs_key: Dict-observation key for the agent state (default
+                ``"policy"``).
+            goal_key: Dict key for the desired goal, or ``None`` if unused.
+            ach_goal_key: Dict key for the achieved goal, or ``None`` if unused.
+            wrappers: Optional list of wrapper specs from ``WRAPPER_REGISTRY``,
+                each a dict with ``type`` and optional ``params``.
+            render_mode: Kit launch mode; ``"headless"`` runs without a display
+                window, any other value launches headed.
+            seed: RNG seed stored on the env config; when ``None``, a random
+                31-bit seed is drawn by the base class.
+            distance_threshold: Sparse-goal success radius forwarded to
+                ``IsaacLabAdapter``. ``None`` means the sparse goal reward is
+                unconfigured; set a real value for HER runs on
+                goal-conditioned Isaac envs.
             enable_cameras: Launch the Kit app with camera/tiled rendering
                 enabled. Required for envs with camera sensors (multi-modal
                 image observations); leave False for state-only envs (faster).
@@ -1782,7 +2065,19 @@ class IsaacSimWrapper(EnvWrapper):
 
 
     def _initialize_env(self):
-        """Initialize the Isaac Sim environment with unique seeds for each environment.
+        """Create the Isaac Lab env, adapt it, and apply registered wrappers.
+
+        Reuses an already-running Kit app when present; otherwise launches via
+        ``AppLauncher``. Instantiates the config class from ``self.env_id``,
+        builds ``NextStepManagerBasedRLEnv``, wraps it in ``IsaacLabAdapter``,
+        then applies ``WRAPPER_REGISTRY`` entries from ``self.wrappers``.
+
+        Returns:
+            env (Any): Adapted Isaac Lab environment, possibly further wrapped.
+
+        Raises:
+            ModuleNotFoundError: If Isaac Lab / Isaac Sim packages cannot be
+                imported and no Kit app is already running.
         """
         import importlib
 
@@ -1833,13 +2128,14 @@ class IsaacSimWrapper(EnvWrapper):
 
         
     def format_actions(self, actions: np.ndarray | T.Tensor):
-        """Format actions for Isaac Sim environment.
-        
+        """Convert NumPy actions to a float32 tensor; pass tensors through.
+
         Args:
-            actions: Actions to format.
-            
+            actions: Action array or tensor to format.
+
         Returns:
-            Any: Formatted actions.
+            formatted (torch.Tensor | numpy.ndarray): Float32 tensor when
+                ``actions`` was a NumPy array; otherwise ``actions`` unchanged.
         """
         if isinstance(actions, np.ndarray):
             return T.tensor(actions, dtype=T.float32)
@@ -1847,21 +2143,52 @@ class IsaacSimWrapper(EnvWrapper):
 
     @property
     def observation_space(self):
+        """Get the observation space of the environment.
+
+        Returns:
+            space (gymnasium.spaces.Space): The vector observation space.
+        """
         return self.env.observation_space
     
     @property
     def action_space(self):
+        """Get the action space of the environment.
+
+        Returns:
+            space (gymnasium.spaces.Space): The vector action space.
+        """
         return self.env.action_space
 
     @property
     def single_action_space(self):
+        """Get the single-env action space for vectorized environments.
+
+        Returns:
+            space (gymnasium.spaces.Space): Action space of one sub-environment.
+        """
         return self.env.single_action_space
 
     @property
     def single_observation_space(self):
+        """Get the single-env observation space for vectorized environments.
+
+        Returns:
+            space (gymnasium.spaces.Space): Observation space of one
+                sub-environment.
+        """
         return self.env.single_observation_space
     
     def reset(self, seed:int|None=None):
+        """Reset the vector env and return an ``Observation``.
+
+        Args:
+            seed: Seed for ``env.reset`` and the action space; defaults to
+                ``self.seed`` when omitted.
+
+        Returns:
+            observation (Observation): Initial states, optional goals, and
+                infos; may attach ``n_step_trajectory`` when present in infos.
+        """
         if seed is not None:
             effective_seed = seed
         else:
@@ -1884,10 +2211,20 @@ class IsaacSimWrapper(EnvWrapper):
         return observation
 
     def close(self):
+        """Close the underlying env and the Kit application."""
         self.env.close()
         self.app.close()
 
     def step(self, action)->Observation:
+        """Step the vector env and pack the transition into an ``Observation``.
+
+        Args:
+            action (Any): Action batch accepted by the underlying vector env.
+
+        Returns:
+            Observation with states, rewards, terminations, truncations, and
+                infos; may attach ``n_step_trajectory`` when present in infos.
+        """
         states, rewards, terminations, truncations, infos = self.env.step(action)
 
         # Separate observations, goals, and achieved goals 
@@ -1909,6 +2246,13 @@ class IsaacSimWrapper(EnvWrapper):
 
     @property
     def config(self):
+        """Build a JSON-serializable config with type ``isaacsim``.
+
+        Returns:
+            config (dict): Parent config with ``type`` set to ``"isaacsim"`` and
+                ``distance_threshold`` / ``enable_cameras`` under nested
+                ``config``.
+        """
         config = super().config
         config['type'] = "isaacsim"
         config['config']['distance_threshold'] = self.distance_threshold
@@ -1928,10 +2272,27 @@ class IsaacSimWrapper(EnvWrapper):
         # }
 
     def to_json(self):
+        """Serialize the wrapper configuration to JSON.
+
+        Returns:
+            json_string (str): JSON encoding of ``self.config``.
+        """
         return json.dumps(self.config)
 
     @classmethod
     def from_json(cls, json_string):
+        """Create an Isaac Sim wrapper instance from a JSON string.
+
+        Args:
+            json_string (str): JSON string with a nested ``config`` object of
+                constructor kwargs.
+
+        Returns:
+            wrapper (IsaacSimWrapper): A new Isaac Sim wrapper instance.
+
+        Raises:
+            ValueError: If construction from the parsed config fails.
+        """
         config = json.loads(json_string)
         config = config['config']
         try:
@@ -1941,7 +2302,19 @@ class IsaacSimWrapper(EnvWrapper):
 
 
 class CustomJSONEncoder(json.JSONEncoder):
+    """JSON encoder for Gymnasium specs and ``GymnasiumWrapper`` configs."""
+
     def default(self, obj):
+        """Serialize known env/wrapper objects; defer unknowns to the base.
+
+        Args:
+            obj (Any): Object ``json.dumps`` could not encode natively.
+
+        Returns:
+            value (dict | str): JSON-serializable form for ``EnvSpec``,
+                ``WrapperSpec``, ``GymnasiumWrapper``, or callables; otherwise
+                the base encoder raises ``TypeError``.
+        """
         if isinstance(obj, EnvSpec):
             return serialize_env_spec(obj)
         if isinstance(obj, WrapperSpec):
@@ -1959,6 +2332,15 @@ class CustomJSONEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 def wrapper_to_dict(wrapper_spec):
+    """Flatten a ``WrapperSpec`` (or stringify a non-spec) for JSON.
+
+    Args:
+        wrapper_spec (Any): Gymnasium ``WrapperSpec``, or any other object.
+
+    Returns:
+        result (dict | str): Attribute dict for a ``WrapperSpec`` (callables
+            stringified), else ``str(wrapper_spec)``.
+    """
     if isinstance(wrapper_spec, WrapperSpec):
         # Convert WrapperSpec to a dictionary dynamically
         wrapper_dict = {}
@@ -1971,7 +2353,15 @@ def wrapper_to_dict(wrapper_spec):
     return str(wrapper_spec)
 
 def serialize_env_spec(env_spec):
-    """Extracts and serializes the relevant parts of the environment specification."""
+    """Extract a JSON-friendly dict of common ``EnvSpec`` fields.
+
+    Args:
+        env_spec (EnvSpec): Gymnasium environment specification.
+
+    Returns:
+        spec_dict (dict): Common ``EnvSpec`` fields; ``additional_wrappers`` is
+            always an empty list.
+    """
     env_spec_dict = {
         "id": env_spec.id,
         "entry_point": env_spec.entry_point,

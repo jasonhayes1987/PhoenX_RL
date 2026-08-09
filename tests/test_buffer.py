@@ -1199,6 +1199,133 @@ class TestHindsightValidation:
 
 
 # =============================================================================
+# HER — distance_threshold=None means "not configured" (Isaac footgun fix)
+# =============================================================================
+class _FakeThresholdHolder:
+    """Minimal object exposing a settable ``distance_threshold`` attribute."""
+
+    def __init__(self, threshold):
+        self.distance_threshold = threshold
+
+
+class _FakeGetBaseEnvWrapper:
+    """Duck-typed env stand-in whose ``get_base_env()`` exposes
+    ``distance_threshold`` directly, as Isaac Sim envs do."""
+
+    def __init__(self, threshold):
+        self._base = _FakeThresholdHolder(threshold)
+
+    def get_base_env(self):
+        return self._base
+
+
+class _FakeSubEnvVecLayer:
+    def __init__(self, threshold):
+        self.envs = [_FakeThresholdHolder(threshold)]
+
+
+class _FakeSubEnvWalkWrapper:
+    """Duck-typed env stand-in with no ``get_base_env``, forcing the resolver
+    to fall through to the ``env.env.envs[0]`` sub-env walk (SyncVectorEnv-style)."""
+
+    def __init__(self, threshold):
+        self.env = _FakeSubEnvVecLayer(threshold)
+
+
+class TestResolveDistanceThreshold:
+    """``HindsightRelabeler._resolve_distance_threshold`` is a @staticmethod;
+    call it directly against minimal duck-typed envs to pin both lookup
+    branches without booting a real Gymnasium/Isaac env."""
+
+    @pytest.mark.parametrize("threshold", [None, 0.2])
+    def test_get_base_env_branch(self, threshold):
+        result = HindsightRelabeler._resolve_distance_threshold(
+            _FakeGetBaseEnvWrapper(threshold)
+        )
+        assert result == threshold
+        if threshold is not None:
+            assert isinstance(result, float)
+
+    @pytest.mark.parametrize("threshold", [None, 0.2])
+    def test_sub_env_walk_branch(self, threshold):
+        result = HindsightRelabeler._resolve_distance_threshold(
+            _FakeSubEnvWalkWrapper(threshold)
+        )
+        assert result == threshold
+        if threshold is not None:
+            assert isinstance(result, float)
+
+
+class _FakeGoalEnvCore:
+    """Base env exposing ``distance_threshold`` and a ``compute_reward`` that
+    always reports success (reward 0) regardless of actual distance.
+
+    The constant reward lets a test tell whether
+    ``HindsightRelabeler._is_achieved`` used the reward-sign fallback (would
+    say "achieved" even for a far-apart goal) or the distance comparison
+    (would correctly say "not achieved" for a far-apart goal).
+    """
+
+    def __init__(self, distance_threshold):
+        self.distance_threshold = distance_threshold
+
+    def compute_reward(self, achieved_goal, desired_goal, info=None):
+        batch = np.asarray(achieved_goal).shape[0]
+        return np.zeros(batch, dtype=np.float32)
+
+
+class _FakeGoalEnvWrapper:
+    """Duck-typed ``EnvWrapper`` stand-in whose ``get_base_env()`` exposes
+    both ``compute_reward`` and ``distance_threshold`` directly."""
+
+    def __init__(self, distance_threshold):
+        self._base = _FakeGoalEnvCore(distance_threshold)
+
+    def get_base_env(self):
+        return self._base
+
+
+class TestIsAchievedThresholdFallback:
+    """``_is_achieved``'s reward-sign fallback is pre-existing, but was
+    unreachable for an env whose ``distance_threshold`` attribute was present
+    and ``None``: ``_resolve_distance_threshold`` raised in ``float(None)``
+    during ``HindsightRelabeler.__init__``, before ``_is_achieved`` was ever
+    called. These pin that construction now succeeds and that the fallback
+    is actually taken (not just that nothing crashes)."""
+
+    def _relabeler(self, threshold):
+        return HindsightRelabeler(
+            _FakeGoalEnvWrapper(threshold), strategy="final",
+            output_format="n_step", N=1, device=DEVICE,
+        )
+
+    def test_none_threshold_construction_succeeds(self):
+        """Old code crashed in float(None) inside __init__; must not raise now."""
+        rl = self._relabeler(None)
+        assert rl._distance_threshold is None
+
+    def test_none_threshold_uses_reward_sign_fallback(self):
+        rl = self._relabeler(None)
+        near = T.zeros(2, 3, device=DEVICE)
+        far = near.clone()
+        far[:, 0] = 1.0
+        # compute_reward always reports success -> fallback says "achieved"
+        # even for the far-apart goal.
+        assert bool(rl._is_achieved(far, near).all())
+
+    def test_numeric_threshold_uses_distance_comparison(self):
+        rl = self._relabeler(0.05)
+        assert rl._distance_threshold == pytest.approx(0.05)
+        near = T.zeros(2, 3, device=DEVICE)
+        far = near.clone()
+        far[:, 0] = 1.0
+        # Distance comparison correctly rejects the far-apart goal even
+        # though the (unused here) compute_reward stub always reports success.
+        assert not bool(rl._is_achieved(far, near).any())
+        assert bool(rl._is_achieved(near, near).all())
+
+
+# =============================================================================
 # Goal-aware storage (Dict observation envs)
 # =============================================================================
 class TestGoalBuffers:

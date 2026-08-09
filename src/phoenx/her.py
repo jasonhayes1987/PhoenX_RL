@@ -596,7 +596,8 @@ class HindsightRelabeler:
         except Exception:
             base = None
         if base is not None and hasattr(base, "distance_threshold"):
-            return float(base.distance_threshold)
+            value = base.distance_threshold
+            return None if value is None else float(value)
         cur = getattr(env, "env", None)
         while cur is not None:
             sub_envs = getattr(cur, "envs", None)
@@ -604,7 +605,8 @@ class HindsightRelabeler:
                 sub = sub_envs[0]
                 core = sub.unwrapped if isinstance(sub, gym.Env) else sub
                 if hasattr(core, "distance_threshold"):
-                    return float(core.distance_threshold)
+                    value = core.distance_threshold
+                    return None if value is None else float(value)
                 break
             cur = getattr(cur, "env", None)
         return None
