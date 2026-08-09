@@ -25,6 +25,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- Several blocks of commented-out dead code are deleted from
+  `src/phoenx/rl_agents.py`, including the four commented lines in
+  `Agent._setup_save_dir` that described a save-directory-name-appending
+  behavior the method has never actually performed. Purely a removal of inert
+  comments; no live statement was removed.
 - Four dead commented lines in `Trainer.set_normalizers` that would have
   propagated normalizer mode into the agent's intrinsic-motivation module are
   deleted. They were inert for two independent reasons: `RewardNorm.normalize`
@@ -49,14 +54,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `phoenx.distributions`, `phoenx.builder`, `phoenx.her`, `phoenx.trainer`,
   `phoenx.rl_callbacks`, `phoenx.normalizer`, `phoenx.buffer`,
   `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.intrinsic_motivation`,
-  `phoenx.env_wrapper`, and `phoenx.models` (docstring-and-docs-completion
-  plan). `her.py`'s module docstring also lost the `===`
-  banner rows that mkdocstrings rendered as literal `=` characters on the HER
-  page, and two of its usage examples were simply wrong: buffers take
-  `hindsight=`, not `relabeler=`, and `strategy='future'` samples `[t, T_ep)`
-  or `(t, T_ep)` depending on `future_lo`. The `intrinsic_motivation` module
-  docstring was rewritten: it previously opened with its own filename as the
-  summary line and used box-drawing characters to sketch the class hierarchy.
+  `phoenx.env_wrapper`, `phoenx.models`, and `phoenx.rl_agents`
+  (docstring-and-docs-completion plan). `rl_agents` was the last of the 15 nav
+  modules: `ruff --select D` on it went from 42 to zero across three class-group
+  passes, and `mkdocs build --strict` now completes with zero griffe warnings
+  for the first time in this plan (it was at 2, both from this file, and 53 when
+  the plan started). Across the three passes the prose was corrected to match
+  the code: `_setup_save_dir` no longer claims to append the agent name (it
+  returns the requested path unchanged); on-policy class docs stopped referring to a
+  nonexistent `curiosity` field and legacy `Stochastic*Policy` / `ValueModel`
+  names in favor of `intrinsic_motivation` and the current head classes; and the
+  off-policy agents document critic-owned shared body + detached policy features
+  rather than the on-policy combined backward. `build_agent` gained a `Raises:`
+  section covering the `ValueError` for an unknown agent type and the `KeyError`
+  for a missing `"type"` key; three class docstrings switched
+  `roots -> trunk -> branches` to the Unicode arrow the rest of the package uses;
+  and the `Returns:` blocks of `Reinforce.act` and `ActorCritic.act` now
+  enumerate which `Action` fields they populate. `her.py`'s module docstring
+  also lost the `===` banner rows that mkdocstrings rendered as literal `=`
+  characters on the HER page, and two of its usage examples were simply wrong:
+  buffers take `hindsight=`, not `relabeler=`, and `strategy='future'` samples
+  `[t, T_ep)` or `(t, T_ep)` depending on `future_lo`. The
+  `intrinsic_motivation` module docstring was rewritten: it previously opened
+  with its own filename as the summary line and used box-drawing characters to
+  sketch the class hierarchy.
 - Docstring cross-references in those modules now use Markdown and
   mkdocs-autorefs (`[load_config][phoenx.builder.load_config]`) rather than
   Sphinx roles. mkdocstrings renders docstring bodies as Markdown, so
@@ -111,6 +132,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- `Reinforce.act` and `ActorCritic.act` returned a bare action tensor, while
+  `Trainer._step` does `self.env.step(action.actions)` (`src/phoenx/trainer.py`)
+  and hands the same object to `nstep_wrapper.set_action(action)`, and
+  `Trainer.get_action` is annotated `-> Action`. A tensor has no `.actions`, so
+  any training run with either agent raised `AttributeError` — neither agent
+  could run through the `Trainer` at all. Both now return the `Action`
+  dataclass from `phoenx.env_wrapper`, matching `PPO`, `DDPG`, `TD3`, and
+  `SAC`. `Reinforce.act` populates `actions` and `log_probs` (`raw_actions` and
+  `hidden` stay `None`); `ActorCritic.act` also populates `raw_actions` on its
+  continuous branch. `Agent.act`'s abstract signature changed from `-> T.Tensor`
+  to `-> Action` to match. This is API-visible for anyone calling `agent.act()`
+  directly: the return is no longer a tensor, and callers that wrote
+  `action = agent.act(obs)` then `env.step(action)` must now write
+  `env.step(action.actions)`.
+- The same two `act()` methods leaked the autograd graph into replay buffers.
+  Their `'train'` branch computed `log_probs` outside any `torch.no_grad()`,
+  and the trainer writes that value straight into persistent buffer storage
+  without detaching —
+  `RolloutBuffer.add` does `self.log_probs[idx, env_ids] = log_probs.to(...)`
+  at `src/phoenx/buffer.py`. The buffer tensor consequently became
+  `requires_grad=True` with an `IndexPutBackward0` chain that grew with every
+  environment step and was never freed, since `RolloutBuffer.sample()` does not
+  zero its storage — unbounded memory growth over a run. Both methods now wrap
+  their entire body in `with T.no_grad():`, exactly as `PPO.act` already did;
+  `DDPG`, `TD3`, and `SAC` reach the same result by guarding each forward
+  individually. The `'test'` branch of both methods was already guarded, so
+  only the training path was affected. Numerical results are unchanged:
+  neither `Reinforce.learn` nor `ActorCritic.learn` reads the stored
+  `log_probs` or `raw_actions` — both recompute log-probs from a fresh forward
+  pass over the sampled batch. The leak was only reachable once the
+  `Action`-return fix above made these agents runnable through the `Trainer`.
+- `recurrent_burn_in` did not survive a save/reload cycle for `DDPG` and
+  `TD3`. Both accept `recurrent_burn_in: int = 0`, store it, validate it
+  against `N`, and consume it in `learn` as
+  `anchor = min(self.recurrent_burn_in, n_step_length - 1)`, but neither
+  `get_config` wrote it into its payload, so a reloaded agent silently
+  reverted to 0 and trained with a different burn-in than the one it was
+  configured with. Both `get_config` methods now emit it next to `"N"`.
+  `Agent.from_config` ends with `return cls(**cfg)` and no subclass overrides
+  it, so the value reaches the constructor by name. `SAC` has no such
+  parameter and is unaffected.
+- Covering the three `rl_agents` fixes above, `tests/test_agents_composite.py`
+  gained 14 tests and repaired one stale test. They pin the `Action` return
+  contract for both agents in both contexts, the invalid-context `ValueError`,
+  the detached-output guard (including one test that drives an `act()` result
+  through a real `RolloutBuffer.add` and asserts the buffer storage stays
+  `requires_grad=False`), and the `recurrent_burn_in` round trip through
+  `build_agent` for both `DDPG` and `TD3`. The fast subset went from
+  `479 passed, 23 deselected` to `493 passed, 23 deselected`.
 - Intrinsic-motivation `reward_scheduler` progress was never restored on
   reload. All four registered classes (`ICM`, `RND`, `EpisodicNovelty`,
   `CompositeIntrinsicMotivation`) persisted the schedule through `get_config()`

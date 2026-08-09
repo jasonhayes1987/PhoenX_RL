@@ -1,5 +1,10 @@
-"""This module holds the Agent base class and all RL agents as subclasses  It also
-provides helper functions for loading any subclass of type Agent.
+"""Reinforcement-learning agents and the factory that rebuilds them from config.
+
+``Agent`` is the abstract base: composite-model plumbing (roots → trunk →
+branches), serialization, and recurrent rollout state. Concrete algorithms
+(``Reinforce``, ``ActorCritic``, ``PPO``, ``DDPG``, ``TD3``, ``SAC``) subclass
+it. ``build_agent`` reconstructs a fresh-tensor agent from a ``{"type",
+"config"}`` mapping via ``AGENT_REGISTRY``.
 """
 
 # imports
@@ -73,6 +78,15 @@ class Agent(ABC):
                  name: str | None = None,
                  **kwargs
     ):
+        """Initialize shared agent bookkeeping and save-path / device setup.
+
+        Args:
+            save_dir: Directory used as the agent's default save root.
+            device: Torch device; ``None`` resolves via ``get_device``.
+            log_level: Logger level name (uppercased before use).
+            name: Logger / display name; defaults to the class name.
+            **kwargs (Any): Extra attributes set on the instance via ``setattr``.
+        """
         self.name = name if name else self.__class__.__name__
         self.logger = get_logger(self.name, level=log_level.upper())
         self.kwargs = kwargs
@@ -80,8 +94,6 @@ class Agent(ABC):
             self.save_dir = self._setup_save_dir(save_dir)
             self.device = get_device(device)
 
-            # Set internal attributes
-            # self._distributed = False
 
             self._diag_freq = None
             self._learn_count = 0
@@ -107,45 +119,26 @@ class Agent(ABC):
             self.logger.error(f"Error in Agent init: {e}", exc_info=True)
 
     def _setup_save_dir(self, save_dir: str):
-        """Setup the save directory for the agent.
-        If save_dir doesn't end with the agent's name, append it.
-        
+        """Return the path used as this agent's save directory.
+
+        The base implementation returns ``save_dir`` unchanged.
+
         Args:
-            save_dir (str): Base save directory path
+            save_dir: Requested save directory path.
+
+        Returns:
+            path (str): Save directory path stored on the agent.
         """
-        # agent_name = self.__class__.__name__.lower()
-        # if f"/{agent_name}/" not in save_dir:
-        #     return save_dir + f"/{agent_name}/"
-        # else:
         return save_dir
-
-    # def _step(self, env: EnvWrapper, step: int, states: np.ndarray, num_episodes: int, episode_scores: np.ndarray, completed_episodes: np.ndarray, score_history: deque, learn: bool = True, training: bool = True):
-    #     """Step function for the agent."""
-    #     raise NotImplementedError("Subclasses must implement _step.")
-
-    # @abstractmethod
-    # def _distributed_learn(self, *args, **kwargs):
-    #     """Handle distributed learning for both on-policy and off-policy agents."""
-    #     raise NotImplementedError("Subclasses must implement _distributed_learn.")
-    
-    # @abstractmethod
-    # def get_parameters(self):
-    #     """Return a dictionary of model parameters: {model_name: params}."""
-    #     raise NotImplementedError("Subclasses must implement get_parameters.")
-
-    # @abstractmethod
-    # def apply_parameters(self, params):
-    #     """Apply the provided parameters to the agent's models."""
-    #     raise NotImplementedError("Subclasses must implement apply_parameters.")
 
     def clone(self, device: Optional[str | T.device] = None) -> 'Agent':
         """Create a deep copy of the agent, optionally moving it to a new device.
-        
+
         Args:
-            device (str or T.device, optional): Target device for the cloned agent. If None, uses the current device.
-        
+            device: Target device for the clone; ``None`` keeps the current device.
+
         Returns:
-            Agent: A cloned instance of the agent with all components correctly copied and moved.
+            Cloned agent with components copied and, when requested, moved.
         """
         # Perform a deep copy of the agent
         clone = copy.deepcopy(self)
@@ -200,6 +193,16 @@ class Agent(ABC):
         return out
 
     def get_config(self):
+        """Return the architecture description ``{"type", "config"}``.
+
+        The inner ``config`` holds base fields (``save_dir``, ``name``,
+        ``device``); subclasses extend it with algorithm-specific entries.
+
+        Returns:
+            payload (dict): Mapping with ``type`` (class name) and ``config``
+                (constructor kwargs suitable for ``from_config`` after env
+                injection).
+        """
         return {
             "type": self.__class__.__name__,
             "config":{
@@ -216,24 +219,33 @@ class Agent(ABC):
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
         **kwargs: Any
-    ) -> T.Tensor:
-        """Returns an action given a state."""
-        raise NotImplementedError("Subclasses must implement get_action.")
+    ) -> Action:
+        """Select an action for the given observation(s).
 
-    # @abstractmethod
-    # def train(self, num_episodes, render: bool = False, render_freq: int = None, save_dir=None):
-    #     """Trains the model for 'episodes' number of episodes."""
-    #     raise NotImplementedError("Subclasses must implement train.")
-    
+        Args:
+            states: Current observation(s).
+            goals: Optional goal vector(s) for goal-conditioned envs.
+            context: Call context, ``'train'`` or ``'test'``.
+            **kwargs: Algorithm-specific extras forwarded by subclasses.
+
+        Returns:
+            Action for the environment step.
+        """
+        raise NotImplementedError("Subclasses must implement act.")
+
     @abstractmethod
     def learn(self, step:int, sample:dict, **kwargs: Any)->dict:
-        """Updates the model."""
-        raise NotImplementedError("Subclasses must implement learn.")
+        """Apply one learning update from a sampled batch.
 
-    # @abstractmethod
-    # def test(self, num_episodes=None, render=False, render_freq=10):
-    #     """Runs a test over 'num_episodes'."""
-    #     raise NotImplementedError("Subclasses must implement test.")
+        Args:
+            step: Global training step (used by schedules and logging).
+            sample: Batch dict from the replay or rollout buffer.
+            **kwargs: Algorithm-specific extras forwarded by subclasses.
+
+        Returns:
+            Metrics dict for logging (loss terms and related scalars).
+        """
+        raise NotImplementedError("Subclasses must implement learn.")
 
     # ------------------------------------------------------------------ #
     # Composite-model plumbing (roots -> trunk -> branches architecture)
@@ -289,18 +301,22 @@ class Agent(ABC):
 
     @property
     def policy(self):
+        """Policy branch head, or ``None`` if that role is absent."""
         return self._branch('policy')
 
     @property
     def value(self):
+        """Value branch head, or ``None`` if that role is absent."""
         return self._branch('value')
 
     @property
     def critic(self):
+        """Primary critic branch head, or ``None`` if that role is absent."""
         return self._branch('critic')
 
     @property
     def critic_b(self):
+        """Secondary critic branch head, or ``None`` if that role is absent."""
         return self._branch('critic_b')
 
     # ------------------------------------------------------------------ #
@@ -348,9 +364,10 @@ class Agent(ABC):
         return outputs
 
     def _context_forward(self, states, goals, branches, dones):
-        """Rolling-window inference for causal-transformer trunks: keep the
-        last ``context_length`` observations per env and run the heads on the
-        window's final position.
+        """Run rolling-window inference for causal-transformer trunks.
+
+        Keeps the last ``context_length`` observations per env and runs the
+        heads on the window's final position.
         """
         from phoenx.obs_utils import tree_detach_clone, tree_stack
         window = int(getattr(self, 'context_length', 16))
@@ -378,8 +395,9 @@ class Agent(ABC):
             obs_window, goal=goals_window, branches=branches, start_mask=start_mask)
 
     def _advance_rollout_window(self) -> None:
-        """Mark the current hidden as the next learn window's initial hidden
-        (called at the end of an on-policy learn: the rollout buffer resets).
+        """Snapshot the live hidden as the next learn window's start state.
+
+        Called at the end of an on-policy learn when the rollout buffer resets.
         """
         if self.model.is_temporal:
             self._rollout_start_hidden = (
@@ -401,14 +419,22 @@ class Agent(ABC):
         Every sub-component is reconstructed and the single live ``env`` is
         injected into all models. Tensor state (weights, optimizers, stats,
         entropy temperature) and intrinsic-motivation modules are restored
-        separately by :meth:`load_state`.
+        separately by [load_state][phoenx.rl_agents.Agent.load_state].
 
-        Accepts BOTH schemas:
-            - new: a ``model`` entry (ModularModel config) that is decomposed
-              into ``roots`` / ``trunk`` / per-role branch heads;
-            - legacy: per-model entries (``policy`` / ``value`` / ``critic`` /
-              ``critic_b``) holding legacy Model or Head configs, adapted into
-              heads (branches-only composite).
+        Accepts both schemas:
+
+        - new: a ``model`` entry (ModularModel config) that is decomposed into
+          ``roots`` / ``trunk`` / per-role branch heads;
+        - legacy: per-model entries (``policy`` / ``value`` / ``critic`` /
+          ``critic_b``) holding legacy Model or Head configs, adapted into
+          heads (branches-only composite).
+
+        Args:
+            config: Inner agent config (the ``config`` field of ``get_config``).
+            env: Live environment injected into every rebuilt model.
+
+        Returns:
+            New agent instance with fresh tensors.
         """
         cfg = dict(config)
         if cfg.get("model") is not None:
@@ -483,10 +509,22 @@ class Agent(ABC):
 
     def _load_legacy_checkpoint(self, model: "ModularModel", attr_name: str,
                                 save_dir: Path, load_weights: bool) -> bool:
-        """Shim: map legacy per-model checkpoint files (``policy.pt``,
-        ``value.pt``, ``critic.pt``, ``critic_b.pt`` and their ``target_*``
-        variants) onto a composite ``ModularModel``. Returns True if any
-        legacy file was found and applied.
+        """Map legacy per-model checkpoint files onto a composite ``ModularModel``.
+
+        Looks for ``policy.pt``, ``value.pt``, ``critic.pt``, ``critic_b.pt``
+        and their ``target_*`` variants under ``save_dir``.
+
+        Args:
+            model: Composite model whose branch roles are loaded.
+            attr_name: Model attribute being restored (``model`` /
+                ``target_model``); a name starting with ``target`` selects the
+                ``target_*`` file prefix.
+            save_dir: Checkpoint directory.
+            load_weights: When ``False``, skip weight tensors and still restore
+                optimizer / schedule state where present.
+
+        Returns:
+            found (bool): ``True`` if any legacy file was found and applied.
         """
         prefix = "target_" if attr_name.startswith("target") else ""
         found = False
@@ -529,10 +567,17 @@ class Agent(ABC):
         return found
 
     def load_state(self, save_dir: str | Path, load_weights: bool = True) -> None:
-        """Restore every tensor written by :meth:`save_state` (in place).
+        """Restore every tensor written by ``save_state`` (in place).
 
-        Falls back to the legacy per-model checkpoint layout (``policy.pt`` /
-        ``value.pt`` / ...) when the composite ``model.pt`` is absent.
+        Restores the artifacts produced by
+        [save_state][phoenx.rl_agents.Agent.save_state]. Falls back to the
+        legacy per-model checkpoint layout (``policy.pt`` / ``value.pt`` / ...)
+        when the composite ``model.pt`` is absent.
+
+        Args:
+            save_dir: Checkpoint directory previously passed to ``save_state``.
+            load_weights: When ``False``, skip model weight tensors where the
+                composite loader supports that flag.
         """
         save_dir = Path(save_dir)
 
@@ -572,6 +617,18 @@ class Agent(ABC):
                 kl_adapter.set_state(extra["kl_adapter"])
 
 class Reinforce(Agent):
+    """REINFORCE (Monte Carlo policy gradient) on-policy agent.
+
+    Assembles a composite ``ModularModel`` with a required stochastic discrete
+    policy head and an optional value baseline. Temporal trunks are rejected at
+    construction; use `ActorCritic` or `PPO` for recurrent / causal policies.
+
+    Learning uses Monte Carlo returns via
+    [compute_monte_carlo_returns][phoenx.agent_utils.compute_monte_carlo_returns].
+    Policy and value losses share one combined backward and a coordinated
+    ``model.step()`` (on-policy gradient ownership).
+    """
+
     MODEL_ATTRS = ("model",)
     SCHEDULE_ATTRS = ("entropy_schedule",)
     IM_ATTRS = ()
@@ -599,28 +656,40 @@ class Reinforce(Agent):
         device: str = None,
         **kwargs,
     ):
-        """Reinforce Agent.
+        """Initialize the REINFORCE agent and assemble its composite model.
 
         Args:
             roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
             trunk: Optional shared fusion SubNetwork.
-            policy: The StochasticDiscreteHead branch used for action selection (required).
-            value: Optional ValueHead branch for baseline state-value prediction.
+            policy: Stochastic discrete policy head used for action selection
+                (required).
+            value: Optional value head for a learned baseline; when present,
+                advantages are ``return - value``, otherwise returns weight the
+                policy gradient directly.
             optimizer_params: Model-wide default optimizer spec.
             lr_scheduler: Model-wide default LR scheduler.
-            shared_update: Gradient-ownership rule for shared modules (default 'combined').
-            discount: The discount factor for future rewards.
-            state_normalizer: The normalizer for state inputs.
-            advantage_normalizer: The normalizer for advantage/return inputs.
-            reward_normalizer: The normalizer for reward inputs.
-            entropy_coefficient: The coefficient for entropy regularization.
-            entropy_schedule: The schedule for entropy regularization.
-            auto_entropy_tuning: Whether to automatically tune the entropy coefficient.
-            entropy_lr: The learning rate for the entropy coefficient.
-            target_entropy_scale: The scale for the target entropy.
-            save_dir: The directory to save the model.
-            device: The device to use for computations.
-            kwargs: Additional keyword arguments.
+            shared_update: Gradient-ownership rule for shared modules; defaults
+                to ``'combined'`` via ``DEFAULT_SHARED_UPDATE``.
+            discount: Discount factor for Monte Carlo returns.
+            state_normalizer: Optional observation normalizer applied in
+                ``learn``.
+            advantage_normalizer: Optional normalizer for the policy-weight
+                tensor (advantages or returns).
+            reward_normalizer: Optional reward normalizer applied before return
+                computation.
+            entropy_coefficient: Fixed entropy bonus weight when
+                ``auto_entropy_tuning`` is ``False``.
+            entropy_schedule: Optional multiplier schedule for
+                ``entropy_coefficient`` when auto-tuning is off.
+            auto_entropy_tuning: When ``True``, learn ``log_alpha`` toward a
+                target entropy.
+            entropy_lr: Learning rate for the entropy temperature optimizer.
+            target_entropy_scale: Scale used when building the target entropy
+                (mainly for discrete action spaces).
+            save_dir: Default save directory passed to the base agent.
+            device: Torch device string; ``None`` resolves via ``get_device``.
+            **kwargs (Any): Extra attributes set on the instance via the base
+                ``Agent`` constructor.
         """
         super().__init__(save_dir, device, **kwargs)
         self._check_head('policy', policy, StochasticDiscreteHead)
@@ -661,35 +730,59 @@ class Reinforce(Agent):
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
         **kwargs: Any
-    ) -> T.Tensor:
-        """Select an action based on the current policy.
-        Returns actions that are already scaled to the environment's action space.
+    ) -> Action:
+        """Select an action from the current policy distribution.
+
+        In ``'train'`` context samples from the policy; in ``'test'`` uses the
+        policy mean / mode via ``get_mean_actions``. Forwards optional episode
+        done flags into `_rollout_forward` for recurrent reset (unused for this
+        feedforward-only agent, but accepted for API parity).
 
         Args:
-            states: np.ndarray | T.Tensor: The current states.
-            goals: np.ndarray | T.Tensor | None: The current goals.
-            context: str: The context of the action (train, test).
-        
+            states: Current observation(s).
+            goals: Optional goal vector(s) for goal-conditioned envs.
+            context: ``'train'`` to sample, ``'test'`` for deterministic actions.
+            **kwargs: May include ``dones`` (previous-step done flags) forwarded
+                to `_rollout_forward`.
+
         Returns:
-            T.Tensor: actions.
+            action (`Action`): Package with ``actions`` and ``log_probs``;
+                ``raw_actions`` and ``hidden`` are always ``None``.
         """
-        if context == 'train':
+        with T.no_grad():
             outputs = self._rollout_forward(
                 states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
-            actions = outputs['policy'].sample()
+            dist = outputs['policy']
+            if context == 'train':
+                actions = dist.sample()
+                log_probs = dist.log_prob(actions)
 
-        elif context == 'test':
-            with T.no_grad():
-                outputs = self._rollout_forward(
-                    states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
-                actions = self.policy.get_mean_actions(outputs['policy'])
-            
-        else:
-            raise ValueError(f"Invalid context: {context}")
+            elif context == 'test':
+                actions = self.policy.get_mean_actions(dist)
+                log_probs = dist.log_prob(actions)
 
-        return actions
+            else:
+                raise ValueError(f"Invalid context: {context}")
+
+        return Action(actions, log_probs=log_probs)
 
     def learn(self, step: int, sample: list[dict], **kwargs: Any)->dict:
+        """Apply one REINFORCE update from completed trajectories.
+
+        Concatenates trajectory tensors, computes Monte Carlo returns, runs a
+        single shared forward through policy (and value when present), then
+        combines policy and value losses into one backward plus ``model.step()``.
+        Auto-entropy, when enabled, updates ``log_alpha`` in a separate step.
+
+        Args:
+            step: Global training step (diagnostics / logging).
+            sample: List of trajectory dicts with ``states``, ``actions``, and
+                ``rewards`` tensors.
+            **kwargs: Unused; accepted for ``Agent.learn`` API compatibility.
+
+        Returns:
+            Metrics dict (policy/value loss, advantages, returns, entropy, LRs).
+        """
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -845,6 +938,16 @@ class Reinforce(Agent):
         return learn_metrics
 
     def get_config(self):
+        """Return the architecture description ``{"type", "config"}``.
+
+        Extends the base payload with the composite model config, discount,
+        normalizers, and entropy-tuning fields.
+
+        Returns:
+            payload (dict): Mapping with ``type`` (class name) and ``config``
+                (constructor kwargs suitable for ``from_config`` after env
+                injection).
+        """
         config = super().get_config()
         config["config"].update({
             "model": self.model.get_config(),
@@ -861,7 +964,17 @@ class Reinforce(Agent):
         return config
 
 class ActorCritic(Agent):
-    """Actor Critic Agent."""
+    """Advantage actor-critic (A2C-style) on-policy agent.
+
+    Assembles a composite ``ModularModel`` with required stochastic policy and
+    value heads (roots → trunk → branches). Supports feedforward and temporal
+    trunks; the temporal path uses `_recurrent_update` with the rollout-start
+    hidden and GAE via
+    [compute_advantages_and_returns][phoenx.agent_utils.compute_advantages_and_returns].
+
+    Policy and value losses share one combined backward and a coordinated
+    ``model.step()`` (on-policy gradient ownership).
+    """
 
     MODEL_ATTRS = ("model",)
     SCHEDULE_ATTRS = ("entropy_schedule",)
@@ -897,6 +1010,47 @@ class ActorCritic(Agent):
         device: Optional[str | T.device] = None,
         **kwargs,
     ):
+        """Initialize the actor-critic agent and assemble its composite model.
+
+        Args:
+            roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
+            trunk: Optional shared fusion SubNetwork (may hold temporal layers).
+            policy: Stochastic discrete or continuous policy head (required).
+            value: Value head for state-value / GAE baselines (required).
+            optimizer_params: Model-wide default optimizer spec.
+            lr_scheduler: Model-wide default LR scheduler.
+            shared_update: Gradient-ownership rule for shared modules; defaults
+                to ``'combined'`` via ``DEFAULT_SHARED_UPDATE``.
+            discount: Discount factor ``gamma`` for TD / GAE.
+            state_normalizer: Optional observation normalizer.
+            goal_normalizer: Optional goal normalizer for goal-conditioned envs.
+            advantage_normalizer: Optional normalizer for policy advantages.
+            reward_normalizer: Optional reward normalizer.
+            entropy_coefficient: Fixed entropy bonus weight when
+                ``auto_entropy_tuning`` is ``False``.
+            entropy_schedule: Optional multiplier schedule for
+                ``entropy_coefficient`` when auto-tuning is off.
+            auto_entropy_tuning: When ``True``, learn ``log_alpha`` toward a
+                target entropy.
+            entropy_lr: Learning rate for the entropy temperature optimizer.
+            target_entropy_scale: Scale used when building the target entropy
+                (mainly for discrete action spaces).
+            gae_coefficient: GAE lambda for advantage estimation.
+            policy_grad_clip: Max grad norm for policy-branch modules; falsy
+                skips clipping.
+            value_grad_clip: Max grad norm for value-branch modules; falsy
+                skips clipping.
+            shared_grad_clip: Max grad norm for shared roots/trunk modules;
+                ``None`` uses ``max(policy_grad_clip, value_grad_clip)`` (with
+                missing clips treated as infinity).
+            value_coef: Multiplier on the squared value loss.
+            bootstrap_truncations: Whether truncated episodes bootstrap from
+                next-state values in GAE / TD targets.
+            save_dir: Default save directory passed to the base agent.
+            device: Torch device; ``None`` resolves via ``get_device``.
+            **kwargs (Any): Extra attributes set on the instance via the base
+                ``Agent`` constructor.
+        """
         super().__init__(save_dir, device, **kwargs)
         self._check_head('policy', policy, StochasticDiscreteHead, StochasticContinuousHead)
         self._check_head('value', value, ValueHead)
@@ -935,35 +1089,70 @@ class ActorCritic(Agent):
         goals: np.ndarray | T.Tensor | None = None,
         context: str = 'train',
         **kwargs: Any
-    ) -> T.Tensor:
-        """Select an action based on the current policy.
-        Returns actions that are already scaled to the environment's action space.
+    ) -> Action:
+        """Select an action from the current policy distribution.
+
+        In ``'train'`` context samples from the policy; in ``'test'`` uses the
+        policy mean / mode: ``get_mean_actions`` on the categorical branch, or
+        ``dist.mean_with_z()`` on the continuous branch. Optional ``dones`` in
+        ``kwargs`` reset recurrent / context state for freshly finished envs.
 
         Args:
-            states: np.ndarray | T.Tensor: The current states.
-            goals: np.ndarray | T.Tensor | None: The current goals.
-            context: str: The context of the action (train, test).
-        
+            states: Current observation(s).
+            goals: Optional goal vector(s) for goal-conditioned envs.
+            context: ``'train'`` to sample, ``'test'`` for deterministic actions.
+            **kwargs: May include ``dones`` (previous-step done flags) forwarded
+                to `_rollout_forward`.
+
         Returns:
-            T.Tensor: actions.
+            action (`Action`): Package with ``actions`` and ``log_probs``;
+                ``raw_actions`` is populated on the continuous branch and
+                ``None`` on the categorical branch. ``hidden`` is always
+                ``None``.
         """
-        if context == 'train':
+        raw_actions = None
+        with T.no_grad():
             outputs = self._rollout_forward(
                 states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
-            actions = outputs['policy'].sample()
+            dist = outputs['policy']
+            if context == 'train':
+                if self.policy.distribution == 'categorical':
+                    actions = dist.sample()
+                    log_probs = dist.log_prob(actions)
+                else: # Continuous
+                    actions, raw_actions = dist.sample_with_z()
+                    log_probs = dist.log_prob_from_z(raw_actions)
+            elif context == 'test':
+                if self.policy.distribution == 'categorical':
+                    actions = self.policy.get_mean_actions(dist)
+                    log_probs = dist.log_prob(actions)
+                else: # Continuous
+                    actions, raw_actions = dist.mean_with_z()
+                    log_probs = dist.log_prob_from_z(raw_actions)
 
-        elif context == 'test':
-            with T.no_grad():
-                outputs = self._rollout_forward(
-                    states, goals=goals, branches=('policy',), dones=kwargs.get('dones'))
-                actions = self.policy.get_mean_actions(outputs['policy'])
-            
-        else:
-            raise ValueError(f"Invalid context: {context}")
+            else:
+                raise ValueError(f"Invalid context: {context}")
 
-        return actions
+        return Action(actions, raw_actions=raw_actions, log_probs=log_probs)
 
     def learn(self, step:int, sample:dict, **kwargs: Any)->dict:
+        """Apply one actor-critic update from a rollout-buffer sample.
+
+        Normalizes observations / goals / rewards when configured, estimates
+        GAE advantages and returns, then combines value and policy losses into
+        one backward plus ``model.step()``. Temporal models delegate to
+        `_recurrent_update` instead of the flat feedforward path.
+
+        Args:
+            step: Global training step (diagnostics / logging).
+            sample: Rollout batch with ``states``, ``actions``, ``rewards``,
+                ``next_states``, terminations / truncations, ``valid_indices``,
+                and goal fields.
+            **kwargs: Unused; accepted for ``Agent.learn`` API compatibility.
+
+        Returns:
+            Metrics dict (losses, TD error, advantages, returns, entropy, LRs).
+        """
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -1188,11 +1377,30 @@ class ActorCritic(Agent):
     ) -> dict:
         """Hidden-aware full-batch ActorCritic update over env sequences.
 
-        Values and the policy distribution come from ONE sequence forward with
+        Values and the policy distribution come from one sequence forward with
         the rollout-start hidden (episode boundaries reset it mid-sequence).
         Next-state values for TD targets are the shifted values from the same
         stream (exact within episodes); the final step's next-value uses the
-        post-sequence hidden.
+        post-sequence hidden. Losses share one combined backward and
+        ``model.step()``.
+
+        Args:
+            step (int): Global training step (diagnostics / logging).
+            states_flat: Flattened observations ``(T * E, ...)``.
+            next_states_flat: Flattened next observations.
+            actions_flat: Flattened actions ``(T * E, action_dim)``.
+            goals_flat: Flattened goals, or ``None``.
+            rewards: Rewards shaped ``(T, E)``.
+            terminations: Termination flags ``(T, E)``.
+            truncations: Truncation flags ``(T, E)``.
+            first_steps: Episode-start / phantom-step mask ``(T, E)``.
+            traj_len (int): Rollout length ``T``.
+            num_envs (int): Parallel environment count ``E``.
+            entropy_coefficient: Scalar entropy weight (tensor or float).
+
+        Returns:
+            Metrics dict matching the feedforward ``learn`` path, after
+            advancing the rollout-start hidden via `_advance_rollout_window`.
         """
         learn_metrics: dict = {}
         from phoenx.obs_utils import tree_map as _tree_map
@@ -1304,6 +1512,16 @@ class ActorCritic(Agent):
         return learn_metrics
 
     def get_config(self):
+        """Return the architecture description ``{"type", "config"}``.
+
+        Extends the base payload with the composite model config, GAE / clip
+        settings, normalizers, and entropy-tuning fields.
+
+        Returns:
+            payload (dict): Mapping with ``type`` (class name) and ``config``
+                (constructor kwargs suitable for ``from_config`` after env
+                injection).
+        """
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
@@ -1328,36 +1546,15 @@ class ActorCritic(Agent):
         return config
 
 class PPO(Agent):
-    """Proximal Policy Optimization (PPO) agent implementation.
+    """Proximal Policy Optimization (clipped surrogate) on-policy agent.
 
-    Attributes:
-        policy: (StochasticDiscretePolicy|StochasticContinuousPolicy): The policy model used for action selection.
-        value: (ValueModel): The value model used for state-value prediction.
-        discount: (float): Discount factor for future rewards.
-        gae_coefficient: (float): GAE smoothing coefficient.
-        state_normalizer: (BaseNormalizer): Normalizer for state inputs.
-        goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
-        advantage_normalizer: (BaseNormalizer): Normalizer for advantages
-        reward_normalizer:(RewardNorm): Normalizer for rewards.
-        entropy_coefficient: (float): Coefficient for entropy regularization.
-        entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
-        auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
-        entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
-        target_entropy_scale: (float): Scale for the target entropy. Only used if auto entropy = True and discrete action space
-        kl_coefficient: (float): Coefficient for KL divergence penalty.
-        kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
-        policy_clip: (float): Clipping value for policy ratio updates.
-        policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
-        policy_grad_clip: (float): Maximum norm for policy model gradients.
-        value_clip: (float): Clipping value for value model updates.
-        value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
-        value_grad_clip: (float): Maximum norm for value model gradients.
-        value_coef: (float): value to weight the value loss by.
-        reward_clip: (float): Maximum absolute value for reward clipping.
-        curiosity: (ICM|None): Intrinsic Curiosity Module for curiosity-driven learning.
-        bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
-        save_dir: (str): Directory to save models and configurations.
-        device: (str): Device for computations ('cpu' or 'cuda').
+    Assembles a composite ``ModularModel`` with required stochastic policy and
+    value heads. Supports multi-epoch minibatch updates with optional KL
+    penalty / [AdaptiveKL][phoenx.adaptive_kl.AdaptiveKL], value clipping,
+    intrinsic motivation, and temporal trunks via `_recurrent_update`.
+
+    Each minibatch combines policy and value losses into one backward and a
+    coordinated ``model.step()`` (on-policy gradient ownership).
     """
 
     MODEL_ATTRS = ("model",)
@@ -1401,40 +1598,62 @@ class PPO(Agent):
         device: str | T.device | None = None,
         **kwargs: Any
     ) -> None:
-        """Initialize the PPO agent.
+        """Initialize the PPO agent and assemble its composite model.
 
         Args:
             roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
-            trunk: Optional shared fusion SubNetwork (identity when None).
-            policy: (StochasticContinuousHead|StochasticDiscreteHead): The policy head used for action selection (required).
-            value: (ValueHead): The value head used for state-value prediction (required).
-            optimizer_params: Model-wide default optimizer spec (per-module overrides allowed).
+            trunk: Optional shared fusion SubNetwork (may hold temporal layers).
+            policy: Stochastic continuous or discrete policy head (required).
+            value: Value head for GAE baselines and the clipped value loss
+                (required).
+            optimizer_params: Model-wide default optimizer spec.
             lr_scheduler: Model-wide default LR scheduler.
-            shared_update: Gradient-ownership rule for shared modules (default 'combined').
-            goal_normalizer: (BaseNormalizer): Normalizer for goal inputs.
-            advantage_normalizer: (BaseNormalizer): Normalizer for advantages.
-            reward_normalizer: (RewardNorm): Normalizer for rewards.
-            entropy_coefficient: (float): Coefficient for entropy regularization.
-            entropy_schedule: (ScheduleWrapper): Rate at which to decay entropy coefficient per learn epoch.
-            auto_entropy_tuning: (bool): Whether to automatically tune the entropy coefficient.
-            entropy_lr: (float): Learning rate for the entropy coefficient. Only used if auto entropy = True
-            target_entropy_scale: (float): Scale for the target entropy. Only used if auto entropy = True and discrete action space
-            kl_coefficient: (float): Coefficient for KL divergence penalty.
-            kl_adapter: (AdaptiveKL): Adjusts kl_coefficient to keep KL Divergence near target.
-            policy_clip: (float): Clipping value for policy ratio updates.
-            policy_clip_schedule: (ScheduleWrapper): Rate at which to decay policy clip per learn epoch.
-            policy_grad_clip: (float): Maximum norm for policy branch gradients.
-            value_clip: (float): Clipping value for value model updates.
-            value_clip_schedule: (ScheduleWrapper): Rate at which to decay value clip per learn epoch.
-            value_grad_clip: (float): Maximum norm for value branch gradients.
-            shared_grad_clip: (float|None): Maximum norm for shared (roots+trunk) gradients; None -> max(policy_grad_clip, value_grad_clip).
-            value_coef: (float): value to weight the value loss by.
-            reward_clip: (float): Maximum absolute value for reward clipping.
-            intrinsic_motivation: (IntrinsicMotivation): Intrinsic Motivation Module for curiosity-driven learning.
-            bootstrap_truncations: (bool): Whether to bootstrap the truncated returns.
-            save_dir: (str): Directory to save models and configurations.
-            device: (str): Device for computations ('cpu' or 'cuda').
-            kwargs: Additional keyword arguments.
+            shared_update: Gradient-ownership rule for shared modules; defaults
+                to ``'combined'`` via ``DEFAULT_SHARED_UPDATE``.
+            discount: Discount factor ``gamma`` for TD / GAE.
+            gae_coefficient: GAE lambda for advantage estimation.
+            state_normalizer: Optional observation normalizer.
+            goal_normalizer: Optional goal normalizer for goal-conditioned envs.
+            advantage_normalizer: Optional normalizer for advantages before the
+                policy update.
+            reward_normalizer: Optional reward normalizer.
+            entropy_coefficient: Fixed entropy bonus weight when
+                ``auto_entropy_tuning`` is ``False``.
+            entropy_schedule: Optional multiplier schedule for
+                ``entropy_coefficient`` when auto-tuning is off.
+            auto_entropy_tuning: When ``True``, learn ``log_alpha`` toward a
+                target entropy.
+            entropy_lr: Learning rate for the entropy temperature optimizer.
+            target_entropy_scale: Scale used when building the target entropy
+                (mainly for discrete action spaces).
+            kl_coefficient: Weight on the approximate KL penalty term when no
+                ``kl_adapter`` is supplied.
+            kl_adapter: Optional adaptive controller that supplies beta and may
+                early-stop epochs when KL exceeds ``1.5 * target_kl``.
+            policy_clip: PPO ratio clip epsilon (before optional schedule).
+            policy_clip_schedule: Optional multiplier schedule for
+                ``policy_clip``.
+            policy_grad_clip: Max grad norm for policy-branch modules; falsy
+                skips clipping.
+            value_clip: Clip range around old values in the value loss (before
+                optional schedule).
+            value_clip_schedule: Optional multiplier schedule for
+                ``value_clip``.
+            value_grad_clip: Max grad norm for value-branch modules; falsy
+                skips clipping.
+            shared_grad_clip: Max grad norm for shared roots/trunk modules;
+                ``None`` uses ``max(policy_grad_clip, value_grad_clip)``.
+            value_coef: Multiplier on the clipped value loss.
+            reward_clip: Absolute clamp applied to extrinsic rewards when finite
+                and ``reward_normalizer`` is ``None``.
+            intrinsic_motivation: Optional intrinsic motivation module trained
+                inside ``learn`` and added to the reward used for GAE.
+            bootstrap_truncations: Whether truncated episodes bootstrap from
+                next-state values in GAE / TD targets.
+            save_dir: Default save directory passed to the base agent.
+            device: Torch device; ``None`` resolves via ``get_device``.
+            **kwargs: Extra attributes set on the instance via the base
+                ``Agent`` constructor.
         """
         super().__init__(save_dir, device, **kwargs)
         self._check_head('policy', policy, StochasticContinuousHead, StochasticDiscreteHead)
@@ -1483,16 +1702,23 @@ class PPO(Agent):
         context: str = 'train',
         **kwargs: Any
     ) -> Action:
-        """Select an action based on the current policy.
-        Returns actions that are already scaled to the environment's action space.
+        """Select an action and package log-probs for the PPO rollout.
+
+        Always runs under ``torch.no_grad``. In ``'train'`` samples from the
+        policy (continuous paths also return the pre-squash ``z`` via
+        ``sample_with_z``); in ``'test'`` uses the mean action. Optional
+        ``dones`` in ``kwargs`` reset recurrent / context state.
 
         Args:
-            states: np.ndarray | T.Tensor: The current states.
-            goals: np.ndarray | T.Tensor | None: The current goals.
-            context: str: The context of the action (train, test).
-        
+            states: Current observation(s).
+            goals: Optional goal vector(s) for goal-conditioned envs.
+            context: ``'train'`` to sample, ``'test'`` for deterministic actions.
+            **kwargs: May include ``dones`` (previous-step done flags) forwarded
+                to `_rollout_forward`.
+
         Returns:
-            Action: actions.
+            `Action` with ``actions``, optional ``raw_actions``, and
+            ``log_probs`` for the importance-ratio baseline in ``learn``.
         """
         raw_actions = None
         with T.no_grad():
@@ -1519,16 +1745,29 @@ class PPO(Agent):
         return Action(actions, raw_actions=raw_actions, log_probs=log_probs)
 
     def learn(self, step:int, sample:dict, learning_epochs:int, mini_batch_size:int, **kwargs: Any)->dict:
-        """Perform learning updates using the collected trajectory.
+        """Apply PPO clipped-surrogate updates over collected rollouts.
+
+        Computes GAE advantages once, then runs ``learning_epochs`` of shuffled
+        minibatches. Each minibatch combines clipped policy and value losses
+        into one backward plus ``model.step()``. Temporal models use
+        `_recurrent_update` (env-subset sequence minibatches). When a
+        ``kl_adapter`` is set, epochs may stop early if mean KL exceeds
+        ``1.5 * target_kl``.
 
         Args:
-            step (int): Current step.
-            sample (dict): Collected rollouts containing states, actions, etc.
-            learning_epochs (int): Number of epochs per update.
-            mini_batch_size (int): Mini batch size for training.
+            step: Global training step (schedules, IM extrinsic gate, logging).
+            sample: Rollout batch including ``states``, ``actions``,
+                ``raw_actions``, rewards, ``intrinsic_rewards``, next states,
+                terminations / truncations, ``first_steps``, ``valid_indices``,
+                and goal fields.
+            learning_epochs: Number of passes over the valid samples.
+            mini_batch_size: Minibatch size in transition units (feedforward) or
+                env units (recurrent path).
+            **kwargs: Unused; accepted for ``Agent.learn`` API compatibility.
 
         Returns:
-            dict: Learning metrics.
+            Metrics dict (losses, entropy, KL, clips, coefficients, LRs, and
+            optional intrinsic-motivation scalars).
         """
         self._learn_count += 1
         if self._diag_freq is not None:
@@ -1881,14 +2120,39 @@ class PPO(Agent):
     ) -> dict:
         """Hidden-aware PPO update over full env sequences (RSL-RL style).
 
-        - Minibatches are subsets of ENVS carrying their full rollout
-          sequences; ``mini_batch_size`` is interpreted in env units (values
-          exceeding / not dividing ``num_envs`` fall back to all envs).
-        - Hidden states start from the snapshot taken at the rollout start and
-          are reset mid-sequence at episode boundaries (``first_steps``).
-        - Next-state values for GAE are the (exact within episodes) shifted
-          values from the same hidden stream; the final step's next-value is
-          computed with the post-sequence hidden.
+        Minibatches are subsets of envs carrying their full rollout sequences;
+        ``mini_batch_size`` is interpreted in env units (values exceeding or not
+        dividing ``num_envs`` fall back to all envs). Hidden states start from
+        the rollout-start snapshot and reset mid-sequence at episode boundaries
+        (``first_steps``). Next-state values for GAE are shifted values from the
+        same hidden stream; the final step uses the post-sequence hidden.
+        Each minibatch combines policy and value losses into one backward and
+        ``model.step()``.
+
+        Args:
+            step (int): Global training step (diagnostics / logging).
+            states_flat: Flattened observations ``(T * E, ...)``.
+            next_states_flat: Flattened next observations.
+            actions_flat: Flattened actions.
+            raw_actions_flat: Flattened pre-squash actions for continuous
+                log-probs.
+            goals_flat: Flattened goals, or ``None``.
+            rewards: Rewards shaped ``(T, E)`` (extrinsic and/or intrinsic).
+            terminations: Termination flags ``(T, E)``.
+            truncations: Truncation flags ``(T, E)``.
+            first_steps: Episode-start / phantom-step mask ``(T, E)``.
+            traj_len (int): Rollout length ``T``.
+            num_envs (int): Parallel environment count ``E``.
+            learning_epochs (int): Number of passes over env subsets.
+            mini_batch_size (int): Envs per minibatch (see above).
+            policy_clip (float): Effective PPO ratio clip epsilon.
+            value_clip (float): Effective value-function clip range.
+            entropy_coefficient: Scalar entropy weight (tensor or float).
+            kl_coefficient: Scalar KL penalty weight (tensor or float).
+
+        Returns:
+            Metrics dict matching the feedforward ``learn`` path, after
+            advancing the rollout-start hidden via `_advance_rollout_window`.
         """
         learn_metrics: dict = {}
 
@@ -2068,10 +2332,15 @@ class PPO(Agent):
         return learn_metrics
 
     def get_config(self):
-        """Get the current configuration of the PPO agent.
+        """Return the architecture description ``{"type", "config"}``.
+
+        Extends the base payload with the composite model config, PPO clip / KL
+        settings, normalizers, entropy tuning, and optional intrinsic motivation.
 
         Returns:
-            dict: Configuration dictionary.
+            payload (dict): Mapping with ``type`` (class name) and ``config``
+                (constructor kwargs suitable for ``from_config`` after env
+                injection).
         """
         config = super().get_config()
         config["config"].update({
@@ -2104,7 +2373,18 @@ class PPO(Agent):
         return config
 
 class DDPG(Agent):
-    """Deep Deterministic Policy Gradient Agent."""
+    """Deep Deterministic Policy Gradient (DDPG) off-policy agent.
+
+    Assembles a composite ``ModularModel`` with a deterministic continuous
+    policy head and a continuous Q critic (roots → trunk → branches). A
+    Polyak-averaged ``target_model`` clones the policy and critic branches
+    (plus shared roots/trunk). Exploration uses optional
+    [Noise][phoenx.noise.Noise] plus an epsilon-greedy random-action chance.
+
+    The critic loss owns shared roots/trunk; the policy trains on detached
+    shared features (off-policy gradient ownership). Targets use n-step returns
+    via [compute_n_step_return][phoenx.agent_utils.compute_n_step_return].
+    """
 
     MODEL_ATTRS = ("model",)
     TARGET_ATTRS = ("target_model",)
@@ -2141,6 +2421,50 @@ class DDPG(Agent):
         device: str | T.device | None = None,
         **kwargs: Any,
     ):
+        """Initialize the DDPG agent and assemble its composite model.
+
+        Args:
+            roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
+            trunk: Optional shared fusion SubNetwork (may hold temporal layers).
+            policy: Deterministic continuous actor head (required).
+            critic: Continuous Q-head (required).
+            optimizer_params: Model-wide default optimizer spec.
+            lr_scheduler: Model-wide default LR scheduler.
+            shared_update: Gradient-ownership rule for shared modules; defaults
+                to ``'critic'`` via ``DEFAULT_SHARED_UPDATE``.
+            discount: Discount factor ``gamma`` for n-step returns.
+            tau: Polyak interpolation factor for
+                [soft_update][phoenx.agent_utils.soft_update] of the target
+                model.
+            action_epsilon: Probability of sampling a uniform random action in
+                ``'train'`` context (after warmup).
+            state_normalizer: Optional observation normalizer.
+            goal_normalizer: Optional goal normalizer for goal-conditioned envs.
+            reward_normalizer: Optional reward normalizer.
+            noise: Optional exploration noise added to the policy action in
+                ``'train'`` (for example
+                [NormalNoise][phoenx.noise.NormalNoise] or
+                [UniformNoise][phoenx.noise.UniformNoise]).
+            noise_schedule: Optional multiplier schedule applied to exploration
+                noise.
+            noise_clip: Absolute clamp on exploration noise when ``> 0``.
+            raw_action_l2_coef: L2 penalty weight on pre-squash / raw policy
+                outputs in the actor loss.
+            policy_grad_clip: Max grad norm for the policy branch.
+            critic_grad_clip: Max grad norm for critic and shared modules on
+                the critic update.
+            critic_huber_delta: Huber loss delta for the critic TD objective.
+            N: N-step return horizon expected from the replay sample.
+            recurrent_burn_in: R2D2 burn-in length for temporal models; must be
+                ``< N`` when set. Anchors the critic / actor TD position after
+                burn-in.
+            intrinsic_motivation: Optional intrinsic motivation module trained
+                inside ``learn`` and mixed into the reward used for targets.
+            save_dir: Default save directory passed to the base agent.
+            device: Torch device; ``None`` resolves via ``get_device``.
+            **kwargs (Any): Extra attributes set on the instance via the base
+                ``Agent`` constructor.
+        """
         super().__init__(save_dir, device, **kwargs)
         self._check_head('policy', policy, DeterministicActorHead)
         self._check_head('critic', critic, ContinuousQHead)
@@ -2180,17 +2504,28 @@ class DDPG(Agent):
         warmup: int | None = None,
         **kwargs: Any,
     ) -> Action:
-        """Select an action based on the current policy.
+        """Select a deterministic action, with train-time exploration noise.
+
+        Temporal models always run a policy forward (to advance recurrent /
+        context state) and may attach the pre-step hidden for R2D2 storage.
+        In ``'train'``, warmup and ``action_epsilon`` may replace the policy
+        with a uniform env sample; otherwise clipped / scheduled exploration
+        noise is added to the policy action. Any non-``'train'`` context uses
+        the deterministic policy without noise (no invalid-context raise).
 
         Args:
-            states: T.Tensor | np.ndarray: The current states.
-            goals: T.Tensor | np.ndarray | None: The current goals.
-            context: str: The context of the action (train, test).
-            step: int | None: The current step.
-            warmup: int | None: The warmup steps.
-        
+            states: Current observation(s).
+            goals: Optional goal vector(s) for goal-conditioned envs.
+            context: ``'train'`` for exploration, anything else for the
+                deterministic policy (typically ``'test'``).
+            step: Global step used with ``warmup`` for random-action warmup.
+            warmup: When ``step <= warmup``, sample from the env action space.
+            **kwargs (Any): May include ``dones`` (previous-step done flags)
+                forwarded to `_rollout_forward` for temporal reset.
+
         Returns:
-            Action: actions.
+            action (`Action`): Package with ``actions``, ``raw_actions``, and
+                optional ``hidden`` for recurrent buffers.
         """
         # Temporal models always run the forward (to advance the recurrent /
         # context stream) and attach the pre-step hidden for R2D2 storage.
@@ -2240,9 +2575,36 @@ class DDPG(Agent):
         return Action(actions, raw_actions=raw_actions, hidden=pre_hidden_flat)
 
     def soft_update_targets(self):
+        """Soft-update the target model from the online model via Polyak averaging.
+
+        Implements [HasTargetNetworks][phoenx.rl_agents.HasTargetNetworks] using
+        [soft_update][phoenx.agent_utils.soft_update] with ``self.tau``. The
+        target holds policy and critic branches (plus shared modules).
+        """
         soft_update(self.model, self.target_model, self.tau)
 
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
+        """Apply one DDPG critic-then-actor update from a replay sample.
+
+        Builds n-step TD targets from the target policy and target critic,
+        updates the critic (owning shared roots/trunk), then updates the
+        policy on detached shared features with actor loss ``-Q(s, pi(s))``
+        plus optional raw-action L2. Does not call ``soft_update_targets``;
+        the trainer invokes that separately.
+
+        Args:
+            step: Global training step (IM extrinsic gate, diagnostics).
+            sample: Replay batch with ``states``, ``actions``, ``raw_actions``,
+                rewards, ``intrinsic_rewards``, next states, terminations /
+                truncations, ``trajectory_lengths``, goals, and optional PER
+                ``weights`` / ``indices``.
+            **kwargs (Any): Unused; accepted for ``Agent.learn`` API
+                compatibility.
+
+        Returns:
+            metrics (dict): Loss scalars, TD errors, prediction means, learning
+                rates, and optional intrinsic-motivation / noise-anneal fields.
+        """
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -2542,6 +2904,16 @@ class DDPG(Agent):
         return learn_metrics
 
     def get_config(self):
+        """Return the architecture description ``{"type", "config"}``.
+
+        Extends the base payload with the composite model, DDPG hyperparameters,
+        normalizers, exploration noise, and optional intrinsic motivation.
+
+        Returns:
+            payload (dict): Mapping with ``type`` (class name) and ``config``
+                (constructor kwargs suitable for ``from_config`` after env
+                injection).
+        """
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
@@ -2560,13 +2932,24 @@ class DDPG(Agent):
             "critic_grad_clip": self.critic_grad_clip,
             "critic_huber_delta": self.critic_huber_delta,
             "N": self.N,
+            "recurrent_burn_in": self.recurrent_burn_in,
             "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
         })
         return config
 
 
 class TD3(Agent):
-    """Twin Delayed Deep Deterministic Policy Gradient Agent."""
+    """Twin Delayed Deep Deterministic Policy Gradient (TD3) off-policy agent.
+
+    Extends DDPG with clipped double-Q (``critic`` / ``critic_b``), target-
+    policy smoothing via ``target_noise``, and delayed policy optimizer steps
+    controlled by ``policy_update_delay``. Assembles a composite
+    ``ModularModel`` (roots → trunk → branches); the Polyak
+    ``target_model`` clones policy and both critics.
+
+    Critic losses own shared roots/trunk; the policy trains on detached shared
+    features (off-policy gradient ownership).
+    """
 
     MODEL_ATTRS = ("model",)
     TARGET_ATTRS = ("target_model",)
@@ -2607,6 +2990,57 @@ class TD3(Agent):
         device: str|T.device|None = None,
         **kwargs
     ):
+        """Initialize the TD3 agent and assemble its composite model.
+
+        When ``critic_b`` is ``None``, a fresh twin critic is cloned from
+        ``critic``'s config.
+
+        Args:
+            roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
+            trunk: Optional shared fusion SubNetwork (may hold temporal layers).
+            policy: Deterministic continuous actor head (required).
+            critic: Continuous Q-head A (required).
+            critic_b: Continuous Q-head B; cloned from ``critic`` when ``None``.
+            optimizer_params: Model-wide default optimizer spec.
+            lr_scheduler: Model-wide default LR scheduler.
+            shared_update: Gradient-ownership rule for shared modules; defaults
+                to ``'critic'`` via ``DEFAULT_SHARED_UPDATE``.
+            discount: Discount factor ``gamma`` for n-step returns.
+            tau: Polyak interpolation factor for
+                [soft_update][phoenx.agent_utils.soft_update] of the target
+                model.
+            action_epsilon: Probability of sampling a uniform random action in
+                ``'train'`` context (after warmup).
+            state_normalizer: Optional observation normalizer.
+            goal_normalizer: Optional goal normalizer for goal-conditioned envs.
+            reward_normalizer: Optional reward normalizer.
+            noise: Optional exploration noise added to the policy action in
+                ``'train'``.
+            noise_schedule: Optional multiplier schedule for exploration noise.
+            target_noise: Noise added to target-policy actions for smoothing.
+            target_noise_schedule: Optional multiplier schedule for
+                ``target_noise``.
+            noise_clip: Absolute clamp applied to both exploration and target
+                noise when ``> 0``.
+            raw_action_l2_coef: L2 penalty weight on raw policy outputs in the
+                actor loss.
+            policy_grad_clip: Max grad norm for the policy branch.
+            critic_grad_clip: Max grad norm for each critic branch and shared
+                modules on the critic update.
+            critic_huber_delta: Huber loss delta for both critic TD objectives.
+            policy_update_delay: Policy optimizer steps only when
+                ``_learn_count % policy_update_delay == 0`` (actor loss is still
+                computed and backpropagated every learn call).
+            N: N-step return horizon expected from the replay sample.
+            recurrent_burn_in: R2D2 burn-in length for temporal models; must be
+                ``< N`` when set.
+            intrinsic_motivation: Optional intrinsic motivation module trained
+                inside ``learn`` and mixed into the reward used for targets.
+            save_dir: Default save directory passed to the base agent.
+            device: Torch device; ``None`` resolves via ``get_device``.
+            **kwargs (Any): Extra attributes set on the instance via the base
+                ``Agent`` constructor.
+        """
         super().__init__(save_dir, device, **kwargs)
         self._check_head('policy', policy, DeterministicActorHead)
         self._check_head('critic', critic, ContinuousQHead)
@@ -2654,17 +3088,27 @@ class TD3(Agent):
         warmup: int | None = None,
         **kwargs: Any,
     ) -> Action:
-        """Select an action based on the current policy.
+        """Select a deterministic action, with train-time exploration noise.
+
+        Same exploration pattern as DDPG: temporal forwards advance recurrent /
+        context state; warmup and ``action_epsilon`` may use uniform env samples;
+        otherwise clipped / scheduled ``noise`` is added. Any non-``'train'``
+        context uses the deterministic policy without noise (no invalid-context
+        raise).
 
         Args:
-            states: T.Tensor | np.ndarray: The current states.
-            goals: T.Tensor | np.ndarray | None: The current goals.
-            context: str: The context of the action (train, test).
-            step: int | None: The current step.
-            warmup: int | None: The warmup steps.
-        
+            states: Current observation(s).
+            goals: Optional goal vector(s) for goal-conditioned envs.
+            context: ``'train'`` for exploration, anything else for the
+                deterministic policy (typically ``'test'``).
+            step: Global step used with ``warmup`` for random-action warmup.
+            warmup: When ``step <= warmup``, sample from the env action space.
+            **kwargs (Any): May include ``dones`` (previous-step done flags)
+                forwarded to `_rollout_forward` for temporal reset.
+
         Returns:
-            Action: actions.
+            action (`Action`): Package with ``actions``, ``raw_actions``, and
+                optional ``hidden`` for recurrent buffers.
         """
         # Temporal models always run the forward (to advance the recurrent /
         # context stream) and attach the pre-step hidden for R2D2 storage.
@@ -2714,9 +3158,37 @@ class TD3(Agent):
         return Action(actions, raw_actions=raw_actions, hidden=pre_hidden_flat)
 
     def soft_update_targets(self):
+        """Soft-update the target model from the online model via Polyak averaging.
+
+        Implements [HasTargetNetworks][phoenx.rl_agents.HasTargetNetworks] using
+        [soft_update][phoenx.agent_utils.soft_update] with ``self.tau``. The
+        target holds policy and both critic branches (plus shared modules).
+        """
         soft_update(self.model, self.target_model, self.tau)
             
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
+        """Apply one TD3 critic-then-actor update from a replay sample.
+
+        Builds n-step TD targets with target-policy smoothing and
+        ``min(Q_a, Q_b)``, updates both critics (owning shared roots/trunk), then
+        computes the actor loss on detached shared features. The actor
+        ``backward`` runs every call; ``model.step`` for the policy branch runs
+        only when ``_learn_count % policy_update_delay == 0``. Does not call
+        ``soft_update_targets``.
+
+        Args:
+            step: Global training step (IM extrinsic gate, diagnostics).
+            sample: Replay batch with ``states``, ``actions``, ``raw_actions``,
+                rewards, ``intrinsic_rewards``, next states, terminations /
+                truncations, ``trajectory_lengths``, goals, and optional PER
+                ``weights`` / ``indices``.
+            **kwargs (Any): Unused; accepted for ``Agent.learn`` API
+                compatibility.
+
+        Returns:
+            metrics (dict): Loss scalars, TD errors, prediction means, learning
+                rates, and optional intrinsic-motivation / noise-anneal fields.
+        """
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -3060,6 +3532,17 @@ class TD3(Agent):
         return learn_metrics
 
     def get_config(self):
+        """Return the architecture description ``{"type", "config"}``.
+
+        Extends the base payload with the composite model, TD3 hyperparameters
+        (including twin-critic, target noise, and ``policy_update_delay``),
+        normalizers, and optional intrinsic motivation.
+
+        Returns:
+            payload (dict): Mapping with ``type`` (class name) and ``config``
+                (constructor kwargs suitable for ``from_config`` after env
+                injection).
+        """
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
@@ -3081,12 +3564,25 @@ class TD3(Agent):
             "critic_huber_delta": self.critic_huber_delta,
             "policy_update_delay": self.policy_update_delay,
             "N": self.N,
+            "recurrent_burn_in": self.recurrent_burn_in,
             "intrinsic_motivation": self.intrinsic_motivation.get_config() if self.intrinsic_motivation is not None else None,
         })
         return config
 
 class SAC(Agent):
-    """Soft Actor Critic Agent."""
+    """Soft Actor-Critic (SAC) off-policy agent.
+
+    Assembles a composite ``ModularModel`` with a stochastic policy
+    (continuous ``normal`` / ``beta`` / ``kumaraswamy``, or discrete) and twin
+    Q critics. The Polyak ``target_model`` clones critics only (no target
+    policy). Supports automatic entropy tuning via
+    [setup_auto_entropy][phoenx.agent_utils.setup_auto_entropy] and Q-retrace
+    targets via
+    [compute_q_retrace][phoenx.agent_utils.compute_q_retrace].
+
+    Critic losses own shared roots/trunk; the policy trains on detached
+    shared features (off-policy gradient ownership).
+    """
 
     MODEL_ATTRS = ("model",)
     TARGET_ATTRS = ("target_model",)
@@ -3123,6 +3619,51 @@ class SAC(Agent):
         device: str|T.device|None = None,
         **kwargs
     ):
+        """Initialize the SAC agent and assemble its composite model.
+
+        When ``critic_b`` is ``None``, a fresh twin critic is cloned from
+        ``critic``'s config. When ``auto_entropy_tuning`` is ``True``, builds
+        ``target_entropy``, ``log_alpha``, and ``entropy_optimizer`` via
+        [setup_auto_entropy][phoenx.agent_utils.setup_auto_entropy].
+
+        Args:
+            roots: Optional per-modality encoder SubNetworks (name -> SubNetwork).
+            trunk: Optional shared fusion SubNetwork (may hold temporal layers).
+            policy: Stochastic continuous or discrete policy head (required).
+            critic: Continuous or discrete Q-head A (required).
+            critic_b: Twin Q-head B; cloned from ``critic`` when ``None``.
+            optimizer_params: Model-wide default optimizer spec.
+            lr_scheduler: Model-wide default LR scheduler.
+            shared_update: Gradient-ownership rule for shared modules; defaults
+                to ``'critic'`` via ``DEFAULT_SHARED_UPDATE``.
+            discount: Discount factor ``gamma`` for Q-retrace.
+            tau: Polyak interpolation factor for
+                [soft_update][phoenx.agent_utils.soft_update] of the target
+                critics.
+            state_normalizer: Optional observation normalizer.
+            goal_normalizer: Optional goal normalizer for goal-conditioned envs.
+            reward_normalizer: Optional reward normalizer.
+            entropy_coefficient: Fixed entropy temperature when
+                ``auto_entropy_tuning`` is ``False``.
+            entropy_schedule: Optional multiplier schedule for
+                ``entropy_coefficient`` when auto-tuning is off.
+            auto_entropy_tuning: When ``True``, learn ``log_alpha`` toward a
+                target entropy.
+            entropy_lr: Learning rate for the entropy temperature optimizer.
+            target_entropy_scale: Scale used when building the target entropy
+                (especially for discrete action spaces).
+            policy_grad_clip: Max grad norm for the policy branch.
+            critic_grad_clip: Max grad norm for each critic branch and shared
+                modules on the critic update.
+            critic_huber_delta: Huber loss delta for both critic objectives.
+            N: N-step / trajectory window length expected from the replay sample.
+            intrinsic_motivation: Optional intrinsic motivation module trained
+                inside ``learn`` and mixed into the reward used for targets.
+            save_dir: Default save directory passed to the base agent.
+            device: Torch device; ``None`` resolves via ``get_device``.
+            **kwargs (Any): Extra attributes set on the instance via the base
+                ``Agent`` constructor.
+        """
         super().__init__(save_dir, device, **kwargs)
         self._check_head('policy', policy, StochasticDiscreteHead, StochasticContinuousHead)
         self._check_head('critic', critic, ContinuousQHead, DiscreteQHead)
@@ -3171,17 +3712,28 @@ class SAC(Agent):
         warmup: int | None = None,
         **kwargs: Any,
     ) -> Action:
-        """Select an action based on the current policy.
+        """Select an action from the stochastic policy (or its mean in test).
+
+        Temporal models always run a policy forward to advance recurrent /
+        context state and may attach the pre-step hidden. In ``'train'``, warmup
+        samples uniform env actions (with synthetic log-probs); otherwise the
+        policy is sampled (continuous paths use ``sample_with_z``). In
+        ``'test'``, uses mean actions. Raises ``ValueError`` for any other
+        context.
 
         Args:
-            states: T.Tensor | np.ndarray: The current states.
-            goals: T.Tensor | np.ndarray | None: The current goals.
-            context: str: The context of the action (train, test).
-            step: int | None: The current step.
-            warmup: int | None: The warmup steps.
+            states: Current observation(s).
+            goals: Optional goal vector(s) for goal-conditioned envs.
+            context: ``'train'`` to sample, ``'test'`` for deterministic /
+                mean actions.
+            step: Global step used with ``warmup`` for random-action warmup.
+            warmup: When ``step <= warmup``, sample from the env action space.
+            **kwargs (Any): May include ``dones`` (previous-step done flags)
+                forwarded to `_rollout_forward` for temporal reset.
 
         Returns:
-            Action: actions.
+            action (`Action`): Package with ``actions``, optional
+                ``raw_actions``, ``log_probs``, and optional ``hidden``.
         """
         raw_actions = None
 
@@ -3244,9 +3796,36 @@ class SAC(Agent):
         return Action(actions, raw_actions=raw_actions, log_probs=log_probs, hidden=pre_hidden_flat)
 
     def soft_update_targets(self):
+        """Soft-update the target critics from the online model via Polyak averaging.
+
+        Implements [HasTargetNetworks][phoenx.rl_agents.HasTargetNetworks] using
+        [soft_update][phoenx.agent_utils.soft_update] with ``self.tau``. The
+        target holds both critic branches only (no target policy).
+        """
         soft_update(self.model, self.target_model, self.tau)
 
     def learn(self, step: int, sample: dict, **kwargs: Any)->dict:
+        """Apply one SAC critic-then-actor update from a replay sample.
+
+        Builds Q-retrace targets with entropy-regularized next-state values from
+        the online policy and twin target critics, updates both critics (owning
+        shared roots/trunk), then updates the policy on detached shared features
+        with entropy regularization. When auto-entropy is enabled, updates
+        ``log_alpha`` in a separate step. Does not call ``soft_update_targets``.
+
+        Args:
+            step: Global training step (IM extrinsic gate, diagnostics).
+            sample: Replay batch with ``states``, ``actions``, ``raw_actions``,
+                ``log_probs``, rewards, ``intrinsic_rewards``, next states,
+                terminations / truncations, ``trajectory_lengths``, goals, and
+                optional PER ``weights`` / ``indices``.
+            **kwargs (Any): Unused; accepted for ``Agent.learn`` API
+                compatibility.
+
+        Returns:
+            metrics (dict): Loss scalars, TD errors, entropy, prediction means,
+                learning rates, and optional intrinsic-motivation fields.
+        """
         self._learn_count += 1
         if self._diag_freq is not None:
             should_log_diag = (self._learn_count % self._diag_freq == 0)
@@ -3724,7 +4303,17 @@ class SAC(Agent):
         return learn_metrics
 
     def get_config(self):
+        """Return the architecture description ``{"type", "config"}``.
 
+        Extends the base payload with the composite model, SAC hyperparameters
+        (entropy tuning, twin critics), normalizers, and optional intrinsic
+        motivation.
+
+        Returns:
+            payload (dict): Mapping with ``type`` (class name) and ``config``
+                (constructor kwargs suitable for ``from_config`` after env
+                injection).
+        """
         config = super().get_config()
         config["type"] = self.__class__.__name__
         config["config"].update({
@@ -3750,7 +4339,11 @@ class SAC(Agent):
 
 @runtime_checkable
 class HasTargetNetworks(Protocol):
-    def soft_update_targets(self) -> None: ...
+    """Protocol for agents that maintain Polyak-averaged target networks."""
+
+    def soft_update_targets(self) -> None:
+        """Soft-update every target network from its online counterpart."""
+        ...
 
 
 # Registry of every concrete agent class, keyed by class name (the "type" tag
@@ -3768,9 +4361,21 @@ AGENT_REGISTRY: Dict[str, type] = {
 def build_agent(config: dict, env: EnvWrapper) -> "Agent":
     """Rebuild an agent from a ``{"type", "config"}`` dict, injecting ``env``.
 
-    This is the single entry point for rebuilding a saved agent config
-    back into a live (fresh-tensor) agent; tensor state is restored afterwards
-    via :meth:`Agent.load_state`.
+    Single entry point for turning a saved agent config into a live
+    (fresh-tensor) agent. Tensor state is restored afterwards via
+    [Agent.load_state][phoenx.rl_agents.Agent.load_state].
+
+    Args:
+        config: Mapping with ``type`` (registry key) and ``config`` (inner
+            constructor kwargs passed to ``from_config``).
+        env: Live environment injected into rebuilt models.
+
+    Returns:
+        Fresh agent instance of the requested type.
+
+    Raises:
+        KeyError: If ``config`` has no ``"type"`` key.
+        ValueError: If ``config["type"]`` is not a key in ``AGENT_REGISTRY``.
     """
     agent_type = config["type"]
     if agent_type not in AGENT_REGISTRY:

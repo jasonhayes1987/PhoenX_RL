@@ -25,7 +25,8 @@ import numpy as np
 import pytest
 import torch as T
 
-from phoenx.env_wrapper import GymnasiumWrapper
+from phoenx.buffer import RolloutBuffer
+from phoenx.env_wrapper import Action, GymnasiumWrapper
 from phoenx.models import (
     ContinuousQHead,
     DeterministicActorHead,
@@ -451,9 +452,113 @@ class TestActSmoke:
 
     def test_reinforce_act_discrete(self, cartpole):
         agent = Reinforce(policy=d_policy(cartpole), auto_entropy_tuning=False, device=DEVICE)
-        actions = agent.act(T.randn(4, 4), context="train")
-        assert actions.shape == (4,)
-        assert set(actions.tolist()) <= {0, 1}
+        result = agent.act(T.randn(4, 4), context="train")
+        assert result.actions.shape == (4,)
+        assert set(result.actions.tolist()) <= {0, 1}
+        assert result.log_probs is not None
+        assert result.raw_actions is None
+
+    # -------------------------------------------------------------------------
+    # Action-return contract (CHANGE A): Reinforce.act / ActorCritic.act now
+    # package everything into an `Action`, matching PPO/DDPG/TD3/SAC.
+    # -------------------------------------------------------------------------
+    @pytest.mark.parametrize("context", ["train", "test"])
+    def test_reinforce_act_action_contract(self, cartpole, context):
+        agent = Reinforce(policy=d_policy(cartpole), auto_entropy_tuning=False, device=DEVICE)
+        result = agent.act(T.randn(4, 4), context=context)
+        assert isinstance(result, Action)
+        assert result.actions.shape == (4,)
+        assert result.log_probs is not None
+        assert result.log_probs.shape == result.actions.shape
+        assert result.raw_actions is None
+        assert result.hidden is None
+
+    @pytest.mark.parametrize("context", ["train", "test"])
+    def test_actor_critic_act_categorical_action_contract(self, cartpole, context):
+        agent = ActorCritic(policy=d_policy(cartpole), value=value(cartpole), device=DEVICE)
+        result = agent.act(T.randn(4, 4), context=context)
+        assert isinstance(result, Action)
+        assert result.actions.shape == (4,)
+        assert result.log_probs is not None
+        assert result.log_probs.shape == result.actions.shape
+        assert result.raw_actions is None
+        assert result.hidden is None
+
+    @pytest.mark.parametrize("context", ["train", "test"])
+    def test_actor_critic_act_continuous_action_contract(self, pendulum, context):
+        agent = ActorCritic(policy=c_policy(pendulum), value=value(pendulum), device=DEVICE)
+        result = agent.act(T.randn(4, 3), context=context)
+        assert isinstance(result, Action)
+        assert result.actions.shape == (4, 1)
+        assert result.raw_actions is not None
+        assert result.raw_actions.shape == result.actions.shape
+        assert result.log_probs is not None
+        assert result.hidden is None
+
+    def test_reinforce_act_invalid_context_raises(self, cartpole):
+        agent = Reinforce(policy=d_policy(cartpole), auto_entropy_tuning=False, device=DEVICE)
+        with pytest.raises(ValueError, match="Invalid context"):
+            agent.act(T.randn(4, 4), context="bogus")
+
+    def test_actor_critic_act_invalid_context_raises(self, cartpole):
+        agent = ActorCritic(policy=d_policy(cartpole), value=value(cartpole), device=DEVICE)
+        with pytest.raises(ValueError, match="Invalid context"):
+            agent.act(T.randn(4, 4), context="bogus")
+
+    # -------------------------------------------------------------------------
+    # Autograd-leak regression guard (CHANGE B): `act()` in 'train' context
+    # now wraps its whole body in `with T.no_grad():`, so returned tensors
+    # must be detached (previously log_probs/raw_actions carried a live graph
+    # straight into the persistent RolloutBuffer tensors).
+    # -------------------------------------------------------------------------
+    def test_reinforce_act_train_outputs_are_detached(self, cartpole):
+        agent = Reinforce(policy=d_policy(cartpole), auto_entropy_tuning=False, device=DEVICE)
+        result = agent.act(T.randn(4, 4), context="train")
+        assert result.actions.requires_grad is False
+        assert result.actions.grad_fn is None
+        assert result.log_probs.requires_grad is False
+        assert result.log_probs.grad_fn is None
+
+    def test_actor_critic_act_train_outputs_are_detached_categorical(self, cartpole):
+        agent = ActorCritic(policy=d_policy(cartpole), value=value(cartpole), device=DEVICE)
+        result = agent.act(T.randn(4, 4), context="train")
+        assert result.actions.requires_grad is False
+        assert result.actions.grad_fn is None
+        assert result.log_probs.requires_grad is False
+        assert result.log_probs.grad_fn is None
+
+    def test_actor_critic_act_train_outputs_are_detached_continuous(self, pendulum):
+        agent = ActorCritic(policy=c_policy(pendulum), value=value(pendulum), device=DEVICE)
+        result = agent.act(T.randn(4, 3), context="train")
+        for tensor in (result.actions, result.log_probs, result.raw_actions):
+            assert tensor.requires_grad is False
+            assert tensor.grad_fn is None
+
+    def test_reinforce_act_train_buffer_write_stays_detached(self, cartpole):
+        """Drives one 'train' Action into a RolloutBuffer the way the trainer
+        does (Trainer._step / RolloutBuffer.add), and asserts the buffer's
+        persistent log_probs tensor is not left attached to a graph. This is
+        the actual downstream consequence CHANGE B fixes: RolloutBuffer.add
+        writes via an unguarded in-place index_put_, so a live-graph source
+        tensor makes the *buffer's own storage* require grad and grow an
+        ever-larger graph across rollout steps."""
+        agent = Reinforce(policy=d_policy(cartpole), auto_entropy_tuning=False, device=DEVICE)
+        buf = RolloutBuffer(env=cartpole, buffer_size=4, device=DEVICE)
+        E = cartpole.num_envs
+        obs_dim = cartpole.single_observation_space.shape[0]
+        states = T.randn(E, obs_dim)
+        result = agent.act(states, context="train")
+        buf.add(
+            states=states,
+            actions=result.actions,
+            rewards=T.zeros(E),
+            next_states=T.randn(E, obs_dim),
+            terminations=T.zeros(E, dtype=T.bool),
+            truncations=T.zeros(E, dtype=T.bool),
+            log_probs=result.log_probs,
+        )
+        assert buf.log_probs.requires_grad is False
+        assert buf.log_probs.grad_fn is None
 
 
 # =============================================================================
@@ -488,6 +593,29 @@ class TestConfigRoundTrip:
                     target_noise=NormalNoise(mean=0.0, stddev=0.2, device=DEVICE),
                     device=DEVICE)
         self._roundtrip(agent, pendulum)
+
+    def test_ddpg_roundtrip_recurrent_burn_in_survives(self, pendulum):
+        """CHANGE C: recurrent_burn_in must round-trip through get_config ->
+        build_agent, not silently reset to 0 on reload."""
+        agent = DDPG(policy=actor(pendulum), critic=c_q(pendulum),
+                     noise=NormalNoise(mean=0.0, stddev=0.1, device=DEVICE),
+                     N=3, recurrent_burn_in=1, device=DEVICE)
+        cfg = agent.get_config()
+        assert cfg["config"]["recurrent_burn_in"] == 1
+        rebuilt = self._roundtrip(agent, pendulum)
+        assert rebuilt.recurrent_burn_in == 1
+
+    def test_td3_roundtrip_recurrent_burn_in_survives(self, pendulum):
+        """CHANGE C: recurrent_burn_in must round-trip through get_config ->
+        build_agent, not silently reset to 0 on reload."""
+        agent = TD3(policy=actor(pendulum), critic=c_q(pendulum),
+                    noise=NormalNoise(mean=0.0, stddev=0.1, device=DEVICE),
+                    target_noise=NormalNoise(mean=0.0, stddev=0.2, device=DEVICE),
+                    N=3, recurrent_burn_in=1, device=DEVICE)
+        cfg = agent.get_config()
+        assert cfg["config"]["recurrent_burn_in"] == 1
+        rebuilt = self._roundtrip(agent, pendulum)
+        assert rebuilt.recurrent_burn_in == 1
 
     def test_legacy_config_schema_adapts(self, cartpole):
         """A legacy-style agent config (per-model keys with legacy Model type
