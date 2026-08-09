@@ -49,7 +49,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `phoenx.distributions`, `phoenx.builder`, `phoenx.her`, `phoenx.trainer`,
   `phoenx.rl_callbacks`, `phoenx.normalizer`, `phoenx.buffer`,
   `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.intrinsic_motivation`,
-  and `phoenx.env_wrapper`. `her.py`'s module docstring also lost the `===`
+  `phoenx.env_wrapper`, and `phoenx.models` (docstring-and-docs-completion
+  plan). `her.py`'s module docstring also lost the `===`
   banner rows that mkdocstrings rendered as literal `=` characters on the HER
   page, and two of its usage examples were simply wrong: buffers take
   `hindsight=`, not `relabeler=`, and `strategy='future'` samples `[t, T_ep)`

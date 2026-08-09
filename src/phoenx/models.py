@@ -1,4 +1,15 @@
-"""Holds Model classes used for Reinforcement learning."""
+"""Neural network building blocks for RL policies and critics.
+
+Defines the layer registry and helpers used to assemble networks from YAML
+(``build_layer``, weight init, ``build_optimizer``), the legacy ``Model``
+hierarchy (policy / value / actor / critic), and ``ModularModel`` with its
+roots → trunk → branches layout and typed ``Head`` subclasses.
+
+Custom attention and recurrent layers (``PositionalEncoding``,
+``SelfAttention``, ``TransformerEncoderBlock``, ``LazyRecurrent``) register
+under the same ``type`` strings configs use. Temporal layers (LSTM / GRU /
+causal transformer) belong in the trunk only.
+"""
 
 # imports
 from abc import abstractmethod
@@ -30,15 +41,16 @@ from .schedulers import ScheduleWrapper
 # =============================================================================
 
 class PositionalEncoding(nn.Module):
-    """Adds positional information to a ``(B, T, d_model)`` token sequence.
-
-    Args:
-        d_model: Embedding dimension of the tokens.
-        max_len: Maximum sequence length supported.
-        learned: If True use a learned positional embedding, else sinusoidal.
-    """
+    """Adds positional information to a ``(B, T, d_model)`` token sequence."""
 
     def __init__(self, d_model: int, max_len: int = 512, learned: bool = False):
+        """Create a fixed sinusoidal or learned positional embedding.
+
+        Args:
+            d_model: Embedding dimension of the tokens.
+            max_len: Maximum sequence length supported.
+            learned: If True use a learned positional embedding, else sinusoidal.
+        """
         super().__init__()
         self.d_model = d_model
         self.max_len = max_len
@@ -55,6 +67,17 @@ class PositionalEncoding(nn.Module):
             self.register_buffer("pe", pe)
 
     def forward(self, x: T.Tensor) -> T.Tensor:
+        """Add positional encodings to a batch of token embeddings.
+
+        Args:
+            x: Input of shape ``(B, T, d_model)``.
+
+        Returns:
+            Tensor of the same shape with positions added.
+
+        Raises:
+            ValueError: If ``x`` is not rank-3 or ``T`` exceeds ``max_len``.
+        """
         if x.dim() != 3:
             raise ValueError(
                 f"positional_encoding expects rank-3 input (B, T, d_model); got shape {tuple(x.shape)}"
@@ -75,10 +98,28 @@ class SelfAttention(nn.Module):
     """
 
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
+        """Wrap a batch-first multi-head attention module.
+
+        Args:
+            embed_dim: Token embedding dimension.
+            num_heads: Number of attention heads.
+            dropout: Dropout probability on attention weights.
+        """
         super().__init__()
         self.attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
 
     def forward(self, x: T.Tensor) -> T.Tensor:
+        """Apply self-attention over the token axis.
+
+        Args:
+            x: Input of shape ``(B, tokens, embed_dim)``.
+
+        Returns:
+            Attended tensor of the same shape.
+
+        Raises:
+            ValueError: If ``x`` is not rank-3.
+        """
         if x.dim() != 3:
             raise ValueError(
                 f"mha expects rank-3 input (B, tokens, embed_dim); got shape {tuple(x.shape)}"
@@ -88,13 +129,12 @@ class SelfAttention(nn.Module):
 
 
 class TransformerEncoderBlock(nn.Module):
-    """``nn.TransformerEncoder`` wrapper (batch_first) with optional causal +
-    episode-segment masking.
+    """``nn.TransformerEncoder`` wrapper with optional causal and segment masking.
 
     - ``causal=False``: intra-step attention over feature tokens; allowed in
       any module (roots/trunk/branches).
     - ``causal=True``: temporal attention over the time axis; only allowed in
-      the trunk (enforced by :class:`SubNetwork`). When a ``start_mask``
+      the trunk (enforced by ``ModularModel``). When a ``start_mask``
       (``(B, T)`` episode-start flags) is provided, attention is additionally
       blocked across episode boundaries.
     """
@@ -110,6 +150,18 @@ class TransformerEncoderBlock(nn.Module):
         causal: bool = False,
         norm_first: bool = False,
     ):
+        """Build a stack of Transformer encoder layers.
+
+        Args:
+            d_model: Token / time-step embedding dimension.
+            nhead: Number of attention heads.
+            num_layers: Number of stacked encoder layers.
+            dim_feedforward: Hidden size of the feed-forward block.
+            dropout: Dropout applied inside each encoder layer.
+            activation: Activation name passed to ``nn.TransformerEncoderLayer``.
+            causal: If True, apply a causal (and optional episode-segment) mask.
+            norm_first: If True, use pre-norm encoder layers.
+        """
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
@@ -143,6 +195,19 @@ class TransformerEncoderBlock(nn.Module):
         return blocked
 
     def forward(self, x: T.Tensor, start_mask: T.Tensor | None = None) -> T.Tensor:
+        """Encode a rank-3 sequence, optionally with causal / segment masks.
+
+        Args:
+            x: Input of shape ``(B, T, d_model)``.
+            start_mask: Optional ``(B, T)`` bool flags marking episode starts;
+                used only when ``causal`` is True to block cross-episode attention.
+
+        Returns:
+            Encoded tensor of the same shape as ``x``.
+
+        Raises:
+            ValueError: If ``x`` is not rank-3.
+        """
         if x.dim() != 3:
             raise ValueError(
                 f"transformer_encoder expects rank-3 input (B, T, d_model); got shape {tuple(x.shape)}"
@@ -167,6 +232,17 @@ class LazyRecurrent(nn.Module):
         dropout: float = 0.0,
         input_size: int | None = None,
     ):
+        """Configure an LSTM or GRU that materializes on first use.
+
+        Args:
+            mode: Either ``'lstm'`` or ``'gru'``.
+            hidden_size: Hidden (and cell) state size.
+            num_layers: Number of stacked recurrent layers.
+            dropout: Dropout between stacked layers (ignored when
+                ``num_layers`` is 1).
+            input_size: If given, materialize immediately; otherwise defer
+                until the first ``forward``.
+        """
         super().__init__()
         if mode not in ("lstm", "gru"):
             raise ValueError(f"LazyRecurrent mode must be 'lstm' or 'gru', got {mode!r}")
@@ -189,6 +265,23 @@ class LazyRecurrent(nn.Module):
         )
 
     def forward(self, x: T.Tensor, hx=None):
+        """Run the recurrent module, materializing it on first call if needed.
+
+        Args:
+            x: Input of shape ``(B, T, features)``.
+            hx (torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None): Optional
+                initial hidden state. For LSTM a ``(h, c)`` pair; for GRU a
+                single ``h``. Each tensor has shape
+                ``(num_layers, B, hidden_size)``.
+
+        Returns:
+            output (torch.Tensor): RNN outputs of shape ``(B, T, hidden_size)``.
+            hx (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): Updated hidden
+                state in the same layout as the input ``hx``.
+
+        Raises:
+            ValueError: If ``x`` is not rank-3.
+        """
         if x.dim() != 3:
             raise ValueError(
                 f"{self.mode} expects rank-3 input (B, T, features); got shape {tuple(x.shape)}"
@@ -199,6 +292,17 @@ class LazyRecurrent(nn.Module):
         return self.rnn(x, hx)
 
     def init_hidden(self, batch_size: int, device: T.device | str):
+        """Allocate a zeroed hidden state for a fresh episode batch.
+
+        Args:
+            batch_size: Leading batch dimension ``B``.
+            device: Device the zeros are allocated on.
+
+        Returns:
+            hidden (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): Zeroed
+                state — ``(h, c)`` for LSTM or ``h`` for GRU, each shaped
+                ``(num_layers, batch_size, hidden_size)``.
+        """
         h = T.zeros(self.num_layers, batch_size, self.hidden_size, device=device)
         if self.mode == "lstm":
             return (h, T.zeros_like(h))
@@ -208,8 +312,10 @@ class LazyRecurrent(nn.Module):
         """Zero the hidden state where ``keep_mask`` is False (episode starts).
 
         Args:
-            hidden: ``(h, c)`` for LSTM or ``h`` for GRU; shape (layers, B, H).
-            keep_mask: bool tensor (B,) — True keeps the state, False resets it.
+            hidden (torch.Tensor | tuple[torch.Tensor, torch.Tensor]): ``(h, c)``
+                for LSTM or ``h`` for GRU; each of shape ``(layers, B, H)``.
+            keep_mask: Bool tensor of shape ``(B,)`` — True keeps the state,
+                False resets it.
         """
         keep = keep_mask.to(dtype=T.float32).view(1, -1, 1)
         if self.mode == "lstm":
@@ -309,6 +415,17 @@ def build_layer(layer_type: str, params: dict | None = None) -> nn.Module:
 
     ``kernel`` / ``kernel_params`` entries (weight-initialization spec) are
     stripped before the remaining params reach the layer constructor.
+
+    Args:
+        layer_type: Registry key, e.g. ``'dense'``, ``'lstm'``, ``'mha'``.
+        params: Constructor kwargs for that layer type. May also carry
+            ``kernel`` / ``kernel_params`` init keys, which are ignored here.
+
+    Returns:
+        Instantiated ``nn.Module`` for ``layer_type``.
+
+    Raises:
+        ValueError: If ``layer_type`` is unknown or a required param is missing.
     """
     if layer_type not in LAYER_REGISTRY:
         raise ValueError(
@@ -330,6 +447,16 @@ def apply_kernel_(tensor: T.Tensor, kernel: str, kernel_params: dict | None = No
 
     Mirrors (and is shared with) the legacy ``Model._init_weights`` kernel
     dispatch so numerics are identical for existing configs.
+
+    Args:
+        tensor: Parameter tensor to initialize in place.
+        kernel: Scheme name (``'kaiming_uniform'``, ``'orthogonal'``,
+            ``'variance_scaling'``, ``'default'``, …).
+        kernel_params: Extra kwargs forwarded to the matching ``nn.init``
+            call. Ignored when ``kernel`` is ``'default'``.
+
+    Raises:
+        ValueError: If ``kernel`` is not a supported scheme name.
     """
     kernel_params = kernel_params or {}
     if kernel == 'kaiming_uniform':
@@ -372,6 +499,12 @@ def init_module_weights(module: nn.Module, kernel: str = 'default', kernel_param
     - parameters with ``'weight'`` in their name and rank >= 2 get the kernel;
     - rank-1 weights (LayerNorm/BatchNorm scales) are left at their defaults;
     - parameters with ``'bias'`` in their name are zeroed (legacy behavior).
+
+    Args:
+        module: Module whose named parameters are initialized in place.
+        kernel: Scheme name passed to ``apply_kernel_``. ``'default'`` leaves
+            weight tensors at their PyTorch defaults.
+        kernel_params: Extra kwargs forwarded to ``apply_kernel_``.
     """
     has_weight = any(
         'weight' in name and p.dim() >= 2 for name, p in module.named_parameters()
@@ -393,7 +526,20 @@ def init_module_weights(module: nn.Module, kernel: str = 'default', kernel_param
 # =============================================================================
 
 def build_optimizer(parameters: Iterator[Parameter], optimizer_params: dict) -> optim.Optimizer:
-    """Build an optimizer from a ``{'type': ..., 'params': {...}}`` spec."""
+    """Build an optimizer from a ``{'type': ..., 'params': {...}}`` spec.
+
+    Args:
+        parameters: Parameter iterator (typically ``module.parameters()``).
+        optimizer_params: Spec with required ``type`` (``'adam'``, ``'sgd'``,
+            ``'rmsprop'``, or ``'adagrad'``; case-insensitive) and optional
+            ``params`` kwargs forwarded to the torch optimizer constructor.
+
+    Returns:
+        Instantiated ``torch.optim`` optimizer.
+
+    Raises:
+        NotImplementedError: If ``type`` is not one of the supported names.
+    """
     original_optimizer_type = optimizer_params['type']
     optimizer_type = str(original_optimizer_type).lower()
     opt_kwargs = optimizer_params.get('params', {})
@@ -410,19 +556,20 @@ def build_optimizer(parameters: Iterator[Parameter], optimizer_params: dict) -> 
 
 
 class Model(nn.Module):
-    """Base class for all reinforcement learning models.
+    """Legacy single-stack RL model base (superseded by ``ModularModel``).
 
-    This class dynamically constructs a neural network based on the provided layer configuration
-    and supports various optimizers and learning rate schedulers.
+    Dynamically builds a sequential ``ModuleDict`` from ``layer_config``, then
+    lets subclasses attach an output head. Prefer
+    [ModularModel][phoenx.models.ModularModel] for new configs (roots → trunk →
+    branches).
 
     Attributes:
-        env (EnvWrapper): The environment wrapper for the model.
-        layer_config (list): List of dictionaries specifying the layers and their parameters.
-        output_config (dict): Configuration for output layer initialization.
-        optimizer_params (dict): Dictionary specifying optimizer type and parameters.
-        lr_scheduler (ScheduleWrapper|None): Learning rate scheduler.
-        device (str|None): The device ('cpu' or 'cuda') to run the model on (default: None = Cuda if available else CPU).
-        log_level (str): Log level (default: 'info').
+        env (EnvWrapper): Environment wrapper providing spaces and keys.
+        layer_config (list): Layer specs ``{'type', 'params'}``.
+        output_config (dict): Output-layer init / kernel config.
+        optimizer_params (dict): Optimizer type and kwargs.
+        lr_scheduler (ScheduleWrapper | None): Optional learning-rate schedule.
+        device (torch.device): Resolved compute device.
     """
     def __init__(
         self,
@@ -434,17 +581,16 @@ class Model(nn.Module):
         device: str|None = None,
         # log_level: str = 'info'
     ):
-        """Sets up the module dictionary of layers (most of which
-        will be lazy).
+        """Build the lazy layer stack and move the module to ``device``.
 
         Args:
-            env (EnvWrapper): Environment wrapper.
-            layer_config (list): List of dictionaries specifying the layers and params.
-            output_config (dict): Configuration for output layer initialization.
-            optimizer_params (dict): Optimizer configuration.
-            lr_scheduler (ScheduleWrapper|None): LR scheduler configuration.
-            device (str|None): Device to run on (default: None = Cuda if available else CPU).
-            log_level (str): Log level (default: 'info').
+            env: Environment wrapper.
+            layer_config: List of dictionaries specifying layers and params.
+            output_config: Configuration for output layer initialization.
+            optimizer_params: Optimizer configuration; defaults to Adam at
+                ``lr=0.001`` when ``None``.
+            lr_scheduler: Optional learning-rate scheduler.
+            device: Device string or ``None`` (CUDA if available, else CPU).
         """
         super().__init__()
         self.env = env
@@ -476,13 +622,15 @@ class Model(nn.Module):
         self.to(self.device)
         
     def _init_model(self, module_dict: nn.ModuleDict, layer_config: list):
-        """Performs a "dry run" forward pass with dummy_input to initialize
-        all lazy modules. Then, initializes weights and optimizer/scheduler.
+        """Materialize lazy modules with a dummy forward, then init weights.
+
+        Builds synthetic tensors from the env observation (and action, for
+        ``ContinuousCritic``) spaces, runs ``forward`` under ``no_grad``, then
+        calls ``_init_weights`` on ``module_dict``.
 
         Args:
-            dummy_input (Tensor, optional): If None, automatically creates
-                a dummy input based on env.observation_space.shape. If your
-                environment is a 3D image (C, H, W), use (1, C, H, W).
+            module_dict: ModuleDict whose lazy layers should be materialized.
+            layer_config: Parallel list of layer configs used for weight init.
         """
         # Dry run forward pass to initialize lazy modules
         # Check if the observation space is a dictionary AND contains goal-conditioned keys
@@ -565,14 +713,16 @@ class Model(nn.Module):
         return build_optimizer(parameters, self.optimizer_params)
     
     def _preprocess_state(self, state):
-        """Preprocess the state tensor to handle various shapes, including flat vectors and images.
-        
-        - Adds a feature dim to 1D (flat) states.
-        - Adds a channel dim to 3D (grayscale image) states.
-        - Permutes image states from Gymnasium envs if needed (HWC -> CHW).
-        
+        """Normalize observation tensor rank and channel layout.
+
+        Adds a feature dim to 1D states, a channel dim to 3D grayscale batches,
+        and permutes Gymnasium HWC images to CHW when channels are last.
+
+        Args:
+            state (torch.Tensor): Raw observation batch or single observation.
+
         Returns:
-            Tensor: Preprocessed state.
+            state (torch.Tensor): Preprocessed observation tensor.
         """
         # Handle flat (1D) states by adding a feature dimension (e.g., for single-feature observations)
         if state.dim() == 1:
@@ -617,7 +767,7 @@ class Model(nn.Module):
             dist (Distribution): The Transformed distribution to get the mean of.
 
         Returns:
-            Tensor: The mean action of the Transformed distribution.
+            mean (torch.Tensor): Deterministic mean / mode action.
         """
         base_dist = self._unwrap_distribution(dist)
 
@@ -640,9 +790,11 @@ class Model(nn.Module):
         
     @abstractmethod
     def forward(self, *args, **kwargs):
+        """Run the model forward pass (implemented by subclasses)."""
         raise NotImplementedError
 
     def get_config(self):
+        """Serialize architecture hyperparameters to a ``{'type', 'config'}`` dict."""
         return {
             "type": self.__class__.__name__,
             "config": {
@@ -656,11 +808,19 @@ class Model(nn.Module):
 
     @classmethod
     def from_config(cls, config: dict, env: EnvWrapper) -> "Model":
-        """Rebuild a model (architecture + fresh weights/optimizer) from the
-        inner ``config`` dict produced by :meth:`get_config`.
+        """Rebuild architecture + fresh weights from an inner config dict.
 
         The environment is injected live (never rebuilt here) so a single env
-        instance can be shared across every model of an agent.
+        instance can be shared across every model of an agent. Nested schedule
+        dicts for ``lr_scheduler`` / ``temperature_schedule`` are rehydrated via
+        ``ScheduleWrapper.from_config``.
+
+        Args:
+            config: Inner ``config`` mapping from ``get_config()['config']``.
+            env: Live environment wrapper to inject.
+
+        Returns:
+            A new instance of ``cls`` with freshly initialized weights.
         """
         import inspect
 
@@ -675,6 +835,19 @@ class Model(nn.Module):
         return cls(**kwargs)
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Resolve clone device and env; subclasses rebuild the concrete model.
+
+        ``copy_weights`` is accepted for a uniform subclass signature but is not
+        used here. Isaac Lab envs are reused; other envs are rebuilt from JSON.
+
+        Args:
+            copy_weights: Unused on the base; subclasses may copy weights.
+            device: Target device; defaults to this model's device.
+
+        Returns:
+            device (torch.device): Resolved device for the clone.
+            env (EnvWrapper): Env instance to pass into the subclass constructor.
+        """
         # Reconstruct the model from its configuration
         if device:
             device = get_device(device)
@@ -707,7 +880,13 @@ class Model(nn.Module):
         T.save(state, path)
 
     def load_state(self, path: Path | str, load_weights: bool = True) -> None:
-        """Restore weights + optimizer + scheduler progress from :meth:`save_state`."""
+        """Restore weights + optimizer + scheduler progress from ``save_state``.
+
+        Args:
+            path: Checkpoint path written by ``save_state``.
+            load_weights: If False, skip ``load_state_dict`` but still restore
+                optimizer / schedule state when present.
+        """
         state = T.load(Path(path), map_location=self.device, weights_only=False)
         if load_weights and state.get("model") is not None:
             self.load_state_dict(state["model"])
@@ -721,23 +900,16 @@ class Model(nn.Module):
 
 
 class StochasticDiscretePolicy(Model):
-    """Policy model for predicting a probability distribution over a discrete action space.
+    """Legacy categorical policy for discrete action spaces.
 
-    This class builds on the `Model` base class and adds functionality specific to
-    policies with a discrete action space, such as using a Categorical distribution
-    for action selection.
+    Modular counterpart: [StochasticDiscreteHead][phoenx.models.StochasticDiscreteHead].
 
     Attributes:
-        env (EnvWrapper): The environment wrapper.
-        layer_config (list[dict]): Configuration of hidden layers (default: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]).
-        output_config (list[dict]): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
-        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
-        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        distribution (str): Type of distribution for action selection ['categorical'] (default: 'categorical').
-        temperature (float): Temperature for the relaxed categorical distribution (default: 1.0).
-        temperature_schedule (ScheduleWrapper, optional): Temperature scheduler configuration. Default=None
-        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        log_level (str): logger level. Default=info.
+        distribution (str): Action distribution name (``'categorical'``).
+        temperature (float): Softmax temperature multiplier.
+        temperature_schedule (ScheduleWrapper | None): Optional temperature
+            schedule whose factor scales ``temperature``.
+        num_actions (int): Number of discrete actions from the env.
     """
 
     def __init__(
@@ -752,18 +924,18 @@ class StochasticDiscretePolicy(Model):
         temperature_schedule: ScheduleWrapper|None = None,
         device: str|T.device|None = None,
     ):
-        """Initialize the policy model.
+        """Initialize the discrete policy, output head, and optimizer.
 
         Args:
-            env (EnvWrapper): The environment wrapper.
-            layer_config (list[dict]): List of dictionaries specifying hidden layer configurations.
-            output_config (dict): Configuration for output layer initialization (default: {}).
-            optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
-            lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
-            distribution (str): Type of distribution for actions ['categorical'] (default: 'categorical').
-            temperature (float): Temperature for the relaxed categorical distribution (default: 1.0).
-            temperature_schedule (ScheduleWrapper, optional): Temperature scheduler configuration. Default=None
-            device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
+            env: Environment wrapper.
+            layer_config: Hidden-layer configuration list.
+            output_config: Output-layer weight-init config (list of layer dicts).
+            optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
+            lr_scheduler: Optional learning-rate scheduler.
+            distribution: Action distribution name; only ``'categorical'``.
+            temperature: Base softmax temperature.
+            temperature_schedule: Optional schedule multiplying ``temperature``.
+            device: Device string/device or ``None`` for the framework default.
         """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.distribution = distribution
@@ -793,13 +965,19 @@ class StochasticDiscretePolicy(Model):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
-        """Perform a forward pass through the model.
+        """Return a categorical distribution over discrete actions.
 
         Args:
-            x (Tensor): Input tensor (e.g., observation from the environment).
+            x (torch.Tensor): Observation batch (preprocessed in place).
+            goal (torch.Tensor | None): Optional goal tensor concatenated on the
+                feature dim for goal-conditioned envs.
 
         Returns:
-            Tuple[Categorical, Tensor]: Action distribution and logits for the action space.
+            dist (torch.distributions.Categorical): Temperature-scaled
+                categorical over ``num_actions`` logits.
+
+        Raises:
+            ValueError: If ``distribution`` is not ``'categorical'``.
         """
         # Preprocess state to ensure correct formatting
         x = self._preprocess_state(x)
@@ -823,6 +1001,7 @@ class StochasticDiscretePolicy(Model):
             raise ValueError(f'Distribution {self.distribution} not supported.')
 
     def get_config(self):
+        """Serialize including distribution and temperature fields."""
         config = super().get_config()
         config["config"].update({
             'distribution': self.distribution,
@@ -832,6 +1011,15 @@ class StochasticDiscretePolicy(Model):
         return config
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Return a new discrete policy, optionally copying weights.
+
+        Args:
+            copy_weights: If True, copy ``state_dict`` into the clone.
+            device: Device for the clone; defaults to this model's device.
+
+        Returns:
+            cloned_model (StochasticDiscretePolicy): Independent policy copy.
+        """
         device, env = super().clone(copy_weights, device)
         cloned_model = StochasticDiscretePolicy(
             env=env,
@@ -849,20 +1037,14 @@ class StochasticDiscretePolicy(Model):
         return cloned_model
 
 class StochasticContinuousPolicy(Model):
-    """Policy model for predicting a probability distribution over a continuous action space.
+    """Legacy bounded continuous policy (Beta / Kumaraswamy / squashed Normal).
 
-    This class extends the `Model` base class to implement policies for continuous action spaces,
-    supporting Beta and Normal distributions.
+    Modular counterpart:
+    [StochasticContinuousHead][phoenx.models.StochasticContinuousHead].
 
     Attributes:
-        env (EnvWrapper): The environment wrapper.
-        layer_config (list): Configuration of hidden layers.
-        output_config (dict): Configuration of the output layer weights.
-        optimizer_params (dict): Parameters for the optimizer.
-        lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
-        distribution (str): Type of distribution for actions (default: 'beta').
-        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        # log_level (str): logger level. Default=info.
+        distribution (str): ``'beta'``, ``'kumaraswamy'``, or ``'normal'``.
+        num_actions (int): Action dimensionality from the env Box space.
     """
 
     def __init__(
@@ -875,19 +1057,16 @@ class StochasticContinuousPolicy(Model):
         distribution: str = 'beta',
         device: str|T.device|None = None,
     ):
-        """Initialize the policy model.
+        """Initialize the continuous policy, dual-parameter head, and optimizer.
 
         Args:
-            env (EnvWrapper): The environment wrapper.
-            layer_config (list): List of dictionaries specifying hidden layer configurations.
-            output_config (dict): Configuration for output layer initialization (default: {}).
-            optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
-            lr_scheduler (ScheduleWrapper, optional): LR scheduler configuration. Default=None
-            distribution (str): Type of distribution for actions (normal or beta) (default: 'beta').
-            # obs_key (str|None): Observation key (default: None).
-            # goal_key (str | None): Goal key (default: None).
-            device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-            # log_level (str): logger level. Default=info.
+            env: Environment wrapper.
+            layer_config: Hidden-layer configuration list.
+            output_config: Output-layer weight-init config (list of layer dicts).
+            optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
+            lr_scheduler: Optional learning-rate scheduler.
+            distribution: ``'beta'``, ``'kumaraswamy'``, or ``'normal'``.
+            device: Device string/device or ``None`` for the framework default.
         """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.distribution = distribution
@@ -918,13 +1097,19 @@ class StochasticContinuousPolicy(Model):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
-        """Perform a forward pass through the model.
+        """Return a bounded continuous action distribution.
 
         Args:
-            x (Tensor): Input tensor (e.g., observation from the environment).
+            x (torch.Tensor): Observation batch.
+            goal (torch.Tensor | None): Optional goal tensor concatenated on the
+                feature dim for goal-conditioned envs.
 
         Returns:
-            Distribution, Tensor, Tensor: Action distribution and its parameters.
+            dist (phoenx.distributions.BoundedIndependent): Scaled Beta,
+                Kumaraswamy, or squashed Normal over the action dimensions.
+
+        Raises:
+            ValueError: If ``distribution`` is not supported.
         """
          # Preprocess state to ensure correct formatting
         x = self._preprocess_state(x)
@@ -979,6 +1164,7 @@ class StochasticContinuousPolicy(Model):
         return BoundedIndependent(dist, reinterpreted_batch_ndims=1)
 
     def get_config(self):
+        """Serialize including the continuous distribution name."""
         config = super().get_config()
         config["config"].update({
             'distribution': self.distribution,
@@ -986,6 +1172,15 @@ class StochasticContinuousPolicy(Model):
         return config
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Return a new continuous policy, optionally copying weights.
+
+        Args:
+            copy_weights: If True, copy ``state_dict`` into the clone.
+            device: Device for the clone; defaults to this model's device.
+
+        Returns:
+            cloned_model (StochasticContinuousPolicy): Independent policy copy.
+        """
         device, env = super().clone(copy_weights, device)
         cloned_model = StochasticContinuousPolicy(
             env=env,
@@ -1002,17 +1197,9 @@ class StochasticContinuousPolicy(Model):
 
 
 class ValueModel(Model):
-    """Value model for predicting state values.
+    """Legacy scalar state-value network V(s).
 
-    This class extends the `Model` base class to implement a neural network for value function approximation in reinforcement learning.
-
-    Attributes:
-        env (EnvWrapper): The environment wrapper.
-        layer_config (list): Configuration of hidden layers (default: [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}]).
-        output_config (dict): Configuration of the output layer weights (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
-        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
-        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
+    Modular counterpart: [ValueHead][phoenx.models.ValueHead].
     """
 
     def __init__(
@@ -1025,15 +1212,15 @@ class ValueModel(Model):
         device: str|T.device|None = None,
         # log_level: str = 'info'
     ):
-        """Initialize the value model.
+        """Initialize the value network, scalar head, and optimizer.
 
         Args:
-            env (EnvWrapper): The environment wrapper.
-            layer_config (list): List of dictionaries specifying hidden layer configurations.
-            output_config (dict): Configuration for output layer initialization (default: {}).
-            optimizer_params (dict, optional): Optimizer parameters (default: Adam with lr=0.001).
-            lr_scheduler (ScheduleWrapper, optional): learning rate Scheduler parameters (default: None).
-            device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
+            env: Environment wrapper.
+            layer_config: Hidden-layer configuration list.
+            output_config: Output-layer weight-init config.
+            optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
+            lr_scheduler: Optional learning-rate scheduler.
+            device: Device string/device or ``None`` for the framework default.
         """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
@@ -1058,14 +1245,15 @@ class ValueModel(Model):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
-        """Perform a forward pass through the model.
+        """Predict a scalar state value.
 
         Args:
-            x (Tensor): Input tensor (e.g., observation from the environment).
-            goal (Tensor, optional): Goal tensor (default: None).
+            x (torch.Tensor): Observation batch.
+            goal (torch.Tensor | None): Optional goal tensor concatenated on the
+                feature dim for goal-conditioned envs.
 
         Returns:
-            Tensor: Predicted state value.
+            value (torch.Tensor): Predicted state values with shape ``[..., 1]``.
         """
         # Preprocess state to ensure correct formatting
         x = self._preprocess_state(x)
@@ -1083,9 +1271,19 @@ class ValueModel(Model):
         return x
 
     def get_config(self):
+        """Serialize architecture hyperparameters (delegates to ``Model``)."""
         return super().get_config()
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Return a new value model, optionally copying weights.
+
+        Args:
+            copy_weights: If True, copy ``state_dict`` into the clone.
+            device: Device for the clone; defaults to this model's device.
+
+        Returns:
+            cloned_model (ValueModel): Independent value-network copy.
+        """
         # Reconstruct the model from its configuration
         device, env = super().clone(copy_weights, device)
 
@@ -1109,16 +1307,10 @@ class ValueModel(Model):
         return cloned_model
 
 class ActorModel(Model):
-    """Actor model for continuous action spaces.
+    """Legacy deterministic continuous actor returning ``(mu, pi)``.
 
-    Attributes:
-        env (EnvWrapper): The environment wrapper.
-        layer_config (list): List of dictionaries specifying hidden layer configurations.
-        output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
-        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
-        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        # log_level (str): Log level (default: 'info').
+    Modular counterpart:
+    [DeterministicActorHead][phoenx.models.DeterministicActorHead].
     """
     
     def __init__(
@@ -1131,6 +1323,16 @@ class ActorModel(Model):
         device: str|T.device|None = None,
         # log_level: str='info'
     ):
+        """Initialize the deterministic actor, tanh head, and optimizer.
+
+        Args:
+            env: Environment wrapper with a continuous Box action space.
+            layer_config: Hidden-layer configuration list.
+            output_config: Output-layer weight-init config.
+            optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
+            lr_scheduler: Optional learning-rate scheduler.
+            device: Device string/device or ``None`` for the framework default.
+        """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
         # Set lower/upper bounds of action space to Tensors
@@ -1159,6 +1361,18 @@ class ActorModel(Model):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, x, goal=None):
+        """Return unbounded ``mu`` and bound-scaled ``pi`` actions.
+
+        Args:
+            x (torch.Tensor): Observation batch.
+            goal (torch.Tensor | None): Optional goal tensor concatenated on the
+                feature dim for goal-conditioned envs.
+
+        Returns:
+            mu (torch.Tensor): Pre-tanh linear outputs.
+            pi (torch.Tensor): Tanh actions scaled into ``[low, high]`` when
+                bounds are finite; otherwise raw tanh outputs in ``[-1, 1]``.
+        """
         x = self._preprocess_state(x)
         x = x.to(self.device)
         if goal is not None:
@@ -1177,9 +1391,19 @@ class ActorModel(Model):
         return mu, pi
 
     def get_config(self):
+        """Serialize architecture hyperparameters (delegates to ``Model``)."""
         return super().get_config()
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Return a new actor, optionally copying weights.
+
+        Args:
+            copy_weights: If True, copy ``state_dict`` into the clone.
+            device: Device for the clone; defaults to this model's device.
+
+        Returns:
+            cloned_model (ActorModel): Independent actor copy.
+        """
         # Reconstruct the model from its configuration
         device, env = super().clone(copy_weights, device)
 
@@ -1199,8 +1423,7 @@ class ActorModel(Model):
         return cloned_model
 
 class BaseCritic(Model):
-    """Base class for critic models.
-    """
+    """Legacy critic base shared by continuous and discrete Q-networks."""
 
     def __init__(
         self,
@@ -1212,30 +1435,45 @@ class BaseCritic(Model):
         device: str|T.device|None = None,
         # log_level: str='info'
         ):
+        """Initialize the shared critic body (no output head yet).
+
+        Args:
+            env: Environment wrapper.
+            layer_config: Hidden-layer configuration list for the state trunk.
+            output_config: Output-layer weight-init config (used by subclasses).
+            optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
+            lr_scheduler: Optional learning-rate scheduler.
+            device: Device string/device or ``None`` for the framework default.
+        """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
 
     @abstractmethod
     def forward(self, *args, **kwargs):
+        """Predict action values (implemented by subclasses)."""
         raise NotImplementedError
 
     def get_config(self):
+        """Serialize architecture hyperparameters (delegates to ``Model``)."""
         return super().get_config()
 
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Resolve clone device/env like ``Model.clone`` (subclasses rebuild).
+
+        Args:
+            copy_weights: Unused here; subclasses may copy weights.
+            device: Target device; defaults to this model's device.
+
+        Returns:
+            device (torch.device): Resolved device for the clone.
+            env (EnvWrapper): Env instance for the subclass constructor.
+        """
         return super().clone(copy_weights, device)
 
 class ContinuousCritic(BaseCritic):
-    """Critic model for continuous action spaces.
+    """Legacy Q(s, a) critic for continuous actions.
 
-    Attributes:
-        env (EnvWrapper): The environment wrapper.
-        layer_config (list): List of dictionaries specifying hidden layer configurations for the state.
-        merged_config (list): List of dictionaries specifying hidden layer configurations for the merged state and action.
-        output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
-        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
-        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        # log_level (str): Log level (default: 'info').
+    Pipeline: state stack → concat(action) → merged stack → scalar Q.
+    Modular counterpart: [ContinuousQHead][phoenx.models.ContinuousQHead].
     """
     def __init__(
         self,
@@ -1248,6 +1486,18 @@ class ContinuousCritic(BaseCritic):
         device: str|T.device|None = None,
         # log_level: str='info'  
     ):
+        """Initialize state, merged, and output stacks plus the optimizer.
+
+        Args:
+            env: Environment wrapper with a continuous Box action space.
+            layer_config: Hidden layers applied to the (optionally goal-augmented)
+                state before the action is concatenated.
+            merged_config: Hidden layers applied after ``concat(state, action)``.
+            output_config: Output-layer weight-init config for the scalar head.
+            optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
+            lr_scheduler: Optional learning-rate scheduler.
+            device: Device string/device or ``None`` for the framework default.
+        """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.merged_config = merged_config
         # self.output_config = output_layer_kernel
@@ -1281,6 +1531,18 @@ class ContinuousCritic(BaseCritic):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, state, action, goal=None):
+        """Predict a scalar Q(s, a) value.
+
+        Args:
+            state (torch.Tensor): Observation batch.
+            action (torch.Tensor): Action batch concatenated after the state
+                stack.
+            goal (torch.Tensor | None): Optional goal tensor concatenated onto
+                ``state`` before the state stack.
+
+        Returns:
+            q (torch.Tensor): Scalar Q-values with shape ``[..., 1]``.
+        """
          # Preprocess state to ensure correct formatting
         state = self._preprocess_state(state)
         state = state.to(self.device)
@@ -1303,6 +1565,7 @@ class ContinuousCritic(BaseCritic):
         return output
 
     def get_config(self):
+        """Serialize including ``merged_config``."""
         config = super().get_config()
         config["config"].update({
             'merged_config': self.merged_config,
@@ -1311,6 +1574,15 @@ class ContinuousCritic(BaseCritic):
         return config
     
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Return a new continuous critic, optionally copying weights.
+
+        Args:
+            copy_weights: If True, copy ``state_dict`` into the clone.
+            device: Device for the clone; defaults to this model's device.
+
+        Returns:
+            cloned_model (ContinuousCritic): Independent critic copy.
+        """
         # Reconstruct the model from its configuration
         device, env = super().clone(copy_weights, device)
             
@@ -1331,16 +1603,9 @@ class ContinuousCritic(BaseCritic):
         return cloned_model
 
 class DiscreteCritic(BaseCritic):
-    """Critic model for discrete action spaces.
+    """Legacy Q(s, ·) critic over discrete actions.
 
-    Attributes:
-        env (EnvWrapper): The environment wrapper.
-        layer_config (list): List of dictionaries specifying hidden layer configurations for the state.
-        output_config (dict): Configuration for output layer initialization (default: {'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}).
-        optimizer_params (dict): Parameters for the optimizer (default: {'type': 'Adam', 'params': {'lr': 0.001}}).
-        lr_scheduler (ScheduleWrapper): Parameters for the learning rate scheduler (default: None).
-        device (str|T.device|None): Device to run the model on (default: None = Cuda if available else CPU).
-        log_level (str): Log level (default: 'info').
+    Modular counterpart: [DiscreteQHead][phoenx.models.DiscreteQHead].
     """
     def __init__(
         self,
@@ -1352,6 +1617,16 @@ class DiscreteCritic(BaseCritic):
         device: str|T.device|None = None,
         # log_level: str='info'
     ):
+        """Initialize the discrete Q-network, action head, and optimizer.
+
+        Args:
+            env: Environment wrapper with a Discrete action space.
+            layer_config: Hidden-layer configuration list.
+            output_config: Output-layer weight-init config.
+            optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
+            lr_scheduler: Optional learning-rate scheduler.
+            device: Device string/device or ``None`` for the framework default.
+        """
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         # self.output_config = output_layer_kernel
 
@@ -1374,6 +1649,17 @@ class DiscreteCritic(BaseCritic):
             self.lr_scheduler.attach_optimizer(self.optimizer)
 
     def forward(self, state, goal=None):
+        """Predict a Q-value vector over discrete actions.
+
+        Args:
+            state (torch.Tensor): Observation batch.
+            goal (torch.Tensor | None): Optional goal tensor concatenated on the
+                feature dim for goal-conditioned envs.
+
+        Returns:
+            q (torch.Tensor): Per-action Q-values with shape
+                ``[..., n_actions]``.
+        """
          # Preprocess state to ensure correct formatting
         state = self._preprocess_state(state)
         state = state.to(self.device)
@@ -1391,10 +1677,20 @@ class DiscreteCritic(BaseCritic):
         return output
 
     def get_config(self):
+        """Serialize architecture hyperparameters (delegates to ``Model``)."""
         config = super().get_config()
         return config
     
     def clone(self, copy_weights: bool = True, device: Optional[str | T.device] = None):
+        """Return a new discrete critic, optionally copying weights.
+
+        Args:
+            copy_weights: If True, copy ``state_dict`` into the clone.
+            device: Device for the clone; defaults to this model's device.
+
+        Returns:
+            cloned_model (DiscreteCritic): Independent critic copy.
+        """
         # Reconstruct the model from its configuration
         device, env = super().clone(copy_weights, device)
             
@@ -1424,7 +1720,18 @@ GOAL_INPUT_KEY = "goal"
 
 
 def unwrap_distribution(dist: Distribution) -> Distribution:
-    """Recursively unwrap a distribution to its base (Normal, Beta, etc.)."""
+    """Recursively unwrap a distribution to its base (Normal, Beta, etc.).
+
+    Peels ``BoundedIndependent``, ``SquashedNormal``, ``ScaledBeta``,
+    ``ScaledKumaraswamy``, and ``TransformedDistribution`` wrappers until a
+    non-wrapped base distribution remains.
+
+    Args:
+        dist: Possibly wrapped distribution.
+
+    Returns:
+        The innermost base distribution.
+    """
     while True:
         if isinstance(dist, BoundedIndependent):
             dist = dist.base_dist
@@ -1438,9 +1745,23 @@ def unwrap_distribution(dist: Distribution) -> Distribution:
 
 
 def mean_actions_from_dist(dist: Distribution, act_space, device) -> T.Tensor:
-    """Deterministic 'mean' action of a (possibly wrapped) distribution.
+    """Deterministic mean action of a (possibly wrapped) distribution.
 
-    Mirrors :meth:`Model.get_mean_actions` exactly.
+    Mirrors ``Model.get_mean_actions`` exactly: scales Beta/Kumaraswamy means
+    to the action bounds, applies tanh-squash decoding for Normal, and returns
+    the mode for Categorical.
+
+    Args:
+        dist: Policy distribution (may be wrapped).
+        act_space (gymnasium.Space): Action space providing ``low``/``high``
+            for continuous bases.
+        device (torch.device | str): Device for bound tensors.
+
+    Returns:
+        Deterministic action tensor.
+
+    Raises:
+        ValueError: If the unwrapped base distribution type is unsupported.
     """
     base_dist = unwrap_distribution(dist)
     if isinstance(base_dist, (Normal, Beta, Kumaraswamy)):
@@ -1459,22 +1780,12 @@ def mean_actions_from_dist(dist: Distribution, act_space, device) -> T.Tensor:
 
 
 class SubNetwork(nn.Module):
-    """A single named sub-network built from a ``layer_config`` list.
+    """Named layer stack used as a root, trunk, or head body.
 
-    Used for roots (per-modality encoders), the trunk (shared fusion body,
-    optionally recurrent/causal), and head bodies.
-
-    Args:
-        layer_config: List of ``{'type', 'params'}`` layer dicts (may be empty
-            = identity).
-        input_keys: For roots only — observation dict keys this sub-network
-            consumes (multiple keys are concatenated along the feature dim).
-            The reserved key ``'goal'`` routes the goal tensor passed to
-            ``ModularModel.forward``.
-        optimizer_params: Optional per-module optimizer spec; ``None`` inherits
-            the model-level default.
-        lr_scheduler: Optional per-module :class:`ScheduleWrapper`.
-        name: Display name used in error messages.
+    Built from a ``layer_config`` list of ``{'type', 'params'}`` dicts. An
+    empty config is an identity. Temporal layers (LSTM / GRU / causal
+    transformer) may appear here when the stack is the trunk only —
+    ``ModularModel`` rejects them in roots and branch bodies.
     """
 
     def __init__(
@@ -1485,6 +1796,20 @@ class SubNetwork(nn.Module):
         lr_scheduler: ScheduleWrapper | None = None,
         name: str | None = None,
     ):
+        """Build the layer stack and record temporal-layer keys.
+
+        Args:
+            layer_config: List of ``{'type', 'params'}`` layer dicts; empty or
+                ``None`` yields an identity stack.
+            input_keys: For roots only — observation dict keys this
+                sub-network consumes (multiple keys are concatenated along the
+                feature dim). The reserved key ``'goal'`` routes the goal
+                tensor passed to ``ModularModel.forward``.
+            optimizer_params: Optional per-module optimizer spec; ``None``
+                inherits the model-level default.
+            lr_scheduler: Optional per-module ``ScheduleWrapper``.
+            name: Display name used in error messages.
+        """
         super().__init__()
         self.layer_config = list(layer_config) if layer_config else []
         self.input_keys = list(input_keys) if input_keys else None
@@ -1516,14 +1841,17 @@ class SubNetwork(nn.Module):
 
     @property
     def is_recurrent(self) -> bool:
+        """True when the stack contains one or more ``LazyRecurrent`` layers."""
         return len(self._recurrent_keys) > 0
 
     @property
     def is_causal(self) -> bool:
+        """True when the stack contains a causal ``TransformerEncoderBlock``."""
         return len(self._causal_keys) > 0
 
     @property
     def is_temporal(self) -> bool:
+        """True when the stack is recurrent or causal (temporal)."""
         return self.is_recurrent or self.is_causal
 
     @property
@@ -1537,13 +1865,21 @@ class SubNetwork(nn.Module):
         return bool(self.layer_config) and self.layer_config[0]['type'] == 'embedding'
 
     def init_hidden(self, batch_size: int, device: T.device | str) -> Dict[str, Any]:
-        """Zero hidden states for every recurrent layer, keyed by layer name."""
+        """Allocate zero hidden states for every recurrent layer.
+
+        Args:
+            batch_size: Leading batch size for the states.
+            device: Device the zero tensors are allocated on.
+
+        Returns:
+            Mapping of layer name to that layer's zero state.
+        """
         return {
             k: self.layers[k].init_hidden(batch_size, device) for k in self._recurrent_keys
         }
 
     def init_weights(self) -> None:
-        """Apply the per-layer kernel specs (multi-tensor aware)."""
+        """Apply each layer's kernel spec (multi-tensor aware)."""
         for config, (layer_name, layer) in zip(self.layer_config, self.layers.items()):
             kernel = config.get('params', {}).get('kernel', 'default')
             kernel_params = config.get('params', {}).get('kernel_params', {})
@@ -1567,7 +1903,9 @@ class SubNetwork(nn.Module):
             mode: ``'step'`` or ``'sequence'``.
 
         Returns:
-            ``(output, new_hidden)`` — ``new_hidden`` keyed by layer name.
+            output (torch.Tensor): Stack output with the same leading layout
+                as ``x``.
+            new_hidden (dict): Recurrent states keyed by layer name.
         """
         new_hidden: Dict[str, Any] = {}
         for key, layer in self.layers.items():
@@ -1627,15 +1965,12 @@ class SubNetwork(nn.Module):
 # -----------------------------------------------------------------------------
 
 class Head(nn.Module):
-    """Base class for branch heads: a :class:`SubNetwork` body plus one or
-    more environment-shaped output layers.
+    """Base class for branch heads: a ``SubNetwork`` body plus env-shaped outputs.
 
     ``output_config`` retains its legacy meaning: the initialization spec of
-    the auto-created output layer(s) (the layer widths come from the env).
-
-    Heads receive already-encoded features from the composite model (which has
-    applied preprocessing / goal concatenation), so unlike the legacy
-    :class:`Model` subclasses they never touch raw observations.
+    the auto-created output layer(s) (widths come from the env). Heads receive
+    already-encoded features from the composite model, so unlike the legacy
+    ``Model`` subclasses they never touch raw observations.
     """
 
     def __init__(
@@ -1648,6 +1983,18 @@ class Head(nn.Module):
         device: str | T.device | None = None,
         name: str | None = None,
     ):
+        """Attach a body stack and build env-shaped output layers.
+
+        Args:
+            env: Environment wrapper providing observation and action spaces.
+            layer_config: Hidden-layer config for the head body (may be empty).
+            output_config: Init specs for the auto-created output layer(s);
+                defaults to a single dense layer with default kernel.
+            optimizer_params: Optional per-head optimizer spec.
+            lr_scheduler: Optional per-head ``ScheduleWrapper``.
+            device: Device to place parameters on (``None`` = framework default).
+            name: Display name used in error messages.
+        """
         super().__init__()
         self.env = env
         self.name = name or self.__class__.__name__
@@ -1676,7 +2023,9 @@ class Head(nn.Module):
         raise NotImplementedError
 
     def init_weights(self) -> None:
-        """Initialize body layers per ``layer_config`` and output layers per
+        """Initialize body and output layers from their configs.
+
+        Body layers use ``layer_config`` kernels; output layers use
         ``output_config`` (legacy zip semantics preserved).
         """
         self.body.init_weights()
@@ -1690,6 +2039,16 @@ class Head(nn.Module):
         return y
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None):
+        """Map trunk features (and optional action) to this head's output.
+
+        Args:
+            features: Encoded features from roots+trunk.
+            action: Action tensor required by action-conditioned heads
+                (e.g. ``ContinuousQHead``); ignored by others.
+
+        Raises:
+            NotImplementedError: Always; concrete heads override this.
+        """
         raise NotImplementedError
 
     # -- distribution helpers (mirroring the legacy Model API) ----------------
@@ -1697,9 +2056,18 @@ class Head(nn.Module):
         return unwrap_distribution(dist)
 
     def get_mean_actions(self, dist: Distribution) -> T.Tensor:
+        """Deterministic mean action for ``dist`` under this head's action space.
+
+        Args:
+            dist: Policy distribution produced by a stochastic head.
+
+        Returns:
+            Deterministic action tensor on this head's device.
+        """
         return mean_actions_from_dist(dist, self.act_space, self.device)
 
     def get_config(self) -> dict:
+        """Serialize this head to a ``{'type', 'config'}`` dict."""
         return {
             'type': self.__class__.__name__,
             'config': {
@@ -1713,6 +2081,19 @@ class Head(nn.Module):
 
     @classmethod
     def from_config(cls, config: dict, env: EnvWrapper) -> 'Head':
+        """Rebuild a head from an inner config dict, injecting ``env``.
+
+        Schedule dicts under ``lr_scheduler`` / ``temperature_schedule`` are
+        reconstructed as ``ScheduleWrapper`` instances. Keys unknown to the
+        constructor are dropped.
+
+        Args:
+            config: Inner config (the ``'config'`` payload of ``get_config``).
+            env: Live environment wrapper injected into the constructor.
+
+        Returns:
+            A new head instance of this class.
+        """
         import inspect
         cfg = dict(config)
         cfg.pop('env', None)
@@ -1726,18 +2107,27 @@ class Head(nn.Module):
 
 
 class ValueHead(Head):
-    """State-value head ``V(s)`` (extracted from :class:`ValueModel`)."""
+    """State-value head ``V(s)`` (modular counterpart of ``ValueModel``)."""
 
     def _build_output_layer(self) -> None:
         self.output_layer = nn.ModuleDict({'value_dense_output': nn.LazyLinear(1)})
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None) -> T.Tensor:
+        """Predict a scalar state value from encoded features.
+
+        Args:
+            features: Encoded features from roots+trunk.
+            action: Unused; accepted for a uniform head call signature.
+
+        Returns:
+            Value tensor of shape ``(..., 1)``.
+        """
         x = self._body_forward(features)
         return self.output_layer['value_dense_output'](x)
 
 
 class StochasticDiscreteHead(Head):
-    """Categorical policy head (extracted from :class:`StochasticDiscretePolicy`)."""
+    """Categorical policy head (modular counterpart of ``StochasticDiscretePolicy``)."""
 
     def __init__(
         self,
@@ -1752,6 +2142,20 @@ class StochasticDiscreteHead(Head):
         device: str | T.device | None = None,
         name: str | None = None,
     ):
+        """Configure logits temperature and build the categorical output layer.
+
+        Args:
+            env: Environment wrapper providing a discrete action space.
+            layer_config: Hidden-layer config for the head body.
+            output_config: Init specs for the logits output layer.
+            optimizer_params: Optional per-head optimizer spec.
+            lr_scheduler: Optional per-head ``ScheduleWrapper``.
+            distribution: Distribution name; only ``'categorical'`` is supported.
+            temperature: Base softmax temperature applied to logits.
+            temperature_schedule: Optional multiplier schedule on temperature.
+            device: Device to place parameters on.
+            name: Display name used in error messages.
+        """
         self.distribution = distribution
         self.temperature = temperature
         self.temperature_schedule = temperature_schedule
@@ -1762,6 +2166,18 @@ class StochasticDiscreteHead(Head):
         self.output_layer = nn.ModuleDict({'policy_dense_output': nn.LazyLinear(self.num_actions)})
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None) -> Categorical:
+        """Return a categorical distribution over discrete actions.
+
+        Args:
+            features: Encoded features from roots+trunk.
+            action: Unused; accepted for a uniform head call signature.
+
+        Returns:
+            ``Categorical`` over ``act_space.n`` logits (temperature-scaled).
+
+        Raises:
+            ValueError: If ``distribution`` is not ``'categorical'``.
+        """
         x = self._body_forward(features)
         x = self.output_layer['policy_dense_output'](x)
         if self.distribution == 'categorical':
@@ -1772,6 +2188,7 @@ class StochasticDiscreteHead(Head):
         raise ValueError(f'Distribution {self.distribution} not supported.')
 
     def get_config(self) -> dict:
+        """Serialize including distribution and temperature fields."""
         config = super().get_config()
         config['config'].update({
             'distribution': self.distribution,
@@ -1783,8 +2200,10 @@ class StochasticDiscreteHead(Head):
 
 
 class StochasticContinuousHead(Head):
-    """Bounded continuous policy head (extracted from
-    :class:`StochasticContinuousPolicy`; identical output math).
+    """Bounded continuous policy head (modular counterpart of ``StochasticContinuousPolicy``).
+
+    Output math matches the legacy policy: Beta / Kumaraswamy / squashed Normal
+    wrapped in ``BoundedIndependent``.
     """
 
     def __init__(
@@ -1798,6 +2217,18 @@ class StochasticContinuousHead(Head):
         device: str | T.device | None = None,
         name: str | None = None,
     ):
+        """Select the continuous distribution family and build param heads.
+
+        Args:
+            env: Environment wrapper providing a Box action space.
+            layer_config: Hidden-layer config for the head body.
+            output_config: Init specs for the two parameter output layers.
+            optimizer_params: Optional per-head optimizer spec.
+            lr_scheduler: Optional per-head ``ScheduleWrapper``.
+            distribution: ``'beta'``, ``'kumaraswamy'``, or ``'normal'``.
+            device: Device to place parameters on.
+            name: Display name used in error messages.
+        """
         self.distribution = distribution
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device, name)
 
@@ -1809,6 +2240,19 @@ class StochasticContinuousHead(Head):
         })
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None):
+        """Return a bounded continuous action distribution.
+
+        Args:
+            features: Encoded features from roots+trunk.
+            action: Unused; accepted for a uniform head call signature.
+
+        Returns:
+            dist (phoenx.distributions.BoundedIndependent): Scaled Beta,
+                Kumaraswamy, or squashed Normal over the action dimensions.
+
+        Raises:
+            ValueError: If ``distribution`` is not supported.
+        """
         x = self._body_forward(features)
         param_1 = self.output_layer['policy_output_param_1'](x)
         param_2 = self.output_layer['policy_output_param_2'](x)
@@ -1848,13 +2292,14 @@ class StochasticContinuousHead(Head):
         return BoundedIndependent(dist, reinterpreted_batch_ndims=1)
 
     def get_config(self) -> dict:
+        """Serialize including the continuous distribution name."""
         config = super().get_config()
         config['config'].update({'distribution': self.distribution})
         return config
 
 
 class DeterministicActorHead(Head):
-    """Deterministic actor head ``(mu, pi)`` (extracted from :class:`ActorModel`)."""
+    """Deterministic actor head ``(mu, pi)`` (modular counterpart of ``ActorModel``)."""
 
     def _build_output_layer(self) -> None:
         self.act_space_low = T.tensor(self.act_space.low, dtype=T.float32, device=self.device)
@@ -1866,6 +2311,17 @@ class DeterministicActorHead(Head):
         })
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None):
+        """Return unbounded ``mu`` and bound-scaled ``pi`` actions.
+
+        Args:
+            features: Encoded features from roots+trunk.
+            action: Unused; accepted for a uniform head call signature.
+
+        Returns:
+            mu (torch.Tensor): Pre-tanh linear outputs.
+            pi (torch.Tensor): Tanh actions scaled into ``[low, high]`` when
+                bounds are finite; otherwise raw tanh outputs in ``[-1, 1]``.
+        """
         x = self._body_forward(features)
         mu = self.output_layer['actor_mu'](x)
         pi = self.output_layer['actor_pi'](mu)
@@ -1877,8 +2333,9 @@ class DeterministicActorHead(Head):
 
 
 class ContinuousQHead(Head):
-    """Q(s, a) head for continuous actions (extracted from
-    :class:`ContinuousCritic`): state stack -> concat(action) -> merged stack.
+    """Q(s, a) head for continuous actions (modular counterpart of ``ContinuousCritic``).
+
+    Pipeline: state body stack → concat(action) → merged stack → scalar Q.
     """
 
     requires_action = True
@@ -1894,6 +2351,18 @@ class ContinuousQHead(Head):
         device: str | T.device | None = None,
         name: str | None = None,
     ):
+        """Build the state body, post-concat merged stack, and Q output.
+
+        Args:
+            env: Environment wrapper providing a Box action space.
+            layer_config: Hidden-layer config applied to state features.
+            merged_config: Layer config applied after concatenating the action.
+            output_config: Init specs for the scalar Q output layer.
+            optimizer_params: Optional per-head optimizer spec.
+            lr_scheduler: Optional per-head ``ScheduleWrapper``.
+            device: Device to place parameters on.
+            name: Display name used in error messages.
+        """
         self.merged_config = list(merged_config) if merged_config else []
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device, name)
 
@@ -1902,10 +2371,23 @@ class ContinuousQHead(Head):
         self.output_layer = nn.ModuleDict({'State_Action_value': nn.LazyLinear(1)})
 
     def init_weights(self) -> None:
+        """Initialize body, merged stack, and output layers."""
         super().init_weights()
         self.merged.init_weights()
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None) -> T.Tensor:
+        """Predict Q(s, a) from encoded features and an action tensor.
+
+        Args:
+            features: Encoded features from roots+trunk.
+            action: Continuous action to concatenate after the state body.
+
+        Returns:
+            Scalar Q-value tensor of shape ``(..., 1)``.
+
+        Raises:
+            ValueError: If ``action`` is ``None``.
+        """
         if action is None:
             raise ValueError(f"{self.name}: ContinuousQHead requires an `action` tensor")
         x = self._body_forward(features)
@@ -1916,19 +2398,29 @@ class ContinuousQHead(Head):
         return output
 
     def get_config(self) -> dict:
+        """Serialize including ``merged_config``."""
         config = super().get_config()
         config['config'].update({'merged_config': self.merged_config})
         return config
 
 
 class DiscreteQHead(Head):
-    """Q(s, .) head over discrete actions (extracted from :class:`DiscreteCritic`)."""
+    """Q(s, ·) head over discrete actions (modular counterpart of ``DiscreteCritic``)."""
 
     def _build_output_layer(self) -> None:
         self.num_actions = self.act_space.n
         self.output_layer = nn.ModuleDict({'Q_values': nn.LazyLinear(self.num_actions)})
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None) -> T.Tensor:
+        """Predict a Q-value vector over discrete actions.
+
+        Args:
+            features: Encoded features from roots+trunk.
+            action: Unused; accepted for a uniform head call signature.
+
+        Returns:
+            Q-values of shape ``(..., num_actions)``.
+        """
         x = self._body_forward(features)
         for layer in self.output_layer.values():
             output = layer(x)
@@ -1951,6 +2443,17 @@ def build_head(config: dict, env: EnvWrapper) -> Head:
     Accepts both the serialized nested form ``{"type": ..., "config": {...}}``
     (emitted by ``get_config``) and the flat YAML-authoring form
     ``{"type": ..., <head kwargs inline>}``.
+
+    Args:
+        config: Head config with a ``'type'`` key naming a ``HEAD_REGISTRY``
+            entry.
+        env: Live environment wrapper injected into the constructor.
+
+    Returns:
+        A concrete ``Head`` instance.
+
+    Raises:
+        ValueError: If ``type`` is not in ``HEAD_REGISTRY``.
     """
     head_type = config['type']
     if head_type not in HEAD_REGISTRY:
@@ -1979,6 +2482,17 @@ def head_from_legacy_model_config(config: dict, env: EnvWrapper) -> Head:
     ``layer_config`` / ``output_config`` / ``optimizer_params`` /
     ``lr_scheduler`` / ``distribution`` / ``temperature`` / ``merged_config``
     are lifted verbatim (``Head.from_config`` drops any legacy-only keys).
+
+    Args:
+        config: Legacy model or head config with a ``'type'`` key.
+        env: Live environment wrapper injected into the constructor.
+
+    Returns:
+        A concrete ``Head`` instance.
+
+    Raises:
+        ValueError: If ``type`` is neither a known head nor a mappable legacy
+            model class.
     """
     model_type = config['type']
     if model_type in HEAD_REGISTRY:
@@ -1997,9 +2511,18 @@ def head_from_legacy_model_config(config: dict, env: EnvWrapper) -> Head:
 def modular_parts_from_config(config: dict, env: EnvWrapper) -> dict:
     """Decompose a ModularModel inner ``config`` into agent-constructor parts.
 
-    Returns ``{'roots', 'trunk', 'branches', 'optimizer_params',
-    'lr_scheduler', 'shared_update', 'device'}`` with live objects (SubNetworks
-    / Heads / ScheduleWrapper) ready to pass into an Agent constructor.
+    Returns live objects (``SubNetwork`` / ``Head`` / ``ScheduleWrapper``)
+    ready to pass into an Agent constructor.
+
+    Args:
+        config: Inner ``ModularModel`` config (the ``'config'`` payload of
+            ``get_config``).
+        env: Live environment wrapper used to build branch heads.
+
+    Returns:
+        Dict with keys ``roots``, ``trunk``, ``branches``,
+        ``optimizer_params``, ``lr_scheduler``, ``shared_update``, and
+        ``device``.
     """
     cfg = dict(config)
     roots = None
@@ -2028,14 +2551,22 @@ def modular_parts_from_config(config: dict, env: EnvWrapper) -> dict:
 
 
 def map_legacy_state_dict(legacy_state: Dict[str, T.Tensor], role: str) -> Dict[str, T.Tensor]:
-    """Map a legacy :class:`Model` ``state_dict`` onto composite keys.
+    """Map a legacy ``Model`` ``state_dict`` onto composite ModularModel keys.
 
-    Legacy models store ``layers.*`` (hidden stack), optional ``merged_layers.*``
-    (ContinuousCritic) and ``output_layer.*``. In a branches-only
-    :class:`ModularModel` the same tensors live under
+    Legacy models store ``layers.*`` (hidden stack), optional
+    ``merged_layers.*`` (``ContinuousCritic``) and ``output_layer.*``. In a
+    branches-only ``ModularModel`` the same tensors live under
     ``branches.<role>.body.layers.*`` / ``branches.<role>.merged.layers.*`` /
-    ``branches.<role>.output_layer.*``. Used by the old-checkpoint loader shim
-    and the golden-equivalence tests.
+    ``branches.<role>.output_layer.*``. Used by the old-checkpoint loader
+    shim and the golden-equivalence tests.
+
+    Args:
+        legacy_state: ``state_dict`` from a legacy ``Model`` instance.
+        role: Branch role name under which tensors are remapped
+            (e.g. ``'policy'``, ``'critic'``).
+
+    Returns:
+        Remapped state dict keyed for a branches-only ``ModularModel``.
     """
     mapped: Dict[str, T.Tensor] = {}
     for key, value in legacy_state.items():
@@ -2051,7 +2582,18 @@ def map_legacy_state_dict(legacy_state: Dict[str, T.Tensor], role: str) -> Dict[
 
 
 def select_policy_head(env: EnvWrapper) -> type:
-    """Stochastic policy head class for the env's action space."""
+    """Return the stochastic policy head class for ``env``'s action space.
+
+    Args:
+        env: Environment wrapper whose ``action_space`` is inspected.
+
+    Returns:
+        ``StochasticDiscreteHead`` for Discrete/MultiDiscrete, or
+        ``StochasticContinuousHead`` for Box.
+
+    Raises:
+        ValueError: If the action space type is unsupported.
+    """
     if isinstance(env.action_space, (gym.spaces.Discrete, gym.spaces.MultiDiscrete)):
         return StochasticDiscreteHead
     if isinstance(env.action_space, gym.spaces.Box):
@@ -2060,7 +2602,18 @@ def select_policy_head(env: EnvWrapper) -> type:
 
 
 def select_critic_head(env: EnvWrapper) -> type:
-    """Q head class for the env's action space."""
+    """Return the Q-head class for ``env``'s action space.
+
+    Args:
+        env: Environment wrapper whose ``action_space`` is inspected.
+
+    Returns:
+        ``DiscreteQHead`` for Discrete/MultiDiscrete, or ``ContinuousQHead``
+        for Box.
+
+    Raises:
+        ValueError: If the action space type is unsupported.
+    """
     if isinstance(env.action_space, (gym.spaces.Discrete, gym.spaces.MultiDiscrete)):
         return DiscreteQHead
     if isinstance(env.action_space, gym.spaces.Box):
@@ -2069,26 +2622,26 @@ def select_critic_head(env: EnvWrapper) -> type:
 
 
 class ModularModel(nn.Module):
-    """Composite roots -> trunk -> branches network with per-module optimizers.
+    """Composite roots → trunk → branches network with per-module optimizers.
 
-    Structure (all module names appear verbatim in parameter names, e.g.
+    Structure (module names appear verbatim in parameter names, e.g.
     ``roots.camera.layers.conv2d_0.weight`` / ``branches.policy.body.layers...``):
 
     - ``roots``: optional ``{name: SubNetwork}`` — one encoder per input
       modality. Each root's flattened output is concatenated (in declaration
       order) and fed to the trunk.
-    - ``trunk``: optional shared :class:`SubNetwork` (identity when ``None``).
-      The only module allowed to contain temporal layers (lstm / gru / causal
-      transformer_encoder).
+    - ``trunk``: optional shared ``SubNetwork`` (identity when ``None``).
+      The only module allowed to contain temporal layers (LSTM / GRU / causal
+      transformer).
     - ``branches``: ``{role: Head}`` — per-role output heads (``policy``,
-      ``value``, ``critic``, ``critic_b``, ...).
+      ``value``, ``critic``, ``critic_b``, …).
 
     Gradient-ownership contract:
 
     - Every module with parameters gets its own optimizer over exactly its
       parameters (disjoint by construction).
-    - On-policy agents combine losses into ONE backward and then ``step()``
-      every optimizer once (equivalent to a single optimizer w/ param groups).
+    - On-policy agents combine losses into one backward and then ``step()``
+      every optimizer once (equivalent to a single optimizer with param groups).
     - Off-policy agents update roots+trunk with the critic loss only; the
       policy pass uses ``detach_shared=True`` and steps only its own branch.
     """
@@ -2105,6 +2658,26 @@ class ModularModel(nn.Module):
         device: str | T.device | None = None,
         name: str | None = None,
     ):
+        """Wire roots, trunk, and branches; dry-run; build per-module optimizers.
+
+        Args:
+            env: Environment wrapper providing observation and action spaces.
+            roots: Optional named modality encoders; temporal layers forbidden.
+            trunk: Optional shared body; the only place temporal layers may live.
+            branches: Non-empty mapping of role name to ``Head``.
+            optimizer_params: Default optimizer spec for modules that omit their
+                own; defaults to Adam with ``lr=0.001``.
+            lr_scheduler: Default ``ScheduleWrapper`` cloned per module that
+                has no scheduler of its own.
+            shared_update: Ownership hint for agents — ``'combined'``,
+                ``'critic'``, or ``'policy'``.
+            device: Device for parameters (``None`` = framework default).
+            name: Display name used in error messages.
+
+        Raises:
+            ValueError: If ``branches`` is empty, ``shared_update`` is invalid,
+                or a root/branch contains temporal layers.
+        """
         super().__init__()
         if not branches:
             raise ValueError("ModularModel requires at least one branch head")
@@ -2155,7 +2728,11 @@ class ModularModel(nn.Module):
     # module bookkeeping
     # ------------------------------------------------------------------ #
     def module_map(self) -> Dict[str, nn.Module]:
-        """``{'roots.<name>'|'trunk'|'branches.<role>': module}`` in order."""
+        """Ordered map of ``roots.<name>`` / ``trunk`` / ``branches.<role>`` modules.
+
+        Returns:
+            Mapping from canonical module name to the live ``nn.Module``.
+        """
         mods: Dict[str, nn.Module] = {}
         if self.roots is not None:
             for root_name, root in self.roots.items():
@@ -2171,7 +2748,18 @@ class ModularModel(nn.Module):
         return [n for n in self.optimizers if n == 'trunk' or n.startswith('roots.')]
 
     def branch_module_names(self, *roles: str) -> List[str]:
-        """Optimizer names for the given branch roles (all branches if empty)."""
+        """Optimizer names for the given branch roles (all branches if empty).
+
+        Args:
+            *roles: Branch role names to select; omit to include every branch
+                that has an optimizer.
+
+        Returns:
+            Optimizer keys of the form ``branches.<role>``.
+
+        Raises:
+            KeyError: If a requested role is not in ``branches``.
+        """
         if not roles:
             return [n for n in self.optimizers if n.startswith('branches.')]
         names = []
@@ -2185,18 +2773,28 @@ class ModularModel(nn.Module):
 
     @property
     def is_recurrent(self) -> bool:
+        """True when the trunk contains recurrent layers."""
         return self.trunk is not None and self.trunk.is_recurrent
 
     @property
     def is_causal(self) -> bool:
+        """True when the trunk contains a causal transformer block."""
         return self.trunk is not None and self.trunk.is_causal
 
     @property
     def is_temporal(self) -> bool:
+        """True when the trunk is recurrent or causal."""
         return self.is_recurrent or self.is_causal
 
     def init_hidden(self, batch_size: int) -> Dict[str, Any]:
-        """Zero recurrent states keyed ``'trunk.<layer_key>'``."""
+        """Allocate zero recurrent states keyed ``trunk.<layer_key>``.
+
+        Args:
+            batch_size: Leading batch size for the states.
+
+        Returns:
+            Hidden-state dict (empty when the trunk is non-recurrent).
+        """
         hidden: Dict[str, Any] = {}
         if self.trunk is not None:
             for k, v in self.trunk.init_hidden(batch_size, self.device).items():
@@ -2205,7 +2803,14 @@ class ModularModel(nn.Module):
 
     @staticmethod
     def detach_hidden(hidden: Dict[str, Any] | None) -> Dict[str, Any]:
-        """Detached copy of a hidden-state dict (safe to carry across steps)."""
+        """Return a detached copy of a hidden-state dict.
+
+        Args:
+            hidden: Hidden-state dict (or ``None`` for empty).
+
+        Returns:
+            Detached copy safe to carry across optimizer steps.
+        """
         out: Dict[str, Any] = {}
         for k, v in (hidden or {}).items():
             if isinstance(v, tuple):
@@ -2216,8 +2821,18 @@ class ModularModel(nn.Module):
 
     @staticmethod
     def index_hidden(hidden: Dict[str, Any] | None, idx) -> Dict[str, Any]:
-        """Select a batch subset of a hidden-state dict (batch dim is dim 1:
-        recurrent states are shaped (num_layers, B, H)).
+        """Select a batch subset of a hidden-state dict.
+
+        The batch dimension is dim 1: recurrent states are shaped
+        ``(num_layers, B, H)``.
+
+        Args:
+            hidden: Hidden-state dict (or ``None`` for empty).
+            idx (int | slice | torch.Tensor): Batch indices accepted by tensor
+                indexing on dim 1.
+
+        Returns:
+            Indexed hidden-state dict with the same keys.
         """
         out: Dict[str, Any] = {}
         for k, v in (hidden or {}).items():
@@ -2228,7 +2843,15 @@ class ModularModel(nn.Module):
         return out
 
     def mask_hidden(self, hidden: Dict[str, Any] | None, start_mask: T.Tensor) -> Dict[str, Any]:
-        """Zero hidden entries for envs flagged in ``start_mask`` (episode starts)."""
+        """Zero hidden entries for envs flagged in ``start_mask`` (episode starts).
+
+        Args:
+            hidden: Hidden-state dict (or ``None`` / empty for no-op).
+            start_mask: Bool tensor of episode-start flags, shape ``(B,)``.
+
+        Returns:
+            Masked hidden-state dict (or ``{}`` when there is nothing to mask).
+        """
         if not hidden or self.trunk is None:
             return hidden or {}
         keep = ~start_mask.bool()
@@ -2247,9 +2870,23 @@ class ModularModel(nn.Module):
         branches=None,
         start_mask: T.Tensor | None = None,
     ) -> Dict[str, Any]:
-        """Causal-context inference: encode a ``(B, W, ...)`` observation
-        window in sequence mode and run the requested heads on the LAST
-        position only (rolling-window rollout for causal-transformer trunks).
+        """Run heads on the last step of a causal observation window.
+
+        Encodes a ``(B, W, ...)`` observation window in sequence mode and
+        evaluates the requested heads on the last time position only
+        (rolling-window rollout for causal-transformer trunks).
+
+        Args:
+            obs_window (torch.Tensor | dict): Observation window with a leading
+                ``(B, W, ...)`` layout (dict values share that layout).
+            action: Optional action consumed by ContinuousQHead branches.
+            goal: Optional goal tensor (same routing rules as ``forward``).
+            branches (str | list | tuple | None): Role name, sequence of roles,
+                or ``None`` for all.
+            start_mask: Optional ``(B, W)`` episode-start flags.
+
+        Returns:
+            Mapping of role name to that head's output at the last position.
         """
         if isinstance(branches, str):
             branch_roles = [branches]
@@ -2269,8 +2906,14 @@ class ModularModel(nn.Module):
         """Flatten a hidden dict to batch-first plain tensors for storage.
 
         LSTM tuples split into ``<key>.h`` / ``<key>.c``; GRU states become
-        ``<key>.g``. Each (num_layers, B, H) state is transposed to
-        (B, num_layers, H) so storage rings/buffers see a leading batch dim.
+        ``<key>.g``. Each ``(num_layers, B, H)`` state is transposed to
+        ``(B, num_layers, H)`` so storage rings/buffers see a leading batch dim.
+
+        Args:
+            hidden: Hidden-state dict (or ``None`` for empty).
+
+        Returns:
+            Flat mapping of suffix-tagged keys to batch-first tensors.
         """
         flat: Dict[str, T.Tensor] = {}
         for k, v in (hidden or {}).items():
@@ -2283,7 +2926,14 @@ class ModularModel(nn.Module):
 
     @staticmethod
     def hidden_from_tensors(flat: Dict[str, T.Tensor] | None) -> Dict[str, Any]:
-        """Inverse of :meth:`hidden_to_tensors` (back to (layers, B, H))."""
+        """Inverse of ``hidden_to_tensors`` (back to ``(layers, B, H)``).
+
+        Args:
+            flat: Flat storage dict produced by ``hidden_to_tensors``.
+
+        Returns:
+            Nested hidden-state dict with LSTM tuples restored.
+        """
         hidden: Dict[str, Any] = {}
         for k, v in (flat or {}).items():
             base, suffix = k.rsplit('.', 1)
@@ -2314,17 +2964,35 @@ class ModularModel(nn.Module):
         return names
 
     def zero_grad(self, modules: List[str] | str | None = None) -> None:
+        """Zero gradients for the selected modules' optimizers.
+
+        Args:
+            modules: Module name, list of names, or ``None`` for every
+                optimizer. Names match ``module_map`` keys.
+        """
         for module_name in self._resolve_optimizer_names(modules):
             self.optimizers[module_name].zero_grad()
 
     def step(self, modules: List[str] | str | None = None) -> None:
+        """Step the selected modules' optimizers.
+
+        Args:
+            modules: Module name, list of names, or ``None`` for every
+                optimizer. Names match ``module_map`` keys.
+        """
         for module_name in self._resolve_optimizer_names(modules):
             self.optimizers[module_name].step()
 
     def clip(self, max_norm: float, modules: List[str] | str | None = None) -> float:
         """Clip the grad norm over the union of the given modules' parameters.
 
-        Returns the pre-clip total norm (0.0 when there are no parameters).
+        Args:
+            max_norm: Maximum allowed total norm.
+            modules: Module name, list of names, or ``None`` for every
+                optimizer.
+
+        Returns:
+            Pre-clip total norm (``0.0`` when there are no parameters).
         """
         params = []
         for module_name in self._resolve_optimizer_names(modules):
@@ -2335,7 +3003,14 @@ class ModularModel(nn.Module):
         return float(T.nn.utils.clip_grad_norm_(params, max_norm=max_norm))
 
     def learning_rate(self, module: str) -> float:
-        """Current LR of a module's optimizer (0.0 when it has none)."""
+        """Current LR of a module's optimizer (``0.0`` when it has none).
+
+        Args:
+            module: Canonical module name (a ``module_map`` key).
+
+        Returns:
+            Learning rate from the first param group, or ``0.0``.
+        """
         opt = self.optimizers.get(module)
         return float(opt.param_groups[0]['lr']) if opt is not None else 0.0
 
@@ -2370,7 +3045,13 @@ class ModularModel(nn.Module):
             mode: ``'step'`` or ``'sequence'``.
 
         Returns:
-            ``(outputs, new_hidden)`` where ``outputs`` maps role -> head output.
+            outputs (dict): Mapping of role name to that head's output.
+            new_hidden (dict): Updated recurrent states keyed ``trunk.<layer>``.
+
+        Raises:
+            ValueError: If ``mode`` is invalid.
+            KeyError: If a requested branch role is unknown.
+            RuntimeError: If a branch forward fails.
         """
         if mode not in ('step', 'sequence'):
             raise ValueError(f"Invalid mode: {mode!r}")
@@ -2700,6 +3381,7 @@ class ModularModel(nn.Module):
         )
 
     def get_config(self) -> dict:
+        """Serialize architecture to a ``{'type', 'config'}`` dict."""
         return {
             'type': 'ModularModel',
             'config': {
@@ -2719,6 +3401,15 @@ class ModularModel(nn.Module):
 
     @classmethod
     def from_config(cls, config: dict, env: EnvWrapper) -> 'ModularModel':
+        """Rebuild a ModularModel from an inner config dict, injecting ``env``.
+
+        Args:
+            config: Inner config (the ``'config'`` payload of ``get_config``).
+            env: Live environment wrapper injected into branch constructors.
+
+        Returns:
+            A new ``ModularModel`` with fresh weights and optimizers.
+        """
         cfg = dict(config)
         roots = None
         if cfg.get('roots'):
@@ -2746,7 +3437,11 @@ class ModularModel(nn.Module):
         )
 
     def save_state(self, path: Path | str) -> None:
-        """Write weights + per-module optimizer/scheduler state to one ``.pt``."""
+        """Write weights plus per-module optimizer/scheduler state to one ``.pt``.
+
+        Args:
+            path: Destination file path (parent directories are created).
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         state = {
@@ -2764,7 +3459,12 @@ class ModularModel(nn.Module):
         T.save(state, path)
 
     def load_state(self, path: Path | str, load_weights: bool = True) -> None:
-        """Restore state written by :meth:`save_state` (in place)."""
+        """Restore state written by ``save_state`` (in place).
+
+        Args:
+            path: Path to a ``.pt`` file produced by ``save_state``.
+            load_weights: If False, restore optimizers/schedulers only.
+        """
         state = T.load(Path(path), map_location=self.device, weights_only=False)
         if load_weights and state.get('model') is not None:
             self.load_state_dict(state['model'])
@@ -2789,6 +3489,18 @@ class ModularModel(nn.Module):
         """Clone the composite (optionally a branch subset, e.g. for targets).
 
         The live env instance is reused (models only read spaces/keys from it).
+
+        Args:
+            copy_weights: If True, copy matching parameters into the clone.
+            branches: Optional subset of branch roles to keep; ``None`` keeps
+                all.
+            device: Device for the clone (defaults to this model's device).
+
+        Returns:
+            A new ``ModularModel`` sharing the same env.
+
+        Raises:
+            KeyError: If a requested branch role is unknown.
         """
         device = get_device(device) if device is not None else self.device
         cfg = self.get_config()['config']
@@ -2806,8 +3518,16 @@ class ModularModel(nn.Module):
         return cloned
 
     def set_device(self, device: str | T.device) -> 'ModularModel':
-        """Move the composite (params, buffers, head attrs, optimizer state)
-        to ``device`` and update every internal device attribute.
+        """Move the composite to ``device`` and update internal device attrs.
+
+        Moves parameters, buffers, head-held tensors (e.g. action bounds), and
+        optimizer state tensors.
+
+        Args:
+            device: Target device (resolved via ``get_device``).
+
+        Returns:
+            ``self``, for chaining.
         """
         device = get_device(device)
         self.device = device
@@ -2848,7 +3568,17 @@ def build_model(config: dict, env: EnvWrapper) -> Model:
 
 
 def build_layers(types: List[str], units_per_layer: List[int], initializers: List[str], kernel_params:List[dict]):
-    """Formats config into policy and value layers"""
+    """Zip parallel layer lists into a legacy ``layer_config`` list.
+
+    Args:
+        types: Layer type names (e.g. ``'dense'``).
+        units_per_layer: Unit counts aligned with ``types``.
+        initializers: Kernel initializer names aligned with ``types``.
+        kernel_params: Per-layer kernel kwargs dicts aligned with ``types``.
+
+    Returns:
+        layers (list[dict]): List of ``{'type', 'params'}`` layer specs.
+    """
     # get policy layers
     layers = []
     for type, units, kernel, k_param in zip(types, units_per_layer, initializers, kernel_params):
@@ -2864,13 +3594,17 @@ def build_layers(types: List[str], units_per_layer: List[int], initializers: Lis
     return layers
 
 def select_policy_model(env: EnvWrapper):
-    """Select the appropriate policy model based on the environment's action space.
+    """Return the legacy stochastic policy class for ``env``'s action space.
 
     Args:
-        env (gym.Env): The environment object.
+        env: Environment wrapper whose ``action_space`` is inspected.
 
     Returns:
-        Class: The class of the appropriate policy model.
+        model_class (type): ``StochasticDiscretePolicy`` for Discrete /
+            MultiDiscrete, or ``StochasticContinuousPolicy`` for Box.
+
+    Raises:
+        ValueError: If the action space type is unsupported.
     """
     #DEBUG
     # print(f'env action space type:{env.action_space}')
@@ -2886,7 +3620,17 @@ def select_policy_model(env: EnvWrapper):
     return model_class
 
 def select_critic_model(env: EnvWrapper):
-    """Select the appropriate critic model based on the environment's action space.
+    """Return the legacy critic class for ``env``'s action space.
+
+    Args:
+        env: Environment wrapper whose ``action_space`` is inspected.
+
+    Returns:
+        model_class (type): ``DiscreteCritic`` for Discrete / MultiDiscrete, or
+            ``ContinuousCritic`` for Box.
+
+    Raises:
+        ValueError: If the action space type is unsupported.
     """
     if isinstance(env.action_space, gym.spaces.Discrete) or isinstance(env.action_space, gym.spaces.MultiDiscrete):
         model_class = DiscreteCritic
