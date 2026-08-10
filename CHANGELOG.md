@@ -25,6 +25,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- Phase 4 of the docstring-and-docs-completion plan finished the eight how-to
+  TODOs across `docs/how-to/configurations.md` (config anatomy, the builder
+  key reference, Isaac `cfg` resolution, and new-environment steps),
+  `docs/how-to/getting-started.md` (training console output, checkpoint and
+  log locations, W&B behavior, and agent evaluation), and
+  `docs/how-to/isaac-sim.md` (Isaac Lab training walkthrough and the custom
+  `*_cfg.py` catalog). The runtime-observable sections were written from real
+  `phoenx-train` / `phoenx-test` runs rather than inferred. While gathering
+  that evidence, three bundled LunarLander examples proved known-broken and are
+  documented as such (no config edits here):
+  `LunarLanderContinuous-v3/sac.yml` and `ppo.yml` cannot currently build an
+  agent because their networks sit at the YAML root while their builders read
+  `agent.config`, and `LunarLander-v3/reinforce.yml` builds but crashes on its
+  first training step. Those are tracked by the modular-schema-migration plan
+  (`.cursor/plans/modular_schema_migration_2fb87c9c.plan.md`).
 - Several blocks of commented-out dead code are deleted from
   `src/phoenx/rl_agents.py`, including the four commented lines in
   `Agent._setup_save_dir` that described a save-directory-name-appending
