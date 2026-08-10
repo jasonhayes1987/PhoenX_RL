@@ -18,45 +18,52 @@ agent:
   type: SAC
   config:
     name: SAC
-    policy:
-      layer_config:
-        - type: dense
-          params: {units: 400, kernel: default, kernel_params: {}}
-        - type: relu
-        - type: dense
-          params: {units: 300, kernel: default, kernel_params: {}}
-        - type: relu
-      output_config:
-        - type: dense
-          params: {kernel: default, kernel_params: {}}
-      optimizer_params: {type: Adam, params: {lr: &policy_lr 0.0003}}
-      # lr_scheduler:
-      #   schedule_type: "linear"
-      #   steps: *stop_units
-      #   start_value: *policy_lr
-      #   end_value: 1.0e-5
-      distribution: normal
-      # temperature: &temperature 1.0 # Categorical dist only
+    model:
       device: *device
-    critic:
-      layer_config:
-        - type: dense
-          params: {units: 400, kernel: default, kernel_params: {}}
-        - type: relu
-      merged_config:
-        - type: dense
-          params: {units: 300, kernel: default, kernel_params: {}}
-        - type: relu
-      output_config:
-        - type: dense
-          params: {kernel: default, kernel_params: {}}
-      optimizer_params: {type: Adam, params: {lr: &critic_lr 0.0003}}
-      # lr_scheduler:
-      #   schedule_type: "linear"
-      #   steps: *stop_units
-      #   start_value: *critic_lr
-      #   end_value: 1.0e-5
-      device: *device
+      roots: null
+      trunk: null
+      branches:
+        policy:
+          type: StochasticContinuousHead
+          layer_config:
+            - type: dense
+              params: {units: 400, kernel: default, kernel_params: {}}
+            - type: relu
+            - type: dense
+              params: {units: 300, kernel: default, kernel_params: {}}
+            - type: relu
+          output_config:
+            - type: dense
+              params: {kernel: default, kernel_params: {}}
+          optimizer_params: {type: Adam, params: {lr: &policy_lr 0.0003}}
+          # lr_scheduler:
+          #   schedule_type: "linear"
+          #   steps: *stop_units
+          #   start_value: *policy_lr
+          #   end_value: 1.0e-5
+          distribution: normal
+          # temperature: &temperature 1.0 # Categorical dist only
+          device: *device
+        critic:
+          type: ContinuousQHead
+          layer_config:
+            - type: dense
+              params: {units: 400, kernel: default, kernel_params: {}}
+            - type: relu
+          merged_config:
+            - type: dense
+              params: {units: 300, kernel: default, kernel_params: {}}
+            - type: relu
+          output_config:
+            - type: dense
+              params: {kernel: default, kernel_params: {}}
+          optimizer_params: {type: Adam, params: {lr: &critic_lr 0.0003}}
+          # lr_scheduler:
+          #   schedule_type: "linear"
+          #   steps: *stop_units
+          #   start_value: *critic_lr
+          #   end_value: 1.0e-5
+          device: *device
     discount: 0.99
     tau: 0.01
     state_normalizer:

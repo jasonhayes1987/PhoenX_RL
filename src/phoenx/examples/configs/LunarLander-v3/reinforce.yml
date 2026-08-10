@@ -14,6 +14,48 @@ schedule:
 agent:
   type: Reinforce
   config:
+    # A flat Box observation needs no per-modality encoder, so there is no
+    # root and no trunk: each head keeps its own body and its own
+    # optimizer.
+    model:
+      device: *device
+      roots: null
+      trunk: null
+      branches:
+        policy:
+          type: StochasticDiscreteHead
+          layer_config:
+            - type: dense
+              params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+            - type: relu
+            - type: dense
+              params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+            - type: relu
+          output_config:
+            - type: dense
+              params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          distribution: categorical
+          temperature: &temperature 1.0
+          # temperature_schedule:
+          #   schedule_type: "cosine"
+          #   steps: 500000
+          #   start_value: *temperature
+          #   end_value: 1.0
+
+        value:
+          type: ValueHead
+          layer_config:
+            - type: dense
+              params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
+            - type: relu
+            - type: dense
+              params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
+            - type: relu
+          output_config:
+            - type: dense
+              params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
+          optimizer_params: {type: Adam, params: {lr: 0.0001}}
     discount: 0.99
     entropy_coefficient: &entropy_coefficient 0.01
     auto_entropy_tuning: false
@@ -21,6 +63,36 @@ agent:
     target_entropy_scale: 0.98
     log_level: INFO
     _diag_freq: 10
+    advantage_normalizer:
+      type: BatchNorm
+      config:
+        clip_value: 10.0
+        device: *device
+        log_level: INFO
+        # kwargs
+        _diag_freq: 1024
+    state_normalizer:
+      type: RunningNorm
+      config:
+        clip_value: 10.0
+        device: *device
+        log_level: INFO
+        # kwargs
+        _diag_freq: 1024
+    reward_normalizer:
+      type: RewardNorm
+      config:
+        gamma: 0.99
+        clip_value: 10.0
+        device: *device
+        log_level: INFO
+        # kwargs
+        _diag_freq: 1024
+    # entropy_schedule:
+    #   schedule_type: "linear"
+    #   steps: 100000
+    #   start_value: *entropy_coefficient
+    #   end_value: 0.001
 
 env:
   type: envpool # "isaacsim" or "gymnasium" or "envpool"
@@ -35,77 +107,6 @@ env:
     wrappers: []
     render_mode: null
     seed: *seed
-    
-
-models:
-  policy:
-    layer_config:
-      - type: dense
-        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
-      # - type: relu
-      - type: dense
-        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
-      # - type: relu
-    output_config:
-      - type: dense
-        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
-    optimizer_params: {type: Adam, params: {lr: 0.001}}
-    distribution: categorical
-    temperature: &temperature 1.0
-    device: *device
-
-  value:
-    layer_config:
-      - type: dense
-        params: {units: 64, kernel: orthogonal, kernel_params: {gain: 2.0}}
-      # - type: relu
-      - type: dense
-        params: {units: 32, kernel: orthogonal, kernel_params: {gain: 2.0}}
-      # - type: relu
-    output_config:
-      - type: dense
-        params: {kernel: orthogonal, kernel_params: {gain: 2.0}}
-    optimizer_params: {type: Adam, params: {lr: 0.0001}}
-    device: *device
-
-normalizers:
-  advantage:
-    type: BatchNorm
-    config:
-      clip_value: 10.0
-      device: *device
-      log_level: INFO
-      # kwargs
-      _diag_freq: 1024
-  state:
-    type: RunningNorm
-    config:
-      clip_value: 10.0
-      device: *device
-      log_level: INFO
-      # kwargs
-      _diag_freq: 1024
-  reward:
-    type: RewardNorm
-    config:
-      gamma: 0.99
-      clip_value: 10.0
-      device: *device
-      log_level: INFO
-      # kwargs
-      _diag_freq: 1024
-
-# entropy_schedule:
-#   schedule_type: "linear"
-#   steps: 100000
-#   start_value: *entropy_coefficient
-#   end_value: 0.001
-
-# temperature_schedule:
-#   schedule_type: "cosine"
-#   steps: 500000
-#   start_value: *temperature
-#   end_value: 1.0
 
 buffer:
   type: TrajectoryBuffer

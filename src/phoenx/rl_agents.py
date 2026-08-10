@@ -90,6 +90,7 @@ class Agent(ABC):
         self.name = name if name else self.__class__.__name__
         self.logger = get_logger(self.name, level=log_level.upper())
         self.kwargs = kwargs
+        self.intrinsic_motivation = None
         try:
             self.save_dir = self._setup_save_dir(save_dir)
             self.device = get_device(device)

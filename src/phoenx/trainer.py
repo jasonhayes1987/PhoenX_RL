@@ -600,8 +600,8 @@ class Trainer:
         # Take action in environment and get new Observation
         observation = self.env.step(action.actions)
         # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer (Training Only)
+        im = getattr(self.agent, 'intrinsic_motivation', None)
         if training:
-            im = getattr(self.agent, 'intrinsic_motivation', None)
             if im is not None:
                 # Pass normalized (flattened for IM) states to IM if present
                 next_obs_norm = self.normalize_observation(observation)
@@ -627,7 +627,7 @@ class Trainer:
         # Add step metrics to step log
         step_log.update({
             'step_reward': observation.rewards.mean().item(),
-            'step_intrinsic_reward': observation.intrinsic_rewards.mean().item() if self.agent.intrinsic_motivation else 0.0
+            'step_intrinsic_reward': observation.intrinsic_rewards.mean().item() if im is not None else 0.0
         })
         
         # Check if any env is done

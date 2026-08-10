@@ -85,15 +85,15 @@ env:
 [build_trainer_from_config][phoenx.builder.build_trainer_from_config] reads a
 fixed set of top-level sections (`env`, `agent`, `buffer`, `schedule`, plus
 optional `callbacks`, `renderer`, `success_criterion`, `log_level`,
-`save_dir`). Network and normalizer layout depends on the algorithm builder
-under `phoenx.builders`:
+`save_dir`). Every algorithm builder under `phoenx.builders` uses the same
+network schema: `agent.config.model` (roots → trunk → branches). Normalizers
+and related schedules live under `agent.config` (not at the YAML root).
 
-- **PPO / SAC / DDPG / TD3** — networks and normalizers live under
-  `agent.config`. Prefer a modular `model:` block (roots → trunk → branches),
-  as in the Isaac camera example below, or legacy per-head keys (`policy`,
-  `critic`, …) nested under `agent.config`.
-- **Reinforce / ActorCritic** — still accept top-level `models:` and
-  `normalizers:` (see `LunarLander-v3/reinforce.yml`).
+[apply_model_config][phoenx.builder.apply_model_config] pops `model` and
+materializes roots, trunk, and branch heads. If `agent.config.model` is
+absent or empty, it raises `ValueError` naming the algorithm and pointing
+here. Top-level `models:` / `normalizers:` and flat `policy:` / `critic:`
+dicts under `agent.config` are no longer read.
 
 Top-level keys that only exist as YAML anchors (commonly `device`,
 `learning_rate`) are not read by the trainer factory; they are merged into
@@ -101,8 +101,10 @@ nested fields via `*anchor` references.
 
 ### Non-multi-modal: LunarLander Continuous SAC
 
-Bundled path: `LunarLanderContinuous-v3/sac.yml`. Annotated structure (same
-keys as the file; some layer lists shortened with `# ...`):
+Bundled path: `LunarLanderContinuous-v3/sac.yml`. Flat `Box` observation, so
+`roots` and `trunk` are `null` and each head keeps its own body and
+optimizer. Annotated structure (same keys as the file; some layer lists
+shortened with `# ...`):
 
 ```yaml
 # Anchor-only: not read by build_trainer_from_config; referenced via *device
@@ -129,6 +131,33 @@ schedule:
 agent:
   type: SAC
   config:
+    model:                         # required for every algorithm
+      device: *device
+      roots: null                  # flat Box → no per-modality encoder
+      trunk: null
+      branches:
+        policy:
+          type: StochasticContinuousHead   # HEAD_REGISTRY name; required
+          # layer_config: dense(400) → relu → dense(300) → relu
+          # output_config: dense out
+          optimizer_params: {type: Adam, params: {lr: &policy_lr 0.00073}}
+          distribution: normal
+          lr_scheduler:            # per-branch; decays 7.3e-4 → 0.0
+            schedule_type: linear
+            steps: *stop_units
+            start_value: *policy_lr
+            end_value: 0.0
+        critic:
+          type: ContinuousQHead
+          # layer_config / merged_config / output_config in the file
+          optimizer_params: {type: Adam, params: {lr: &critic_lr 0.00073}}
+          lr_scheduler: {schedule_type: linear, steps: *stop_units,
+                         start_value: *critic_lr, end_value: 0.0}
+        critic_b:
+          type: ContinuousQHead    # twin Q; same shape as critic
+          optimizer_params: {type: Adam, params: {lr: &critic_b_lr 0.00073}}
+          lr_scheduler: {schedule_type: linear, steps: *stop_units,
+                         start_value: *critic_b_lr, end_value: 0.0}
     discount: 0.99
     tau: 0.01
     entropy_coefficient: 1.0
@@ -139,8 +168,9 @@ agent:
     N: &n 1                    # must match buffer N and VectorNStepReward n
     log_level: DEBUG
     _diag_freq: 1000
-    # Current SAC builder also expects policy / critic / normalizers HERE
-    # (or a nested model: block). See the Isaac example and Key reference.
+    state_normalizer:          # under agent.config, not top-level normalizers:
+      type: RunningNorm
+      config: {clip_value: 10.0, device: *device, log_level: DEBUG, _diag_freq: 10000}
 
 # Required. type: envpool | gymnasium | isaacsim
 env:
@@ -156,33 +186,6 @@ env:
         params: {n: *n, obs_key: *obs_key, goal_key: *goal_key, ach_goal_key: *ach_goal_key}
     render_mode: null
     seed: *seed
-
-# Present in this bundled file for Reinforce-style layouts. SAC/PPO/DDPG/TD3
-# builders do not read top-level models: — nest equivalent heads under
-# agent.config (or use agent.config.model as in the camera example).
-models:
-  policy:
-    # layer_config / output_config in the bundled file:
-    # dense(400) → relu → dense(300) → relu → dense out
-    optimizer_params: {type: Adam, params: {lr: &policy_lr 0.00073}}
-    distribution: normal
-    device: *device
-  critic: {}      # twin Q head A (layer + merged + output stacks in the file)
-  critic_b: {}    # twin Q head B (same shape as critic)
-
-# Same placement note as models: — SAC builder looks for state_normalizer
-# under agent.config, not top-level normalizers.state.
-normalizers:
-  state:
-    type: RunningNorm
-    config: {clip_value: 10.0, device: *device, log_level: DEBUG, _diag_freq: 10000}
-
-# Top-level LR schedules in this file are not wired by builders.sac.
-# Attach schedules as policy.lr_scheduler / critic.lr_scheduler under
-# agent.config when using create_policy / create_critic.
-policy_lr_schedule: {schedule_type: linear, steps: *stop_units, start_value: *policy_lr, end_value: 0.0}
-critic_lr_schedule: {schedule_type: linear, steps: *stop_units, start_value: *critic_lr, end_value: 0.0}
-critic_b_lr_schedule: {schedule_type: linear, steps: *stop_units, start_value: *critic_b_lr, end_value: 0.0}
 
 # Required. type → Buffer.create_instance; config kwargs (+ injected env)
 buffer:
@@ -335,10 +338,11 @@ key is missing (constructor defaults for passthrough sections).
 | `save_dir` | str | `"models/"` | Trainer checkpoint / renderer root |
 
 Keys that appear in some YAML but are **not** read by
-`build_trainer_from_config` include top-level `device`, `learning_rate`,
-`models`, `normalizers`, and `*_lr_schedule` / `entropy_schedule`. Those are
-either YAML anchors or consumed only by specific algorithm builders when
-placed where that builder looks (see Agent section).
+`build_trainer_from_config` include top-level `device` and `learning_rate`
+(YAML anchors only). Top-level `models`, `normalizers`, `*_lr_schedule`,
+`entropy_schedule`, and `temperature_schedule` are also ignored — put the
+equivalents under `agent.config` / `agent.config.model` (see Agent section
+and the migration table below).
 
 ### `schedule` → [TrainingSchedule][phoenx.trainer.TrainingSchedule]
 
@@ -393,27 +397,59 @@ the env. Full wrapper API: [Environment wrappers][phoenx.env_wrapper].
 | `type` | str | required | `"ActorCritic"` \| `"Reinforce"` \| `"PPO"` \| `"DDPG"` \| `"TD3"` \| `"SAC"` |
 | `config` | mapping | required | Algorithm kwargs after the builder materializes models / normalizers |
 
-**Model schemas inside `agent.config` (PPO / SAC / DDPG / TD3):**
+**Network schema (all six algorithms):** `agent.config.model` with
+`roots`, optional `trunk`, `branches`, plus optional
+`optimizer_params`, `lr_scheduler`, and `shared_update`. Processed by
+[apply_model_config][phoenx.builder.apply_model_config]. Every branch needs
+an explicit `type:` naming a [HEAD_REGISTRY][phoenx.models.HEAD_REGISTRY]
+entry (`StochasticContinuousHead`, `StochasticDiscreteHead`,
+`ContinuousQHead`, `ValueHead`, …). A `device` key under `model:` is not
+read; the composite model is placed on the agent's own `device`.
 
-1. **Modular** — `model:` with `roots`, optional `trunk`, `branches`, plus
-   optional `device`, `optimizer_params`, `lr_scheduler`, `shared_update`.
-   Processed by [apply_model_config][phoenx.builder.apply_model_config].
-2. **Legacy nested heads** — `policy` / `value` / `critic` / `critic_b` /
-   `actor` dicts passed through `create_policy`, `create_value`,
-   `create_critic`, or `create_actor`.
+[Head.from_config][phoenx.models.Head.from_config] silently drops keys the
+head constructor does not accept. A misplaced field (for example an LR
+schedule parked next to `discount` instead of on the branch) fails quietly
+rather than loudly — check the live branch keys against the head class.
 
-**Normalizers / extras under `agent.config` (PPO / SAC / DDPG / TD3):**
+**Branches-only vs shared roots.** A flat `Box` observation needs no
+per-modality encoder: set `roots: null` and `trunk: null` so the observation
+is preprocessed and routed straight to each head. The three LunarLander
+bundled configs use that layout; each head keeps its own body and optimizer,
+and `shared_update` is inert when nothing is shared (omit it and the agent
+default applies). Multi-modal dict observations need named roots with
+`input_keys` (and usually a trunk): see
+`IsaacSim/franka/cube_lift/dense/ppo_camera.yml`, which encodes `rgb` and
+`policy` separately before a shared trunk.
+
+**Missing `model`:** if `agent.config.model` is absent or empty,
+[apply_model_config][phoenx.builder.apply_model_config] raises `ValueError`
+(`"{algo}: 'agent.config.model' is required … See docs/how-to/configurations.md."`).
+Add a `model:` block as in the examples above; do not fall back to top-level
+`models:` or flat `policy:` / `critic:` keys.
+
+**Migrating an older YAML**
+
+| Old location | New location |
+|--------------|--------------|
+| top-level `models.<role>` | `agent.config.model.branches.<role>` (add explicit `type:`) |
+| flat `agent.config.<role>` head dict | `agent.config.model.branches.<role>` (add explicit `type:`) |
+| top-level `normalizers.state` / `.goal` / `.advantage` / `.reward` | `agent.config.state_normalizer` / `goal_normalizer` / `advantage_normalizer` / `reward_normalizer` |
+| top-level `entropy_schedule` | `agent.config.entropy_schedule` |
+| top-level `<role>_lr_schedule` | `agent.config.model.branches.<role>.lr_scheduler` |
+| top-level `temperature_schedule` | `agent.config.model.branches.policy.temperature_schedule` |
+
+Legacy `Model` / policy / critic classes, `head_from_legacy_model_config`,
+`LEGACY_MODEL_TO_HEAD_TYPE`, `map_legacy_state_dict`, and the legacy branch
+of `Agent.from_config` / `_load_legacy_checkpoint` remain for **checkpoint
+and saved-config reload only**. They do not make legacy YAML loadable.
+
+**Normalizers / extras under `agent.config`:**
 `state_normalizer`, `goal_normalizer`, `reward_normalizer`,
-`advantage_normalizer` (PPO), `intrinsic_motivation`, `entropy_schedule`,
-`policy_clip_schedule` / `value_clip_schedule` (PPO), `kl_adapter` (PPO →
-[AdaptiveKL][phoenx.adaptive_kl.AdaptiveKL]), `noise` / `noise_schedule`
-(DDPG/TD3). Each normalizer is a `{type, config}` mapping; see
-[Normalizers][phoenx.normalizer].
-
-**Reinforce / ActorCritic** additionally read top-level `models` and
-`normalizers` (and optional top-level `entropy_schedule` /
-`temperature_schedule`). Prefer copying `LunarLander-v3/reinforce.yml` for
-those agents.
+`advantage_normalizer` (on-policy), `intrinsic_motivation`,
+`entropy_schedule`, `policy_clip_schedule` / `value_clip_schedule` (PPO),
+`kl_adapter` (PPO → [AdaptiveKL][phoenx.adaptive_kl.AdaptiveKL]), `noise` /
+`noise_schedule` (DDPG/TD3). Each normalizer is a `{type, config}` mapping;
+see [Normalizers][phoenx.normalizer].
 
 Remaining algorithm hyperparameters (`discount`, clip coefficients, `tau`,
 entropy settings, …) are constructor kwargs for the agent class. See
@@ -462,12 +498,11 @@ Optional passthrough to [SuccessCriterion][phoenx.trainer.SuccessCriterion]:
 
 ## Creating a config for a new environment
 
-1. **Copy the nearest bundled file.** Flat Gymnasium / EnvPool → start from
-   `LunarLanderContinuous-v3/sac.yml` or `ppo.yml`, but nest networks under
-   `agent.config` (or use a `model:` block) when the agent type is SAC/PPO/
-   DDPG/TD3. Multi-modal Isaac → copy
-   `IsaacSim/franka/cube_lift/dense/ppo_camera.yml`. Discrete on-policy →
-   `LunarLander-v3/reinforce.yml`.
+1. **Copy the nearest bundled file.** Flat Gymnasium / EnvPool continuous →
+   `LunarLanderContinuous-v3/sac.yml` or `ppo.yml` (branches-only
+   `agent.config.model`). Discrete on-policy → `LunarLander-v3/reinforce.yml`.
+   Multi-modal Isaac → `IsaacSim/franka/cube_lift/dense/ppo_camera.yml`
+   (named roots + trunk).
 2. **Change env identity.** Set `env.type` and `env.config.cfg` (Gymnasium /
    EnvPool id, or Isaac `module.path:ClassName`). Adjust `num_envs`,
    `obs_key` / `goal_key` / `ach_goal_key`, `wrappers`, and Isaac-only
@@ -503,6 +538,8 @@ Optional passthrough to [SuccessCriterion][phoenx.trainer.SuccessCriterion]:
 - **HER keys** — `goal_key` (and usually `ach_goal_key`) must be set;
   `buffer.config.hindsight` must use `output_format` compatible with the
   buffer (`n_step` for replay, `flat` for trajectory).
-- **Schema placement** — Putting `models:` / `normalizers:` at the YAML root
-  works for Reinforce / ActorCritic builders, not for the current SAC/PPO/
-  DDPG/TD3 builders.
+- **Schema placement** — Networks belong under `agent.config.model`;
+  normalizers and `entropy_schedule` under `agent.config`. Top-level
+  `models:` / `normalizers:` / `*_lr_schedule` are ignored for every
+  algorithm. Missing `agent.config.model` raises `ValueError` from
+  [apply_model_config][phoenx.builder.apply_model_config].

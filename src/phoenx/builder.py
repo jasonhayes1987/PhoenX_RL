@@ -3,9 +3,9 @@
 Training configs are plain YAML mappings. These helpers turn sections of that
 mapping into live objects: ``create_env`` / ``build_agent`` / ``build_buffer``
 and friends construct the pieces, and ``build_trainer_from_config`` (or
-``build_trainer_from_config_path``) wires them into a ``Trainer``. Head and
-normalizer helpers (``create_policy``, ``create_normalizer``, …) are shared by
-the per-algorithm builders under ``phoenx.builders``.
+``build_trainer_from_config_path``) wires them into a ``Trainer``. Normalizer
+and schedule helpers (``create_normalizer``, ``apply_model_config``, …) are
+shared by the per-algorithm builders under ``phoenx.builders``.
 
 Most factories take either the full config or a sub-dict already extracted by
 the caller. When an optional section is absent they typically return ``None``
@@ -19,10 +19,7 @@ import gymnasium as gym
 import numpy as np
 import yaml
 
-from phoenx.models import (
-    StochasticContinuousHead, StochasticDiscreteHead, DeterministicActorHead,
-    ValueHead, DiscreteQHead, ContinuousQHead, modular_parts_from_config,
-)
+from phoenx.models import modular_parts_from_config
 from phoenx.buffer import Buffer
 from phoenx.her import HindsightRelabeler
 from phoenx.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
@@ -181,30 +178,32 @@ def create_env(config: dict) -> EnvWrapper:
     raise ValueError(f"Invalid environment type: {env_type}")
 
 
-def apply_model_config(agent_cfg: dict, env: EnvWrapper) -> bool:
-    """Handle the canonical ``model:`` schema (roots/trunk/branches).
+def apply_model_config(agent_cfg: dict, env: EnvWrapper, algo: str) -> None:
+    """Decompose the canonical ``model:`` schema (roots/trunk/branches).
 
-    If ``agent_cfg`` carries a ``model`` entry it is decomposed into live
+    ``agent_cfg`` must carry a ``model`` entry; it is decomposed into live
     ``roots`` / ``trunk`` / per-role branch heads (plus model-wide
     ``optimizer_params`` / ``lr_scheduler`` / ``shared_update``) written back
-    into ``agent_cfg``, and True is returned. Legacy per-model configs
-    (``policy:`` / ``value:`` / ...) return False and are handled by the
-    per-algorithm builders below.
+    into ``agent_cfg`` in place.
 
     Args:
         agent_cfg: Agent sub-dict (typically ``config["agent"]["config"]``).
-            On success this function pops ``model`` and writes ``roots``,
-            ``trunk``, per-role head objects, and optionally
-            ``optimizer_params``, ``lr_scheduler``, and ``shared_update``.
+            Pops ``model`` and writes ``roots``, ``trunk``, per-role head
+            objects, and optionally ``optimizer_params``, ``lr_scheduler``,
+            and ``shared_update``.
         env: Environment passed to ``modular_parts_from_config``.
+        algo: Algorithm name used only to name the missing-schema error.
 
-    Returns:
-        ``True`` if a ``model`` entry was applied; ``False`` if absent or empty
-        (legacy schema left untouched).
+    Raises:
+        ValueError: If ``agent_cfg`` has no (non-empty) ``model`` entry.
     """
     model_cfg = agent_cfg.pop('model', None)
     if not model_cfg:
-        return False
+        raise ValueError(
+            f"{algo}: 'agent.config.model' is required (roots / trunk / branches). "
+            "Top-level 'models:' / 'normalizers:' and flat 'policy:' / 'critic:' keys "
+            "under agent.config are no longer read. See docs/how-to/configurations.md."
+        )
     inner = model_cfg.get('config', model_cfg)
     parts = modular_parts_from_config(inner, env)
     agent_cfg['roots'] = parts['roots']
@@ -217,103 +216,6 @@ def apply_model_config(agent_cfg: dict, env: EnvWrapper) -> bool:
         agent_cfg.setdefault('lr_scheduler', parts['lr_scheduler'])
     if parts['shared_update']:
         agent_cfg.setdefault('shared_update', parts['shared_update'])
-    return True
-
-
-def create_policy(config: dict, env: EnvWrapper) -> StochasticContinuousHead | StochasticDiscreteHead:
-    """Create a stochastic policy head from a head config sub-dict.
-
-    Args:
-        config: Policy head mapping. Must include ``distribution``. Accepted
-            values: ``"categorical"`` (builds ``StochasticDiscreteHead``, and
-            wraps optional ``temperature_schedule``), or ``"beta"``,
-            ``"kumaraswamy"``, ``"normal"`` (builds ``StochasticContinuousHead``).
-            Optional ``lr_scheduler`` is wrapped in ``ScheduleWrapper`` when
-            present. Mutated in place: injects ``env`` and the wrapped
-            schedules before unpacking into the head constructor.
-        env: Environment bound onto the head as ``config["env"]``.
-
-    Returns:
-        Stochastic discrete or continuous policy head.
-
-    Raises:
-        ValueError: If ``distribution`` is not one of the accepted values.
-    """
-    config['env'] = env
-    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
-    if config['distribution'] in ['categorical']:
-        config['temperature_schedule'] = ScheduleWrapper(**config['temperature_schedule']) if config.get('temperature_schedule', None) else None
-        return StochasticDiscreteHead(**config)
-    elif config['distribution'] in ['beta', 'kumaraswamy', 'normal']:
-        return StochasticContinuousHead(**config)
-    else:
-        raise ValueError(f"Invalid distribution: {config['distribution']}")
-
-
-def create_actor(config: dict, env: EnvWrapper) -> DeterministicActorHead:
-    """Create a deterministic actor head from a head config sub-dict.
-
-    Args:
-        config: Actor head mapping unpacked into ``DeterministicActorHead``.
-            Optional ``lr_scheduler`` is wrapped in ``ScheduleWrapper`` when
-            present. Mutated in place: injects ``env`` and the wrapped
-            schedule.
-        env: Environment bound onto the head as ``config["env"]``.
-
-    Returns:
-        Deterministic actor head.
-    """
-    config['env'] = env
-    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
-    return DeterministicActorHead(**config)
-
-
-def create_value(config: dict, env: EnvWrapper) -> ValueHead:
-    """Create a value head from a head config sub-dict.
-
-    Args:
-        config: Value head mapping. Copied before mutation, then unpacked into
-            ``ValueHead``. Optional ``lr_scheduler`` is wrapped in
-            ``ScheduleWrapper`` when present.
-        env: Environment bound onto the head as ``config["env"]``.
-
-    Returns:
-        Value head.
-    """
-    config = dict(config)
-    config['env'] = env
-    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
-    return ValueHead(**config)
-
-
-def create_critic(config: dict, env: EnvWrapper) -> DiscreteQHead | ContinuousQHead:
-    """Create a Q-head from a head config sub-dict.
-
-    Dispatches on ``env.single_action_space``: ``Discrete`` → ``DiscreteQHead``,
-    ``Box`` → ``ContinuousQHead``.
-
-    Args:
-        config: Critic head mapping unpacked into the chosen Q-head class.
-            Optional ``lr_scheduler`` is wrapped in ``ScheduleWrapper`` when
-            present. Mutated in place: injects ``env`` and the wrapped
-            schedule.
-        env: Environment used for action-space dispatch and bound as
-            ``config["env"]``.
-
-    Returns:
-        Discrete or continuous Q-head.
-
-    Raises:
-        ValueError: If the action space is neither ``Discrete`` nor ``Box``.
-    """
-    config['env'] = env
-    config['lr_scheduler'] = ScheduleWrapper(**config['lr_scheduler']) if config.get('lr_scheduler', None) else None
-    if isinstance(env.single_action_space, gym.spaces.Discrete):
-        return DiscreteQHead(**config)
-    elif isinstance(env.single_action_space, gym.spaces.Box):
-        return ContinuousQHead(**config)
-    else:
-        raise ValueError(f"Invalid action space: {env.single_action_space}")
 
 
 def create_normalizer(config: dict, env: EnvWrapper, key: str | None = None) -> RunningNorm | BatchNorm | RewardNorm:

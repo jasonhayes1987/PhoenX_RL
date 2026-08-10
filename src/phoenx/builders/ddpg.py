@@ -1,4 +1,4 @@
-from phoenx.builder import apply_model_config, create_intrinsic_motivation, create_normalizer, create_actor, create_critic
+from phoenx.builder import apply_model_config, create_intrinsic_motivation, create_normalizer
 from phoenx.rl_agents import DDPG
 from phoenx.env_wrapper import EnvWrapper
 from phoenx.schedulers import ScheduleWrapper
@@ -15,13 +15,8 @@ def build(config: dict, env: EnvWrapper) -> DDPG:
     Returns:
         DDPG: The built DDPG agent.
     """
-    # Canonical 'model:' schema (roots/trunk/branches) or legacy per-model keys
-    if not apply_model_config(config['agent']['config'], env):
-        # build policy
-        config['agent']['config']['policy'] = create_actor(config['agent']['config']['policy'], env)
-
-        # build critic model
-        config['agent']['config']['critic'] = create_critic(config['agent']['config']['critic'], env)
+    # Canonical 'model:' schema (roots/trunk/branches)
+    apply_model_config(config['agent']['config'], env, "DDPG")
 
     # create noise object if present in config
     if config['agent']['config'].get('noise', None):

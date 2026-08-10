@@ -1,7 +1,4 @@
-from phoenx.builder import (
-    apply_model_config, create_intrinsic_motivation, create_normalizer,
-    create_policy, create_value,
-)
+from phoenx.builder import apply_model_config, create_intrinsic_motivation, create_normalizer
 from phoenx.rl_agents import PPO
 from phoenx.env_wrapper import EnvWrapper
 from phoenx.normalizer import create_normalizer as normalizer_factory
@@ -12,10 +9,8 @@ from phoenx.adaptive_kl import AdaptiveKL
 def build(config: dict, env: EnvWrapper):
     agent_cfg = config["agent"]["config"]
 
-    # Canonical 'model:' schema (roots/trunk/branches) or legacy per-model keys
-    if not apply_model_config(agent_cfg, env):
-        agent_cfg["policy"] = create_policy(agent_cfg["policy"], env)
-        agent_cfg["value"] = create_value(agent_cfg["value"], env)
+    # Canonical 'model:' schema (roots/trunk/branches)
+    apply_model_config(agent_cfg, env, "PPO")
 
     # normalizers
     if agent_cfg.get("state_normalizer", None):

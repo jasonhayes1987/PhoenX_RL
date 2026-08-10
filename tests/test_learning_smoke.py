@@ -52,12 +52,18 @@ def test_ppo_cartpole_learns(tmp_path):
     config = _base_config(str(tmp_path) + "/")
     config["agent"] = {"type": "PPO", "config": {
         "name": "PPO",
-        "policy": {"layer_config": [DENSE(64), RELU, DENSE(64), RELU],
-                   "output_config": OUT_POLICY, "distribution": "categorical",
-                   "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
-        "value": {"layer_config": [DENSE(64), RELU, DENSE(64), RELU],
-                  "output_config": OUT_VALUE,
-                  "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
+        "model": {
+            "branches": {
+                "policy": {"type": "StochasticDiscreteHead",
+                           "layer_config": [DENSE(64), RELU, DENSE(64), RELU],
+                           "output_config": OUT_POLICY, "distribution": "categorical",
+                           "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
+                "value": {"type": "ValueHead",
+                          "layer_config": [DENSE(64), RELU, DENSE(64), RELU],
+                          "output_config": OUT_VALUE,
+                          "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
+            },
+        },
         "discount": 0.99, "gae_coefficient": 0.95, "auto_entropy_tuning": False,
         "entropy_coefficient": 0.01, "policy_clip": 0.2, "value_clip": 0.2,
         "policy_grad_clip": 0.5, "value_grad_clip": 0.5, "value_coef": 0.5,

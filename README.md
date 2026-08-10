@@ -96,8 +96,11 @@ cd PhoenX_RL
 `installation.md` for switches.
 
 ## Usage
-Training is driven by a YAML config. At least one of `--config` or `--agent_dir`
-is required; if both are passed, `--config` wins. Console entry points: `phoenx-train` and `phoenx-test`
+Training is driven by a YAML config. Networks live under
+`agent.config.model` (roots → trunk → branches) for every algorithm;
+normalizers and related schedules live under `agent.config`. At least one of
+`--config` or `--agent_dir` is required; if both are passed, `--config` wins.
+Console entry points: `phoenx-train` and `phoenx-test`
 (`python -m phoenx.cli.train` also works).
 
 ### Bundled example configs

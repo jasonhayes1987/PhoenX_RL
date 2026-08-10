@@ -25,6 +25,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- Modular schema migration (`.cursor/plans/modular_schema_migration_2fb87c9c.plan.md`):
+  `apply_model_config` now raises `ValueError` when `agent.config.model` is
+  absent or empty instead of falling back to legacy YAML. The three bundled
+  LunarLander configs are rewritten as branches-only `agent.config.model`
+  ports (`roots: null` / `trunk: null`). Training dynamics that were
+  previously dead keys now take effect: `reinforce.yml` restores four
+  `relu` layers that were commented out (policy and value were purely
+  linear); `ppo.yml`'s `entropy_schedule` (cosine, 0.02 → 0.001) applies;
+  and the former top-level `*_lr_schedule` blocks are per-branch
+  `lr_scheduler` entries (PPO policy 3e-4 → 1e-5; SAC policy/critic/critic_b
+  7.3e-4 → 0.0).
 - Phase 4 of the docstring-and-docs-completion plan finished the eight how-to
   TODOs across `docs/how-to/configurations.md` (config anatomy, the builder
   key reference, Isaac `cfg` resolution, and new-environment steps),
@@ -38,8 +49,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `LunarLanderContinuous-v3/sac.yml` and `ppo.yml` cannot currently build an
   agent because their networks sit at the YAML root while their builders read
   `agent.config`, and `LunarLander-v3/reinforce.yml` builds but crashes on its
-  first training step. Those are tracked by the modular-schema-migration plan
-  (`.cursor/plans/modular_schema_migration_2fb87c9c.plan.md`).
+  first training step. All three are fixed later in this same release by the
+  modular schema migration recorded above.
 - Several blocks of commented-out dead code are deleted from
   `src/phoenx/rl_agents.py`, including the four commented lines in
   `Agent._setup_save_dir` that described a save-directory-name-appending
@@ -116,6 +127,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Buffer` is now a real ABC (`class Buffer(ABC)`). It previously imported `abstractmethod` but never `ABC`, so the base was directly instantiable and its declared `add`/`sample` signatures matched no concrete subclass. Direct instantiation now raises `TypeError`. In-repo callers are unaffected (`Buffer.create_instance` and all concrete subclasses are unchanged), but any out-of-repo code that subclassed without implementing `add`/`sample`, or that instantiated `Buffer` directly, will break.
 
 ### Removed
+- Modular schema migration: the two legacy YAML network schemas (top-level
+  `models:` / `normalizers:` / `entropy_schedule:` / `temperature_schedule:`,
+  and flat `policy:` / `value:` / `critic:` / `critic_b:` head dicts under
+  `agent.config`). Public API removal from `phoenx.builder`: `create_policy`,
+  `create_actor`, `create_value`, and `create_critic`. Checkpoint- and
+  saved-config adapters (`head_from_legacy_model_config`,
+  `LEGACY_MODEL_TO_HEAD_TYPE`, `map_legacy_state_dict`, the legacy branch of
+  `Agent.from_config` / `_load_legacy_checkpoint`, and the legacy `Model` /
+  policy / critic classes) remain and do **not** make legacy YAML loadable.
 - The dead single-env `NStepReward` wrapper (`src/phoenx/env_wrapper.py`), superseded roughly five months ago by `VectorNStepReward` and never reachable since: `EnvWrapper._find_nstep_wrapper` only matches `VectorNStepReward`, and `NStepReward` never gained the `set_action` / `set_intrinsic_motivation` methods the trainer and renderer call to feed it per-step data, so it could never receive an action. Nothing in the repo — no test, no bundled or committed config, no doc — ever referenced it by name. The only visible effect is on `WRAPPER_REGISTRY`: a hand-written YAML or an old saved run's `config.json` listing `{"type": "NStepReward"}` will now fail env construction with `ValueError: Unknown wrapper type 'NStepReward'` instead of silently building an inert wrapper. Use `{"type": "VectorNStepReward", "params": {"n": ...}}` instead.
 - `wrap_env` (`src/phoenx/env_wrapper.py`), which nothing in the repository called. It rebuilt a `SyncVectorEnv` from scratch — one fresh `gym.make(vec_env.spec.id)` per sub-env with the registry wrappers applied — duplicating what each adapter's own `_initialize_env` already does, and it silently skipped wrapper types missing from `WRAPPER_REGISTRY` where `_initialize_env` raises `ValueError`. It was never imported or referenced, so no configuration or call site changes.
 - Twelve unused import statements from `src/phoenx/agent_utils.py`: `json`, `math.e`, `pathlib.Path`, `typing.{Dict, Any, List, Optional}`, `numpy`, `torch.nn`, and the relative imports of `.models`, `.env_wrapper`, `.buffer`, `.noise`, `.normalizer`, and `.schedulers`. Nothing the module defines referenced any of them. This is API-visible rather than purely internal: the six relative imports re-exported roughly two dozen names, so code doing `from phoenx.agent_utils import ScheduleWrapper` (or reaching `agent_utils.np`) was leaning on a re-export that no longer exists and should import from the owning module instead.
@@ -147,6 +167,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- Modular schema migration: Reinforce and ActorCritic builders read
+  normalizers and `entropy_schedule` from `agent.config` (they previously
+  read the YAML root even in modular mode, so a correctly-modular config
+  silently dropped them). `Agent.__init__` defaults
+  `self.intrinsic_motivation = None`, and `Trainer.step` no longer reads
+  that attribute unconditionally — Reinforce and ActorCritic declare
+  `IM_ATTRS = ()` and never set it, so any real run of either agent died with
+  `AttributeError` on step one. Bundled `LunarLanderContinuous-v3/ppo.yml` and
+  `sac.yml` could not build (networks at the YAML root while those builders
+  read `agent.config`); `LunarLander-v3/reinforce.yml` built via the legacy
+  top-level `models:` path but crashed on step one. All three now train as
+  branches-only `agent.config.model` configs.
 - `Reinforce.act` and `ActorCritic.act` returned a bare action tensor, while
   `Trainer._step` does `self.env.step(action.actions)` (`src/phoenx/trainer.py`)
   and hands the same object to `nstep_wrapper.set_action(action)`, and
