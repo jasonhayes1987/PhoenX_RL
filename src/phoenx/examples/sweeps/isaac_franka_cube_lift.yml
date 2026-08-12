@@ -1,0 +1,131 @@
+# =============================================================================
+# Isaac Franka cube-lift (camera + state) PPO multi-phase Ray Tune sweep.
+#
+# Three phases run in series, each promoting its winner into the next:
+#   1. architecture  - random search + ASHA over all five modules
+#                       (roots.camera, roots.state, trunk, branches.policy,
+#                       branches.value), block grammar. roots.camera uses the
+#                       conv block with an EXPLICIT `suffix: [flatten, dense,
+#                       relu]` -- conv -> dense in one stack needs flatten
+#                       spelled out; it is NOT auto-inserted (the root's
+#                       overall output reshape to (B, D) is a separate thing).
+#   2. optimizers     - Optuna over a per-module learning rate for all five
+#                       modules (this base config only declares one
+#                       model-wide optimizer_params, so there is no
+#                       per-module LR to tune until this phase writes one).
+#   3. refine         - random search over PPO's core training scalars.
+#
+# ISAAC SIM CONCURRENCY CAVEAT (see the "Isaac Sim concurrency" section of
+# .cursor/plans/ray_tune_sweeps_9866d476.plan.md): running more than one
+# Isaac Sim / Kit app instance on a single GPU is *not* free parallelism --
+# IsaacLab's own maintainers report two instances "interfere...and run in
+# series instead" of overlapping (github.com/isaac-sim/IsaacLab/issues/2989).
+# Ray's fractional `resources: {gpu: ...}` request is bookkeeping only; it
+# reserves no VRAM or SM time. Until a benchmark (a later delivery pass)
+# settles a recommended concurrency, this sweep keeps max_concurrent_trials
+# at 1 (one Isaac Sim instance at a time) on a single-GPU machine. On a
+# multi-GPU box, one trial per GPU (resources: {gpu: 1}, max_concurrent_trials
+# = number of GPUs) is the safer starting point, not a higher fractional
+# value on a single GPU.
+#
+# Validate the schema only -- this never boots Isaac Sim or touches Ray:
+#   phoenx-tune --config isaac_franka_cube_lift.yml --validate-only
+#
+# Run it (needs a real Isaac Sim / IsaacLab install and a GPU):
+#   phoenx-tune --config isaac_franka_cube_lift.yml
+#
+# Uncomment and fill in for a multi-worker run so ISAACLAB_PATH / PYTHONPATH
+# reach Ray workers (ray_init is forwarded verbatim to ray.init()):
+# ray_init:
+#   runtime_env:
+#     env_vars:
+#       ISAACLAB_PATH: "/absolute/path/to/IsaacLab"
+#       PYTHONPATH: "/absolute/path/to/IsaacLab/source"
+#
+# This sweep does not use PBT (Population Based Training); scheduler.type:
+# pbt is rejected in this delivery pass (it needs checkpoint plumbing).
+# =============================================================================
+
+base_config: IsaacSim/franka/cube_lift/dense/ppo_camera.yml
+
+overrides:
+  schedule.stop_units: 4000000
+  log_level: ERROR
+
+defaults:
+  metric: avg_reward
+  mode: max
+  resources: {cpu: 4, gpu: 1}
+  max_concurrent_trials: 1   # see the concurrency caveat above
+  report: {every: 100000, unit: timestep}
+  auto_learn_every: true
+
+blocks:
+  dense_block:
+    layers:
+      - type: dense
+        params:
+          units: {dist: choice, values: [64, 128, 256], share_across_slots: true}
+          kernel: {dist: choice, values: [orthogonal, default]}
+      - type: {dist: choice, values: [relu, tanh]}
+  conv_block:
+    layers:
+      - type: conv2d
+        params:
+          out_channels: {dist: choice, values: [32, 64]}
+          kernel_size: {dist: choice, values: [3, 5]}
+          stride: 2
+          padding: 1
+      - type: relu
+
+phases:
+  - name: architecture
+    architecture:
+      roots.camera:
+        depth: {dist: randint, lower: 2, upper: 4}
+        blocks: [conv_block]
+        suffix:                       # conv -> dense needs an explicit flatten
+          - {type: flatten}
+          - type: dense
+            params: {units: {dist: choice, values: [128, 256]}}
+          - {type: relu}
+      roots.state:
+        depth: {dist: choice, values: [1, 2]}
+        blocks: [dense_block]
+      trunk:
+        depth: {dist: randint, lower: 1, upper: 3}
+        blocks: [dense_block]
+      branches.policy: {depth: {dist: choice, values: [1, 2]}, blocks: [dense_block]}
+      branches.value:  {depth: {dist: choice, values: [1, 2]}, blocks: [dense_block]}
+    tune:
+      num_samples: 6
+      search_alg: {type: random}
+      # max_t must be >= grace_period and matches overrides.schedule.stop_units,
+      # since time_attr is the timestep count a trial reports.
+      scheduler: {type: asha, time_attr: timestep, grace_period: 1000000, max_t: 4000000, reduction_factor: 2}
+    promote: {mode: best, seed_next: 2}
+
+  - name: optimizers
+    optimizers:
+      roots.camera:    {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
+      roots.state:     {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
+      trunk:           {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
+      branches.policy: {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
+      branches.value:  {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
+    tune:
+      num_samples: 8
+      search_alg: {type: optuna}
+      scheduler: {type: asha, time_attr: timestep, grace_period: 1000000, max_t: 4000000}
+    promote: {mode: best, seed_next: 3}
+
+  - name: refine
+    search_space:
+      agent.config.discount:            {dist: uniform, low: 0.95, high: 0.999}
+      agent.config.gae_coefficient:     {dist: uniform, low: 0.9, high: 0.99}
+      agent.config.entropy_coefficient: {dist: loguniform, low: 1.0e-4, high: 0.05}
+      agent.config.policy_clip:         {dist: uniform, low: 0.1, high: 0.4}
+      schedule.learning_epochs:         {dist: randint, lower: 3, upper: 11}
+    tune:
+      num_samples: 6
+      search_alg: {type: random}       # no scheduler declared here -> FIFO
+    promote: {mode: best}

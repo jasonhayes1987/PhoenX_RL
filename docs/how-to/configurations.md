@@ -496,6 +496,13 @@ Optional passthrough to [SuccessCriterion][phoenx.trainer.SuccessCriterion]:
 `threshold` (required for the distance / reward metrics), `info_key`
 (default `"is_success"`).
 
+## Hyperparameter sweeps
+
+To search over a training config without editing it on disk, write a
+standalone sweep YAML and run `phoenx-tune`. Schema, multi-phase
+promotion, architecture search, and the bundled examples:
+[Hyperparameter Sweeps](hyperparameter-sweeps.md).
+
 ## Creating a config for a new environment
 
 1. **Copy the nearest bundled file.** Flat Gymnasium / EnvPool continuous →

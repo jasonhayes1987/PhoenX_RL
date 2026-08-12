@@ -6,6 +6,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Multi-phase Ray Tune hyperparameter sweeps via `phoenx-tune` and
+  `phoenx.ray_tune`: standalone sweep YAML (block-grammar architecture
+  search, per-module optimizers, phase promotion, constraint validation),
+  bundled examples under `phoenx/examples/sweeps/`, plus a how-to guide and
+  API reference page. PBT is not yet supported.
 - Machine-local `.phoenx-env` record (gitignored) plus `scripts/use-env.ps1`,
   `scripts/activate.ps1`, and `scripts/activate.sh`. An environment *name* is
   ambiguous when several conda installations on one machine each have an env

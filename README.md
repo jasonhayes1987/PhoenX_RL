@@ -50,9 +50,10 @@ The framework emphasizes extensibility, allowing users to customize models, nois
    - **Schedulers**: Learning rate and parameter schedulers (linear, step, cosine annealing, exponential), attachable per module.
    - **Buffers**: Standard ReplayBuffer, PrioritizedReplayBuffer (proportional or rank-based), with N-step return support, trajectory tracking, and R2D2 stored-state support.
    - **Intrinsic Curiosity Module (ICM)**: For exploration in sparse-reward environments.
-   - **Callbacks**: WandB integration for logging, metrics, and artifact saving; extensible for custom hooks, with distributed variants.
+   - **Callbacks**: WandB integration for logging, metrics, and artifact saving; extensible for custom hooks.
 - **Experiment Logging**: Optional Weights & Biases (WandB) callback support for metrics/logging and artifact saving.
-- **Environment Support**: Gymnasium and IsaacSim
+- **Environment Support**: Gymnasium, EnvPool, and IsaacSim
+- **Hyperparameter Sweeps**: Multi-phase Ray Tune sweeps from a standalone YAML (`phoenx-tune`), with block-grammar architecture search, per-module optimizer tuning, phase promotion, and trial constraint validation.
 
 ## Installation
 PhoenX installs with conda + pip. Two modes share the same order; Isaac Lab mode inserts one extra command. Full detail, extras, and troubleshooting: [`installation.md`](installation.md).

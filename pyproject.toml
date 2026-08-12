@@ -25,7 +25,7 @@ dependencies = [
   "gymnasium-robotics>=1.4.0",
   "ale-py>=0.9",
   "envpool>=1.2.5",
-  "ray[tune,default]>=2.10",
+  "ray[tune,default]>=2.52,<3",
   "optuna>=3.6",
   "hyperopt>=0.2.7",
   "wandb>=0.27",
@@ -53,6 +53,7 @@ docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 [project.scripts]
 phoenx-train = "phoenx.cli.train:main"
 phoenx-test  = "phoenx.cli.test:main"
+phoenx-tune  = "phoenx.cli.tune:main"
 
 [project.urls]
 Repository = "https://github.com/jasonhayes1987/PhoenX_RL"
@@ -63,7 +64,7 @@ where = ["src"]
 namespaces = false
 
 [tool.setuptools.package-data]
-"phoenx.examples" = ["configs/**/*.yml"]
+"phoenx.examples" = ["configs/**/*.yml", "sweeps/**/*.yml"]
 
 [tool.pytest.ini_options]
 minversion = "6.0"

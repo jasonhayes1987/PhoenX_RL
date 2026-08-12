@@ -163,3 +163,6 @@ src/app/wandb_api_key
 src/phoenx/wandb_api_key
 tools/check_docstring_only_diff.py
 AGENTS.md
+
+# Ray Tune sweep output (phoenx-tune, any --storage-path)
+ray_results/

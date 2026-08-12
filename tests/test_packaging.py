@@ -19,6 +19,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIGS_SRC = REPO_ROOT / "src" / "phoenx" / "examples" / "configs"
 WHEEL_CONFIG_PREFIX = "phoenx/examples/configs/"
+SWEEPS_SRC = REPO_ROOT / "src" / "phoenx" / "examples" / "sweeps"
+WHEEL_SWEEPS_PREFIX = "phoenx/examples/sweeps/"
 DOCUMENTED_SAC = (
     "phoenx/examples/configs/LunarLanderContinuous-v3/sac.yml"
 )
@@ -47,28 +49,32 @@ def _git_porcelain() -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
-def _source_config_wheel_paths() -> set[str]:
+def _source_config_wheel_paths(
+    root: Path = CONFIGS_SRC, wheel_prefix: str = WHEEL_CONFIG_PREFIX
+) -> set[str]:
     """Return expected wheel member paths for every source ``*.yml`` config.
 
     Paths are relative to the wheel root, e.g.
-    ``phoenx/examples/configs/LunarLanderContinuous-v3/sac.yml``.
+    ``phoenx/examples/configs/LunarLanderContinuous-v3/sac.yml``. Parameterized
+    by ``root``/``wheel_prefix`` (defaulting to the ``configs/`` glob) so the
+    same logic covers the sibling ``sweeps/`` package-data glob.
     """
-    if not CONFIGS_SRC.is_dir():
+    if not root.is_dir():
         return set()
     return {
-        f"{WHEEL_CONFIG_PREFIX}{path.relative_to(CONFIGS_SRC).as_posix()}"
-        for path in CONFIGS_SRC.rglob("*.yml")
+        f"{wheel_prefix}{path.relative_to(root).as_posix()}"
+        for path in root.rglob("*.yml")
         if path.is_file()
     }
 
 
-def _wheel_yml_paths(wheel_path: Path) -> set[str]:
-    """Return ``.yml`` member paths under ``phoenx/examples/configs/``."""
+def _wheel_yml_paths(wheel_path: Path, wheel_prefix: str = WHEEL_CONFIG_PREFIX) -> set[str]:
+    """Return ``.yml`` member paths under ``wheel_prefix`` (default ``configs/``)."""
     with zipfile.ZipFile(wheel_path) as zf:
         return {
             name
             for name in zf.namelist()
-            if name.startswith(WHEEL_CONFIG_PREFIX) and name.endswith(".yml")
+            if name.startswith(wheel_prefix) and name.endswith(".yml")
         }
 
 
@@ -177,6 +183,27 @@ def test_wheel_yml_set_matches_source_tree(built_wheel: Path) -> None:
     actual = _wheel_yml_paths(built_wheel)
     assert actual == expected, (
         f"wheel config set mismatch vs source tree:\n"
+        f"  missing from wheel: {sorted(expected - actual)}\n"
+        f"  unexpected in wheel: {sorted(actual - expected)}"
+    )
+
+
+@pytest.mark.slow
+def test_wheel_sweeps_yml_set_matches_source_tree(built_wheel: Path) -> None:
+    """Assert wheel sweep-YAML paths match ``src/phoenx/examples/sweeps/**/*.yml``.
+
+    The sweeps directory lives deliberately outside ``examples/configs/``
+    (see the four-name contract pinned in
+    ``tests/test_example_configs.py::available_example_configs``), but is
+    still declared as its own ``package-data`` glob
+    (``"phoenx.examples" = [..., "sweeps/**/*.yml"]``) and must ship in the
+    wheel the same way the configs do.
+    """
+    expected = _source_config_wheel_paths(SWEEPS_SRC, WHEEL_SWEEPS_PREFIX)
+    assert expected, f"no source sweep configs found under {SWEEPS_SRC}"
+    actual = _wheel_yml_paths(built_wheel, WHEEL_SWEEPS_PREFIX)
+    assert actual == expected, (
+        f"wheel sweeps set mismatch vs source tree:\n"
         f"  missing from wheel: {sorted(expected - actual)}\n"
         f"  unexpected in wheel: {sorted(actual - expected)}"
     )
