@@ -151,6 +151,7 @@ __autograph_*.py
 *.onnx
 *.pt
 *.json
+!tests/fixtures/smoke_baselines.json
 
 # Playwright
 node_modules/
@@ -161,7 +162,7 @@ node_modules/
 *.npz
 src/app/wandb_api_key
 src/phoenx/wandb_api_key
-tools/check_docstring_only_diff.py
+tools/
 AGENTS.md
 
 # Ray Tune sweep output (phoenx-tune, any --storage-path)

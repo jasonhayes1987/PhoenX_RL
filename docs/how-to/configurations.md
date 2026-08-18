@@ -360,6 +360,20 @@ Passthrough kwargs. Dataclass defaults:
 | `learning_epochs` | int | `1` | Forwarded to `agent.learn` |
 | `warmup_steps` | int | `0` | Env steps before the first learn |
 | `seed` | int \| null | `None` | If set, seeds the run via `phoenx.torch_utils.set_seed` before build |
+| `save_every` | int | `50_000` | Min env timesteps between automatic best-model checkpoints (`0` = every new best) |
+
+`save_every` exists because a new rolling-average best used to trigger a full
+checkpoint tree (and, with W&B, a full artifact upload) nearly every step
+early in training — `avg_reward` is a mean over the last 100 episodes and
+climbs almost monotonically, and many parallel envs finish episodes on
+nearly every step. The cooldown is counted in **timesteps** regardless of
+`stop_unit` / `learn_every_unit`. The first new best of a run always saves;
+later peaks inside the window are pending until it expires (disk weights may
+lag the exact peak by design). A pending peak is written at the first episode
+boundary after the window expires, so real gaps run somewhat longer than
+`save_every`, and one still pending when training stops is flushed at the end
+of the run — so a short run that never reaches `save_every` again still ends
+with its best on disk. Set `save_every: 0` to restore save-on-every-new-best.
 
 ### `env`
 
@@ -478,9 +492,27 @@ PER-only defaults: `alpha=0.6`, `beta_start=0.4`, `beta_iter=100000`,
 ### `callbacks`
 
 List of `{type, config}` mappings. `type` must be a registered callback class
-name (bundled examples use `"WandbCallback"`). `config` is constructor kwargs
-(for W&B: `project_name`, optional `run_name`). See
+name (bundled examples use `"WandbCallback"`). `config` is constructor kwargs.
+For `WandbCallback`: required `project_name`; optional `run_name`, `group`,
+`tags`, `run_id`, `resume`, `sweep_params`, and `artifact_every`. See
 [RL callbacks][phoenx.rl_callbacks].
+
+`artifact_every` (int or omit / `null`; default `null`) is an optional extra
+minimum number of trainer timesteps between W&B model-artifact uploads,
+applied **on top of** `schedule.save_every`. Omit it, or set `0` / `null`, to
+upload on every checkpoint written during the run — the end-of-run flush of a
+still-pending best writes to disk without uploading. Uploads gate on the
+episode-log `saved` flag (checkpoint written this step), not `best` (new
+rolling-average peak) — so a custom callback that still keys off `best` can
+publish a stale on-disk model when the save cooldown skipped the write.
+
+```yaml
+callbacks:
+  - type: "WandbCallback"
+    config:
+      project_name: "LunarLanderContinuous-v3"
+      artifact_every: 200000   # rarer than local saves; omit to match save_every
+```
 
 ### `renderer`
 

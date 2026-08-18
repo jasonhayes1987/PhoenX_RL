@@ -345,7 +345,14 @@ explicit name and a per-phase group; swept params appear under a
 `sweep/*` prefix so parallel-coordinates and parameter-importance panels
 work. Ray's own `WandbLoggerCallback` is **not** used — it could only log
 what is inside `tune.report`, whereas PhoenX's callback logs every step
-and episode metric, per-module LRs, and best-model artifacts. Leave
+and episode metric, per-module LRs, and best-model artifacts. The base
+config's `schedule.save_every` cooldown (default `50_000` timesteps)
+applies per trial automatically, and since uploads follow checkpoints a
+sweep picks up the throttle with no schema change — which matters because
+a sweep multiplies checkpoint and upload cost by its trial count. An
+`artifact_every` set on the base config's `WandbCallback` does **not**
+carry over: the trial's callback is rebuilt by the sweep engine, so only
+`schedule.save_every` throttles a sweep today. Leave
 `wandb` out (as `lunarlander_ppo.yml` does) when you do not want
 credentials required to run the example.
 

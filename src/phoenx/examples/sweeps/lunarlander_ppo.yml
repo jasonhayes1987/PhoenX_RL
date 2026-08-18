@@ -38,13 +38,11 @@ overrides:
 defaults:
   metric: avg_reward
   mode: max
-  resources: {cpu: 1, gpu: 0}
-  max_concurrent_trials: 2
+  resources: {cpu: 1, gpu: 0.25}
+  max_concurrent_trials: 4
   report: {every: 20000, unit: timestep}
   auto_learn_every: true
-  # Add a `wandb: {project: my-project}` block to a phase (or here, to apply
-  # to every phase) to get one grouped, fully-named W&B run per trial. Left
-  # out by default so this example never needs W&B credentials to run.
+  wandb: {project: LunarLanderContinuous-v3-sweep-test}
 
 # Reusable block library referenced by the architecture phase.
 blocks:
@@ -71,25 +69,25 @@ phases:
       agent.config.model.branches.policy.output_config.0.params.kernel_params.gain:
         {dist: choice, values: [0.01, 0.1, 1.0]}
     tune:
-      num_samples: 6
+      num_samples: 100
       search_alg: {type: random}
       # max_t must be >= grace_period and matches overrides.schedule.stop_units,
       # since time_attr is the timestep count a trial reports.
       scheduler: {type: asha, time_attr: timestep, grace_period: 40000, max_t: 300000, reduction_factor: 2}
       stop: [{type: TrialPlateauStopper, metric: avg_reward, std: 5.0, num_results: 5}]
-    promote: {mode: best, seed_next: 2}
+    promote: {mode: best, seed_next: 5}
 
   - name: optimizers
     optimizers:
       branches.policy: {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
       branches.value:  {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
     tune:
-      num_samples: 8
+      num_samples: 100
       search_alg: {type: optuna}
       # max_t must be >= grace_period and matches overrides.schedule.stop_units,
       # since time_attr is the timestep count a trial reports.
       scheduler: {type: asha, time_attr: timestep, grace_period: 40000, max_t: 300000, reduction_factor: 2}
-    promote: {mode: best, seed_next: 3}
+    promote: {mode: best, seed_next: 5}
 
   - name: refine
     search_space:
@@ -99,6 +97,6 @@ phases:
       agent.config.policy_clip:         {dist: uniform, low: 0.1, high: 0.4}
       schedule.learning_epochs:         {dist: randint, lower: 3, upper: 11}
     tune:
-      num_samples: 8
+      num_samples: 100
       search_alg: {type: random}       # no scheduler declared here -> FIFO
     promote: {mode: best}

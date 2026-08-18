@@ -30,6 +30,7 @@ from phoenx.builder import (
     apply_model_config,
     available_example_configs,
     build_agent,
+    build_schedule,
     build_trainer_from_config,
     create_env,
     load_config,
@@ -313,3 +314,23 @@ class TestTrainerStepToleratesMissingIntrinsicMotivation:
             assert result["step_log"]["step_intrinsic_reward"] == 0.0
         finally:
             trainer.env.close()
+
+
+# =============================================================================
+# 5. build_schedule wires the `save_every` checkpoint-cooldown YAML key
+# =============================================================================
+class TestBuildScheduleSaveEvery:
+    """``build_schedule`` does ``TrainingSchedule(**schedule_spec)``, so any
+    YAML key that ``TrainingSchedule`` accepts is live for free -- this pins
+    that `save_every` specifically reaches the built schedule, since a typo
+    or dropped key here would silently fall back to the 50,000 default."""
+
+    def test_save_every_from_config_reaches_built_schedule(self):
+        config = {"schedule": {"stop_unit": "timestep", "stop_units": 10, "save_every": 250_000}}
+        schedule = build_schedule(config)
+        assert schedule.save_every == 250_000
+
+    def test_save_every_omitted_from_config_uses_default(self):
+        config = {"schedule": {"stop_unit": "timestep", "stop_units": 10}}
+        schedule = build_schedule(config)
+        assert schedule.save_every == 50_000

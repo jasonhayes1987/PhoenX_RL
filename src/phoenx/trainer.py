@@ -48,6 +48,12 @@ class TrainingSchedule:
         learning_epochs: Epochs forwarded to ``agent.learn``.
         warmup_steps: Environment steps collected before the first learn.
         seed: Optional RNG seed; ``None`` draws a random seed at run start.
+        save_every: Minimum number of environment timesteps between
+            automatic best-model checkpoints. Counted in timesteps
+            unconditionally, independent of ``stop_unit`` and
+            ``learn_every_unit`` — predictability is the point. ``0``
+            disables the cooldown, saving on every new best. Defaults to 50,000 to match ``RayTuneCallback``'s
+            default report cadence.
     """
     # Training Length
     stop_unit: Literal["timestep", "episode"] = "timestep" # Train length unit
@@ -63,6 +69,7 @@ class TrainingSchedule:
     # Misc.
     warmup_steps: int = 0 # Optional warmup gate (no learning until this many steps)
     seed: int | None = None # Seed
+    save_every: int = 50_000 # Minimum timesteps between automatic best-model checkpoints (0 disables the cooldown)
 
     def is_done(self, *, step: int, episodes: int) -> bool:
         """Return whether the run has reached its configured length.
@@ -104,6 +111,26 @@ class TrainingSchedule:
         }[self.learn_every_unit]
         return progress >= last_learn_at + self.learn_every
 
+    def should_save(self, *, step: int, last_save_at: int | None) -> bool:
+        """Return whether it is time for another automatic best-model save.
+
+        Counts timesteps unconditionally, independent of ``stop_unit`` and
+        ``learn_every_unit``.
+
+        Args:
+            step: Cumulative environment timesteps so far.
+            last_save_at: Timestep of the previous automatic save, or
+                ``None`` if no automatic save has happened yet this run.
+
+        Returns:
+            ``True`` when no automatic save has happened yet (the first best
+                is always checkpointed), or when ``step`` has advanced by at
+                least ``save_every`` timesteps since ``last_save_at``.
+        """
+        if last_save_at is None:
+            return True
+        return step >= last_save_at + self.save_every
+
     def get_config(self) -> dict:
         """Return a JSON-safe dict of the schedule fields.
 
@@ -121,6 +148,7 @@ class TrainingSchedule:
             "learning_epochs": self.learning_epochs,
             "warmup_steps": self.warmup_steps,
             "seed": self.seed,
+            "save_every": self.save_every,
         }
 
 
@@ -243,6 +271,8 @@ class Trainer:
         self._prev_obs = None
         self._prev_done = None
         self._best_reward = None
+        self._last_save = None
+        self._best_pending = None
         self._episode_steps = None
         self._completed_episodes = None
         self._episode_scores = None
@@ -339,6 +369,8 @@ class Trainer:
         self._step = 0
         self._prev_obs = observation
         self._best_reward = -T.inf
+        self._last_save = None
+        self._best_pending = False
         self._episode_steps = T.zeros(self.env.num_envs, dtype=T.int32, device=self.agent.device)
         self._completed_episodes = T.zeros(self.env.num_envs, dtype=T.int32, device=self.agent.device)
         self._episode_scores = T.zeros(self.env.num_envs, dtype=T.float32, device=self.agent.device)
@@ -367,6 +399,8 @@ class Trainer:
         if state is not None:
             self._step = state.get("_step", self._step)
             self._best_reward = state.get("_best_reward", self._best_reward)
+            self._last_save = state.get("_last_save", self._last_save)
+            self._best_pending = state.get("_best_pending", self._best_pending)
             for name in ("_completed_episodes", "_episode_scores", "_episode_steps"):
                 value = state.get(name)
                 if value is not None:
@@ -577,7 +611,11 @@ class Trainer:
 
         Selects an action, steps the env, updates episode trackers, and builds
         per-episode logs when any env finishes. During training, transitions
-        are written to the buffer and a best-checkpoint save may fire.
+        are written to the buffer and a new rolling-average best is tracked;
+        the resulting checkpoint save is gated by ``schedule.should_save``, so
+        it may not fire on every new best (see ``schedule.save_every``). A
+        best left pending by this cooldown is flushed once ``train`` exits,
+        so it is delayed rather than lost.
 
         Args:
             training: When ``True``, record into the buffer and allow
@@ -585,7 +623,8 @@ class Trainer:
 
         Returns:
             result (dict): Mapping with ``step_log`` (per-step scalars) and
-                ``episode_logs`` (one dict per finished env this step).
+                ``episode_logs`` (one dict per finished env this step; the
+                    last entry may carry ``best`` and/or ``saved`` flags).
         """
         step_log = {}
         episode_logs = []
@@ -663,7 +702,12 @@ class Trainer:
             if avg_reward > self._best_reward:
                 self._best_reward = avg_reward
                 episode_logs[-1]['best'] = True
+                self._best_pending = True
+            if self._best_pending and self.schedule.should_save(step=self._step, last_save_at=self._last_save):
+                self._last_save = self._step
+                self._best_pending = False
                 self.save()
+                episode_logs[-1]['saved'] = True
 
 
         # set _cur_obs to observation
@@ -779,7 +823,12 @@ class Trainer:
 
         Steps the env, learns on the schedule's cadence, soft-updates target
         networks when present, drives callbacks, and optionally renders
-        episodes. Closes the env when finished.
+        episodes. If a new best is still awaiting its checkpoint cooldown
+        when the loop exits, flushes it immediately (bypassing
+        ``schedule.should_save``) so the run's peak is not silently dropped;
+        the flushed weights are from the end of the run rather than the
+        exact peak, the same approximation the mid-run cooldown already
+        makes. Closes the env when finished.
         """
         self._initialize_run(context="train")
         # Initialize Rich Console
@@ -879,6 +928,17 @@ class Trainer:
                 for episode_log in step_result['episode_logs']:
                     for callback in self.callbacks:
                         callback.on_train_end(episode_log)
+
+            # Flush a best that is still awaiting its cooldown: once the loop
+            # exits there is no further episode boundary to retry the save
+            # at, so bypass schedule.should_save entirely rather than risk
+            # losing the run's peak. Not gated by _step being set: a run that
+            # never initialized or never stepped also never flips
+            # _best_pending to True, so this is a no-op in that case.
+            if self._best_pending:
+                self._last_save = self._step
+                self._best_pending = False
+                self.save()
 
         self.env.close()
 
@@ -986,6 +1046,8 @@ class Trainer:
         return {
             "_step": self._step,
             "_best_reward": self._best_reward,
+            "_last_save": self._last_save,
+            "_best_pending": self._best_pending,
             "_last_learn": self._last_learn,
             "_completed_episodes": self._completed_episodes,
             "_episode_scores": self._episode_scores,

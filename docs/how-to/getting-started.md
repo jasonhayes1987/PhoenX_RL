@@ -171,11 +171,18 @@ root when training was started from the repo root, and under `src/` when
 started from `src/`. Pick one cwd and stick to it, or you will lose a run or
 overwrite another.
 
-Checkpoints are not periodic.
+Checkpoints are driven by progress, not by a fixed interval.
 [Trainer.step][phoenx.trainer.Trainer.step] saves only when a just-finished
 episode pushes the running average reward above the best seen so far in this
-run (`best: True` on that episode log, then `self.save()`). A 120,000-step
-Isaac PPO camera run saved five times.
+run (`best: True` on that episode log), and then only if `schedule.save_every`
+timesteps have elapsed since the last automatic save. The first new best of a
+run always saves; a later peak that lands inside the cooldown window is held
+and written at the first episode boundary after the window expires, so real
+gaps between checkpoints are somewhat longer than `save_every`. A peak still
+pending when training stops is flushed once at the end of the run, so it is
+delayed rather than lost. An episode log carries `saved: True` on the steps
+where a checkpoint was actually written. See `schedule.save_every` in
+[Configurations](configurations.md) to tune or disable the cooldown.
 
 On-disk layout is documented on [Trainer.save][phoenx.trainer.Trainer.save].
 After that same run:
@@ -224,8 +231,12 @@ wandb: logging graph, to disable use `wandb.watch(log_graph=False)`
 ```
 
 The local W&B run directory `wandb/` is created under the current working
-directory, not under `save_dir`. Every best-model checkpoint also uploads a
-model artifact (you will see an `Adding directory to artifact (...)` line).
+directory, not under `save_dir`. Each checkpoint written during the run also
+uploads a model artifact (you will see an `Adding directory to artifact (...)`
+line), so the upload inherits the `schedule.save_every` cooldown; set
+`artifact_every` on the callback to make uploads rarer still. The end-of-run
+flush of a still-pending best is the one exception — it writes to disk without
+uploading, since artifacts are published from the per-episode hook.
 Use `wandb offline` if you want the run recorded without syncing.
 
 ## Evaluate a trained agent

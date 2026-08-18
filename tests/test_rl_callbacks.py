@@ -224,19 +224,30 @@ def test_fallback_login_exception_raises_chained_value_error(
 
 
 # -----------------------------------------------------------------------------
-# Contract 7: ``WandbCallback.on_train_epoch_end``'s best-checkpoint artifact
-# save, gated on ``logs.get("best", False)``.
+# Contract 7 (UPDATED): ``WandbCallback.on_train_epoch_end``'s best-checkpoint
+# artifact save is gated on ``logs.get("saved", False)``, NOT
+# ``logs.get("best", False)``.
 #
-# ``src/phoenx/trainer.py`` is the only producer of that ``"best"`` key
-# (``episode_logs[-1]['best'] = True`` when a completed training episode
-# beats the running-average best). These tests pin the consumer side: given
-# the flag, the artifact save fires with ``model_is_best=True``; without it,
+# ``src/phoenx/trainer.py`` sets ``episode_logs[-1]['best'] = True`` whenever a
+# completed training episode beats the running-average best, but that is now
+# purely a metric signal: the trainer's own ``schedule.save_every`` cooldown
+# (see ``tests/test_trainer.py``) may defer the actual checkpoint write, in
+# which case ``episode_logs[-1]['saved']`` is NOT set even though ``best`` is.
+# Gating the artifact upload on ``best`` alone (the old contract) would ship
+# whatever model happens to already be on disk and mislabel it
+# ``model_is_best=True`` -- i.e. publish a stale artifact. Gating on ``saved``
+# means an upload only ever follows a real write to disk this step.
+#
+# These tests pin the consumer side: given ``saved``, the artifact save fires
+# with ``model_is_best=True``; given ``best`` WITHOUT ``saved`` (the case that
+# pins the fix -- it fails under the old ``best``-gated contract),
 # ``save_model_artifact`` is never called at all.
 # -----------------------------------------------------------------------------
-def test_on_train_epoch_end_saves_best_artifact_when_logs_flag_best(
+def test_on_train_epoch_end_saves_artifact_when_logs_flag_saved(
     monkeypatch, callback, tmp_path
 ):
-    """A `best: True` log entry makes `on_train_epoch_end` save a
+    """A `saved: True` log entry -- the trainer having actually written a
+    checkpoint to disk this step -- makes `on_train_epoch_end` save a
     `model_is_best=True` W&B artifact to `save_dir`."""
     monkeypatch.setattr(rl_callbacks.wandb, "log", lambda *a, **k: None)
     calls = []
@@ -248,17 +259,43 @@ def test_on_train_epoch_end_saves_best_artifact_when_logs_flag_best(
     save_dir = str(tmp_path / "run")
     callback.save_dir = save_dir
 
-    callback.on_train_epoch_end(epoch=3, logs={"avg_reward": 5.0, "best": True})
+    callback.on_train_epoch_end(
+        epoch=3, logs={"avg_reward": 5.0, "best": True, "saved": True}
+    )
 
     assert calls == [((save_dir, "phoenx-test-project"), {"model_is_best": True})]
     assert os.path.isdir(save_dir)
 
 
-def test_on_train_epoch_end_skips_artifact_without_best_key(
+def test_on_train_epoch_end_skips_artifact_when_best_without_saved(
     monkeypatch, callback, tmp_path
 ):
-    """No `best` key in the log dict (the pre-fix behavior, always) means the
-    artifact save is never attempted."""
+    """`best: True` alone -- a new rolling-average best whose checkpoint
+    write the trainer's own `save_every` cooldown deferred -- must NOT upload
+    an artifact. This is the negative case that pins the fix: gating on
+    `best` (the pre-fix contract) would have uploaded here, publishing a
+    stale model.
+    """
+    monkeypatch.setattr(rl_callbacks.wandb, "log", lambda *a, **k: None)
+    calls = []
+    monkeypatch.setattr(
+        rl_callbacks.wandb_support,
+        "save_model_artifact",
+        lambda *a, **k: calls.append((a, k)),
+    )
+    callback.save_dir = str(tmp_path / "run")
+
+    callback.on_train_epoch_end(epoch=3, logs={"avg_reward": 5.0, "best": True})
+
+    assert calls == []
+
+
+def test_on_train_epoch_end_skips_artifact_without_saved_key(
+    monkeypatch, callback, tmp_path
+):
+    """No `saved` key in the log dict at all (no episode has completed, or
+    training hasn't started checkpointing yet) means the artifact save is
+    never attempted."""
     monkeypatch.setattr(rl_callbacks.wandb, "log", lambda *a, **k: None)
     calls = []
     monkeypatch.setattr(
@@ -273,11 +310,11 @@ def test_on_train_epoch_end_skips_artifact_without_best_key(
     assert calls == []
 
 
-def test_on_train_epoch_end_treats_best_false_same_as_absent(
+def test_on_train_epoch_end_treats_saved_false_same_as_absent(
     monkeypatch, callback, tmp_path
 ):
-    """An explicit `best: False` behaves identically to omitting the key —
-    `.get("best", False)` treats both as falsy."""
+    """An explicit `saved: False` behaves identically to omitting the key —
+    `.get("saved", False)` treats both as falsy."""
     monkeypatch.setattr(rl_callbacks.wandb, "log", lambda *a, **k: None)
     calls = []
     monkeypatch.setattr(
@@ -287,7 +324,7 @@ def test_on_train_epoch_end_treats_best_false_same_as_absent(
     )
     callback.save_dir = str(tmp_path / "run")
 
-    callback.on_train_epoch_end(epoch=3, logs={"avg_reward": 5.0, "best": False})
+    callback.on_train_epoch_end(epoch=3, logs={"avg_reward": 5.0, "saved": False})
 
     assert calls == []
 
@@ -329,7 +366,8 @@ def _make_run_number_recorder(return_value: int):
 
 
 # -----------------------------------------------------------------------------
-# Backward compatibility: old positional construction and old YAML both work.
+# Backward compatibility: old positional construction and old YAML both work
+# with the new eighth constructor kwarg (`artifact_every`) added.
 # -----------------------------------------------------------------------------
 def test_backward_compat_positional_project_and_run_name():
     cb = WandbCallback("phoenx-test-project", "explicit-run")
@@ -341,6 +379,7 @@ def test_backward_compat_positional_project_and_run_name():
     assert cb.run_id is None
     assert cb.resume is None
     assert cb.sweep_params is None
+    assert cb.artifact_every is None
 
 
 def test_backward_compat_project_name_only():
@@ -348,6 +387,7 @@ def test_backward_compat_project_name_only():
 
     assert cb.project_name == "phoenx-test-project"
     assert cb.run_name is None
+    assert cb.artifact_every is None
 
 
 def test_legacy_yaml_config_loads_via_registry():
@@ -359,6 +399,7 @@ def test_legacy_yaml_config_loads_via_registry():
     assert cb.project_name == "legacy-project"
     assert cb.run_name is None
     assert cb.group is None
+    assert cb.artifact_every is None
 
 
 # -----------------------------------------------------------------------------
@@ -599,9 +640,10 @@ def test_finish_run_idempotent_across_multiple_on_test_end_calls(monkeypatch, ca
 
 
 # -----------------------------------------------------------------------------
-# get_config() round-trips all seven constructor kwargs.
+# get_config() round-trips all eight constructor kwargs (was seven before
+# `artifact_every` was added as the eighth).
 # -----------------------------------------------------------------------------
-def test_get_config_round_trips_all_seven_kwargs():
+def test_get_config_round_trips_all_eight_kwargs():
     cb = WandbCallback(
         project_name="proj",
         run_name="run-1",
@@ -610,6 +652,7 @@ def test_get_config_round_trips_all_seven_kwargs():
         run_id="run-id-1",
         resume="allow",
         sweep_params={"lr": 0.1},
+        artifact_every=25_000,
     )
 
     config = cb.get_config()
@@ -624,6 +667,7 @@ def test_get_config_round_trips_all_seven_kwargs():
             "run_id": "run-id-1",
             "resume": "allow",
             "sweep_params": {"lr": 0.1},
+            "artifact_every": 25_000,
         },
     }
 
@@ -635,6 +679,90 @@ def test_get_config_round_trips_all_seven_kwargs():
     assert rebuilt.run_id == "run-id-1"
     assert rebuilt.resume == "allow"
     assert rebuilt.sweep_params == {"lr": 0.1}
+    assert rebuilt.artifact_every == 25_000
+
+
+# -----------------------------------------------------------------------------
+# artifact_every: an ADDITIONAL cooldown on top of the trainer's own
+# save_every, throttling how often a `saved` episode log actually triggers an
+# upload. `epoch` is the trainer's global timestep (not an episode index).
+# -----------------------------------------------------------------------------
+def _save_recorder(monkeypatch):
+    monkeypatch.setattr(rl_callbacks.wandb, "log", lambda *a, **k: None)
+    calls = []
+    monkeypatch.setattr(
+        rl_callbacks.wandb_support,
+        "save_model_artifact",
+        lambda *a, **k: calls.append((a, k)),
+    )
+    return calls
+
+
+def test_artifact_every_throttles_close_together_saved_logs_to_one_upload(
+    monkeypatch, tmp_path
+):
+    cb = WandbCallback("proj", artifact_every=1_000)
+    cb.save_dir = str(tmp_path / "run")
+    calls = _save_recorder(monkeypatch)
+
+    cb.on_train_epoch_end(epoch=100, logs={"saved": True})
+    cb.on_train_epoch_end(epoch=500, logs={"saved": True})  # still within 1000 of epoch 100
+
+    assert len(calls) == 1
+
+
+def test_artifact_every_uploads_again_once_its_own_window_elapses(
+    monkeypatch, tmp_path
+):
+    cb = WandbCallback("proj", artifact_every=1_000)
+    cb.save_dir = str(tmp_path / "run")
+    calls = _save_recorder(monkeypatch)
+
+    cb.on_train_epoch_end(epoch=100, logs={"saved": True})
+    cb.on_train_epoch_end(epoch=500, logs={"saved": True})  # throttled
+    cb.on_train_epoch_end(epoch=1_200, logs={"saved": True})  # 1200 >= 100 + 1000
+
+    assert len(calls) == 2
+
+
+def test_artifact_every_uploads_exactly_at_its_own_window_boundary(
+    monkeypatch, tmp_path
+):
+    """Pins the exact cooldown boundary in `_should_upload_artifact` (source:
+    `return epoch >= self._last_artifact_at + self.artifact_every`), mirroring
+    `TrainingSchedule.should_save`'s own boundary test in
+    `tests/test_trainer.py`. The test above this one uses epoch 1200 against
+    a boundary of 1100, which passes whether the implementation uses `>=` or
+    `>`; this one would fail against a `>` off-by-one, because epoch 1_100
+    would then still be throttled and only 1 (not 2) upload would occur.
+    """
+    cb = WandbCallback("proj", artifact_every=1_000)
+    cb.save_dir = str(tmp_path / "run")
+    calls = _save_recorder(monkeypatch)
+
+    cb.on_train_epoch_end(epoch=100, logs={"saved": True})
+    cb.on_train_epoch_end(epoch=1_099, logs={"saved": True})  # just inside the window
+    assert len(calls) == 1
+    cb.on_train_epoch_end(epoch=1_100, logs={"saved": True})  # exactly 100 + 1000
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("artifact_every", [None, 0])
+def test_artifact_every_none_or_zero_uploads_every_saved_log(
+    monkeypatch, tmp_path, artifact_every
+):
+    """`None`/`0` disable the additional cooldown entirely: every `saved`
+    log uploads, following the trainer's own checkpoint cadence exactly."""
+    cb = WandbCallback("proj", artifact_every=artifact_every)
+    cb.save_dir = str(tmp_path / "run")
+    calls = _save_recorder(monkeypatch)
+
+    cb.on_train_epoch_end(epoch=1, logs={"saved": True})
+    cb.on_train_epoch_end(epoch=2, logs={"saved": True})
+    cb.on_train_epoch_end(epoch=3, logs={"saved": True})
+
+    assert len(calls) == 3
 
 
 # =============================================================================

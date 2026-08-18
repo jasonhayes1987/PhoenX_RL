@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `schedule.save_every` on `TrainingSchedule` (default `50_000` timesteps):
+  minimum environment timesteps between automatic best-model checkpoints.
+  Counted in timesteps unconditionally (independent of `stop_unit` /
+  `learn_every_unit`). The first new best of a run always saves; later peaks
+  inside a cooldown window are remembered as pending and written at the first
+  episode boundary after the window expires, and a peak still pending when
+  training stops is flushed once at the end of the run, so a peak is delayed
+  rather than lost (weights may therefore lag the exact peak — intentional,
+  since `avg_reward` is a 100-episode rolling mean). Set `save_every: 0` to
+  restore save-on-every-new-best.
+- `WandbCallback` constructor kwarg `artifact_every` (default `None`):
+  optional extra minimum timesteps between W&B artifact uploads, applied on
+  top of the trainer's checkpoint cadence. `None` or `0` uploads whenever
+  the trainer actually wrote a checkpoint (`logs['saved']`).
 - Multi-phase Ray Tune hyperparameter sweeps via `phoenx-tune` and
   `phoenx.ray_tune`: standalone sweep YAML (block-grammar architecture
   search, per-module optimizers, phase promotion, constraint validation),
@@ -30,6 +44,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- Automatic best-model checkpointing is no longer every new rolling-average
+  best by default. Configs that omit `schedule.save_every` now inherit the
+  `50_000`-timestep cooldown (chosen so the fix applies without editing every
+  YAML). Short runs may perform no automatic save beyond the first best;
+  `save_every: 0` restores the previous behavior exactly. Episode logs keep
+  `best` as the metric signal for a new peak and add `saved` only when a
+  checkpoint was actually written; `WandbCallback` uploads on `saved`, not
+  `best`, so an upload never ships a stale on-disk model when the save
+  cooldown skipped the write.
 - Modular schema migration (`.cursor/plans/modular_schema_migration_2fb87c9c.plan.md`):
   `apply_model_config` now raises `ValueError` when `agent.config.model` is
   absent or empty instead of falling back to legacy YAML. The three bundled

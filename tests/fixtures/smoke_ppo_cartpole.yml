@@ -1,0 +1,80 @@
+# Smoke fixture: PPO on CartPole-v1 (on-policy path, public phoenx-train entry point).
+# Small enough to run in a few tens of seconds; schedule.seed / env.config.seed are
+# overridden by tests/test_smoke_train.py::train_and_evaluate for every run.
+
+device: &device cpu
+save_dir: models/smoke_ppo_cartpole/
+log_level: ERROR
+
+schedule:
+  stop_unit: timestep
+  stop_units: 60000
+  learn_every_unit: timestep
+  learn_every: 1024
+  updates_per_learn: 1
+  batch_size: 1
+  mini_batch_size: 256
+  learning_epochs: 4
+  warmup_steps: 0
+  seed: 0
+  save_every: 0
+
+agent:
+  type: PPO
+  config:
+    name: PPO
+    model:
+      branches:
+        policy:
+          type: StochasticDiscreteHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}}
+            - {type: relu}
+            - {type: dense, params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: orthogonal, kernel_params: {gain: 0.01}}}
+          distribution: categorical
+          optimizer_params: {type: Adam, params: {lr: 0.0003}}
+          device: *device
+        value:
+          type: ValueHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}}
+            - {type: relu}
+            - {type: dense, params: {units: 64, kernel: orthogonal, kernel_params: {gain: 1.41421356}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: orthogonal, kernel_params: {gain: 1.0}}}
+          optimizer_params: {type: Adam, params: {lr: 0.0003}}
+          device: *device
+    discount: 0.99
+    gae_coefficient: 0.95
+    auto_entropy_tuning: false
+    entropy_coefficient: 0.01
+    policy_clip: 0.2
+    value_clip: 0.2
+    policy_grad_clip: 0.5
+    value_grad_clip: 0.5
+    value_coef: 0.5
+    bootstrap_truncations: true
+    device: *device
+    log_level: ERROR
+
+env:
+  type: gymnasium
+  config:
+    cfg: CartPole-v1
+    num_envs: 8
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
+    wrappers: []
+    render_mode: null
+    seed: 0
+
+buffer:
+  type: RolloutBuffer
+  config:
+    buffer_size: 512
+    device: *device

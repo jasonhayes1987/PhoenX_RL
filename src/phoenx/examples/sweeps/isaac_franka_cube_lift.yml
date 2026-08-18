@@ -55,7 +55,7 @@ overrides:
 defaults:
   metric: avg_reward
   mode: max
-  resources: {cpu: 4, gpu: 1}
+  resources: {cpu: 8, gpu: 1}
   max_concurrent_trials: 1   # see the concurrency caveat above
   report: {every: 100000, unit: timestep}
   auto_learn_every: true
@@ -72,8 +72,8 @@ blocks:
     layers:
       - type: conv2d
         params:
-          out_channels: {dist: choice, values: [32, 64]}
-          kernel_size: {dist: choice, values: [3, 5]}
+          out_channels: {dist: choice, values: [32, 64, 128, 256]}
+          kernel_size: {dist: choice, values: [3, 5, 7]}
           stride: 2
           padding: 1
       - type: relu
@@ -98,7 +98,7 @@ phases:
       branches.policy: {depth: {dist: choice, values: [1, 2]}, blocks: [dense_block]}
       branches.value:  {depth: {dist: choice, values: [1, 2]}, blocks: [dense_block]}
     tune:
-      num_samples: 6
+      num_samples: 100
       search_alg: {type: random}
       # max_t must be >= grace_period and matches overrides.schedule.stop_units,
       # since time_attr is the timestep count a trial reports.
@@ -113,7 +113,7 @@ phases:
       branches.policy: {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
       branches.value:  {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
     tune:
-      num_samples: 8
+      num_samples: 100
       search_alg: {type: optuna}
       scheduler: {type: asha, time_attr: timestep, grace_period: 1000000, max_t: 4000000}
     promote: {mode: best, seed_next: 3}

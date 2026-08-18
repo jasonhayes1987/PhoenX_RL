@@ -73,6 +73,8 @@ testpaths = ["tests"]
 markers = [
   "isaac: integration tests that boot a real Isaac Sim / isaaclab environment (GPU required)",
   "slow: long-running tests, e.g. stepping a real env to an episode boundary",
+  "golden: independent-reference numerical identities (GAE, RunningNorm, PER weights, BatchNorm)",
+  "smoke: short seeded public-path train/eval learning gates",
 ]
 
 [tool.black]

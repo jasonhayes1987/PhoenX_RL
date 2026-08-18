@@ -152,12 +152,15 @@ class Callback():
 
         `Trainer.train` calls this for each finished env in a step, passing
         the global step counter as ``epoch`` and the per-episode metrics as
-        ``logs``. Typical uses: log episode reward, checkpoint on ``best``.
+        ``logs``. Typical uses: log episode reward, checkpoint on ``saved``.
 
         Args:
             epoch: Trainer global step at episode end (not an episode index).
             logs (dict | None): Episode metrics (``episode_reward``,
-                ``avg_reward``, optional ``best``, …), or ``None``.
+                ``avg_reward``, optional ``best``, optional ``saved``, …), or
+                ``None``. ``best`` marks a new rolling-average best reward;
+                ``saved`` marks that the trainer actually wrote a checkpoint
+                to disk this step (gated by ``schedule.save_every``).
         """
         pass
 
@@ -273,9 +276,11 @@ class WandbCallback(Callback):
 
     Authenticates on first train begin, starts a W&B run from the trainer
     config, logs step and episode metrics, and uploads a model artifact when
-    an episode log carries ``best=True``. Accepts explicit run naming,
-    grouping, tags, and id so every trial of a sweep is distinguishable
-    without an extra W&B API call per trial (see ``run_name`` / ``group`` on
+    an episode log carries ``saved=True`` (i.e. the trainer actually wrote a
+    checkpoint to disk this step), subject to its own optional additional
+    cooldown (``artifact_every``). Accepts explicit run naming, grouping,
+    tags, and id so every trial of a sweep is distinguishable without an
+    extra W&B API call per trial (see ``run_name`` / ``group`` on
     `__init__`).
     """
 
@@ -288,6 +293,7 @@ class WandbCallback(Callback):
         run_id: str | None = None,
         resume: str | bool | None = None,
         sweep_params: dict | None = None,
+        artifact_every: int | None = None,
     ):
         """Store W&B run identity so every trial of a sweep is distinguishable.
 
@@ -314,6 +320,12 @@ class WandbCallback(Callback):
                 under a ``sweep/`` prefix and merged into
                 ``wandb.init(config=...)`` so W&B's parallel-coordinates and
                 parameter-importance panels can chart swept values directly.
+            artifact_every: Minimum number of trainer timesteps between
+                artifact uploads, applied on top of the trainer's own
+                ``schedule.save_every`` checkpoint cadence. ``None`` (the
+                default) or ``0`` means no additional cooldown: an artifact
+                is uploaded on every step the trainer actually wrote a
+                checkpoint (``logs['saved']``).
         """
         self.project_name = project_name
         self.run_name = run_name
@@ -322,9 +334,11 @@ class WandbCallback(Callback):
         self.run_id = run_id
         self.resume = resume
         self.sweep_params = sweep_params
+        self.artifact_every = artifact_every
         self.save_dir = None
         self.initialized = False
         self._finished = False
+        self._last_artifact_at = None
 
     def _ensure_wandb_login(self) -> None:
         """Ensure a W&B session is authenticated before a run starts.
@@ -512,21 +526,50 @@ class WandbCallback(Callback):
         """
         pass
 
+    def _should_upload_artifact(self, epoch: int) -> bool:
+        """Return whether the artifact upload's own cooldown has elapsed.
+
+        Args:
+            epoch: Current trainer global step (as passed to
+                `on_train_epoch_end`).
+
+        Returns:
+            ``True`` when ``artifact_every`` is ``None``/``0`` (no
+                additional cooldown beyond the trainer's own save cadence),
+                or when no artifact has been uploaded yet this run, or when
+                ``epoch`` has advanced by at least ``artifact_every`` steps
+                since the last upload.
+        """
+        if not self.artifact_every:
+            return True
+        if self._last_artifact_at is None:
+            return True
+        return epoch >= self._last_artifact_at + self.artifact_every
+
     def on_train_epoch_end(self, epoch: int, logs=None):
         """Log episode metrics to W&B and upload a best-model artifact if flagged.
 
+        Uploads follow ``logs['saved']`` — set by the trainer only when it
+        actually wrote a checkpoint to disk this step — rather than
+        ``logs['best']``, so an upload never ships a stale model when the
+        trainer's own save cooldown skipped the write. ``artifact_every``
+        can throttle uploads further on top of that.
+
         Args:
-            epoch: Trainer global step used as the W&B ``step``.
-            logs (dict | None): Episode metrics; when ``best`` is true, saves
-                a model artifact under ``self.save_dir``.
+            epoch: Trainer global step used as the W&B ``step`` and as the
+                cooldown clock for ``artifact_every``.
+            logs (dict | None): Episode metrics; when ``saved`` is true and
+                the upload cooldown has elapsed, saves a model artifact
+                under ``self.save_dir``.
         """
         if logs is None:
             logs = {}
         wandb.log(logs, step=epoch)
-        if logs.get("best", False):
+        if logs.get("saved", False) and self._should_upload_artifact(epoch):
             # Create save dir if not exist
             os.makedirs(self.save_dir, exist_ok=True)
             wandb_support.save_model_artifact(self.save_dir, self.project_name, model_is_best=True)
+            self._last_artifact_at = epoch
 
     def on_train_step_begin(self, step: int, logs=None):
         """No-op; W&B logging happens on step end.
@@ -622,8 +665,8 @@ class WandbCallback(Callback):
             config (dict): Mapping with ``type`` ``"WandbCallback"`` and a
                 ``config`` sub-dict of constructor kwargs (``project_name``,
                 ``run_name``, ``group``, ``tags``, ``run_id``, ``resume``,
-                ``sweep_params``), sufficient to rebuild an equivalent
-                callback via `load`.
+                ``sweep_params``, ``artifact_every``), sufficient to rebuild
+                an equivalent callback via `load`.
         """
         return {
             'type': "WandbCallback",
@@ -635,6 +678,7 @@ class WandbCallback(Callback):
                 'run_id': self.run_id,
                 'resume': self.resume,
                 'sweep_params': self.sweep_params,
+                'artifact_every': self.artifact_every,
             }
         }
 

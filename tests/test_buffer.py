@@ -617,6 +617,7 @@ class TestPrioritizedProportional:
         assert frac[5].item() > 0.9
         assert int(frac.argmax()) == 5
 
+    @pytest.mark.golden
     def test_importance_weights_match_formula(self, discrete_env):
         """weights == (size * probs) ** (-beta), normalized so max == 1."""
         T.manual_seed(11)

@@ -40,7 +40,7 @@ from phoenx.models import (
     SubNetwork,
     ValueHead,
 )
-from phoenx.normalizer import DictNormalizer, ImageScale, RunningNorm, create_normalizer
+from phoenx.normalizer import BatchNorm, DictNormalizer, ImageScale, RunningNorm, create_normalizer
 from phoenx.obs_utils import flatten_leading, flatten_obs, tree_index
 from phoenx.rl_agents import PPO, SAC
 
@@ -542,6 +542,50 @@ class TestRunningNormMinStd:
         assert cfg["config"]["min_std"] == pytest.approx(0.01)
         rebuilt = create_normalizer(cfg)
         assert rebuilt.min_std == pytest.approx(0.01)
+
+
+class TestBatchNorm:
+    """BatchNorm.normalize: batch stats (with clip) in train, running stats
+    (no clip) in eval — the counterpart to RunningNorm, which always uses
+    running stats regardless of ``training`` (see ``normalizer.py:394-446``).
+    """
+
+    @pytest.mark.golden
+    def test_batchnorm_train_uses_batch_stats_eval_uses_running(self):
+        """Train-mode normalize matches batch mean/std; eval matches running mean/std."""
+        T.manual_seed(0)
+        # Large clip_value so the train-mode clip never engages; this test
+        # is about which stats get used, not the clip bound itself.
+        norm = BatchNorm(num_features=3, clip_value=1e6, device=DEVICE)
+        warmup = T.randn(256, 3) * 2.0 + 5.0
+        norm.add(warmup)
+        norm.update()
+        running_mean = norm.running_mean.clone()
+        running_std = norm.running_std.clone()
+
+        # Train mode: normalize must use THIS batch's own mean/std, not the
+        # running stats accumulated above. The batch is centered far from the
+        # running stats so a bug that used running stats here would be caught.
+        assert norm.training
+        train_batch = T.randn(16, 3) * 0.3 - 10.0
+        got_train = norm.normalize(train_batch)
+
+        batch_mean = train_batch.mean(dim=0, keepdim=True)
+        batch_var = train_batch.var(dim=0, unbiased=False, keepdim=True)
+        batch_std = T.sqrt(batch_var + norm.epsilon**2).clamp(min=1e-4)
+        want_train = (train_batch - batch_mean) / batch_std
+        assert T.allclose(got_train, want_train, rtol=0, atol=1e-4)
+        # Sanity: batch stats really do differ from running stats here, so
+        # the assertion above is not vacuously true.
+        assert not T.allclose(batch_mean.squeeze(0), running_mean, atol=1e-2)
+
+        # Eval mode: normalize must use the tracked running mean/std, and
+        # must not clip.
+        norm.eval()
+        eval_batch = T.randn(16, 3) * 0.3 - 10.0
+        got_eval = norm.normalize(eval_batch)
+        want_eval = (eval_batch - running_mean) / running_std
+        assert T.allclose(got_eval, want_eval, rtol=0, atol=1e-4)
 
 
 # =============================================================================
