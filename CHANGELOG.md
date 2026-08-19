@@ -6,6 +6,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Two pytest markers registered in `pyproject.toml`, `golden` and `smoke`, and
+  the test suites they select. `golden` checks numerical identities against
+  reference implementations written independently of PhoenX: in
+  `tests/test_golden_numerics.py`, GAE (the λ=1 and λ=0 identities, PhoenX
+  advantages against a backward-loop reference, and truncation-versus-termination
+  bootstrapping under both `bootstrap_truncations` settings) and `RunningNorm`
+  (incremental updates against a concatenated mean and population variance, a
+  `save_state` / `load_state` round trip that also pins the restored object's
+  *next* update, and that `normalize` never moves the running statistics); plus
+  prioritized-replay importance weights in `tests/test_buffer.py` and `BatchNorm`
+  train-versus-eval statistics in `tests/test_dict_datapath.py`. PhoenX float32
+  is compared against a reference at `rtol=0, atol=1e-4`. `smoke` runs short
+  seeded trainings in `tests/test_smoke_train.py` through the public
+  `load_config` + `build_trainer_from_config` path, so config schema drift is
+  caught there too, with CPU-only Gymnasium fixtures under `tests/fixtures/`
+  (PPO on `CartPole-v1`, SAC and TD3 on `Pendulum-v1`). Its three
+  learning-threshold tests are skipped until measured returns are approved,
+  while `test_training_is_seed_deterministic` is live. `golden` is fast and
+  stays in the default subset; `smoke` is additionally marked `slow`, so
+  `pytest -q -m "not slow and not isaac and not smoke"` drops it.
 - `schedule.save_every` on `TrainingSchedule` (default `50_000` timesteps):
   minimum environment timesteps between automatic best-model checkpoints.
   Counted in timesteps unconditionally (independent of `stop_unit` /
@@ -53,14 +73,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checkpoint was actually written; `WandbCallback` uploads on `saved`, not
   `best`, so an upload never ships a stale on-disk model when the save
   cooldown skipped the write.
-- Modular schema migration (`.cursor/plans/modular_schema_migration_2fb87c9c.plan.md`):
-  `apply_model_config` now raises `ValueError` when `agent.config.model` is
-  absent or empty instead of falling back to legacy YAML. The three bundled
-  LunarLander configs are rewritten as branches-only `agent.config.model`
-  ports (`roots: null` / `trunk: null`). Training dynamics that were
-  previously dead keys now take effect: `reinforce.yml` restores four
-  `relu` layers that were commented out (policy and value were purely
-  linear); `ppo.yml`'s `entropy_schedule` (cosine, 0.02 → 0.001) applies;
+- Modular schema migration: `apply_model_config` now raises `ValueError` when
+  `agent.config.model` is absent or empty instead of falling back to legacy
+  YAML. The three bundled LunarLander configs are rewritten as branches-only
+  `agent.config.model` ports (`roots: null` / `trunk: null`). Training
+  dynamics that were previously dead keys now take effect: `reinforce.yml`
+  restores four `relu` layers that were commented out (policy and value were
+  purely linear); `ppo.yml`'s `entropy_schedule` (cosine, 0.02 → 0.001) applies;
   and the former top-level `*_lr_schedule` blocks are per-branch
   `lr_scheduler` entries (PPO policy 3e-4 → 1e-5; SAC policy/critic/critic_b
   7.3e-4 → 0.0).
