@@ -15,6 +15,7 @@ from collections import deque
 import copy
 
 from .logging_config import get_logger
+from .metrics import MetricsRecorder, NULL_RECORDER
 
 from .intrinsic_motivation import IntrinsicMotivation
 from .models import (
@@ -70,6 +71,13 @@ class Agent(ABC):
     SCHEDULE_ATTRS: tuple[str, ...] = ()
     # IntrinsicMotivation attributes (self-contained sub-artifacts).
     IM_ATTRS: tuple[str, ...] = ("intrinsic_motivation",)
+    # Metrics sink; a Trainer overwrites this with a bound MetricsManager in
+    # `_initialize_run`. Left as the no-op default for agents built without a
+    # Trainer (e.g. directly in a script or test). Not a constructor kwarg:
+    # `**kwargs` leftovers are `setattr`-applied by `__init__`, so a YAML
+    # `metrics:` key under `agent.config` would silently overwrite this;
+    # the Trainer's assignment is the sole authority for a real run.
+    metrics: MetricsRecorder = NULL_RECORDER
 
     def __init__(self,
                  save_dir: str = "models/",

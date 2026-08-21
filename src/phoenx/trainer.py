@@ -10,6 +10,7 @@ from YAML.
 
 from collections import deque
 import json
+import math
 import random
 from pathlib import Path
 import time
@@ -32,6 +33,7 @@ from .buffer import Buffer, PrioritizedReplayBuffer
 from .her import HindsightRelabeler
 from .renderer import Renderer
 from .logging_config import get_logger
+from .metrics import MetricsManager
 
 @dataclass
 class TrainingSchedule:
@@ -235,6 +237,7 @@ class Trainer:
         callbacks:list[Callback]|None = None,
         log_level: str = 'INFO',
         save_dir: str = 'models/',
+        metrics: MetricsManager | None = None,
     ):
         """Wire the agent, environment, schedule, and optional run services.
 
@@ -248,6 +251,8 @@ class Trainer:
             callbacks: Optional list of train/test lifecycle callbacks.
             log_level: Logger level name (e.g. ``"INFO"``).
             save_dir: Directory for checkpoints and renderer output.
+            metrics: Centralized metrics manager. ``None`` builds a default
+                ``MetricsManager()``; ``self.metrics`` is always non-``None``.
         """
         self.agent = agent
         self.env = env
@@ -258,6 +263,7 @@ class Trainer:
         self.callbacks = callbacks
         self.log_level = log_level
         self.save_dir = save_dir
+        self.metrics = metrics if metrics is not None else MetricsManager()
 
         # Set Renderer save dir (the agent owns its own save_dir via its config)
         if self.renderer is not None:
@@ -279,6 +285,8 @@ class Trainer:
         self._score_history = None
         self._last_learn = None
         self._success_tracker = None
+        self._grad_step = None
+        self._run_start_step = None
         # Checkpoint snapshots applied by _initialize_run when resuming (Trainer.load).
         self._resume_state = None
         self._resume_rng = None
@@ -333,6 +341,14 @@ class Trainer:
             if nstep_wrapper is not None:
                 nstep_wrapper.set_intrinsic_motivation(im)
 
+        # Bind the centralized metrics manager against this agent/env/buffer
+        # capability set, then let the agent push into the same instance.
+        # Guarded so a stub agent without a `metrics` attribute (e.g. tests)
+        # is unaffected.
+        self.metrics.bind(agent=self.agent, env=self.env, buffer=self.buffer)
+        if hasattr(self.agent, 'metrics'):
+            self.agent.metrics = self.metrics
+
         # Set normalizers to train or eval mode
         self.set_normalizers(context)
 
@@ -378,9 +394,21 @@ class Trainer:
         self._score_history = deque(maxlen=100)
         self._last_learn = 0
         self._success_tracker = deque(maxlen=100)
+        # Number of `agent.learn()` calls this run. Not persisted to
+        # `trainer_state.pt` (out of scope for Phase 1), so it restarts at 0
+        # on resume; this is not claimed to be an optimizer-step count.
+        self._grad_step = 0
 
         # If resuming (Trainer.load), overlay the checkpointed counters + RNG.
         self._apply_resume_state(context)
+
+        # Captured AFTER resume state is applied: 0 on a fresh run, the
+        # restored `_step` on a resumed one. `_grad_step` is never persisted
+        # to `trainer_state.pt`, so anchoring `offpolicy/replay_ratio`'s
+        # denominator to `self._step - self._run_start_step` (this run
+        # segment) rather than the absolute `self._step` keeps the ratio
+        # correct across a resume; the two coincide on a fresh run.
+        self._run_start_step = self._step
 
     def _apply_resume_state(self, context: Literal["train", "test"]) -> None:
         """Overlay checkpointed counters and RNG onto a freshly initialized run.
@@ -448,11 +476,12 @@ class Trainer:
                 yield name, norm
 
     def _apply_per_update(self, sample: dict, learn_metrics: dict) -> None:
-        """Push TD errors into a prioritized buffer and collect PER metrics.
+        """Push TD errors into a prioritized buffer and record PER metrics.
 
         No-op unless ``self.buffer`` is a ``PrioritizedReplayBuffer``. Pops
         ``td_errors`` from ``learn_metrics`` so a per-sample tensor never
-        reaches scalar loggers.
+        reaches scalar loggers, then (once priorities are updated) pushes
+        Table A2's PER diagnostics through ``self.metrics``.
 
         Args:
             sample: Batch returned by ``buffer.sample``, including ``indices``.
@@ -473,17 +502,19 @@ class Trainer:
         )
 
         # if self._wandb:
-        learn_metrics.update(self._collect_per_metrics(sample, indices))
+        self._collect_per_metrics(sample, indices)
 
-    def _collect_per_metrics(self, sample: dict, indices: T.Tensor) -> dict:
-        """Build scalar PER diagnostics for the latest sampled indices.
+    def _collect_per_metrics(self, sample: dict, indices: T.Tensor) -> None:
+        """Push scalar PER diagnostics for the latest sampled indices through the manager.
+
+        Records the legacy ``PER/...`` names via ``record_many`` (dual-emit
+        resolves each to its new ``per/...`` key per Table A2), plus the two
+        new-only keys ``per/is_weight_max`` and ``per/priority_entropy``
+        directly under their canonical names.
 
         Args:
             sample: Sampled batch carrying ``weights`` and ``probs``.
             indices: Buffer indices of the samples just trained on.
-
-        Returns:
-            Mapping of ``PER/...`` scalar metric names to float values.
         """
         # pb = self.buffer  # PrioritizedReplayBuffer
         actual_size = min(self.buffer.samples_added, self.buffer.buffer_size)
@@ -499,7 +530,7 @@ class Trainer:
 
         weights = sample["weights"]
         probs = sample["probs"]
-        return {
+        per_metrics = {
             "PER/beta": self.buffer.beta,
             "PER/sampled_priority_mean": sampled_pri.mean().item(),
             "PER/sampled_priority_max": sampled_pri.max().item(),
@@ -509,7 +540,13 @@ class Trainer:
             "PER/weight_std": weights.std().item(),
             "PER/prob_mean": probs.mean().item(),
             "PER/prob_max": probs.max().item(),
+            "per/is_weight_max": weights.max().item(),
         }
+        if actual_size >= 2:
+            p = buffer_pri / buffer_pri.sum()
+            entropy = -(p * p.clamp_min(1e-12).log()).sum()
+            per_metrics["per/priority_entropy"] = (entropy / math.log(actual_size)).item()
+        self.metrics.record_many(per_metrics)
 
     def set_normalizers(self, context: Literal["train", "test"]):
         """Set every agent normalizer to train or eval mode.
@@ -615,7 +652,10 @@ class Trainer:
         the resulting checkpoint save is gated by ``schedule.should_save``, so
         it may not fire on every new best (see ``schedule.save_every``). A
         best left pending by this cooldown is flushed once ``train`` exits,
-        so it is delayed rather than lost.
+        so it is delayed rather than lost. Also pushes the Table A rollout /
+        perf metrics into ``self.metrics`` when ``training`` is ``True`` --
+        that gate (not swapping the recorder) is what keeps evaluation steps
+        from polluting a training window.
 
         Args:
             training: When ``True``, record into the buffer and allow
@@ -659,6 +699,29 @@ class Trainer:
         if training:
             self.buffer.record(observation, prev_observation = self._prev_obs, actions = action, prev_dones = self._prev_done)
 
+        # Table A rollout/perf metrics: training only. Evaluation isolation is
+        # by this gate (not by swapping the recorder), so eval steps never
+        # contribute to a training window or grow manager state.
+        if training:
+            self.metrics.record("perf/sps", self._step)
+            if self.metrics.should_compute("offpolicy/buffer_fill"):
+                # Guarded rather than raised: an off-policy agent paired with
+                # a buffer stand-in lacking these attributes (or a buffer
+                # that hasn't allocated storage yet) must not crash step();
+                # the metric is simply omitted for this window instead.
+                buffer_size = getattr(self.buffer, "buffer_size", None)
+                samples_added = getattr(self.buffer, "samples_added", None)
+                if buffer_size and samples_added is not None:
+                    self.metrics.record("offpolicy/buffer_fill", min(samples_added, buffer_size) / buffer_size)
+            if self.metrics.should_compute("offpolicy/replay_ratio"):
+                # Denominator is this run SEGMENT (since the last resume),
+                # not the absolute step count: `_step` is restored from
+                # `trainer_state.pt` on resume while `_grad_step` deliberately
+                # is not, so dividing by the absolute step would report a
+                # ratio depressed toward zero right after resuming a long run.
+                run_steps = self._step - (self._run_start_step or 0)
+                self.metrics.record("offpolicy/replay_ratio", (self._grad_step or 0) / max(run_steps, 1))
+
         # Increment episode steps and rewards
         self._episode_steps[valid_steps] += 1
         self._episode_scores[valid_steps] += observation.rewards[valid_steps].flatten()
@@ -676,6 +739,20 @@ class Trainer:
             self._completed_episodes[i] += 1
             self._score_history.append(float(self._episode_scores[i].item()))
             avg_reward = sum(self._score_history) / len(self._score_history)
+
+            if training:
+                episode_return = float(self._episode_scores[i].item())
+                episode_length = float(self._episode_steps[i].item())
+                is_termination = bool(observation.terminations[i].item())
+                is_truncation = bool(observation.truncations[i].item()) and not is_termination
+                self.metrics.record("rollout/return_mean", episode_return)
+                self.metrics.record("rollout/return_rolling_100", episode_return)
+                self.metrics.record("rollout/return_std", episode_return)
+                self.metrics.record("rollout/ep_length_mean", episode_length)
+                self.metrics.record("rollout/ep_length_std", episode_length)
+                self.metrics.record("rollout/termination_rate", 1.0 if is_termination else 0.0)
+                self.metrics.record("rollout/truncation_rate", 1.0 if is_truncation else 0.0)
+
             # Create episode log
             episode_log = {
                 'env': i,
@@ -778,8 +855,14 @@ class Trainer:
         Draws ``updates_per_learn * batch_size`` transitions when the buffer
         is ready. With a single update the whole sample is passed through;
         with multiple updates the sample is shuffled and sliced into
-        ``batch_size`` chunks. Each update runs
-        ``_apply_per_update`` for prioritized replay.
+        ``batch_size`` chunks. Each update runs ``_apply_per_update`` for
+        prioritized replay, then pushes that update's return dict through
+        ``self.metrics.record_many`` -- with ``updates_per_learn > 1``, only
+        keys backed by a ``MEAN``-reduced spec (Table B's losses/diagnostics)
+        average over every update this call; ``LAST``-reduced specs and the
+        unmapped bucket deliberately reproduce BASE_REF behavior and deliver
+        only the final update's value. Also advances ``self._grad_step`` by
+        one per ``agent.learn`` call.
 
         Returns:
             Metrics dict from the last ``agent.learn`` call, or ``{}`` when
@@ -798,7 +881,9 @@ class Trainer:
                 learning_epochs=self.schedule.learning_epochs,
                 mini_batch_size=self.schedule.mini_batch_size
             )
+            self._grad_step = (self._grad_step or 0) + 1
             self._apply_per_update(samples, learn_metrics)
+            self.metrics.record_many(learn_metrics)
 
         else:
             samples = self._shuffle_sample(samples)
@@ -815,7 +900,9 @@ class Trainer:
                     learning_epochs=self.schedule.learning_epochs,
                     mini_batch_size=self.schedule.mini_batch_size
                     )
+                self._grad_step = (self._grad_step or 0) + 1
                 self._apply_per_update(sample, learn_metrics)
+                self.metrics.record_many(learn_metrics)
         return learn_metrics
 
     def train(self):
@@ -829,6 +916,15 @@ class Trainer:
         the flushed weights are from the end of the run rather than the
         exact peak, the same approximation the mid-run cooldown already
         makes. Closes the env when finished.
+
+        Each iteration merges ``self.metrics.collect()`` into ``step_log``
+        before handing it to callbacks, so every enabled Table A/A2/B metric
+        (plus its legacy dual-emitted alias) reaches
+        ``callback.on_train_step_end`` alongside ``step_reward`` and
+        ``step_intrinsic_reward``. With ``updates_per_learn > 1``, only
+        ``MEAN``-reduced Table B keys average over every update since the
+        last ``collect()``; ``LAST``-reduced keys and the unmapped bucket
+        reflect only the final update's value.
         """
         self._initialize_run(context="train")
         # Initialize Rich Console
@@ -840,6 +936,7 @@ class Trainer:
                 
                 step_result = self.step(training=True)
                 self._step += self.env.num_envs
+                self.metrics.set_context(env_step=self._step, grad_step=self._grad_step)
                 self.add_to_normalizers(self._prev_obs)
                 self.update_schedulers()
 
@@ -848,7 +945,8 @@ class Trainer:
                     episodes=self._completed_episodes.sum().item(),
                     last_learn_at=self._last_learn
                 ):
-                    learn_metrics = self.learn()
+                    self.learn()
+                    self.metrics.set_context(env_step=self._step, grad_step=self._grad_step)
 
                     # Update normalizers AFTER learning: agent.learn()
                     # re-normalizes the stored raw rollout, so the stats it
@@ -857,7 +955,6 @@ class Trainer:
                     # learned — under the refreshed statistics (SB3/RSL-RL
                     # collection-time normalization semantics).
                     self.update_normalizers()
-                    step_result['step_log'].update(learn_metrics)
                     # Merge n-step boundary diagnostics
                     nstep_diag = {}
                     if hasattr(self.agent, "get_nstep_diagnostics"):
@@ -878,6 +975,13 @@ class Trainer:
                         "timestep": self._step,
                         "episode": self._completed_episodes.sum().item(),
                     }[self.schedule.learn_every_unit]
+
+                # Learn-return metrics (Table B) arrive here: MEAN-reduced
+                # keys (e.g. loss/policy) average over every update since the
+                # last collect(); LAST-reduced keys and the unmapped bucket
+                # deliberately reflect only the final update's value, the
+                # same BASE_REF behavior this replaces.
+                step_result['step_log'].update(self.metrics.collect())
 
                 if self.callbacks:
                     for callback in self.callbacks:
@@ -1021,9 +1125,9 @@ class Trainer:
         spec); no sub-component re-embeds it.
 
         Returns:
-            Mapping with ``agent``, ``env``, ``schedule``, and optional
-                ``success_criterion``, ``buffer``, ``renderer``, ``callbacks``,
-                plus ``log_level`` and ``save_dir``.
+            Mapping with ``agent``, ``env``, ``schedule``, ``metrics``, and
+                optional ``success_criterion``, ``buffer``, ``renderer``,
+                ``callbacks``, plus ``log_level`` and ``save_dir``.
         """
         return {
             'agent': self.agent.get_config(),
@@ -1035,6 +1139,7 @@ class Trainer:
             'callbacks': [callback.get_config() for callback in self.callbacks] if self.callbacks else None,
             'log_level': self.log_level,
             'save_dir': self.save_dir,
+            'metrics': self.metrics.get_config(),
         }
 
     def _trainer_state(self) -> dict:
@@ -1126,7 +1231,13 @@ class Trainer:
             log_level: Logger level for the rebuilt Trainer.
 
         Returns:
-            A Trainer ready to ``.train()`` (resumes counters/RNG) or ``.test()``.
+            A Trainer ready to ``.train()`` (resumes counters/RNG) or
+                ``.test()``. Its ``metrics`` is rebuilt via
+                ``MetricsManager.load(config["metrics"])`` when that key is
+                present, else a default ``MetricsManager()`` (so a
+                ``config.json`` written before this change still loads); it
+                is unbound until the returned trainer's ``train()`` /
+                ``test()`` calls ``_initialize_run``.
         """
         run_dir = Path(run_dir)
         with open(run_dir / "config.json", "r", encoding="utf-8") as f:
@@ -1151,6 +1262,7 @@ class Trainer:
         )
 
         log_level = log_level if log_level is not None else config.get('log_level', 'INFO')
+        metrics = MetricsManager.load(config["metrics"]) if config.get("metrics") else MetricsManager()
 
         trainer = cls(
             agent=agent,
@@ -1162,6 +1274,7 @@ class Trainer:
             callbacks=callbacks,
             log_level=log_level,
             save_dir=str(run_dir),
+            metrics=metrics,
         )
 
         # Stage counters/RNG; applied by _initialize_run once the env is reset.

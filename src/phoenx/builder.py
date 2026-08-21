@@ -28,6 +28,7 @@ from phoenx.renderer import Renderer
 from phoenx.rl_callbacks import load as callback_load
 from phoenx.trainer import TrainingSchedule, Trainer, SuccessCriterion
 from phoenx.intrinsic_motivation import IntrinsicMotivation
+from phoenx.metrics import MetricsManager
 from phoenx.normalizer import create_normalizer as normalizer_factory, RunningNorm, BatchNorm, RewardNorm
 from phoenx.schedulers import ScheduleWrapper
 from phoenx.torch_utils import set_seed
@@ -381,6 +382,30 @@ def build_success_criterion(config:dict) -> SuccessCriterion | None:
     return SuccessCriterion(**success_spec)
 
 
+def build_metrics(config: dict) -> MetricsManager:
+    """Build the centralized metrics manager from the top-level config.
+
+    Args:
+        config: Full training config. Reads the optional top-level
+            ``metrics`` block, whose keys must be exactly the
+            ``MetricsManager`` constructor kwargs (``tiers``, ``emit_every``,
+            ``include``, ``exclude``, ``dual_emit``).
+
+    Returns:
+        Constructed ``MetricsManager``; a default ``MetricsManager()`` when
+            the ``metrics`` section is absent.
+
+    Example:
+        >>> from phoenx.builder import build_metrics
+        >>> build_metrics({}).get_config()["emit_every"]
+        1
+    """
+    metrics_spec = config.get("metrics")
+    if not metrics_spec:
+        return MetricsManager()
+    return MetricsManager(**metrics_spec)
+
+
 def build_agent(config: dict, env: EnvWrapper) -> Agent:
     """Build an agent by dispatching to the per-algorithm builder.
 
@@ -428,7 +453,8 @@ def build_trainer_from_config(config: dict, log_level: str | None = None) -> Tra
         config: Full training config. Uses top-level keys ``env``, ``agent``,
             ``buffer``, and ``schedule`` (required by their factories);
             optional ``callbacks``, ``renderer``, ``success_criterion``,
-            ``log_level``, and ``save_dir`` (default ``"models/"``).
+            ``metrics``, ``log_level``, and ``save_dir`` (default
+            ``"models/"``).
         log_level: Override for the trainer's log level. When ``None``, falls
             back to ``config.get("log_level", "INFO")``.
 
@@ -446,6 +472,7 @@ def build_trainer_from_config(config: dict, log_level: str | None = None) -> Tra
     callbacks = build_callbacks(config)
     renderer = build_renderer(config)
     success_criterion = build_success_criterion(config)
+    metrics = build_metrics(config)
     return Trainer(
             agent=agent,
             env=env,
@@ -456,6 +483,7 @@ def build_trainer_from_config(config: dict, log_level: str | None = None) -> Tra
             callbacks=callbacks,
             log_level=log_level if log_level is not None else config.get('log_level', 'INFO'),
             save_dir=config.get('save_dir', 'models/'),
+            metrics=metrics,
         )
 
 
