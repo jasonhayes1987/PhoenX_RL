@@ -335,24 +335,78 @@ Recommend `--validate-only` as the first command on any new sweep.
 
 ## Operational notes
 
-**Windows paths.** Trial directories are deliberately short (`trial_00001`).
-Ray's default embeds every sampled param in the path and would exceed
-`MAX_PATH` mid-sweep.
+**Windows paths.** Trial directories are deliberately short —
+`trial_<suffix>`, where `suffix` is the part of the Ray trial id *after
+its last underscore* (`trial.trial_id.rsplit("_", 1)[-1]`, see
+`_trial_dirname_creator`), not the full trial id. For a
+`random`/`variant_generator` phase, whose trial ids are shaped
+`<uuid-prefix>_00001`, that suffix is the zero-padded index alone, so the
+directory is `trial_00001` — never `trial_<uuid-prefix>_00001`. For every
+other searcher the trial id (e.g. `c6a5bab2`) has no underscore at all, so
+the split is a no-op and the directory is the whole id, `trial_c6a5bab2`.
+Ray's default naming embeds every sampled param in the path and would
+exceed `MAX_PATH` mid-sweep either way. This is the raw Ray trial id (or
+its suffix), not the W&B run-name ordinal described below (under
+"Weights & Biases"); to map a run back to its directory from a run's
+`ray/trial_id` config value, apply the same rule.
 
 **Weights & Biases.** Add `wandb: {project: my-project}` under `defaults`
-or a phase. Each trial gets a full-fidelity `WandbCallback` run with an
-explicit name and a per-phase group; swept params appear under a
-`sweep/*` prefix so parallel-coordinates and parameter-importance panels
-work. Ray's own `WandbLoggerCallback` is **not** used — it could only log
-what is inside `tune.report`, whereas PhoenX's callback logs every step
-and episode metric, per-module LRs, and best-model artifacts. The base
-config's `schedule.save_every` cooldown (default `50_000` timesteps)
-applies per trial automatically, and since uploads follow checkpoints a
-sweep picks up the throttle with no schema change — which matters because
-a sweep multiplies checkpoint and upload cost by its trial count. An
-`artifact_every` set on the base config's `WandbCallback` does **not**
-carry over: the trial's callback is rebuilt by the sweep engine, so only
-`schedule.save_every` throttles a sweep today. Leave
+or a phase. Each trial gets a full-fidelity `WandbCallback` run with a
+per-phase group; swept params appear under a `sweep/*` prefix so
+parallel-coordinates and parameter-importance panels work. Ray's own
+`WandbLoggerCallback` is **not** used — it could only log what is inside
+`tune.report`, whereas PhoenX's callback logs every step and episode
+metric, per-module LRs, and best-model artifacts.
+
+The run name is `f"{sweep_name}-{phase_name}-{ordinal}"`
+(`_inject_trial_callbacks` in [phoenx.ray_tune][]), where `ordinal` is a
+1-based, per-phase trial number formatted `NNNNofTOTAL` — e.g.
+`ppo_sweep-optimizers-0007of0010` — zero-padded to `max(4, len(str(total)))`
+digits. That shape is identical no matter which search algorithm the
+phase uses: a `random` phase's Ray trial ids already carry their own
+zero-padded index, but a wrapped searcher (`optuna`, `hyperopt`, `bohb`,
+...) mints a bare id with no index at all, so a dedicated per-phase
+counter hands out the ordinal instead of parsing one out of the id.
+`TOTAL` is the phase's *planned* trial count — `num_samples`, multiplied
+by any `grid_search` sizes on a `random`/`variant_generator` phase — and
+is therefore an upper bound: a stopper or `time_budget_s` can end the
+phase early, and an errored trial still consumes an ordinal.
+
+`TOTAL` is **omitted** (leaving a bare `0007`, no `of...` suffix) whenever
+it cannot be computed — `num_samples: -1`; a `random` phase seeded with
+more `points_to_evaluate` than its `num_samples` (only
+`BasicVariantGenerator` can overshoot `num_samples`, so seed points are
+counted for `random` alone — an `optuna` phase seeded past its
+`num_samples` still prints its `num_samples`); or a `--resume`'d phase,
+where the total is suppressed unconditionally, not just possibly wrong:
+`Tuner.restore` takes neither `param_space` nor `tune_config`, so Ray
+replays the persisted experiment spec and this invocation's `num_samples`
+may not be what actually runs, and a resumed phase therefore never prints
+a total. The ordinal itself falls all the way back to the raw Ray trial id
+(today's pre-ordinal shape, `{sweep}-{phase}-{trial_id}`) only when the
+phase's ordinal counter cannot be reached at all. The case you will
+actually hit: **`--resume` restarts the per-phase counter from 1**, so a
+resumed phase's ordinals do not continue where the interrupted run left
+off, and can repeat numbers already used by that run's own trials.
+
+The raw Ray trial id is not lost — it moves into the run's W&B config
+table as `ray/trial_id` (plus `ray/phase`, and `ray/trial_ordinal` when an
+ordinal resolved), instead of living in the run name. If you were using
+the old run name to find a trial's on-disk directory, that id is where it
+went: trial directory names themselves are unchanged (see "Windows paths"
+above). To map a run back to its directory, take `ray/trial_id`'s value,
+keep only the part after its last underscore (or the whole value when
+there is none), and prefix it with `trial_` — the same rule
+`_trial_dirname_creator` used to name the directory in the first place —
+to get `<storage_path>/<sweep>/<phase>/trial_<suffix>/`.
+
+The base config's `schedule.save_every` cooldown (default `50_000`
+timesteps) applies per trial automatically, and since uploads follow
+checkpoints a sweep picks up the throttle with no schema change — which
+matters because a sweep multiplies checkpoint and upload cost by its trial
+count. An `artifact_every` set on the base config's `WandbCallback` does
+**not** carry over: the trial's callback is rebuilt by the sweep engine,
+so only `schedule.save_every` throttles a sweep today. Leave
 `wandb` out (as `lunarlander_ppo.yml` does) when you do not want
 credentials required to run the example.
 

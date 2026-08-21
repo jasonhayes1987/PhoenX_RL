@@ -28,6 +28,8 @@ from ray.tune.stopper import CombinedStopper, MaximumIterationStopper, TrialPlat
 from phoenx import models, ray_tune
 from phoenx.builder import build_trainer_from_config, load_config
 from phoenx.ray_tune import (
+    _start_phase_counter,
+    _stop_phase_counter,
     apply_architecture,
     apply_auto_learn_every,
     apply_optimizers,
@@ -1694,3 +1696,95 @@ class TestEndToEndSweep:
             assert trainer is not None
         finally:
             trainer.env.close()
+
+
+# =============================================================================
+# 11. Per-phase trial-ordinal counter actor: real local-cluster plumbing
+# (C2 covers the ordinal logic itself, in `_PhaseTrialLedger`, without any
+# Ray cluster -- see `tests/test_ray_tune_driver.py::TestTrialOrdinalHelpers`.
+# These two tests exist only to prove the thin `ray.remote` actor wrapper and
+# real concurrency around it; kept to one class, 50 ids, seconds not tens of
+# seconds.)
+# =============================================================================
+import ray as _ray_for_ask_helper  # noqa: E402  (module-level `@ray.remote` needs `ray` importable at import time)
+
+
+@_ray_for_ask_helper.remote
+def _ask_phase_counter(name: str, trial_id: str) -> int:
+    """Cross-process ask: resolve one trial's ordinal by actor NAME, exactly the
+    way `_resolve_trial_ordinal` does from inside a trial worker (a different
+    process than whichever one created the actor). Submitting many of these as
+    remote tasks -- rather than looping `actor.ordinal.remote(...)` calls on the
+    driver -- is what actually exercises the actor under concurrent, cross-process
+    callers instead of one FIFO-ordered caller."""
+    return _ray_for_ask_helper.get(_ray_for_ask_helper.get_actor(name).ordinal.remote(trial_id))
+
+
+@pytest.mark.slow
+class TestPhaseTrialCounterActor:
+    def test_actor_preserves_ledger_contract_under_concurrency_and_stop_is_idempotent(self):
+        """FINDING 8 (C2b, CORRECTED): the Ray actor preserves 1-based/memoized/unique-per-id ordinals under REAL concurrency, and `_stop_phase_counter` is safe to call twice (and with `None`) without raising.
+
+        The previous version submitted all 50 `ordinal.remote` asks from the
+        driver to a single-threaded actor; Ray orders those FIFO, so that
+        version could not fail regardless of whether the actor were safe under
+        concurrency -- it was not testing concurrency at all. This version fans
+        the asks out through `_ask_phase_counter.remote(...)` remote tasks
+        instead, which also makes it a genuine cross-process test: the actual
+        production caller (`_resolve_trial_ordinal`) runs inside a trial worker,
+        not the driver that created the actor.
+        """
+        import ray
+
+        if ray.is_initialized():
+            ray.shutdown()
+        try:
+            ray.init(num_cpus=2, include_dashboard=False, log_to_driver=False)
+
+            handle, name = _start_phase_counter("s", "p")
+
+            got = ray.get([_ask_phase_counter.remote(name, f"t{i}") for i in range(50)])
+            assert sorted(got) == list(range(1, 51))
+
+            repeat = ray.get([_ask_phase_counter.remote(name, f"t{i}") for i in range(50)])
+            assert repeat == got
+
+            assert ray.get(ray.get_actor(name).issued.remote()) == 50
+
+            # ray.kill is asynchronous and de-registration is not a
+            # documented synchronous point, so this only asserts that
+            # stopping (including a repeat stop, and a stop with `None`)
+            # never raises -- not that a subsequent get_actor fails.
+            _stop_phase_counter(handle)
+            _stop_phase_counter(handle)
+            _stop_phase_counter(None)
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()
+
+    def test_start_phase_counter_returns_an_immediately_resolvable_name(self):
+        """FINDING 9 (C15, CORRECTED): once `_start_phase_counter` returns a name, that name is immediately resolvable FROM ANOTHER PROCESS -- no sleep, no retry -- so the first trial of a phase cannot race actor registration.
+
+        The previous version asserted `ray.get_actor(name)` on the DRIVER that
+        created the actor; a reviewer ran 20 iterations of create-then-lookup
+        with the readiness wait deleted and got 20/20 immediate resolution, so
+        that assertion passes with or without the behavior it claims to pin --
+        `ray.get_actor` on the creating process is simply not the thing that can
+        race. The production caller is a trial WORKER, a different process; this
+        re-points the assertion at the same `_ask_phase_counter` remote-task
+        helper C2b uses, so it actually resolves the name cross-process.
+        """
+        import ray
+
+        if ray.is_initialized():
+            ray.shutdown()
+        try:
+            ray.init(num_cpus=2, include_dashboard=False, log_to_driver=False)
+
+            handle, name = _start_phase_counter("s", "p")
+            assert name is not None
+            assert ray.get(_ask_phase_counter.remote(name, "t-first")) == 1  # no sleep, no retry
+            _stop_phase_counter(handle)
+        finally:
+            if ray.is_initialized():
+                ray.shutdown()

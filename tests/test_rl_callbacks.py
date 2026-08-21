@@ -14,6 +14,8 @@ ever touches the network, a real wandb session, or writes anything outside
 
 from __future__ import annotations
 
+import copy
+import json
 import os
 import subprocess
 import sys
@@ -640,10 +642,12 @@ def test_finish_run_idempotent_across_multiple_on_test_end_calls(monkeypatch, ca
 
 
 # -----------------------------------------------------------------------------
-# get_config() round-trips all eight constructor kwargs (was seven before
-# `artifact_every` was added as the eighth).
+# get_config() round-trips all NINE constructor kwargs (was eight before
+# `extra_config` was added as the ninth; renamed from
+# `test_get_config_round_trips_all_eight_kwargs`).
 # -----------------------------------------------------------------------------
-def test_get_config_round_trips_all_eight_kwargs():
+def test_get_config_round_trips_all_nine_kwargs():
+    """C9: `get_config()`/`load()` round-trip all nine constructor kwargs, including the new `extra_config`."""
     cb = WandbCallback(
         project_name="proj",
         run_name="run-1",
@@ -653,6 +657,7 @@ def test_get_config_round_trips_all_eight_kwargs():
         resume="allow",
         sweep_params={"lr": 0.1},
         artifact_every=25_000,
+        extra_config={"ray/trial_id": "abc123"},
     )
 
     config = cb.get_config()
@@ -668,6 +673,7 @@ def test_get_config_round_trips_all_eight_kwargs():
             "resume": "allow",
             "sweep_params": {"lr": 0.1},
             "artifact_every": 25_000,
+            "extra_config": {"ray/trial_id": "abc123"},
         },
     }
 
@@ -680,6 +686,179 @@ def test_get_config_round_trips_all_eight_kwargs():
     assert rebuilt.resume == "allow"
     assert rebuilt.sweep_params == {"lr": 0.1}
     assert rebuilt.artifact_every == 25_000
+    assert rebuilt.extra_config == {"ray/trial_id": "abc123"}
+
+
+def test_get_config_json_dumps_without_raising():
+    """C9: `get_config()`'s wrapped dict, including a populated `extra_config`, is JSON-serializable."""
+    cb = WandbCallback(
+        project_name="proj", extra_config={"ray/trial_id": "abc123", "ray/trial_ordinal": 7}
+    )
+    json.dumps(cb.get_config())  # must not raise
+
+
+def test_save_then_load_round_trips_extra_config(tmp_path):
+    """C9: `save()` -> read the on-disk `wandb_config.json` -> `load()` round-trips `extra_config`."""
+    cb = WandbCallback(project_name="proj", extra_config={"ray/trial_id": "abc123"})
+    cb.save(str(tmp_path))
+
+    with open(tmp_path / "wandb_config.json", encoding="utf-8") as f:
+        saved = json.load(f)
+
+    rebuilt = WandbCallback.load(saved)
+    assert rebuilt.extra_config == {"ray/trial_id": "abc123"}
+
+
+def test_load_pre_change_eight_key_config_yields_extra_config_none():
+    """C9: a `wandb_config.json` written by the pre-change (eight-kwarg) version still loads, with `extra_config` defaulting to `None`."""
+    pre_change_config = {
+        "type": "WandbCallback",
+        "config": {
+            "project_name": "legacy",
+            "run_name": "r",
+            "group": "g",
+            "tags": ["t"],
+            "run_id": "id",
+            "resume": "allow",
+            "sweep_params": {"lr": 0.1},
+            "artifact_every": 1000,
+        },
+    }
+
+    rebuilt = WandbCallback.load(pre_change_config)
+
+    assert rebuilt.extra_config is None
+
+
+def test_extra_config_survives_the_trainer_get_config_json_persist_path():
+    """C9 SECOND PERSIST PATH: `extra_config` reaches disk through `Trainer.get_config()["callbacks"]` -> `json.dump` -> `json.load` -> `rl_callbacks.load`, which is how it reaches disk for every real sweep trial (not through `wandb_config.json`)."""
+    cb = WandbCallback(project_name="proj", extra_config={"ray/trial_id": "abc123", "ray/trial_ordinal": 7})
+
+    # Mirrors the shape of Trainer.get_config()["callbacks"] (a list of
+    # get_config() dicts), then Trainer.save's plain json.dump and
+    # Trainer.load's json.load + rl_callbacks.load.
+    trainer_style_config = {"callbacks": [cb.get_config()]}
+    round_tripped = json.loads(json.dumps(trainer_style_config))
+
+    rebuilt = rl_callbacks.load(round_tripped["callbacks"][0])
+
+    assert rebuilt.extra_config == {"ray/trial_id": "abc123", "ray/trial_ordinal": 7}
+
+
+# -----------------------------------------------------------------------------
+# extra_config: merged into wandb.init(config=...) LAST (wins over a
+# colliding sweep_params key), and never mutates the `logs` dict it was
+# handed.
+# -----------------------------------------------------------------------------
+def test_extra_config_merges_last_and_wins_over_colliding_sweep_param(monkeypatch, tmp_path):
+    """C8: `extra_config` is merged into `wandb.init(config=...)` LAST, so it wins over a colliding flattened `sweep_params` key, and `logs` is never mutated."""
+    cb = WandbCallback(
+        project_name="p", run_name="r", group="g",
+        sweep_params={"lr": 1e-3},
+        extra_config={"ray/trial_id": "x", "sweep/lr": 999},
+    )
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+
+    logs = {"save_dir": str(tmp_path), "agent": {}}
+    snapshot = copy.deepcopy(logs)
+
+    cb.initialize_run(logs, run_number=1)
+
+    config = init_recorder.calls[0]["config"]
+    assert config["ray/trial_id"] == "x"
+    assert config["sweep/lr"] == 999
+    assert config["save_dir"] == str(tmp_path)
+    assert logs == snapshot
+    assert config is not logs
+
+
+def test_no_extra_config_and_no_sweep_params_leaves_config_as_plain_logs(monkeypatch, tmp_path):
+    """C8 (second case, CORRECTED): with neither `sweep_params` nor `extra_config` set, the recorded config IS `logs` -- identity, not merely equality. `==` would also pass an implementation that copies `logs` when there is nothing to merge; W1 requires the object itself pass through unchanged."""
+    cb = WandbCallback(project_name="p", run_name="r", group="g")
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+    logs = {"save_dir": str(tmp_path), "agent": {}}
+
+    cb.initialize_run(logs, run_number=1)
+
+    assert init_recorder.calls[0]["config"] is logs
+
+
+# -----------------------------------------------------------------------------
+# PHASE B: `extra_config` internal branches Phase A's contract text did not
+# force a test for -- an empty (falsy) dict, colliding with a real `logs`
+# key (not just a `sweep/`-prefixed one), and that adding `extra_config`
+# does not disturb the unrelated `self.tags` combination logic.
+# -----------------------------------------------------------------------------
+def test_empty_extra_config_dict_behaves_as_absent(monkeypatch, tmp_path):
+    """C8 (third case): `extra_config={}` is falsy and must be treated exactly like `extra_config=None` -- the recorded config IS `logs` (identity), not merely equal to it."""
+    cb = WandbCallback(project_name="p", run_name="r", group="g", extra_config={})
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+    logs = {"save_dir": str(tmp_path), "agent": {}}
+
+    cb.initialize_run(logs, run_number=1)
+
+    assert init_recorder.calls[0]["config"] is logs
+
+
+def test_constructor_copies_extra_config_mutating_callers_dict_after_does_not_leak(tmp_path):
+    """C8 (fourth case): the constructor COPIES `extra_config` (matching the `self.tags = list(tags) if tags else None` precedent) -- mutating the caller's dict after construction must change neither `cb.extra_config` nor what `get_config()` returns."""
+    caller_dict = {"ray/trial_id": "abcd_00003"}
+    cb = WandbCallback(project_name="p", extra_config=caller_dict)
+
+    caller_dict["ray/trial_id"] = "MUTATED"
+    caller_dict["new_key"] = "also new"
+
+    assert cb.extra_config == {"ray/trial_id": "abcd_00003"}
+    assert cb.get_config()["config"]["extra_config"] == {"ray/trial_id": "abcd_00003"}
+
+
+def test_extra_config_can_override_a_real_logs_key_not_just_a_sweep_key(
+    monkeypatch, tmp_path
+):
+    """PHASE B: `extra_config` is merged in last against the FULL config (`logs` merged with any flattened `sweep_params`), so it can override a genuine `logs` key like `save_dir`, not only a `sweep/`-prefixed one -- Phase A's C8 test only exercised a `sweep/` collision."""
+    cb = WandbCallback(
+        project_name="p",
+        run_name="r",
+        group="g",
+        extra_config={"save_dir": "/overridden/by/extra_config"},
+    )
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+    logs = {"save_dir": str(tmp_path), "agent": {}}
+
+    cb.initialize_run(logs, run_number=1)
+
+    config = init_recorder.calls[0]["config"]
+    assert config["save_dir"] == "/overridden/by/extra_config"
+    assert config["agent"] == {}
+
+
+def test_extra_config_present_does_not_change_tag_combination(monkeypatch, tmp_path):
+    """PHASE B: `extra_config` being set must not interfere with the unrelated `self.tags` + call-site-`tags` + agent-type combination logic (a merge implemented by mutating the wrong dict, e.g. `logs` itself, could plausibly leak into `tags` handling too)."""
+    cb = WandbCallback(
+        "proj",
+        run_name="r",
+        group="g",
+        tags=["base"],
+        extra_config={"ray/trial_id": "abcd_00003"},
+    )
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+
+    cb.initialize_run(
+        logs={"save_dir": str(tmp_path), "agent": {"type": "SAC"}},
+        models=None,
+        run_number=1,
+        run_name_prefix="train",
+        tags=["train"],
+        job_type="train",
+    )
+
+    assert sorted(init_recorder.calls[0]["tags"]) == sorted(["base", "train", "SAC"])
+    assert init_recorder.calls[0]["config"]["ray/trial_id"] == "abcd_00003"
 
 
 # -----------------------------------------------------------------------------

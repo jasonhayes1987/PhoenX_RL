@@ -1422,6 +1422,7 @@ def resolve_trial_config(sweep: dict, phase: dict, sampled: dict, base_config: d
 
 import json
 import math
+import uuid
 import warnings
 
 import numpy as np
@@ -1828,6 +1829,339 @@ def _ensure_ray_initialized(sweep: dict) -> None:
     ray.init(**ray_init_kwargs)
 
 
+#: Bounds every driver-side wait on a phase's trial-ordinal counter actor —
+#: the post-creation readiness check in
+#: [_start_phase_counter][phoenx.ray_tune._start_phase_counter] and each
+#: trial's ``ordinal.remote`` round trip in
+#: [_resolve_trial_ordinal][phoenx.ray_tune._resolve_trial_ordinal] — so a
+#: stuck or unreachable actor degrades one trial's W&B run name instead of
+#: hanging it.
+_ORDINAL_ACTOR_TIMEOUT_S = 30
+
+
+class _PhaseTrialLedger:
+    """Plain (non-Ray) 1-based, memoized trial counter for one sweep phase.
+
+    Deliberately an ordinary class, wrapped as a ``num_cpus=0`` Ray actor by
+    [_PhaseTrialCounter][phoenx.ray_tune._PhaseTrialCounter] rather than being
+    a single ``@ray.remote``-decorated class, so its numbering/memoization
+    contract has a fast unit test with no live Ray cluster, and only the thin
+    actor wrapper needs a ``@pytest.mark.slow`` test against a real cluster.
+
+    Example:
+        >>> from phoenx.ray_tune import _PhaseTrialLedger
+        >>> ledger = _PhaseTrialLedger()
+        >>> ledger.ordinal("2c7b5_00000")
+        1
+        >>> ledger.ordinal("2c7b5_00001")
+        2
+        >>> ledger.ordinal("2c7b5_00000")
+        1
+        >>> ledger.issued()
+        2
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty ``{trial_id: ordinal}`` ledger."""
+        self._ordinals: dict[str, int] = {}
+
+    def ordinal(self, trial_id: str) -> int:
+        """Return this trial id's 1-based ordinal, assigning one on first ask.
+
+        Args:
+            trial_id: The Ray trial id asking for its ordinal.
+
+        Returns:
+            This trial id's ordinal — the number of distinct ids seen so far,
+            including this one. Memoized: a repeated ``trial_id`` (e.g. a
+            ``reuse_actors`` worker re-entering under a retried request for
+            the same trial) always gets back the number it was first given.
+        """
+        return self._ordinals.setdefault(trial_id, len(self._ordinals) + 1)
+
+    def issued(self) -> int:
+        """Return how many distinct trial ids have been assigned an ordinal.
+
+        Returns:
+            The count of distinct ``trial_id`` values seen by `ordinal`.
+        """
+        return len(self._ordinals)
+
+
+#: The Ray actor wrapping [_PhaseTrialLedger][phoenx.ray_tune._PhaseTrialLedger].
+#: ``num_cpus=0`` because it only ever increments an in-memory dict and must
+#: never compete with trials for the phase's CPU budget (a counter that
+#: cannot schedule would deadlock every trial's ``ray.get`` in
+#: [_resolve_trial_ordinal][phoenx.ray_tune._resolve_trial_ordinal]).
+#: ``max_restarts`` is deliberately left unset: a restarted actor would start
+#: from an empty ledger and re-issue ordinal 1, and a duplicated ordinal is
+#: worse than the degraded-name fallback a dead, non-restarted actor produces.
+_PhaseTrialCounter = ray.remote(num_cpus=0)(_PhaseTrialLedger)
+
+
+def _phase_counter_name(sweep_name: str, phase_name: str, token: str) -> str:
+    """Build a phase run's unique named-actor identifier.
+
+    Args:
+        sweep_name: The sweep's name.
+        phase_name: The phase's name.
+        token: A per-invocation random token (``uuid.uuid4().hex[:8]``, from
+            [_start_phase_counter][phoenx.ray_tune._start_phase_counter]) that
+            makes the name unique even when two concurrent sweeps share a
+            ``sweep_name``/``phase_name`` pair under one Ray namespace — e.g.
+            because ``sweep['ray_init']`` set an explicit ``namespace:``, or
+            the caller already initialized Ray before
+            [run_phase][phoenx.ray_tune.run_phase] ran.
+
+    Returns:
+        ``f"phoenx-trial-counter-{sweep_name}-{phase_name}-{token}"``.
+
+    Example:
+        >>> from phoenx.ray_tune import _phase_counter_name
+        >>> _phase_counter_name("ppo_sweep", "optimizers", "a1b2c3d4")
+        'phoenx-trial-counter-ppo_sweep-optimizers-a1b2c3d4'
+    """
+    return f"phoenx-trial-counter-{sweep_name}-{phase_name}-{token}"
+
+
+def _start_phase_counter(sweep_name: str, phase_name: str) -> tuple[Any | None, str | None]:
+    """Create this phase's ordinal-counting actor and wait for it to be name-resolvable.
+
+    Named-actor registration is asynchronous, and
+    [_resolve_trial_ordinal][phoenx.ray_tune._resolve_trial_ordinal] looks the
+    actor up **by name from a different process** (a trial worker). Without
+    waiting here, the first trial of the phase could race actor registration
+    and see a lookup failure — which, for a searcher phase whose trial id
+    carries no index, degrades straight to the raw Ray trial id, exactly the
+    shape this feature exists to remove. One driver-side ``ray.get`` round
+    trip per phase is a rounding error against a phase that runs for minutes
+    to hours.
+
+    Args:
+        sweep_name: The sweep's name, used only to build a readable actor
+            name.
+        phase_name: The phase's name, likewise.
+
+    Returns:
+        ``(handle, name)`` on success — the actor handle (used only by
+        [_stop_phase_counter][phoenx.ray_tune._stop_phase_counter]; never
+        stored on the trial-facing sweep dict, since an ``ActorHandle`` inside
+        ``tune.with_parameters`` would pin the actor's lifetime to the
+        trainable) and the actor's name (the value actually stashed on
+        ``trial_sweep["_phase_counter"]`` by
+        [run_phase][phoenx.ray_tune.run_phase]). Returns ``(None, None)`` when
+        actor creation or the readiness wait fails for any reason, so a phase
+        that cannot get a counter degrades to today's trial-id-based run
+        names instead of failing.
+    """
+    token = uuid.uuid4().hex[:8]
+    name = _phase_counter_name(sweep_name, phase_name, token)
+    handle = None
+    try:
+        handle = _PhaseTrialCounter.options(name=name).remote()
+        ray.get(handle.issued.remote(), timeout=_ORDINAL_ACTOR_TIMEOUT_S)
+        return handle, name
+    except Exception:
+        logger.warning(
+            "run_phase '%s': could not start the trial-ordinal counter actor; "
+            "W&B run names for this phase will fall back to the Ray trial id.",
+            phase_name,
+            exc_info=True,
+        )
+        _stop_phase_counter(handle)
+        return None, None
+
+
+def _stop_phase_counter(handle: Any | None) -> None:
+    """Kill this phase's ordinal-counting actor, tolerating a missing or already-dead one.
+
+    Args:
+        handle: The actor handle returned by
+            [_start_phase_counter][phoenx.ray_tune._start_phase_counter], or
+            ``None`` when no actor was ever created (in which case this is a
+            no-op).
+    """
+    if handle is None:
+        return
+    try:
+        ray.kill(handle)
+    except Exception:
+        logger.debug("Failed to kill the phase trial-ordinal counter actor.", exc_info=True)
+
+
+def _resolve_trial_ordinal(sweep: dict, phase_name: str, trial_id: str) -> int | None:
+    """Resolve one trial's 1-based ordinal for its W&B run name.
+
+    Two regimes, chosen by whether the phase has a counter at all — and
+    never mixed, per Amendment A. Actor ordinals are trial *start* order;
+    the trial id's own ``_NNNNN`` index is Ray's *creation* order. The two
+    are independent, so falling from a failed actor lookup through to the
+    index (as an earlier draft did) can hand two different trials the same
+    number once the counter has died mid-phase — precisely the collision
+    this feature exists to prevent.
+
+    - When ``sweep["_phase_counter"]`` is truthy, the actor is the **only**
+      source of truth: its answer is returned, and any failure to reach or
+      read it (dead actor, bad name, an unparseable answer) resolves to
+      ``None`` — it does **not** fall through to the trial id's index.
+    - When no counter name is stashed, the trial id's own ``_NNNNN`` index
+      (Ray's ``BasicVariantGenerator`` shape, 0-based, converted to 1-based
+      to match the actor's numbering) is the phase's only numbering, so
+      using it is safe and collision-free; a searcher-shaped id or any
+      other non-matching suffix resolves to ``None``. The suffix must also
+      be ASCII: ``str.isdigit()`` is ``True`` for Unicode ``No``-category
+      characters (e.g. ``"²"``) that ``int()`` then rejects.
+
+    Never raises, for any input — including a non-``str`` ``trial_id``, a
+    non-``str`` ``sweep["_phase_counter"]``, or an actor answer ``int()``
+    rejects. Run naming is cosmetic, and a raise here would reach
+    [_inject_trial_callbacks][phoenx.ray_tune._inject_trial_callbacks],
+    which has no handler for it, and fail the trial.
+
+    Args:
+        sweep: The parsed sweep config; reads the private
+            ``sweep["_phase_counter"]`` actor name that
+            [run_phase][phoenx.ray_tune.run_phase] stashes for this phase.
+        phase_name: The current phase's name, used only in the warning
+            logged when resolution fails.
+        trial_id: This trial's Ray-assigned id
+            (``tune.get_context().get_trial_id()``).
+
+    Returns:
+        The 1-based ordinal as an ``int``, or ``None`` when it could not be
+        determined.
+    """
+    counter_name = sweep.get("_phase_counter")
+    try:
+        if counter_name:
+            ordinal = ray.get(
+                ray.get_actor(counter_name).ordinal.remote(trial_id),
+                timeout=_ORDINAL_ACTOR_TIMEOUT_S,
+            )
+            return int(ordinal)
+        suffix = trial_id.rsplit("_", 1)[-1]
+        if suffix != trial_id and suffix.isascii() and suffix.isdigit():
+            return int(suffix) + 1
+        return None
+    except Exception:
+        if counter_name:
+            logger.warning(
+                "run_phase '%s': could not resolve a trial ordinal for trial "
+                "'%s' from the counter actor; this phase has a counter, so "
+                "no trial-id-index fallback is used and the run name "
+                "degrades to the raw trial id.",
+                phase_name,
+                trial_id,
+            )
+        else:
+            logger.warning(
+                "run_phase '%s': could not resolve a trial ordinal for "
+                "trial '%s' from its own id.",
+                phase_name,
+                trial_id,
+            )
+        return None
+
+
+def _format_trial_ordinal(ordinal: int, total: Any) -> str:
+    """Format a trial's ordinal for its W&B run name, with the phase total when known.
+
+    Args:
+        ordinal: The trial's 1-based ordinal, from
+            [_resolve_trial_ordinal][phoenx.ray_tune._resolve_trial_ordinal].
+        total: The phase's planned trial count, from
+            [_phase_trial_total][phoenx.ray_tune._phase_trial_total] (read
+            off ``sweep["_phase_trial_total"]``), or any other value —
+            including ``None``, a non-``int``, or a non-positive ``int`` — to
+            omit it.
+
+    Returns:
+        ``f"{ordinal:0{width}d}of{total:0{width}d}"`` with
+        ``width = max(4, len(str(total)))`` when ``total`` is a positive
+        ``int`` and not a ``bool`` (``True``/``False`` are ``int`` subclasses
+        in Python but are never a real trial count); otherwise just
+        ``f"{ordinal:04d}"``.
+
+    Example:
+        >>> from phoenx.ray_tune import _format_trial_ordinal
+        >>> _format_trial_ordinal(7, 10)
+        '0007of0010'
+        >>> _format_trial_ordinal(7, None)
+        '0007'
+    """
+    if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+        width = max(4, len(str(total)))
+        return f"{ordinal:0{width}d}of{total:0{width}d}"
+    return f"{ordinal:04d}"
+
+
+def _phase_trial_total(
+    space: dict,
+    num_samples: Any,
+    *,
+    expand_grid: bool,
+    num_seed_points: int = 0,
+) -> int | None:
+    """Compute a phase's planned trial count, or ``None`` when it cannot be bounded.
+
+    Ray's ``BasicVariantGenerator`` (``search_alg: {type: random}`` or
+    ``{type: variant_generator}`` — Ray maps both names to the same class)
+    expands every ``grid_search`` dimension *per sample*, so that phase's real
+    trial count is ``num_samples x prod(grid sizes)``, not ``num_samples``.
+    Every other searcher never expands grids. Presets
+    (``points_to_evaluate``) complicate this further: Ray's preset branch
+    fires before its ``num_samples_left`` branch and keeps firing while
+    presets remain, so a phase seeded with more points than ``num_samples``
+    runs more trials than ``num_samples x prod(grid sizes)`` would predict —
+    in that regime no value this function could return would be a true upper
+    bound, so it returns ``None`` instead of a wrong number.
+
+    Args:
+        space: The phase's flat search space, as returned by
+            [build_search_space][phoenx.ray_tune.build_search_space].
+        num_samples: The phase's resolved ``tune.TuneConfig(num_samples=...)``
+            value.
+        expand_grid: Whether this phase's searcher is one of Ray's two
+            ``BasicVariantGenerator`` aliases (``"random"`` /
+            ``"variant_generator"``, see
+            [_search_alg_type][phoenx.ray_tune._search_alg_type]) and
+            therefore expands ``grid_search`` dimensions per sample.
+        num_seed_points: This phase's number of ``points_to_evaluate`` seed
+            points (``len(points_to_evaluate or [])``), needed to detect the
+            preset-overshoot case above.
+
+    Returns:
+        The phase's planned trial count as an ``int``, or ``None`` when
+        ``num_samples`` is not a positive, non-``bool`` ``int``, or when
+        ``num_seed_points > num_samples``.
+
+    Example:
+        >>> from phoenx.ray_tune import _phase_trial_total
+        >>> _phase_trial_total({"a": {"grid_search": [1, 2, 3]}}, 10, expand_grid=True)
+        30
+        >>> _phase_trial_total({}, 10, expand_grid=False)
+        10
+    """
+    if not isinstance(num_samples, int) or isinstance(num_samples, bool) or num_samples <= 0:
+        return None
+    if num_seed_points > num_samples:
+        return None
+
+    total = num_samples
+    if expand_grid:
+        for value in space.values():
+            if not (isinstance(value, dict) and len(value) == 1 and "grid_search" in value):
+                continue
+            values = value["grid_search"]
+            try:
+                grid_size = len(values)
+            except TypeError:
+                continue
+            if grid_size > 0:
+                total *= grid_size
+    return total
+
+
 def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dict) -> None:
     """Replace this trial's ``callbacks:`` list with exactly the right set.
 
@@ -1839,13 +2173,25 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
       already declares.
     - If ``phase['wandb']`` is present, ensure exactly one ``WandbCallback``
       with ``project_name`` from ``phase['wandb']['project']``, an explicit
-      ``run_name`` identifying the trial (sweep name, phase name, Ray trial
-      id), an explicit ``group`` shared by every trial of the phase, tags
-      including the sweep and phase name, and ``sweep_params=sampled`` (so
-      swept values land under ``sweep/*`` in the W&B config), passed
-      through [``_to_plain``][phoenx.ray_tune._to_plain] first so a numpy
-      scalar from a searcher cannot break a later plain ``json.dump`` of
-      the trainer config (e.g. ``Trainer.save()``).
+      ``run_name`` of the shape ``"{sweep}-{phase}-{NNNNofTOTAL}"`` — a
+      1-based per-phase trial ordinal resolved by
+      [_resolve_trial_ordinal][phoenx.ray_tune._resolve_trial_ordinal] and
+      formatted by
+      [_format_trial_ordinal][phoenx.ray_tune._format_trial_ordinal], falling
+      back to ``"{sweep}-{phase}-{trial_id}"`` (today's shape) only when no
+      ordinal could be resolved — an explicit ``group`` shared by every
+      trial of the phase, tags including the sweep and phase name,
+      ``sweep_params=sampled`` (so swept values land under ``sweep/*`` in
+      the W&B config), passed through
+      [``_to_plain``][phoenx.ray_tune._to_plain] first so a numpy scalar
+      from a searcher cannot break a later plain ``json.dump`` of the
+      trainer config (e.g. ``Trainer.save()``), and
+      ``extra_config={"ray/trial_id": ..., "ray/phase": ...}`` (plus
+      ``"ray/trial_ordinal"`` when an ordinal resolved) so the underlying
+      Ray provenance is still recoverable from the W&B config table without
+      polluting the ``sweep/`` namespace. The ordinal is resolved only
+      inside this branch, so a phase with no ``wandb:`` block never
+      contacts the counter actor.
     - If ``phase['wandb']`` is absent, strip any ``WandbCallback`` the base
       config declares, so trials do not spam W&B with default naming.
 
@@ -1854,7 +2200,11 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
             place (``config['callbacks']`` is replaced).
         sweep: The parsed sweep config; reads the private ``_sweep_name``
             key [run_phase][phoenx.ray_tune.run_phase] stashes on it for
-            this call (falls back to ``"sweep"`` when absent).
+            this call (falls back to ``"sweep"`` when absent), the private
+            ``_phase_trial_total`` key it also stashes (read directly, to
+            format the resolved ordinal), and the private ``_phase_counter``
+            actor name (read indirectly, via
+            [_resolve_trial_ordinal][phoenx.ray_tune._resolve_trial_ordinal]).
         phase: The current normalized phase (reads ``phase['report']`` /
             ``phase['wandb']`` and ``phase['name']``).
         sampled: This trial's sampled dict, passed through (after
@@ -1891,14 +2241,26 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             trial_id = tune.get_context().get_trial_id() or "local"
+
+        ordinal = _resolve_trial_ordinal(sweep, phase_name, trial_id)
+        if ordinal is None:
+            suffix = trial_id
+        else:
+            suffix = _format_trial_ordinal(ordinal, sweep.get("_phase_trial_total"))
+
+        extra_config = {"ray/trial_id": trial_id, "ray/phase": phase_name}
+        if ordinal is not None:
+            extra_config["ray/trial_ordinal"] = ordinal
+
         callbacks.append({
             "type": "WandbCallback",
             "config": {
                 "project_name": project,
-                "run_name": f"{sweep_name}-{phase_name}-{trial_id}",
+                "run_name": f"{sweep_name}-{phase_name}-{suffix}",
                 "group": f"{sweep_name}-{phase_name}",
                 "tags": [sweep_name, phase_name],
                 "sweep_params": _to_plain(sampled),
+                "extra_config": extra_config,
             },
         })
 
@@ -2003,8 +2365,18 @@ def _trial_dirname_creator(trial: Any) -> str:
 
     Ray's default trial dirname embeds every sampled param; with dotted
     config paths and architecture search-space keys, that routinely exceeds
-    Windows' ``MAX_PATH`` mid-sweep. Uses just the trial's own zero-padded
-    index suffix (e.g. trial id ``"3cf3e_00007"`` -> ``"trial_00007"``).
+    Windows' ``MAX_PATH`` mid-sweep. Uses ``trial.trial_id.rsplit("_", 1)[-1]``
+    — the part of the Ray trial id after its last underscore. For a
+    ``random`` (``BasicVariantGenerator``) phase that is a zero-padded index
+    (e.g. trial id ``"3cf3e_00007"`` -> ``"trial_00007"``); for every other
+    searcher the id is a bare ``uuid4().hex[:8]`` with no underscore, so the
+    split is a no-op and the directory is the whole id (e.g.
+    ``"trial_c6a5bab2"``). This is the raw Ray trial id, not the same value
+    as a trial's W&B run-name ordinal (see
+    [_resolve_trial_ordinal][phoenx.ray_tune._resolve_trial_ordinal]) —
+    deliberately so, since aligning this to the ordinal would break
+    ``--resume`` (a restored trial must land back on its existing directory,
+    and the ordinal counter restarts at 1 on every run).
 
     Args:
         trial: The ``ray.tune.experiment.Trial`` Ray is naming a directory
@@ -2068,8 +2440,30 @@ def run_phase(
     [build_stopper][phoenx.ray_tune.build_stopper], and runs exactly one
     ``tune.Tuner`` under ``<storage_path>/<sweep_name>/<phase['name']>/``.
     ``storage_path`` is resolved to an absolute path first, and every trial
-    gets a short ``trial_XXXXX`` directory name (mandatory on Windows; see
-    ``_trial_dirname_creator``).
+    gets a short directory name (mandatory on Windows; see
+    ``_trial_dirname_creator`` — the exact shape depends on the phase's
+    searcher).
+
+    When ``phase['wandb']`` is set (the same condition
+    ``_inject_trial_callbacks`` gates on — a phase that will never name a
+    W&B run does not pay for one), starts a per-phase, ``num_cpus=0`` Ray
+    actor (see ``_start_phase_counter``) that hands out 1-based
+    trial-start-order ordinals used by
+    ``_inject_trial_callbacks`` for each trial's W&B run name. The actor is
+    created before, and killed in a ``finally`` spanning, both ``Tuner``
+    construction/restore and ``tuner.fit()``, so it always dies with the
+    phase and never leaks past it. Ordinals are trial *start* order, not
+    creation order — with ``max_concurrent_trials > 1`` ordinal ``N`` is not
+    guaranteed to be the Nth trial Ray created, and an errored trial still
+    consumes one. On ``resume=True`` the restored ``Tuner`` does pick up
+    this fresh actor, but the actor's ledger itself starts empty, so a
+    resumed phase renumbers ordinals from 1 and can repeat numbers issued in
+    the original attempt; ``ray/trial_id`` in each run's W&B config table
+    (see ``_inject_trial_callbacks``) still disambiguates. The planned
+    trial total (``…of<total>``) is also suppressed (``None``) on the
+    restore branch, since ``Tuner.restore`` takes neither ``param_space``
+    nor ``tune_config`` — Ray replays the persisted experiment spec, so this
+    invocation's ``num_samples`` may not be what actually runs.
 
     Args:
         sweep: Parsed sweep config (forwarded to the trainable, and used
@@ -2152,35 +2546,70 @@ def run_phase(
     storage_path_abs = Path(storage_path).resolve()
     phase_dir = storage_path_abs / sweep_name / phase_name
 
-    trial_sweep = dict(sweep)
-    trial_sweep["_sweep_name"] = sweep_name
-    trainable = tune.with_parameters(rl_trainable, sweep=trial_sweep, phase=phase, base_config=base_config)
-    trainable = tune.with_resources(trainable, resources)
+    counter_handle = counter_name = None
+    try:
+        # AMENDMENT B (F2): only a phase that will actually name W&B runs
+        # pays for a counter round trip; _inject_trial_callbacks gates on
+        # exactly this condition, so the driver must use the same one.
+        if phase.get("wandb"):
+            counter_handle, counter_name = _start_phase_counter(sweep_name, phase_name)
 
-    tune_config = tune.TuneConfig(
-        metric=metric,
-        mode=mode,
-        num_samples=resolved_num_samples,
-        search_alg=search_alg,
-        scheduler=scheduler,
-        max_concurrent_trials=resolved_max_concurrent,
-        reuse_actors=reuse_actors,
-        time_budget_s=time_budget_s,
-        trial_dirname_creator=_trial_dirname_creator,
-    )
-    run_config = tune.RunConfig(
-        name=phase_name,
-        storage_path=str(storage_path_abs / sweep_name),
-        stop=stopper,
-    )
+        alg_type = _search_alg_type(phase)
+        # F4: decide restore-vs-fresh BEFORE trial_sweep is captured by
+        # tune.with_parameters below, so a restored phase's total can be
+        # suppressed before, not after, the trainable closes over it.
+        is_resume = bool(resume) and tune.Tuner.can_restore(phase_dir)
 
-    if resume and tune.Tuner.can_restore(phase_dir):
-        logger.info("run_phase: resuming existing experiment at '%s'", phase_dir)
-        tuner = tune.Tuner.restore(str(phase_dir), trainable, resume_errored=True)
-    else:
-        tuner = tune.Tuner(trainable, param_space=space, tune_config=tune_config, run_config=run_config)
+        trial_sweep = dict(sweep)
+        trial_sweep["_sweep_name"] = sweep_name
+        trial_sweep["_phase_counter"] = counter_name
+        trial_sweep["_phase_trial_total"] = (
+            None
+            if is_resume
+            else _phase_trial_total(
+                space,
+                resolved_num_samples,
+                expand_grid=alg_type in ("random", "variant_generator"),
+                # F3: only BasicVariantGenerator (search_alg.type == "random")
+                # can run more trials than num_samples, and only when handed
+                # presets. Ray attaches presets solely for the types in
+                # _POINTS_TO_EVALUATE_SUPPORTED, and every other searcher's
+                # SearchGenerator.is_finished hard-caps at num_samples, so
+                # counting seed points for e.g. "optuna" or
+                # "variant_generator" would throw the total away for a phase
+                # that can never overshoot.
+                num_seed_points=(len(points_to_evaluate or []) if alg_type == "random" else 0),
+            )
+        )
+        trainable = tune.with_parameters(rl_trainable, sweep=trial_sweep, phase=phase, base_config=base_config)
+        trainable = tune.with_resources(trainable, resources)
 
-    result_grid = tuner.fit()
+        tune_config = tune.TuneConfig(
+            metric=metric,
+            mode=mode,
+            num_samples=resolved_num_samples,
+            search_alg=search_alg,
+            scheduler=scheduler,
+            max_concurrent_trials=resolved_max_concurrent,
+            reuse_actors=reuse_actors,
+            time_budget_s=time_budget_s,
+            trial_dirname_creator=_trial_dirname_creator,
+        )
+        run_config = tune.RunConfig(
+            name=phase_name,
+            storage_path=str(storage_path_abs / sweep_name),
+            stop=stopper,
+        )
+
+        if is_resume:
+            logger.info("run_phase: resuming existing experiment at '%s'", phase_dir)
+            tuner = tune.Tuner.restore(str(phase_dir), trainable, resume_errored=True)
+        else:
+            tuner = tune.Tuner(trainable, param_space=space, tune_config=tune_config, run_config=run_config)
+
+        result_grid = tuner.fit()
+    finally:
+        _stop_phase_counter(counter_handle)
 
     if result_grid.num_errors:
         logger.warning(

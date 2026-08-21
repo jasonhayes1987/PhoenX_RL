@@ -494,8 +494,8 @@ PER-only defaults: `alpha=0.6`, `beta_start=0.4`, `beta_iter=100000`,
 List of `{type, config}` mappings. `type` must be a registered callback class
 name (bundled examples use `"WandbCallback"`). `config` is constructor kwargs.
 For `WandbCallback`: required `project_name`; optional `run_name`, `group`,
-`tags`, `run_id`, `resume`, `sweep_params`, and `artifact_every`. See
-[RL callbacks][phoenx.rl_callbacks].
+`tags`, `run_id`, `resume`, `sweep_params`, `artifact_every`, and
+`extra_config`. See [RL callbacks][phoenx.rl_callbacks].
 
 `artifact_every` (int or omit / `null`; default `null`) is an optional extra
 minimum number of trainer timesteps between W&B model-artifact uploads,
@@ -513,6 +513,17 @@ callbacks:
       project_name: "LunarLanderContinuous-v3"
       artifact_every: 200000   # rarer than local saves; omit to match save_every
 ```
+
+`extra_config` (mapping or omit / `null`; default `null`) is an
+already-flat mapping merged into `wandb.init(config=...)` **last** — after
+the trainer config and any flattened `sweep_params` — so it wins any key
+collision. It is copied at construction time, so mutating the dict you
+passed in afterwards does not change what `get_config()`/`save()` later
+write. It exists for run provenance that is not itself a swept
+hyperparameter — `phoenx-tune` sets it automatically on each sweep trial's
+callback to record the underlying Ray trial id (see
+[Hyperparameter Sweeps](hyperparameter-sweeps.md)) — so a hand-written
+training YAML has no reason to set it.
 
 ### `renderer`
 

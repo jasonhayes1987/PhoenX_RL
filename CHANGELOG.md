@@ -6,6 +6,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `WandbCallback` constructor kwarg `extra_config` (default `None`): an
+  already-flat mapping merged into `wandb.init(config=...)` last, so it wins
+  any key collision with the trainer config or a flattened `sweep_params`
+  entry. Copied at construction time rather than aliased. `phoenx-tune`
+  sweeps now use it to record each trial's Ray provenance (`ray/trial_id`,
+  `ray/phase`, and, when it could be resolved, `ray/trial_ordinal`) in the
+  run's W&B config table.
 - Two pytest markers registered in `pyproject.toml`, `golden` and `smoke`, and
   the test suites they select. `golden` checks numerical identities against
   reference implementations written independently of PhoenX: in
@@ -64,6 +71,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- `phoenx-tune` sweep trial W&B run names now end in a 1-based per-phase
+  ordinal with the phase's planned trial total, e.g.
+  `ppo_sweep-optimizers-0007of0010`, identically for every search algorithm,
+  instead of the raw Ray trial id — whose shape previously differed between
+  `random`-searcher phases (their own zero-padded index) and every other
+  searcher (a bare id with no index, so no progress signal in the W&B
+  sidebar). The trial id itself moved to the run's W&B config table
+  (`ray/trial_id`) rather than the name; on-disk trial directory names are
+  unchanged. Falls back to the old `<sweep>-<phase>-<trial_id>` name when no
+  ordinal can be resolved, and a resumed phase (`--resume`) restarts its
+  numbering from 1 rather than continuing it. **If you have saved W&B
+  filters, dashboards, or grouping keyed on the old run-name shape, update
+  them** — either to the new ordinal shape, or to the `ray/trial_id` config
+  column, which is unaffected by this change.
 - Automatic best-model checkpointing is no longer every new rolling-average
   best by default. Configs that omit `schedule.save_every` now inherit the
   `50_000`-timestep cooldown (chosen so the fix applies without editing every
@@ -214,6 +235,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- `_trial_dirname_creator`'s docstring and the hyperparameter-sweeps how-to's
+  "Windows paths" note both claimed trial directories are always
+  `trial_<zero-padded index>` (e.g. `trial_00001`). That shape only holds
+  for a `random`/`variant_generator` phase, whose Ray trial ids carry
+  their own zero-padded index; every other searcher (`optuna`, `hyperopt`,
+  `bohb`, ...) mints a trial id with no index at all, so its directory is
+  `trial_<the whole id>` (e.g. `trial_c6a5bab2`) instead. Both places now
+  state the actual rule and both shapes.
 - Modular schema migration: Reinforce and ActorCritic builders read
   normalizers and `entropy_schedule` from `agent.config` (they previously
   read the YAML root even in modular mode, so a correctly-modular config

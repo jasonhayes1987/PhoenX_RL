@@ -294,6 +294,7 @@ class WandbCallback(Callback):
         resume: str | bool | None = None,
         sweep_params: dict | None = None,
         artifact_every: int | None = None,
+        extra_config: dict | None = None,
     ):
         """Store W&B run identity so every trial of a sweep is distinguishable.
 
@@ -326,6 +327,16 @@ class WandbCallback(Callback):
                 default) or ``0`` means no additional cooldown: an artifact
                 is uploaded on every step the trainer actually wrote a
                 checkpoint (``logs['saved']``).
+            extra_config: Optional mapping already flat (no further
+                flattening applied), merged into ``wandb.init(config=...)``
+                last — after ``logs`` and any flattened ``sweep_params`` — so
+                it wins any key collision. Exists for run provenance that is
+                not itself a swept hyperparameter (e.g. the underlying Ray
+                Tune trial id), and so is expected to stay out of the
+                ``sweep/`` namespace that W&B's parallel-coordinates and
+                parameter-importance panels read. Produced by
+                `_inject_trial_callbacks` in `phoenx.ray_tune`; a
+                hand-written training YAML has no reason to set it.
         """
         self.project_name = project_name
         self.run_name = run_name
@@ -335,6 +346,7 @@ class WandbCallback(Callback):
         self.resume = resume
         self.sweep_params = sweep_params
         self.artifact_every = artifact_every
+        self.extra_config = dict(extra_config) if extra_config else None
         self.save_dir = None
         self.initialized = False
         self._finished = False
@@ -393,7 +405,8 @@ class WandbCallback(Callback):
         """Start a W&B run from the trainer config and optionally watch models.
 
         Reads ``logs['save_dir']`` for artifact paths and calls ``wandb.init``
-        with the full config (plus any flattened ``sweep_params``) as
+        with the full config (plus any flattened ``sweep_params``, then
+        ``self.extra_config`` merged last so it wins any key collision) as
         ``config``. When ``models`` is non-empty, registers each with
         ``wandb.watch``.
 
@@ -456,6 +469,8 @@ class WandbCallback(Callback):
         config = logs
         if self.sweep_params:
             config = {**logs, **flatten_dict(self.sweep_params, parent_key='sweep', sep='/')}
+        if self.extra_config:
+            config = {**config, **self.extra_config}
 
         init_kwargs = dict(
             project=self.project_name,
@@ -665,8 +680,8 @@ class WandbCallback(Callback):
             config (dict): Mapping with ``type`` ``"WandbCallback"`` and a
                 ``config`` sub-dict of constructor kwargs (``project_name``,
                 ``run_name``, ``group``, ``tags``, ``run_id``, ``resume``,
-                ``sweep_params``, ``artifact_every``), sufficient to rebuild
-                an equivalent callback via `load`.
+                ``sweep_params``, ``artifact_every``, ``extra_config``),
+                sufficient to rebuild an equivalent callback via `load`.
         """
         return {
             'type': "WandbCallback",
@@ -679,6 +694,7 @@ class WandbCallback(Callback):
                 'resume': self.resume,
                 'sweep_params': self.sweep_params,
                 'artifact_every': self.artifact_every,
+                'extra_config': self.extra_config,
             }
         }
 
