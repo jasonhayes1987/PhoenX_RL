@@ -2644,6 +2644,10 @@ class ModularModel(nn.Module):
       every optimizer once (equivalent to a single optimizer with param groups).
     - Off-policy agents update roots+trunk with the critic loss only; the
       policy pass uses ``detach_shared=True`` and steps only its own branch.
+
+    ``optimizer_steps`` (an ``int`` instance attribute, not a checkpointed
+    tensor) counts ``step()`` calls; see ``step`` for exactly what it does
+    and does not count.
     """
 
     def __init__(
@@ -2720,6 +2724,11 @@ class ModularModel(nn.Module):
 
         self.optimizers: Dict[str, optim.Optimizer] = {}
         self.lr_schedulers: Dict[str, ScheduleWrapper] = {}
+        # Instance attribute (never class-level): counts `step()` calls made
+        # on THIS model. Not persisted across a checkpoint and never shared
+        # between models, so two Ray Tune trials in one process cannot leak
+        # counts into each other.
+        self.optimizer_steps: int = 0
 
         self.to(self.device)
         self._init_model()
@@ -2976,10 +2985,20 @@ class ModularModel(nn.Module):
     def step(self, modules: List[str] | str | None = None) -> None:
         """Step the selected modules' optimizers.
 
+        Increments ``optimizer_steps`` by exactly one per call -- once per
+        ``ModularModel.step()`` call, not once per module optimizer it steps
+        -- unconditionally on entry, including when ``modules`` resolves to
+        an empty list (e.g. no module in the selection owns parameters).
+        The increment is a plain integer add: it touches no tensor, no
+        optimizer state, and no autograd graph. An optimizer that never goes
+        through ``ModularModel`` (e.g. a SAC or on-policy temperature
+        ``entropy_optimizer``) never contributes to it.
+
         Args:
             modules: Module name, list of names, or ``None`` for every
                 optimizer. Names match ``module_map`` keys.
         """
+        self.optimizer_steps += 1
         for module_name in self._resolve_optimizer_names(modules):
             self.optimizers[module_name].step()
 

@@ -287,6 +287,7 @@ class Trainer:
         self._success_tracker = None
         self._grad_step = None
         self._run_start_step = None
+        self._run_start_optimizer_steps = None
         # Checkpoint snapshots applied by _initialize_run when resuming (Trainer.load).
         self._resume_state = None
         self._resume_rng = None
@@ -395,21 +396,31 @@ class Trainer:
         self._last_learn = 0
         self._success_tracker = deque(maxlen=100)
         # Number of `agent.learn()` calls this run. Deliberately not persisted
-        # to `trainer_state.pt`, so it restarts at 0 on resume; this is why
-        # `offpolicy/replay_ratio` divides by the run segment rather than by
-        # `_step`. Not claimed to be an optimizer-step count.
+        # to `trainer_state.pt`, so it restarts at 0 on resume. Retained only
+        # for the `grad_step` context key `collect()` emits alongside every
+        # window; it no longer feeds any ratio metric and is not claimed to
+        # be an optimizer-step count -- `ModularModel.optimizer_steps` (read
+        # via `optim/updates_per_env_step`) is the actual optimizer-step
+        # count.
         self._grad_step = 0
 
         # If resuming (Trainer.load), overlay the checkpointed counters + RNG.
         self._apply_resume_state(context)
 
         # Captured AFTER resume state is applied: 0 on a fresh run, the
-        # restored `_step` on a resumed one. `_grad_step` is never persisted
-        # to `trainer_state.pt`, so anchoring `offpolicy/replay_ratio`'s
-        # denominator to `self._step - self._run_start_step` (this run
-        # segment) rather than the absolute `self._step` keeps the ratio
-        # correct across a resume; the two coincide on a fresh run.
+        # restored `_step` on a resumed one. `optim/updates_per_env_step`
+        # divides by `self._step - self._run_start_step` (this run segment)
+        # rather than the absolute `self._step`, since `self._step` may be
+        # restored from `trainer_state.pt` on resume; the two coincide on a
+        # fresh run.
         self._run_start_step = self._step
+
+        # `ModularModel.optimizer_steps` is never persisted to a checkpoint,
+        # so this run segment's baseline is always read fresh here, never
+        # restored from `_resume_state`. Guarded via chained `getattr` so a
+        # stub agent without a `model` attribute, or a model without an
+        # `optimizer_steps` counter, does not break initialization.
+        self._run_start_optimizer_steps = getattr(getattr(self.agent, "model", None), "optimizer_steps", 0)
 
     def _apply_resume_state(self, context: Literal["train", "test"]) -> None:
         """Overlay checkpointed counters and RNG onto a freshly initialized run.
@@ -654,9 +665,10 @@ class Trainer:
         it may not fire on every new best (see ``schedule.save_every``). A
         best left pending by this cooldown is flushed once ``train`` exits,
         so it is delayed rather than lost. Also pushes the Table A rollout /
-        perf metrics into ``self.metrics`` when ``training`` is ``True`` --
-        that gate (not swapping the recorder) is what keeps evaluation steps
-        from polluting a training window.
+        perf metrics and the four ``buffer/*`` occupancy/readiness metrics
+        into ``self.metrics`` when ``training`` is ``True`` -- that gate (not
+        swapping the recorder) is what keeps evaluation steps from polluting
+        a training window.
 
         Args:
             training: When ``True``, record into the buffer and allow
@@ -705,23 +717,30 @@ class Trainer:
         # contribute to a training window or grow manager state.
         if training:
             self.metrics.record("perf/sps", self._step)
-            if self.metrics.should_compute("offpolicy/buffer_fill"):
-                # Guarded rather than raised: an off-policy agent paired with
-                # a buffer stand-in lacking these attributes (or a buffer
-                # that hasn't allocated storage yet) must not crash step();
-                # the metric is simply omitted for this window instead.
-                buffer_size = getattr(self.buffer, "buffer_size", None)
-                samples_added = getattr(self.buffer, "samples_added", None)
-                if buffer_size and samples_added is not None:
-                    self.metrics.record("offpolicy/buffer_fill", min(samples_added, buffer_size) / buffer_size)
-            if self.metrics.should_compute("offpolicy/replay_ratio"):
-                # Denominator is this run SEGMENT (since the last resume),
-                # not the absolute step count: `_step` is restored from
-                # `trainer_state.pt` on resume while `_grad_step` deliberately
-                # is not, so dividing by the absolute step would report a
-                # ratio depressed toward zero right after resuming a long run.
-                run_steps = self._step - (self._run_start_step or 0)
-                self.metrics.record("offpolicy/replay_ratio", (self._grad_step or 0) / max(run_steps, 1))
+            # Buffer occupancy / readiness are properties of the buffer, not
+            # of whether the agent happens to be off-policy: `buffer_size` is
+            # declared on the `Buffer` ABC and every concrete subclass now
+            # answers `fill`. Each site checks `should_compute` BEFORE
+            # reading any buffer attribute, then reads through `getattr`
+            # with a default, so a stub buffer lacking these attributes (or
+            # one bound before it allocated storage) never crashes `step()`.
+            if self.metrics.should_compute("buffer/fill"):
+                fill = getattr(self.buffer, "fill", None)
+                if fill is not None:
+                    self.metrics.record("buffer/fill", fill)
+            if self.metrics.should_compute("buffer/env_steps"):
+                env_steps = getattr(self.buffer, "env_steps", None)
+                if env_steps is not None:
+                    self.metrics.record("buffer/env_steps", float(env_steps))
+            if self.metrics.should_compute("buffer/is_ready"):
+                is_ready = getattr(self.buffer, "is_ready", None)
+                if is_ready is not None:
+                    total_samples = self.schedule.updates_per_learn * self.schedule.batch_size
+                    self.metrics.record("buffer/is_ready", float(bool(is_ready(samples=total_samples))))
+            if self.metrics.should_compute("buffer/pending_trajectories"):
+                completed = getattr(self.buffer, "completed_trajectories", None)
+                if completed is not None:
+                    self.metrics.record("buffer/pending_trajectories", float(len(completed)))
 
         # Increment episode steps and rewards
         self._episode_steps[valid_steps] += 1
@@ -925,7 +944,11 @@ class Trainer:
         ``step_intrinsic_reward``. With ``updates_per_learn > 1``, only
         ``MEAN``-reduced Table B keys average over every update since the
         last ``collect()``; ``LAST``-reduced keys and the unmapped bucket
-        reflect only the final update's value.
+        reflect only the final update's value. ``optim/updates_per_env_step``
+        is recorded after the learn gate and the ``self._step`` increment,
+        immediately before that ``collect()`` call, so both its numerator
+        and denominator reflect the current iteration rather than the one
+        before it.
         """
         self._initialize_run(context="train")
         # Initialize Rich Console
@@ -976,6 +999,23 @@ class Trainer:
                         "timestep": self._step,
                         "episode": self._completed_episodes.sum().item(),
                     }[self.schedule.learn_every_unit]
+
+                # optim/updates_per_env_step is recorded HERE -- after the
+                # learn gate above and after this iteration's `self._step`
+                # increment -- rather than inside `step()`, so both the
+                # numerator (optimizer_steps) and the denominator (env
+                # steps) reflect this iteration rather than lagging it by
+                # one. Guarded the same way as the buffer/* metrics: check
+                # should_compute before reading any agent/model attribute,
+                # then read through getattr with a default.
+                if self.metrics.should_compute("optim/updates_per_env_step"):
+                    optimizer_steps = getattr(getattr(self.agent, "model", None), "optimizer_steps", None)
+                    if optimizer_steps is not None:
+                        updates = optimizer_steps - (self._run_start_optimizer_steps or 0)
+                        env_steps_this_segment = self._step - (self._run_start_step or 0)
+                        self.metrics.record(
+                            "optim/updates_per_env_step", updates / max(env_steps_this_segment, 1)
+                        )
 
                 # Learn-return metrics (Table B) arrive here: MEAN-reduced
                 # keys (e.g. loss/policy) average over every update since the

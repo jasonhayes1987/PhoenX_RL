@@ -278,6 +278,29 @@ class Buffer(ABC):
         """
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def fill(self) -> float:
+        """Fraction of allocated timestep capacity currently holding valid data.
+
+        Every concrete subclass answers for itself, since the source of
+        "valid entries" differs (circular sample count vs. write-pointer
+        position); a completed trajectory that has already been moved out
+        of the allocation does not count toward it (see
+        ``TrajectoryBuffer.completed_trajectories`` for that count).
+
+        Returns:
+            Value in ``[0.0, 1.0]`` in normal operation; ``0.0`` when
+                ``buffer_size`` is falsy. ``ReplayBuffer`` (and
+                ``PrioritizedReplayBuffer``) clamp to this range explicitly
+                via ``min(...)``. For the rollout buffers (``RolloutBuffer``
+                / ``TrajectoryBuffer``) the upper bound is not clamped and
+                holds only because ``add()`` raises once ``cur_idx`` reaches
+                ``buffer_size``; a ``buffer_size`` mutated below the current
+                write pointer can push the value above ``1.0``.
+        """
+        raise NotImplementedError
+
     def get_config(self) -> Dict[str, Any]:
         """Return a serializable ``{'type', 'config'}`` mapping for this buffer.
 
@@ -739,7 +762,20 @@ class ReplayBuffer(Buffer):
             samples: Minimum ``samples_added`` required before learning.
         """
         return self.samples_added >= samples
-    
+
+    @property
+    def fill(self) -> float:
+        """Fraction of circular capacity currently holding valid windows.
+
+        Returns:
+            ``min(samples_added, buffer_size) / buffer_size``, saturating at
+                ``1.0``; ``0.0`` when ``buffer_size`` is falsy (no
+                ``ZeroDivisionError``).
+        """
+        if not self.buffer_size:
+            return 0.0
+        return min(self.samples_added, self.buffer_size) / self.buffer_size
+
     def get_config(self) -> Dict[str, Any]:
         """Extend the base config with the N-step window length.
 
@@ -1272,6 +1308,7 @@ class RolloutBuffer(Buffer):
             actions: Actions taken from ``prev_observation``.
             prev_dones: Per-env done flags from the previous step.
         """
+        self.env_steps += self.env.num_envs
         self.add(
             states=prev_observation.states,
             actions=actions.actions,
@@ -1427,7 +1464,27 @@ class RolloutBuffer(Buffer):
             **kwargs: Ignored; accepted for interface symmetry.
         """
         return True
-    
+
+    @property
+    def fill(self) -> float:
+        """Fraction of allocated timestep capacity spanned by the write pointer.
+
+        Uses the largest per-env ``cur_idx`` rather than the mean: it is the
+        index closest to overflowing the allocation, which is the quantity
+        that matters for sizing ``buffer_size``. Reading this never mutates
+        or aliases ``cur_idx`` -- ``cur_idx.max()`` allocates a new 0-dim
+        tensor, and ``.item()`` on it returns a plain Python ``int`` (``cur_idx``
+        is ``dtype=T.long``), which the surrounding ``float(...)`` converts.
+
+        Returns:
+            ``float(cur_idx.max()) / buffer_size``; ``0.0`` when
+                ``buffer_size`` is falsy or ``cur_idx`` is empty (an empty
+                tensor's ``.max()`` would otherwise raise).
+        """
+        if not self.buffer_size or self.cur_idx.numel() == 0:
+            return 0.0
+        return float(self.cur_idx.max().item()) / self.buffer_size
+
     def get_config(self) -> Dict[str, Any]:
         """Return the base buffer config with this class's ``type``."""
         config = super().get_config()
@@ -1435,7 +1492,16 @@ class RolloutBuffer(Buffer):
         return config
 
 class TrajectoryBuffer(RolloutBuffer):
-    """On-policy buffer that collects completed episode trajectories."""
+    """On-policy buffer that collects completed episode trajectories.
+
+    Inherits ``fill`` from ``RolloutBuffer`` unchanged, but the value means
+    something different here: because ``add`` zeroes a finished env's
+    ``cur_idx`` back to ``0`` while ``sample`` does not reset any index,
+    ``fill`` reports the longest still-in-progress episode as a fraction of
+    ``buffer_size`` rather than dropping to ``0.0`` once trajectories are
+    drained. That is the overflow-risk quantity for this class, since the
+    same index is the one that would run past the allocation.
+    """
 
     def __init__(
         self,
@@ -1476,6 +1542,7 @@ class TrajectoryBuffer(RolloutBuffer):
             actions: Actions taken from ``prev_observation``.
             prev_dones: Per-env done flags from the previous step.
         """
+        self.env_steps += self.env.num_envs
         self.add(
             states=prev_observation.states,
             actions=actions.actions,

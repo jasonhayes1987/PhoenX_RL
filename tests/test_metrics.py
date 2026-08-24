@@ -699,7 +699,9 @@ def test_ppo_capability_gating_excludes_offpolicy_and_sac_and_twin_critic_keys(p
     mm.bind(agent=ppo_agent, env=cartpole_env, buffer=None)
     enabled = mm.enabled_keys()
     assert "sac/alpha" not in enabled
-    assert "offpolicy/buffer_fill" not in enabled
+    # Bound with buffer=None, so the buffer_capacity gate is unmet. Asserting on
+    # a deleted key here would pass no matter what the gate did.
+    assert "buffer/fill" not in enabled
     assert "optim/lr/critic_b" not in enabled
 
 
@@ -1234,51 +1236,55 @@ def test_metric_spec_is_frozen_with_pinned_defaults():
         spec.key = "other"  # frozen dataclass
 
 
-@pytest.mark.parametrize("key,expected_reduction,expected_aliases", [
-    ("rollout/return_mean", Reduction.MEAN, frozenset()),
-    ("rollout/return_rolling_100", Reduction.ROLLING, frozenset()),
-    ("rollout/return_std", Reduction.ROLLING_STD, frozenset()),
-    ("rollout/ep_length_mean", Reduction.MEAN, frozenset()),
-    ("rollout/ep_length_std", Reduction.ROLLING_STD, frozenset()),
-    ("rollout/termination_rate", Reduction.MEAN, frozenset()),
-    ("rollout/truncation_rate", Reduction.MEAN, frozenset()),
-    ("perf/sps", Reduction.RATE, frozenset()),
-    ("offpolicy/buffer_fill", Reduction.LAST, frozenset()),
-    ("offpolicy/replay_ratio", Reduction.LAST, frozenset()),
-    ("health/non_finite", Reduction.MAX, frozenset()),
-    ("per/beta", Reduction.LAST, frozenset({"PER/beta"})),
-    ("per/sampled_priority_mean", Reduction.MEAN, frozenset({"PER/sampled_priority_mean"})),
-    ("per/is_weight_max", Reduction.MAX, frozenset()),
-    ("per/priority_entropy", Reduction.MEAN, frozenset()),
-    ("loss/policy", Reduction.MEAN, frozenset({"policy_loss"})),
-    ("loss/value", Reduction.MEAN, frozenset({"value_loss"})),
-    ("loss/critic", Reduction.MEAN, frozenset({"critic_loss"})),
-    ("critic/td_error_mean", Reduction.MEAN, frozenset({"temporal_difference", "td_error"})),
-    ("critic/value_pred_mean", Reduction.MEAN, frozenset({"critic_predictions"})),
-    ("critic/return_mean_batch", Reduction.MEAN, frozenset({"returns"})),
-    ("policy/advantage_mean", Reduction.MEAN, frozenset({"advantages"})),
-    ("policy/entropy", Reduction.MEAN, frozenset({"entropy"})),
-    ("policy/kl", Reduction.MEAN, frozenset({"kl"})),
-    ("ppo/ratio_mean", Reduction.MEAN, frozenset({"prob_ratio"})),
-    ("ppo/policy_clip", Reduction.LAST, frozenset({"policy_clip"})),
-    ("ppo/value_clip", Reduction.LAST, frozenset({"value_clip"})),
-    ("onpolicy/entropy_coef", Reduction.LAST, frozenset({"entropy_coefficient"})),
-    ("onpolicy/kl_coef", Reduction.LAST, frozenset({"kl_coefficient"})),
-    ("optim/lr/policy", Reduction.LAST, frozenset({"policy_learning_rate"})),
-    ("optim/lr/value", Reduction.LAST, frozenset({"value_learning_rate"})),
-    ("optim/lr/critic", Reduction.LAST, frozenset({"critic_learning_rate"})),
-    ("optim/lr/critic_b", Reduction.LAST, frozenset({"critic_b_learning_rate"})),
-    ("sac/alpha", Reduction.LAST, frozenset({"entropy_coefficient"})),
-    ("exploration/noise_anneal", Reduction.LAST, frozenset({"noise_anneal"})),
-    ("td3/target_noise_anneal", Reduction.LAST, frozenset({"target_noise_anneal"})),
-    ("policy/temperature", Reduction.LAST, frozenset({"temperature"})),
+@pytest.mark.parametrize("key,expected_reduction,expected_aliases,expected_requires", [
+    ("rollout/return_mean", Reduction.MEAN, frozenset(), frozenset()),
+    ("rollout/return_rolling_100", Reduction.ROLLING, frozenset(), frozenset()),
+    ("rollout/return_std", Reduction.ROLLING_STD, frozenset(), frozenset()),
+    ("rollout/ep_length_mean", Reduction.MEAN, frozenset(), frozenset()),
+    ("rollout/ep_length_std", Reduction.ROLLING_STD, frozenset(), frozenset()),
+    ("rollout/termination_rate", Reduction.MEAN, frozenset(), frozenset()),
+    ("rollout/truncation_rate", Reduction.MEAN, frozenset(), frozenset()),
+    ("perf/sps", Reduction.RATE, frozenset(), frozenset()),
+    ("buffer/fill", Reduction.LAST, frozenset(), frozenset({"buffer_capacity"})),
+    ("buffer/env_steps", Reduction.LAST, frozenset(), frozenset({"buffer_capacity"})),
+    ("buffer/is_ready", Reduction.LAST, frozenset(), frozenset({"buffer_capacity"})),
+    ("buffer/pending_trajectories", Reduction.LAST, frozenset(), frozenset({"buffer_trajectories"})),
+    ("optim/updates_per_env_step", Reduction.LAST, frozenset(), frozenset({"optimizer_steps"})),
+    ("health/non_finite", Reduction.MAX, frozenset(), frozenset()),
+    ("per/beta", Reduction.LAST, frozenset({"PER/beta"}), frozenset({"per"})),
+    ("per/sampled_priority_mean", Reduction.MEAN, frozenset({"PER/sampled_priority_mean"}), frozenset({"per"})),
+    ("per/is_weight_max", Reduction.MAX, frozenset(), frozenset({"per"})),
+    ("per/priority_entropy", Reduction.MEAN, frozenset(), frozenset({"per"})),
+    ("loss/policy", Reduction.MEAN, frozenset({"policy_loss"}), frozenset()),
+    ("loss/value", Reduction.MEAN, frozenset({"value_loss"}), frozenset({"has_value"})),
+    ("loss/critic", Reduction.MEAN, frozenset({"critic_loss"}), frozenset({"has_critic"})),
+    ("critic/td_error_mean", Reduction.MEAN, frozenset({"temporal_difference", "td_error"}), frozenset()),
+    ("critic/value_pred_mean", Reduction.MEAN, frozenset({"critic_predictions"}), frozenset({"has_critic"})),
+    ("critic/return_mean_batch", Reduction.MEAN, frozenset({"returns"}), frozenset()),
+    ("policy/advantage_mean", Reduction.MEAN, frozenset({"advantages"}), frozenset({"on_policy"})),
+    ("policy/entropy", Reduction.MEAN, frozenset({"entropy"}), frozenset()),
+    ("policy/kl", Reduction.MEAN, frozenset({"kl"}), frozenset({"on_policy"})),
+    ("ppo/ratio_mean", Reduction.MEAN, frozenset({"prob_ratio"}), frozenset()),
+    ("ppo/policy_clip", Reduction.LAST, frozenset({"policy_clip"}), frozenset()),
+    ("ppo/value_clip", Reduction.LAST, frozenset({"value_clip"}), frozenset()),
+    ("onpolicy/entropy_coef", Reduction.LAST, frozenset({"entropy_coefficient"}), frozenset({"on_policy"})),
+    ("onpolicy/kl_coef", Reduction.LAST, frozenset({"kl_coefficient"}), frozenset()),
+    ("optim/lr/policy", Reduction.LAST, frozenset({"policy_learning_rate"}), frozenset()),
+    ("optim/lr/value", Reduction.LAST, frozenset({"value_learning_rate"}), frozenset({"has_value"})),
+    ("optim/lr/critic", Reduction.LAST, frozenset({"critic_learning_rate"}), frozenset({"has_critic"})),
+    ("optim/lr/critic_b", Reduction.LAST, frozenset({"critic_b_learning_rate"}), frozenset({"twin_critic"})),
+    ("sac/alpha", Reduction.LAST, frozenset({"entropy_coefficient"}), frozenset()),
+    ("exploration/noise_anneal", Reduction.LAST, frozenset({"noise_anneal"}), frozenset()),
+    ("td3/target_noise_anneal", Reduction.LAST, frozenset({"target_noise_anneal"}), frozenset()),
+    ("policy/temperature", Reduction.LAST, frozenset({"temperature"}), frozenset({"discrete"})),
 ])
-def test_registry_entry_matches_pinned_table(key, expected_reduction, expected_aliases):
+def test_registry_entry_matches_pinned_table(key, expected_reduction, expected_aliases, expected_requires):
     assert key in METRIC_REGISTRY, f"{key!r} missing from METRIC_REGISTRY"
     spec = METRIC_REGISTRY[key]
     assert spec.key == key
     assert spec.reduction == expected_reduction
     assert frozenset(spec.aliases) == expected_aliases
+    assert frozenset(spec.requires) == expected_requires
 
 
 def test_build_metrics_absent_block_returns_default_manager():
@@ -1473,34 +1479,48 @@ def test_health_non_finite_max_over_a_mixed_window():
 # 4. bind() capability sets for each of the six real agents, exactly
 # --------------------------------------------------------------------------- #
 def test_bind_capabilities_exact_for_reinforce(reinforce_agent, cartpole_env):
+    # buffer=None: bool(getattr(None, "buffer_size", 0)) is False (short-circuits
+    # buffer_capacity) and hasattr(None, "completed_trajectories") is False
+    # (buffer_trajectories), so neither buffer tag is added regardless of agent.
+    # optimizer_steps is added for every agent below: hasattr(agent.model,
+    # "optimizer_steps") is True for any real ModularModel, independent of
+    # on/off-policy status.
     mm = MetricsManager()
     mm.bind(agent=reinforce_agent, env=cartpole_env, buffer=None)
-    assert mm.capabilities() == frozenset({"agent:reinforce", "on_policy", "has_value", "discrete"})
+    assert mm.capabilities() == frozenset(
+        {"agent:reinforce", "on_policy", "has_value", "discrete", "optimizer_steps"}
+    )
 
 
 def test_bind_capabilities_exact_for_actor_critic(actor_critic_agent, cartpole_env):
     mm = MetricsManager()
     mm.bind(agent=actor_critic_agent, env=cartpole_env, buffer=None)
-    assert mm.capabilities() == frozenset({"agent:actorcritic", "on_policy", "has_value", "discrete"})
+    assert mm.capabilities() == frozenset(
+        {"agent:actorcritic", "on_policy", "has_value", "discrete", "optimizer_steps"}
+    )
 
 
 def test_bind_capabilities_exact_for_ppo(ppo_agent, cartpole_env):
     mm = MetricsManager()
     mm.bind(agent=ppo_agent, env=cartpole_env, buffer=None)
-    assert mm.capabilities() == frozenset({"agent:ppo", "on_policy", "has_value", "discrete"})
+    assert mm.capabilities() == frozenset(
+        {"agent:ppo", "on_policy", "has_value", "discrete", "optimizer_steps"}
+    )
 
 
 def test_bind_capabilities_exact_for_ddpg(ddpg_agent, pendulum_env):
     mm = MetricsManager()
     mm.bind(agent=ddpg_agent, env=pendulum_env, buffer=None)
-    assert mm.capabilities() == frozenset({"agent:ddpg", "off_policy", "has_critic", "continuous"})
+    assert mm.capabilities() == frozenset(
+        {"agent:ddpg", "off_policy", "has_critic", "continuous", "optimizer_steps"}
+    )
 
 
 def test_bind_capabilities_exact_for_td3(td3_agent, pendulum_env):
     mm = MetricsManager()
     mm.bind(agent=td3_agent, env=pendulum_env, buffer=None)
     assert mm.capabilities() == frozenset(
-        {"agent:td3", "off_policy", "has_critic", "twin_critic", "continuous"}
+        {"agent:td3", "off_policy", "has_critic", "twin_critic", "continuous", "optimizer_steps"}
     )
 
 
@@ -1508,7 +1528,7 @@ def test_bind_capabilities_exact_for_sac(sac_agent, pendulum_env):
     mm = MetricsManager()
     mm.bind(agent=sac_agent, env=pendulum_env, buffer=None)
     assert mm.capabilities() == frozenset(
-        {"agent:sac", "off_policy", "has_critic", "twin_critic", "continuous"}
+        {"agent:sac", "off_policy", "has_critic", "twin_critic", "continuous", "optimizer_steps"}
     )
 
 
@@ -1599,27 +1619,18 @@ def test_per_priority_entropy_absent_when_actual_size_below_2(pendulum_env_nstep
 
 # --------------------------------------------------------------------------- #
 # 7. offpolicy/buffer_fill and offpolicy/replay_ratio exact formulas
+#
+# RETIRED: both keys were deleted from METRIC_REGISTRY with no aliases (they
+# were gated on agent class name, so no on-policy run ever logged anything
+# about its buffer -- the categorization defect this replaces). Their formula
+# coverage now lives elsewhere under the new buffer/*-namespaced, duck-typed
+# gating: the saturating-at-1.0 fill formula is
+# test_replay_buffer_fill_is_samples_added_over_buffer_size_saturating_at_one,
+# and the fixed-numerator ratio is
+# test_optim_updates_per_env_step_reflects_current_iteration_post_learn_post_increment
+# and test_optim_updates_per_env_step_after_resume_uses_run_segment_not_absolute_counters,
+# all in tests/test_buffer_metrics.py.
 # --------------------------------------------------------------------------- #
-def test_offpolicy_buffer_fill_and_replay_ratio_formulas(tmp_path):
-    class _FillBuffer(_RecordingBuffer):
-        samples_added = 6
-        buffer_size = 16
-
-    agent = type("DDPG", (_ScriptedFakeAgent,), {})(num_envs=1)
-    env = _ScriptedFakeEnv(num_envs=1, rewards=T.zeros(1),
-                            terminations=T.tensor([False]), truncations=T.tensor([False]))
-    buffer = _FillBuffer()
-    trainer = _make_stub_trainer(env, buffer, tmp_path, agent=agent,
-                                  stop_unit="timestep", stop_units=1)
-    trainer._step = 10
-    trainer._grad_step = 3
-    trainer.metrics.bind(agent=agent, env=env, buffer=buffer)
-    assert "off_policy" in trainer.metrics.capabilities()
-
-    trainer.step(training=True)
-    collected = trainer.metrics.collect()
-    assert collected["offpolicy/buffer_fill"] == pytest.approx(6 / 16)
-    assert collected["offpolicy/replay_ratio"] == pytest.approx(3 / 10)
 
 
 # --------------------------------------------------------------------------- #
@@ -1894,70 +1905,23 @@ def test_f5_rollout_return_std_reachable_on_a_single_env_run_across_episodes(tmp
 
 
 # --------------------------------------------------------------------------- #
-# F6 (MAJOR) -- offpolicy/replay_ratio divides by the absolute self._step,
-# which IS restored on a checkpoint resume, while self._grad_step is
-# deliberately NOT restored -- so the ratio is depressed by however many
-# steps the run had already taken before the resume. The amended plan
-# anchors the denominator to self._step - self._run_start_step, where
-# _run_start_step is captured in _initialize_run AFTER _apply_resume_state.
+# F6 (MAJOR) -- offpolicy/replay_ratio divided by the absolute self._step,
+# which IS restored on a checkpoint resume, while self._grad_step was
+# deliberately NOT restored -- so the ratio was depressed by however many
+# steps the run had already taken before the resume.
+#
+# RETIRED: offpolicy/replay_ratio no longer exists, but the defect class
+# (a resume-sensitive counter divided by a resume-restored absolute step)
+# is guarded against for its successor, optim/updates_per_env_step, by
+# test_optim_updates_per_env_step_after_resume_uses_run_segment_not_absolute_counters
+# in tests/test_buffer_metrics.py. That successor was confirmed to actually
+# detect this defect class: temporarily replacing its trainer-side
+# denominator (`self._step - (self._run_start_step or 0)`) with the
+# absolute `self._step` made it fail with
+#   AssertionError: expected new_updates / new_env_steps == 10/5 == 2.0; ...
+#   Obtained: 0.009950248756218905 (== 10/1005, the un-anchored ratio)
+#   Expected: 2.0
+# confirming it fails for exactly this reason (depressed by the restored
+# absolute step) rather than by accident, before the diagnostic edit was
+# reverted.
 # --------------------------------------------------------------------------- #
-def test_f6_offpolicy_replay_ratio_after_resume_uses_run_segment_not_absolute_step(tmp_path):
-    """Plan VERIFY: run an off-policy stub to a known (_step, _grad_step);
-    save; load; run a known number of further steps and learns; assert the
-    reported ratio equals new_learns / new_env_steps and is not depressed by
-    the restored _step."""
-    FakeDDPG = type("DDPG", (_ScriptedFakeAgent,), {})
-
-    def _make_offpolicy_env_and_buffer():
-        env = _ScriptedFakeEnv(num_envs=1, rewards=T.tensor([0.0]),
-                                terminations=T.tensor([False]), truncations=T.tensor([False]))
-        buffer = _LearnableFakeBuffer()
-        buffer.samples_added = 10
-        buffer.buffer_size = 100
-        return env, buffer
-
-    # "Save": a prior run that reached _step=1000 after 50 grad steps.
-    env1, buffer1 = _make_offpolicy_env_and_buffer()
-    trainer1 = _make_stub_trainer(env1, buffer1, tmp_path, agent=FakeDDPG(num_envs=1),
-                                   stop_unit="timestep", stop_units=1)
-    trainer1._step = 1000
-    trainer1._grad_step = 50
-    resume_state = trainer1._trainer_state()
-
-    # "Load": a fresh Trainer resuming from that checkpoint via the real
-    # _initialize_run -> _apply_resume_state path (the actual mechanism the
-    # amended plan concerns, not a hand-rolled substitute for it).
-    env2, buffer2 = _make_offpolicy_env_and_buffer()
-    schedule = TrainingSchedule(stop_unit="timestep", stop_units=10_000, seed=0)
-    trainer2 = Trainer(agent=FakeDDPG(num_envs=1), env=env2, schedule=schedule,
-                        buffer=buffer2, save_dir=str(tmp_path))
-    trainer2._resume_state = resume_state
-    trainer2._initialize_run(context="train")
-
-    assert trainer2._step == 1000, "resume did not restore _step from the checkpoint"
-    assert trainer2._grad_step == 0, (
-        "test invariant violated: _grad_step is deliberately not persisted, "
-        "so a freshly initialized+resumed run must start it at 0"
-    )
-
-    # Run a KNOWN number of further learns and env steps this run segment.
-    new_learns = 3
-    for _ in range(new_learns):
-        trainer2.learn()
-    assert trainer2._grad_step == new_learns
-
-    new_env_steps = 500
-    trainer2._step += new_env_steps  # now 1500: the pre-resume 1000 + this segment's 500
-
-    trainer2.step(training=True)
-    collected = trainer2.metrics.collect()
-
-    expected_ratio = new_learns / new_env_steps
-    assert collected.get("offpolicy/replay_ratio") == pytest.approx(expected_ratio), (
-        f"offpolicy/replay_ratio == {collected.get('offpolicy/replay_ratio')}, "
-        f"expected new_learns / new_env_steps == {new_learns}/{new_env_steps} == "
-        f"{expected_ratio}. The current formula divides grad_step by the "
-        f"ABSOLUTE _step (1500) instead of by the post-resume run segment "
-        f"(500), depressing the ratio to {new_learns}/1500 == "
-        f"{new_learns / 1500:.6f} after a resume."
-    )

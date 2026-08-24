@@ -15,14 +15,17 @@ Every piece of agent/env/buffer capability detection is duck-typed (see
 default before a ``Trainer`` attaches a real manager) never creates an import
 cycle.
 
-Current scope: rollout, prioritized-replay, and agent ``learn()``-return
-metrics, emitted every collected window (``emit_every`` defaults to ``1``).
-There is as yet no gradient/optimizer telemetry, no metric that requires new
-computation inside ``learn()``, no recurrent-specific metric, and no
-persistence of ROLLING / ROLLING_STD deques or RATE anchors across a resume — after
-``Trainer.load``, ``rollout/return_rolling_100`` starts from an empty window
-even though ``Trainer._score_history`` is restored from ``trainer_state.pt``,
-so the two will disagree for the first window after a resume.
+Current scope: rollout, buffer occupancy/readiness, prioritized-replay, and
+agent ``learn()``-return metrics, emitted every collected window
+(``emit_every`` defaults to ``1``), plus one optimizer-activity counter
+(``optim/updates_per_env_step``, a ratio of ``ModularModel.step()`` calls to
+environment steps -- not a gradient norm and not per-module telemetry). There
+is as yet no per-module gradient-norm telemetry, no recurrent-specific
+metric, and no persistence of ROLLING / ROLLING_STD deques or RATE anchors
+across a resume — after ``Trainer.load``, ``rollout/return_rolling_100``
+starts from an empty window even though ``Trainer._score_history`` is
+restored from ``trainer_state.pt``, so the two will disagree for the first
+window after a resume.
 """
 
 from __future__ import annotations
@@ -127,8 +130,11 @@ _SPECS: tuple[MetricSpec, ...] = (
     _spec("rollout/termination_rate", Reduction.MEAN),
     _spec("rollout/truncation_rate", Reduction.MEAN),
     _spec("perf/sps", Reduction.RATE),
-    _spec("offpolicy/buffer_fill", Reduction.LAST, requires=("off_policy",)),
-    _spec("offpolicy/replay_ratio", Reduction.LAST, requires=("off_policy",)),
+    _spec("buffer/fill", Reduction.LAST, requires=("buffer_capacity",)),
+    _spec("buffer/env_steps", Reduction.LAST, requires=("buffer_capacity",)),
+    _spec("buffer/is_ready", Reduction.LAST, requires=("buffer_capacity",)),
+    _spec("buffer/pending_trajectories", Reduction.LAST, requires=("buffer_trajectories",)),
+    _spec("optim/updates_per_env_step", Reduction.LAST, requires=("optimizer_steps",)),
     _spec("health/non_finite", Reduction.MAX),
     # Table A2 -- PER, exact old -> new map
     _spec("per/beta", Reduction.LAST, requires=("per",), aliases=("PER/beta",)),
@@ -388,10 +394,14 @@ class MetricsManager(MetricsRecorder):
 
         Args:
             agent: Live agent instance; only ``type(agent).__name__`` and a
-                handful of duck-typed attributes are read.
+                handful of duck-typed attributes (including ``agent.model``)
+                are read.
             env: Live environment instance; only ``goal_key`` is read.
-            buffer: Optional buffer instance; only ``hasattr(buffer,
-                'update_priorities')`` is read.
+            buffer: Optional buffer instance; reads ``hasattr(buffer,
+                'update_priorities')`` (PER), ``buffer_size`` and
+                ``hasattr(buffer, 'fill')`` together (buffer occupancy /
+                readiness), and ``hasattr(buffer, 'completed_trajectories')``
+                (pending-trajectory count).
         """
         agent_class_name = type(agent).__name__
         self._agent_tag = agent_class_name.lower()
@@ -411,6 +421,12 @@ class MetricsManager(MetricsRecorder):
         _add("discrete", lambda: getattr(agent.policy, "distribution", None) == "categorical")
         _add("recurrent", lambda: bool(getattr(agent.model, "is_recurrent", False)))
         _add("per", lambda: hasattr(buffer, "update_priorities"))
+        # `buffer_capacity` requires the `fill` API itself, not merely a
+        # truthy `buffer_size`: a stub carrying only `buffer_size` would
+        # otherwise enable three keys and then raise on the reads.
+        _add("buffer_capacity", lambda: bool(getattr(buffer, "buffer_size", 0)) and hasattr(buffer, "fill"))
+        _add("buffer_trajectories", lambda: hasattr(buffer, "completed_trajectories"))
+        _add("optimizer_steps", lambda: hasattr(agent.model, "optimizer_steps"))
         _add("auto_entropy", lambda: bool(getattr(agent, "auto_entropy_tuning", False)))
         _add("intrinsic_motivation", lambda: getattr(agent, "intrinsic_motivation", None) is not None)
         _add("goal_conditioned", lambda: getattr(env, "goal_key", None) is not None)

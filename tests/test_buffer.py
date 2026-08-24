@@ -1158,14 +1158,24 @@ class TestBufferFactory:
 
 
 class TestBufferAbstract:
-    """``Buffer`` declares ``add``/``sample`` as abstractmethods on an ABC; it
-    must not be directly instantiable."""
+    """``Buffer`` declares ``add``/``sample``/``fill`` as abstractmethods on an
+    ABC; it must not be directly instantiable."""
 
     def test_direct_instantiation_raises_typeerror(self):
         """ABCMeta blocks instantiation in ``object.__new__`` before
         ``__init__`` ever runs, so invalid constructor args are fine here."""
         with pytest.raises(TypeError):
             Buffer(env=None, buffer_size=10)
+
+    def test_abstract_method_set_is_exactly_add_sample_fill(self):
+        """Pins the abstract-method set itself, not just that instantiation
+        raises -- a subclass that forgets to implement one of these would
+        still raise TypeError on direct ``Buffer(...)`` instantiation (that
+        assertion alone can't distinguish which methods are abstract), but
+        this catches a spec drift (e.g. an abstractmethod added to or
+        removed from the ABC) that the instantiation check alone would miss.
+        """
+        assert Buffer.__abstractmethods__ == frozenset({"add", "sample", "fill"})
 
 
 class TestHindsightValidation:
