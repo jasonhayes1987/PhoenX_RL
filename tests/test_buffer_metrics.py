@@ -35,6 +35,7 @@ import torch as T
 from phoenx.buffer import PrioritizedReplayBuffer, ReplayBuffer, RolloutBuffer, TrajectoryBuffer
 from phoenx.builder import build_trainer_from_config
 from phoenx.env_wrapper import Action, GymnasiumWrapper, Observation
+from phoenx.her import HindsightRelabeler
 from phoenx.metrics import METRIC_REGISTRY, MetricsManager
 from phoenx.models import ContinuousQHead, ModularModel, StochasticContinuousHead, StochasticDiscreteHead, ValueHead
 from phoenx.rl_agents import ActorCritic, PPO, SAC
@@ -264,6 +265,36 @@ def pendulum_env_nstep2():
     _safe_close(env)
 
 
+@pytest.fixture(scope="module")
+def goal_env1():
+    """FetchReach-v4 (Dict goal obs), single env. Skipped if MuJoCo / robotics
+    is missing. A single env (rather than tests/test_buffer.py's goal_env,
+    which uses two) so exactly one episode boundary is crossed at a time.
+    """
+    try:
+        env = GymnasiumWrapper(
+            cfg="FetchReach-v4",
+            num_envs=1,
+            seed=0,
+            obs_key="observation",
+            goal_key="desired_goal",
+            ach_goal_key="achieved_goal",
+            wrappers=[{
+                "type": "VectorNStepReward",
+                "params": {
+                    "n": 1,
+                    "obs_key": "observation",
+                    "goal_key": "desired_goal",
+                    "ach_goal_key": "achieved_goal",
+                },
+            }],
+        )
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"goal env (FetchReach-v4) unavailable: {exc}")
+    yield env
+    _safe_close(env)
+
+
 # =============================================================================
 # CONTRACT: ReplayBuffer.fill is samples_added/buffer_size, saturating at 1.0.
 # =============================================================================
@@ -422,6 +453,33 @@ def test_env_steps_maintained_by_every_buffer_subclass(nstep_env3, plain_env3):
     trb = TrajectoryBuffer(env=plain_env3, buffer_size=100, device=DEVICE)
     _record_direct(trb, plain_env3, n)
     assert trb.env_steps == n * k
+
+
+# =============================================================================
+# CONTRACT: env_steps increments inside record(), never inside add(). add()
+#           runs once per HER-relabeled copy inside TrajectoryBuffer.add, so
+#           an increment placed there would double-count every relabeled add
+#           on a goal-conditioned run, silently inflating buffer/env_steps.
+#           The test above (every record() call advancing by num_envs) cannot
+#           tell these two placements apart, since every record() calls add()
+#           exactly once absent HER; this drives add() directly to isolate it.
+# =============================================================================
+@pytest.mark.parametrize("buffer_cls", [RolloutBuffer, TrajectoryBuffer])
+def test_env_steps_increments_in_record_not_add(buffer_cls, plain_env1):
+    buf = buffer_cls(env=plain_env1, buffer_size=8, device=DEVICE)
+    before = buf.env_steps
+
+    buf.add(**_step_batch(plain_env1))
+    assert buf.env_steps == before, (
+        "env_steps must not move on a direct add() call -- an implementation "
+        "that incremented inside add() instead of record() would double-count "
+        "HER's relabeled adds inside TrajectoryBuffer.add"
+    )
+
+    _record_direct(buf, plain_env1, 1)
+    assert buf.env_steps == before + plain_env1.num_envs, (
+        "env_steps must advance by exactly num_envs on a single record() call"
+    )
 
 
 # =============================================================================
@@ -871,7 +929,11 @@ def test_buffer_is_ready_always_one_for_on_policy_buffer(tmp_path, buffer_cls):
 
 # =============================================================================
 # CONTRACT: buffer/pending_trajectories counts entries in the list, and is
-#           gated to TrajectoryBuffer.
+#           gated to TrajectoryBuffer. Two cases, because HER appends
+#           relabeled copies to the SAME list: (a) no hindsight -- the count
+#           equals the completed-episode count; (b) hindsight configured --
+#           the count is strictly larger than the episode count, since it
+#           must reflect the list length, not the number of episodes.
 # =============================================================================
 def test_buffer_pending_trajectories_counts_completed_trajectories_list_length(tmp_path, plain_env1):
     buf = TrajectoryBuffer(env=plain_env1, buffer_size=50, hindsight=None, device=DEVICE)
@@ -887,6 +949,76 @@ def test_buffer_pending_trajectories_counts_completed_trajectories_list_length(t
     trainer.step(training=True)  # a 4th, non-terminating step; must not harvest a 4th trajectory
     collected = trainer.metrics.collect()
     assert collected.get("buffer/pending_trajectories") == pytest.approx(3.0)
+
+
+def test_buffer_pending_trajectories_counts_relabeled_copies_not_episode_count(tmp_path, goal_env1):
+    """With hindsight=None (the test above), len(completed_trajectories) is
+    numerically equal to the completed-episode count, so that test alone
+    cannot tell "counts the list" apart from "counts episodes". HER appending
+    relabeled copies to the same list is the only thing that discriminates
+    the two readings -- this drives that case: exactly one completed episode
+    must still report more than 1.0.
+    """
+    rl = HindsightRelabeler(goal_env1, strategy="final", output_format="flat", device=DEVICE)
+    buf = TrajectoryBuffer(env=goal_env1, buffer_size=200, hindsight=rl, device=DEVICE)
+    obs = goal_env1.reset(seed=0)
+    prev = T.zeros(goal_env1.num_envs, dtype=T.bool, device=DEVICE)
+    nstep = goal_env1._find_nstep_wrapper()
+    for _ in range(200):
+        a = T.as_tensor(goal_env1.action_space.sample())
+        act = Action(actions=a, log_probs=T.zeros(goal_env1.num_envs, device=DEVICE))
+        nstep.set_action(act)
+        nxt = goal_env1.step(a)
+        buf.record(nxt, obs, act, prev)
+        prev = T.logical_or(nxt.terminations, nxt.truncations)
+        obs = nxt
+        if len(buf.completed_trajectories) >= 1:
+            break  # exactly one episode boundary crossed (single env)
+
+    episode_count = 1.0
+    actual = len(buf.completed_trajectories)
+    assert actual > episode_count, (
+        "test setup invariant: strategy='final' must append at least one "
+        "relabeled copy per completed episode (K=1 whenever the episode has "
+        "a valid step), or this test cannot discriminate 'counts the list' "
+        "from 'counts episodes' -- pick a different env/strategy if it can't"
+    )
+
+    # Drive the metrics-recording site through a real Trainer.step() on the
+    # SAME goal_env1 (not the CartPole-shaped _ScriptedEnv/_make_stub_trainer
+    # pair used elsewhere in this module: FetchReach's observation and goal
+    # tensors have a different shape, and _ScriptedEnv supplies neither).
+    agent = _ScriptedAgent(num_envs=1)
+    agent.act = lambda states, *a, **k: Action(actions=T.as_tensor(goal_env1.action_space.sample()))
+    trainer = Trainer(
+        agent=agent, env=goal_env1,
+        schedule=TrainingSchedule(stop_unit="timestep", stop_units=1000),
+        success_criterion=None, buffer=buf, renderer=None, callbacks=None,
+        save_dir=str(tmp_path),
+    )
+    trainer._step = 0
+    trainer._grad_step = 0
+    trainer._prev_obs = obs  # real Observation carried over from the loop above
+    trainer._prev_done = prev
+    trainer._best_reward = float("-inf")
+    trainer._last_save = None
+    trainer._best_pending = False
+    dev = obs.states.device
+    trainer._episode_steps = T.zeros(1, dtype=T.int32, device=dev)
+    trainer._completed_episodes = T.zeros(1, dtype=T.int32, device=dev)
+    trainer._episode_scores = T.zeros(1, dtype=T.float32, device=dev)
+    trainer._score_history = deque(maxlen=100)
+    trainer._last_learn = 0
+    trainer.metrics.bind(agent=agent, env=goal_env1, buffer=buf)
+
+    trainer.step(training=True)  # one more, almost-certainly-non-terminating step
+    collected = trainer.metrics.collect()
+    assert collected.get("buffer/pending_trajectories") == pytest.approx(float(actual))
+    assert collected["buffer/pending_trajectories"] > episode_count, (
+        "an implementation that counted completed EPISODES (1.0 here) "
+        "instead of len(completed_trajectories) would pass the hindsight=None "
+        "case above by coincidence but must fail this one"
+    )
 
 
 def test_buffer_pending_trajectories_absent_when_rollout_buffer_bound(plain_env1):

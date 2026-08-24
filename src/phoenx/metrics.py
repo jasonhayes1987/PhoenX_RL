@@ -116,9 +116,10 @@ def _spec(
 
 
 # --------------------------------------------------------------------------- #
-# Metric registry, in three groups: metrics computed in trainer.py
-# (rollout / perf), prioritized-replay diagnostics, and metrics alias-ingested
-# from agent.learn() return dicts.
+# Metric registry, in three groups: metrics computed in trainer.py (rollout /
+# perf, buffer occupancy/readiness, and optimizer activity), prioritized-
+# replay diagnostics, and metrics alias-ingested from agent.learn() return
+# dicts.
 # --------------------------------------------------------------------------- #
 _SPECS: tuple[MetricSpec, ...] = (
     # Table A -- computed in trainer.py
@@ -413,6 +414,11 @@ class MetricsManager(MetricsRecorder):
                 caps.add(tag)
 
         _add("on_policy", lambda: agent_class_name in {"Reinforce", "ActorCritic", "PPO"})
+        # No spec in METRIC_REGISTRY currently requires "off_policy" -- buffer
+        # occupancy and readiness are gated on buffer capability instead (see
+        # "buffer_capacity" below), not on the agent's class. The tag is kept
+        # for future specs and so the capability set stays stable for callers
+        # that inspect it directly.
         _add("off_policy", lambda: agent_class_name in {"DDPG", "TD3", "SAC"})
         _add("has_value", lambda: "value" in agent.model.branches)
         _add("has_critic", lambda: "critic" in agent.model.branches)

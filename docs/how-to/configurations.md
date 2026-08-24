@@ -549,16 +549,16 @@ constructor kwargs — there is no nesting:
 
 | Key | Type | Default | Effect |
 |-----|------|---------|--------|
-| `tiers` | list[int] | `[0, 1, 2]` | Cost tiers enabled by default (Phase 1 ships tier 0 only) |
+| `tiers` | list[int] | `[0, 1, 2]` | Cost tiers enabled by default (every registered metric is currently tier 0) |
 | `emit_every` | int | `1` | `collect()` calls between emitting calls; raise to cut logging traffic |
 | `include` | list[str] \| null | `null` | Exact-key allow-list applied **after** capability gating; when set, it *replaces* the tier gate rather than widening it |
 | `exclude` | list[str] | `[]` | Exact keys to suppress, along with their legacy aliases |
 | `dual_emit` | bool | `true` | Also emit each aliased metric under its legacy flat name |
 
 Omitting the block entirely builds a default `MetricsManager()` — every
-Phase 1 metric whose agent/env/buffer capability is present, `emit_every: 1`
-(today's per-step cadence), and both new and legacy key names emitted side
-by side.
+registered metric whose agent/env/buffer capability is present,
+`emit_every: 1` (today's per-step cadence), and both new and legacy key
+names emitted side by side.
 
 ```yaml
 metrics:
@@ -594,13 +594,33 @@ not changed.
   from an empty window even though the trainer's own 100-episode score
   history is restored from `trainer_state.pt`, so the two disagree for the
   first window after a resume.
+- **Buffer occupancy and optimizer activity.** `buffer/fill`,
+  `buffer/env_steps`, and `buffer/is_ready` are enabled for every buffer
+  type (`buffer/pending_trajectories` for `TrajectoryBuffer` only), gated on
+  the buffer's own capability rather than on the agent being off-policy, so
+  PPO, REINFORCE, and `ActorCritic` runs report buffer state alongside
+  DDPG/TD3/SAC. `buffer/fill` shares one definition but not one dynamic:
+  it saturates at `1.0` for the replay buffers, resets to `0.0` on every
+  `sample()` for `RolloutBuffer`, and for `TrajectoryBuffer` tracks the
+  longest still-in-progress episode — it stays put across a `sample()` and
+  only drops when that episode's env finishes. Do not treat a low
+  `buffer/fill` as "still warming up" for every buffer type; that reading
+  only holds for the replay buffers. `optim/updates_per_env_step` counts
+  `ModularModel.step()` calls per environment step for the current run
+  segment — a useful, well-defined ratio, but **not** the literature's
+  replay ratio, since off-policy agents call `step()` twice per `learn()`
+  (critic modules, then policy) while on-policy agents call it once per
+  minibatch; the temperature (`entropy_optimizer`) and intrinsic-motivation
+  optimizers are not counted.
 
-**Phase 1 scope.** Covers rollout/perf metrics, prioritized-replay
-diagnostics, and metrics ingested from each agent's existing `learn()`
-return dict only. Per-module gradient/optimizer telemetry, metrics that
-would require new computation inside `learn()`, recurrent-specific metrics,
-and a held-out evaluation harness for off-policy explained variance are not
-part of this phase.
+**Scope.** Covers rollout/perf metrics, buffer occupancy and readiness, a
+single optimizer-activity counter (`optim/updates_per_env_step`),
+prioritized-replay diagnostics, and metrics ingested from each agent's
+existing `learn()` return dict. Per-module gradient norms, pre-clip norms,
+param norms, and update/weight ratios remain unimplemented, as do metrics
+that would require new computation inside `learn()`, recurrent-specific
+metrics, and a held-out evaluation harness for off-policy explained
+variance.
 
 ## Hyperparameter sweeps
 

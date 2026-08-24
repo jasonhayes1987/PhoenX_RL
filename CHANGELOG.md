@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Phase 1 of a centralized, logger-agnostic metrics system: `phoenx.metrics`
+- A centralized, logger-agnostic metrics system: `phoenx.metrics`
   (`MetricsManager`, `MetricSpec`, `METRIC_REGISTRY`, `NullRecorder`) owns
   namespacing, windowed reduction, cadence, and capability gating for a
   training run, replacing metric collection previously scattered across
@@ -21,10 +21,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   built without a `Trainer` works unchanged. `WandbCallback` and
   `RayTuneCallback` were not modified. New API reference page
   (`docs/api/metrics.md`) and a `metrics:` section in
-  `docs/how-to/configurations.md`. Phase 1 does not yet cover per-module
-  gradient/optimizer telemetry, metrics needing new computation inside
-  `learn()`, recurrent-specific metrics, or a held-out evaluation harness
-  for off-policy explained variance.
+  `docs/how-to/configurations.md`. This does not yet cover per-module
+  gradient norms, pre-clip norms, param norms, or update/weight ratios — see
+  the single optimizer-activity counter added below for the only optimizer
+  telemetry so far — nor metrics needing new computation inside `learn()`,
+  recurrent-specific metrics, or a held-out evaluation harness for
+  off-policy explained variance.
+- Buffer occupancy/readiness and optimizer-activity metrics: `buffer/fill`,
+  `buffer/env_steps`, `buffer/is_ready` (every buffer), and
+  `buffer/pending_trajectories` (`TrajectoryBuffer` only), gated on the
+  buffer actually having the relevant capability rather than on the agent's
+  class, so PPO, REINFORCE, and `ActorCritic` runs now report buffer state
+  too, alongside DDPG/TD3/SAC. `buffer/fill`'s definition is identical
+  across buffer classes but its dynamics are not: it climbs and then
+  saturates at `1.0` for the replay buffers, sawtooths between learns for
+  `RolloutBuffer` (it drops to `0.0` after every `sample()`), and for
+  `TrajectoryBuffer` reports the longest still-in-progress episode as a
+  fraction of capacity — it does **not** drop after `sample()`, only when
+  the env holding that episode finishes it. Do not read a low `buffer/fill`
+  as "still warming up" across buffer types; that reading is only valid for
+  the replay buffers. Also adds `optim/updates_per_env_step`: the number of
+  `ModularModel.step()` calls made during the current run segment divided by
+  the environment steps in that same segment. This is a well-defined
+  "optimizer updates per environment step" but is **not** the replay ratio
+  of the literature — it counts `ModularModel.step()` calls, not per-module
+  optimizer steps, so an off-policy agent (two calls per `learn()`: critic
+  modules, then policy) and PPO (one call per minibatch) are not directly
+  comparable to a textbook ratio. The temperature (`entropy_optimizer`) and
+  the intrinsic-motivation module's own optimizer are not counted, since
+  neither routes through `ModularModel`.
 - `WandbCallback` constructor kwarg `extra_config` (default `None`): an
   already-flat mapping merged into `wandb.init(config=...)` last, so it wins
   any key collision with the trainer config or a flattened `sweep_params`
@@ -212,8 +237,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The bundled Isaac camera example's `env.config.cfg` now points at `phoenx.examples.isaac.custom_franka_cube_lift_cfg:FrankaCubeLiftCameraBlindEnvCfg`. It previously used a `Configs.IsaacSim...` prefix that raised `ModuleNotFoundError: No module named 'Configs'`.
 - Tests no longer depend on the untracked `configs/` tree. `TestCanonicalConfig`'s Isaac camera test reads the packaged copy via `importlib.resources`, while the multi-modal config and `test_roundtrip.py`'s legacy-schema SAC config moved to `tests/fixtures/`.
 - `Buffer` is now a real ABC (`class Buffer(ABC)`). It previously imported `abstractmethod` but never `ABC`, so the base was directly instantiable and its declared `add`/`sample` signatures matched no concrete subclass. Direct instantiation now raises `TypeError`. In-repo callers are unaffected (`Buffer.create_instance` and all concrete subclasses are unchanged), but any out-of-repo code that subclassed without implementing `add`/`sample`, or that instantiated `Buffer` directly, will break.
+- **Breaking:** `Buffer` gained a new `fill` property, declared `@property
+  @abstractmethod`. Every in-tree concrete buffer (`ReplayBuffer`,
+  `PrioritizedReplayBuffer`, `RolloutBuffer`, `TrajectoryBuffer`) implements
+  it, but any out-of-tree subclass that does not will now fail to
+  instantiate with `TypeError: Can't instantiate abstract class ... fill`.
+  Separately, `RolloutBuffer` and `TrajectoryBuffer` now maintain the
+  `env_steps` counter that was already declared on the `Buffer` ABC but
+  previously updated only by the two replay buffers' `record()` methods, so
+  a saved `buffer.pt` for an on-policy run now carries a live count instead
+  of a permanently frozen `0`. The set of keys written to `buffer.pt` is
+  unchanged either way, and nothing in the package reads this field.
 
 ### Removed
+- The `offpolicy/buffer_fill` and `offpolicy/replay_ratio` metrics, gated on
+  the agent's class name being DDPG/TD3/SAC even though buffer occupancy is
+  a property of the buffer, declared on the `Buffer` ABC, not of the agent
+  family — no on-policy run ever logged anything about its buffer. Replaced
+  by the `buffer/*` and `optim/updates_per_env_step` keys added above,
+  gated on buffer/model capability instead of agent class. Deleted with
+  **no legacy alias**, unlike every other rename in this metrics system:
+  both keys existed only in this same `[Unreleased]` section and were never
+  part of a release, so there is no published history to preserve.
 - Modular schema migration: the two legacy YAML network schemas (top-level
   `models:` / `normalizers:` / `entropy_schedule:` / `temperature_schedule:`,
   and flat `policy:` / `value:` / `critic:` / `critic_b:` head dicts under
