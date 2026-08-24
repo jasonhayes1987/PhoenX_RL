@@ -44,6 +44,7 @@ nav:
       - Agents (phoenx.rl_agents): api/rl_agents.md
       - Models (phoenx.models): api/models.md
       - Trainer (phoenx.trainer): api/trainer.md
+      - Metrics (phoenx.metrics): api/metrics.md
       - Buffer (phoenx.buffer): api/buffer.md
       - HER (phoenx.her): api/her.md
       - Environment Wrappers (phoenx.env_wrapper): api/env_wrapper.md

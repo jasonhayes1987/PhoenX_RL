@@ -6,6 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Phase 1 of a centralized, logger-agnostic metrics system: `phoenx.metrics`
+  (`MetricsManager`, `MetricSpec`, `METRIC_REGISTRY`, `NullRecorder`) owns
+  namespacing, windowed reduction, cadence, and capability gating for a
+  training run, replacing metric collection previously scattered across
+  `Trainer._collect_per_metrics`, `Trainer.step`, and each agent's `learn()`
+  return dict. `collect()` returns a flat `dict[str, float]` (namespaced
+  keys like `rollout/return_mean`, `loss/policy`, `per/is_weight_mean`);
+  every aliased key is also dual-emitted under its pre-existing flat name
+  (`policy_loss`, `PER/beta`, ...) so W&B history stays continuous. Wired
+  into the trainer via a new optional `metrics:` config block
+  (`phoenx.builder.build_metrics`) and a new `Trainer(metrics=...)` kwarg;
+  `Agent.metrics` defaults to a no-op `NULL_RECORDER` so a standalone agent
+  built without a `Trainer` works unchanged. `WandbCallback` and
+  `RayTuneCallback` were not modified. New API reference page
+  (`docs/api/metrics.md`) and a `metrics:` section in
+  `docs/how-to/configurations.md`. Phase 1 does not yet cover per-module
+  gradient/optimizer telemetry, metrics needing new computation inside
+  `learn()`, recurrent-specific metrics, or a held-out evaluation harness
+  for off-policy explained variance.
 - `WandbCallback` constructor kwarg `extra_config` (default `None`): an
   already-flat mapping merged into `wandb.init(config=...)` last, so it wins
   any key collision with the trainer config or a flattened `sweep_params`

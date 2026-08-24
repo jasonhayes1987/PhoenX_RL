@@ -15,9 +15,8 @@
 #                       per-module LR to tune until this phase writes one).
 #   3. refine         - random search over PPO's core training scalars.
 #
-# ISAAC SIM CONCURRENCY CAVEAT (see the "Isaac Sim concurrency" section of
-# .cursor/plans/ray_tune_sweeps_9866d476.plan.md): running more than one
-# Isaac Sim / Kit app instance on a single GPU is *not* free parallelism --
+# ISAAC SIM CONCURRENCY CAVEAT: running more than one Isaac Sim / Kit app
+# instance on a single GPU is *not* free parallelism --
 # IsaacLab's own maintainers report two instances "interfere...and run in
 # series instead" of overlapping (github.com/isaac-sim/IsaacLab/issues/2989).
 # Ray's fractional `resources: {gpu: ...}` request is bookkeeping only; it

@@ -15,11 +15,11 @@ Every piece of agent/env/buffer capability detection is duck-typed (see
 default before a ``Trainer`` attaches a real manager) never creates an import
 cycle.
 
-Phase 1 scope: Tier-0 rollout/PER/learn-return metrics only, always emitted
-every collected window (``emit_every`` defaults to ``1``). No gradient/
-optimizer telemetry, no metrics that require new computation inside
-``learn()``, no recurrent-specific metrics, and no persistence of ROLLING /
-ROLLING_STD deques or RATE anchors across a checkpoint resume — after
+Current scope: rollout, prioritized-replay, and agent ``learn()``-return
+metrics, emitted every collected window (``emit_every`` defaults to ``1``).
+There is as yet no gradient/optimizer telemetry, no metric that requires new
+computation inside ``learn()``, no recurrent-specific metric, and no
+persistence of ROLLING / ROLLING_STD deques or RATE anchors across a resume — after
 ``Trainer.load``, ``rollout/return_rolling_100`` starts from an empty window
 even though ``Trainer._score_history`` is restored from ``trainer_state.pt``,
 so the two will disagree for the first window after a resume.
@@ -72,7 +72,8 @@ class MetricSpec:
             which the bound agent's tag must be ONE (OR); empty means any
             agent.
         tier: Coarse cost tier; enabled when in ``MetricsManager``'s ``tiers``
-            (or explicitly named in ``include``). Phase 1 specs are all tier 0.
+            (or explicitly named in ``include``). Every registered spec is
+            currently tier 0.
         window: Deque length for ``Reduction.ROLLING`` / ``Reduction.ROLLING_STD``
             specs; unused otherwise.
         aliases: Legacy flat key names dual-emitted alongside ``key`` at
@@ -112,9 +113,9 @@ def _spec(
 
 
 # --------------------------------------------------------------------------- #
-# Phase 1 metric registry: Table A (trainer.py rollout/perf), Table A2 (PER,
-# old -> new map), and Table B (alias-ingested from agent.learn() returns).
-# See .cursor/plans/metrics-manager-phase1.md for the normative source.
+# Metric registry, in three groups: metrics computed in trainer.py
+# (rollout / perf), prioritized-replay diagnostics, and metrics alias-ingested
+# from agent.learn() return dicts.
 # --------------------------------------------------------------------------- #
 _SPECS: tuple[MetricSpec, ...] = (
     # Table A -- computed in trainer.py
@@ -329,7 +330,8 @@ class MetricsManager(MetricsRecorder):
         """Configure gating and cadence; no capability is enabled until ``bind()``.
 
         Args:
-            tiers: Cost tiers enabled by default. Phase 1 specs are all tier 0.
+            tiers: Cost tiers enabled by default. Every registered spec is
+                currently tier 0.
             emit_every: Number of ``collect()`` calls between emitting calls;
                 ``1`` emits every call (today's per-step behavior).
             include: Optional exact-key allow-list applied AFTER capability
@@ -362,8 +364,7 @@ class MetricsManager(MetricsRecorder):
     # ------------------------------------------------------------------ #
     @staticmethod
     def _safe(predicate) -> bool:
-        """Evaluate a zero-arg capability predicate, treating a missing or
-        wrong-shaped attribute as ``False``.
+        """Evaluate a zero-arg capability predicate, treating a missing or wrong-shaped attribute as ``False``.
 
         Catches both ``AttributeError`` (a duck-typed attribute is simply
         absent, e.g. no ``agent.model``) and ``TypeError`` (an attribute is
@@ -432,10 +433,7 @@ class MetricsManager(MetricsRecorder):
         ``capabilities()``; ``agents`` is empty or the bound agent tag is one
         of them; its key is not in ``exclude``; and -- when ``include`` is
         ``None`` -- its ``tier`` is in ``tiers``, or -- when ``include`` is
-        not ``None`` -- its key is in ``include``. ``include`` REPLACES the
-        tier gate rather than widening it, so it cannot force a
-        capability/agent-disabled spec to enable, and it is not a no-op just
-        because every Phase 1 spec is tier 0.
+        not ``None`` -- its key is in ``include``.
         """
         tiers = set(self._tiers)
         include = set(self._include) if self._include is not None else None
@@ -494,8 +492,8 @@ class MetricsManager(MetricsRecorder):
     def should_compute(self, key: str) -> bool:
         """Return whether a producer should bother computing ``key`` at all.
 
-        Identical to ``is_enabled`` in Phase 1: neither ``emit_every`` nor
-        cadence affects computation gating, only emission.
+        Identical to ``is_enabled`` today: neither ``emit_every`` nor cadence
+        affects computation gating, only emission.
 
         Args:
             key: Canonical ``METRIC_REGISTRY`` key to check.
@@ -773,8 +771,7 @@ class MetricsManager(MetricsRecorder):
         return result
 
     def reset(self) -> None:
-        """Clear all window state, including ROLLING/ROLLING_STD deques and
-        RATE anchors.
+        """Clear all window state, including ROLLING/ROLLING_STD deques and RATE anchors.
 
         Unlike an emitting ``collect()`` (which preserves ROLLING/ROLLING_STD/
         RATE state), this clears everything. Capability bindings and the last

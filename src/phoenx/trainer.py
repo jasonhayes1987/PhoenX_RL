@@ -394,9 +394,10 @@ class Trainer:
         self._score_history = deque(maxlen=100)
         self._last_learn = 0
         self._success_tracker = deque(maxlen=100)
-        # Number of `agent.learn()` calls this run. Not persisted to
-        # `trainer_state.pt` (out of scope for Phase 1), so it restarts at 0
-        # on resume; this is not claimed to be an optimizer-step count.
+        # Number of `agent.learn()` calls this run. Deliberately not persisted
+        # to `trainer_state.pt`, so it restarts at 0 on resume; this is why
+        # `offpolicy/replay_ratio` divides by the run segment rather than by
+        # `_step`. Not claimed to be an optimizer-step count.
         self._grad_step = 0
 
         # If resuming (Trainer.load), overlay the checkpointed counters + RNG.

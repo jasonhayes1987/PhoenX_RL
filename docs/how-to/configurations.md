@@ -336,6 +336,7 @@ key is missing (constructor defaults for passthrough sections).
 | `success_criterion` | mapping | omitted → `None` | [build_success_criterion][phoenx.builder.build_success_criterion] → [SuccessCriterion][phoenx.trainer.SuccessCriterion] |
 | `log_level` | str | `"INFO"` | Trainer logger; CLI `--log_level` overrides when passed |
 | `save_dir` | str | `"models/"` | Trainer checkpoint / renderer root |
+| `metrics` | mapping | omitted → default manager | [build_metrics][phoenx.builder.build_metrics] → [MetricsManager][phoenx.metrics.MetricsManager] |
 
 Keys that appear in some YAML but are **not** read by
 `build_trainer_from_config` include top-level `device` and `learning_rate`
@@ -538,6 +539,68 @@ Optional passthrough to [SuccessCriterion][phoenx.trainer.SuccessCriterion]:
 `metric` (`"info_flag"` \| `"goal_distance"` \| `"episode_reward"`),
 `threshold` (required for the distance / reward metrics), `info_key`
 (default `"is_success"`).
+
+### `metrics`
+
+Optional mapping, passed through
+[build_metrics][phoenx.builder.build_metrics] to
+[MetricsManager][phoenx.metrics.MetricsManager]. Its keys are exactly the
+constructor kwargs — there is no nesting:
+
+| Key | Type | Default | Effect |
+|-----|------|---------|--------|
+| `tiers` | list[int] | `[0, 1, 2]` | Cost tiers enabled by default (Phase 1 ships tier 0 only) |
+| `emit_every` | int | `1` | `collect()` calls between emitting calls; raise to cut logging traffic |
+| `include` | list[str] \| null | `null` | Exact-key allow-list applied **after** capability gating; when set, it *replaces* the tier gate rather than widening it |
+| `exclude` | list[str] | `[]` | Exact keys to suppress, along with their legacy aliases |
+| `dual_emit` | bool | `true` | Also emit each aliased metric under its legacy flat name |
+
+Omitting the block entirely builds a default `MetricsManager()` — every
+Phase 1 metric whose agent/env/buffer capability is present, `emit_every: 1`
+(today's per-step cadence), and both new and legacy key names emitted side
+by side.
+
+```yaml
+metrics:
+  emit_every: 10        # cut W&B traffic to one collected window in 10
+  exclude: [policy/kl]  # drop this key AND its legacy alias `kl`
+```
+
+**What this replaces.** Metric collection used to be scattered across the
+trainer's rollout/PER bookkeeping and each agent's `learn()` return dict,
+all funneling directly into `callback.on_train_step_end`. A `MetricsManager`
+now owns namespacing, windowed reduction, cadence, and capability gating,
+and returns a flat `dict[str, float]` that the trainer merges into
+`step_log` before callbacks run — `WandbCallback` and `RayTuneCallback` were
+not changed.
+
+- **Capability gating.** A metric is only enabled when the bound
+  agent/env/buffer actually has the relevant capability — `sac/alpha` never
+  appears on a PPO run rather than logging as null, and `include` cannot
+  force it to.
+- **Dual-emit.** Every aliased metric (e.g. `loss/policy`) is also emitted
+  under its pre-existing flat name (`policy_loss`), so existing W&B history
+  stays continuous. Set `dual_emit: false` to emit only the namespaced keys.
+- **Absent, not zero.** A metric with no recorded value this window is
+  omitted from the merged log entirely — never `0.0`, never `null`.
+- **Behavior changes worth knowing about:** with `schedule.updates_per_learn
+  > 1`, mean-reduced losses now average over every update in that `learn()`
+  call instead of reporting only the last one; `RayTuneCallback` gains a
+  few reported keys, because values that used to arrive as live one-element
+  tensors (silently skipped by its accumulator) now arrive as plain floats;
+  and per-step W&B key cardinality rises from roughly 15 to roughly 45.
+- **Resume caveat.** Window state (rolling windows and rate anchors) is not
+  checkpointed. After `Trainer.load`, `rollout/return_rolling_100` starts
+  from an empty window even though the trainer's own 100-episode score
+  history is restored from `trainer_state.pt`, so the two disagree for the
+  first window after a resume.
+
+**Phase 1 scope.** Covers rollout/perf metrics, prioritized-replay
+diagnostics, and metrics ingested from each agent's existing `learn()`
+return dict only. Per-module gradient/optimizer telemetry, metrics that
+would require new computation inside `learn()`, recurrent-specific metrics,
+and a held-out evaluation harness for off-policy explained variance are not
+part of this phase.
 
 ## Hyperparameter sweeps
 

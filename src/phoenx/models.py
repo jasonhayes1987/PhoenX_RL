@@ -1918,7 +1918,7 @@ class SubNetwork(nn.Module):
                     x = layer(x, start_mask=start_mask)
                 else:
                     # Step mode: a causal layer degenerates to a length-1 window.
-                    # Rolling inference context is provided by the agent (Phase 5).
+                    # Rolling inference context is provided by the agent.
                     x = layer(x.unsqueeze(1)).squeeze(1)
             else:
                 x = layer(x)
