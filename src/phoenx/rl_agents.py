@@ -943,6 +943,8 @@ class Reinforce(Agent):
             'policy_learning_rate': policy_learning_rate,
             'value_learning_rate': value_learning_rate,
         })
+        if self.value is not None:
+            learn_metrics['value_predictions'] = values.mean().item()
 
         return learn_metrics
 
@@ -1367,6 +1369,7 @@ class ActorCritic(Agent):
             'temporal_difference': td_errors_flat.mean().item(),
             'advantages': advantages_flat.mean().item(),
             'returns': returns_flat.mean().item(),
+            'value_predictions': state_values_flat.mean().item(),
             'entropy': entropies.mean().item(),
             'entropy_coefficient': entropy_coefficient,
             'policy_learning_rate': policy_learning_rate,
@@ -1511,6 +1514,7 @@ class ActorCritic(Agent):
             'temporal_difference': (td_errors_tm.transpose(0, 1) * valid_mask).sum().item() / valid_count.item(),
             'advantages': (advantages_et * valid_mask).sum().item() / valid_count.item(),
             'returns': (returns_et * valid_mask).sum().item() / valid_count.item(),
+            'value_predictions': (values_et * valid_mask).sum().item() / valid_count.item(),
             'entropy': ((entropies * valid_mask).sum() / valid_count).item(),
             'entropy_coefficient': entropy_coefficient,
             'policy_learning_rate': self.model.learning_rate('branches.policy'),
@@ -2097,6 +2101,7 @@ class PPO(Agent):
             'temporal_difference': td_errors.reshape(total_samples, 1)[valid_idx].cpu().flatten().mean().item(),
             'advantages': advantages.reshape(total_samples, 1)[valid_idx].cpu().flatten().mean().item(),
             'returns': returns.reshape(total_samples, 1)[valid_idx].cpu().flatten().mean().item(),
+            'value_predictions': cur_values.reshape(total_samples, 1)[valid_idx].cpu().flatten().mean().item(),
             'policy_clip': policy_clip,
             'value_clip': value_clip,
             'entropy_coefficient': entropy_coefficient,
@@ -2327,6 +2332,7 @@ class PPO(Agent):
             'temporal_difference': (td_errors_tm.transpose(0, 1) * valid_mask).sum().item() / valid_count.item(),
             'advantages': (advantages_et * valid_mask).sum().item() / valid_count.item(),
             'returns': (returns_et * valid_mask).sum().item() / valid_count.item(),
+            'value_predictions': (cur_values_et * valid_mask).sum().item() / valid_count.item(),
             'policy_clip': policy_clip,
             'value_clip': value_clip,
             'entropy_coefficient': entropy_coefficient,

@@ -1,10 +1,8 @@
-"""Behavior-contract tests for ``phoenx.metrics`` (Phase 1 centralized metrics).
+"""Behavior-contract tests for ``phoenx.metrics``.
 
-Written PHASE A, from ``.cursor/plans/metrics-manager-phase1.md`` and the pinned
-public signatures only -- ``src/phoenx/metrics.py`` did not exist yet and was
-never read while writing this file. Every test below is an independent oracle:
-either a closed-form value computed in the test, or a behavioral assertion
-transcribed directly from the plan's normative text / tables.
+Every test below is an independent oracle: either a closed-form value computed
+in the test, or a behavioral assertion about the documented contract rather
+than about what the implementation happens to do.
 
 Two construction strategies are used, chosen per contract:
 
@@ -59,9 +57,11 @@ from phoenx.models import (
     DeterministicActorHead,
     StochasticContinuousHead,
     StochasticDiscreteHead,
+    SubNetwork,
     ValueHead,
 )
 from phoenx.noise import NormalNoise
+from phoenx.obs_utils import flatten_leading
 from phoenx.rl_agents import ActorCritic, DDPG, PPO, SAC, TD3, Reinforce
 from phoenx.trainer import Trainer, TrainingSchedule
 
@@ -1260,6 +1260,7 @@ def test_metric_spec_is_frozen_with_pinned_defaults():
     ("loss/critic", Reduction.MEAN, frozenset({"critic_loss"}), frozenset({"has_critic"})),
     ("critic/td_error_mean", Reduction.MEAN, frozenset({"temporal_difference", "td_error"}), frozenset()),
     ("critic/value_pred_mean", Reduction.MEAN, frozenset({"critic_predictions"}), frozenset({"has_critic"})),
+    ("value/pred_mean", Reduction.MEAN, frozenset({"value_predictions"}), frozenset({"has_value"})),
     ("critic/return_mean_batch", Reduction.MEAN, frozenset({"returns"}), frozenset()),
     ("policy/advantage_mean", Reduction.MEAN, frozenset({"advantages"}), frozenset({"on_policy"})),
     ("policy/entropy", Reduction.MEAN, frozenset({"entropy"}), frozenset()),
@@ -1306,10 +1307,9 @@ def test_build_metrics_wires_constructor_kwargs_from_top_level_metrics_block():
 
 
 # =============================================================================
-# PHASE B -- supplementary coverage, written after reading
-# src/phoenx/metrics.py, src/phoenx/trainer.py, src/phoenx/rl_agents.py, and
-# src/phoenx/builder.py. Targets internal branches and cross-module
-# integration Phase A could not anticipate from the contracts alone.
+# Supplementary coverage: internal branches and cross-module integration that
+# the contract-level tests above do not reach -- reduction arithmetic, coercion
+# edge cases, capability-predicate detail, and the PER path end to end.
 # =============================================================================
 
 # --------------------------------------------------------------------------- #
@@ -1432,7 +1432,7 @@ def test_record_many_ambiguous_alias_falls_through_to_unmapped_bucket():
 # 3. Every Reduction member's arithmetic, and health/non_finite transitions
 # --------------------------------------------------------------------------- #
 def test_reduce_first_min_sum_max_arithmetic_via_synthetic_spec():
-    """No Phase 1 registry spec uses FIRST, MIN, or SUM (confirmed by
+    """No registry spec currently uses FIRST, MIN, or SUM (confirmed by
     inspecting every entry in ``METRIC_REGISTRY``), so their arithmetic is
     otherwise unreachable through the public record()/collect() surface with
     a real key. Exercise ``_reduce`` directly against a synthetic spec/window;
@@ -1687,11 +1687,9 @@ def test_raytune_accumulate_still_skips_a_live_tensor_unchanged_by_this_feature(
 
 
 # =============================================================================
-# REGRESSION TESTS -- six findings accepted from two independent reviewers.
-# Each test below FAILS against the current implementation and reproduces
-# the defect described in the amended `.cursor/plans/metrics-manager-phase1.md`.
-# No src/ file is touched here; these tests are written to the amended
-# contracts, not to what the implementation happens to do today.
+# REGRESSION TESTS -- each reproduces a defect that shipped and was fixed.
+# Each is written to the corrected contract rather than to what the code does,
+# and each was confirmed to fail before its fix landed.
 # =============================================================================
 
 # --------------------------------------------------------------------------- #
@@ -1790,19 +1788,19 @@ def test_f2_exclude_suppresses_the_alias_too_when_driven_through_record_many():
 
 
 # --------------------------------------------------------------------------- #
-# F3 (MAJOR) -- `include` only ever bypassed the tier gate (a no-op in
-# Phase 1, since every spec is tier 0 and the default tiers already contains
-# 0), instead of replacing it as a true allow-list.
+# F3 (MAJOR) -- `include` only ever bypassed the tier gate, which is a no-op
+# while every spec is tier 0 and the default tiers already contains 0, instead
+# of replacing it as a true allow-list.
 # --------------------------------------------------------------------------- #
 def test_f3_include_is_a_true_allowlist_that_replaces_the_tier_gate():
-    """Plan VERIFY: MetricsManager(include=["policy/entropy"]).enabled_keys()
-    == {"policy/entropy"}."""
+    """MetricsManager(include=["policy/entropy"]).enabled_keys() must be
+    exactly {"policy/entropy"}."""
     mm = MetricsManager(include=["policy/entropy"])
     enabled = mm.enabled_keys()
     assert enabled == frozenset({"policy/entropy"}), (
         f"expected exactly {{'policy/entropy'}}, got {len(enabled)} keys: "
         f"{sorted(enabled)} -- an `include` that only bypasses the tier "
-        f"check is a no-op in Phase 1 (every spec is tier 0)."
+        f"check is a no-op while every spec is tier 0."
     )
 
 
@@ -1925,3 +1923,469 @@ def test_f5_rollout_return_std_reachable_on_a_single_env_run_across_episodes(tmp
 # absolute step) rather than by accident, before the diagnostic edit was
 # reverted.
 # --------------------------------------------------------------------------- #
+
+
+# =============================================================================
+# NEW METRIC -- value/pred_mean: the value estimate that formed the current
+# batch's returns (the GAE bootstrap V for PPO/ActorCritic, the learned
+# baseline for REINFORCE), gated on has_value and kept deliberately separate
+# from the has_critic-gated critic/value_pred_mean. These tests pin: which
+# tensor is logged at each site (the pre-update tensor over the valid
+# population, never an in-loop/last-minibatch tensor or an unmasked one),
+# which mask the recurrent sites use (the full-rollout valid_mask /
+# valid_count, not a per-minibatch mask), the has_value capability gate for
+# REINFORCE, and that every emitted value is a plain Python float.
+# =============================================================================
+
+def _recurrent_ppo_agent(env, **kw):
+    """PPO with an LSTM trunk, matching the framework's on-policy recurrent
+    construction shape (roots -> temporal trunk -> policy/value branches)."""
+    return PPO(
+        roots={"state": SubNetwork(LC, name="state")},
+        trunk=SubNetwork([
+            {"type": "dense", "params": {"units": 16}},
+            {"type": "relu"},
+            {"type": "lstm", "params": {"hidden_size": 16}},
+        ], name="trunk"),
+        policy=StochasticDiscreteHead(env, layer_config=[], output_config=OC, device=DEVICE),
+        value=ValueHead(env, layer_config=[], output_config=OC, device=DEVICE),
+        optimizer_params=OPT, auto_entropy_tuning=False, device=DEVICE, **kw,
+    )
+
+
+def _recurrent_actor_critic_agent(env, **kw):
+    """ActorCritic with a GRU trunk, same recurrent construction shape."""
+    return ActorCritic(
+        roots={"state": SubNetwork(LC, name="state")},
+        trunk=SubNetwork([{"type": "gru", "params": {"hidden_size": 12}}], name="trunk"),
+        policy=StochasticDiscreteHead(env, layer_config=[], output_config=OC, device=DEVICE),
+        value=ValueHead(env, layer_config=[], output_config=OC, device=DEVICE),
+        optimizer_params=OPT, auto_entropy_tuning=False, device=DEVICE, **kw,
+    )
+
+
+def _value_masking_ff_sample(traj_len, num_envs, obs_dim, outlier_flat_idx, outlier_value=50.0):
+    """Feedforward rollout-shaped sample with one extreme-valued phantom row.
+
+    ``outlier_flat_idx`` (into the ``(traj_len * num_envs,)`` flattening used
+    by ``flatten_leading``) is excluded from ``valid_indices`` and marked
+    ``first_steps`` True, and carries a state far outside the scale of every
+    other row. A value head evaluated on it therefore produces a prediction
+    that visibly shifts the population mean if a masking implementation ever
+    includes that row -- so an equal-to-masked / not-equal-to-unmasked
+    assertion pair actually proves the mask is load-bearing, rather than
+    passing by coincidence.
+    """
+    total = traj_len * num_envs
+    states = T.randn(traj_len, num_envs, obs_dim) * 0.1
+    t0, e0 = divmod(outlier_flat_idx, num_envs)
+    states[t0, e0] = outlier_value
+    first_steps = T.zeros(traj_len, num_envs, dtype=T.bool)
+    first_steps[t0, e0] = True
+    valid_mask_flat = T.ones(total, dtype=T.bool)
+    valid_mask_flat[outlier_flat_idx] = False
+    valid_indices = valid_mask_flat.nonzero()
+    return {
+        "states": states,
+        "actions": T.randint(0, 2, (traj_len, num_envs, 1)).float(),
+        "raw_actions": T.zeros(traj_len, num_envs, 1),
+        "rewards": T.randn(traj_len, num_envs) * 0.1,
+        "intrinsic_rewards": T.zeros(traj_len, num_envs),
+        "next_states": T.randn(traj_len, num_envs, obs_dim) * 0.1,
+        "terminations": T.zeros(traj_len, num_envs, dtype=T.bool),
+        "truncations": T.zeros(traj_len, num_envs, dtype=T.bool),
+        "first_steps": first_steps,
+        "valid_indices": valid_indices,
+        "state_achieved_goals": None,
+        "next_state_achieved_goals": None,
+        "desired_goals": None,
+    }
+
+
+def _recurrent_value_masking_sample(traj_len, num_envs, obs_dim, outlier_env, outlier_t=0, outlier_value=50.0):
+    """Recurrent rollout-shaped sample with one extreme-valued phantom
+    (``first_steps`` True) row at ``(outlier_t, outlier_env)``."""
+    states = T.randn(traj_len, num_envs, obs_dim) * 0.1
+    states[outlier_t, outlier_env] = outlier_value
+    first_steps = T.zeros(traj_len, num_envs, dtype=T.bool)
+    first_steps[outlier_t, outlier_env] = True
+    valid_indices = (first_steps.reshape(-1) == 0).nonzero()
+    return {
+        "states": states,
+        "actions": T.randint(0, 2, (traj_len, num_envs, 1)).float(),
+        "raw_actions": T.zeros(traj_len, num_envs, 1),
+        "rewards": T.randn(traj_len, num_envs) * 0.1,
+        "intrinsic_rewards": T.zeros(traj_len, num_envs),
+        "next_states": T.randn(traj_len, num_envs, obs_dim) * 0.1,
+        "terminations": T.zeros(traj_len, num_envs, dtype=T.bool),
+        "truncations": T.zeros(traj_len, num_envs, dtype=T.bool),
+        "first_steps": first_steps,
+        "valid_indices": valid_indices,
+        "state_achieved_goals": None,
+        "next_state_achieved_goals": None,
+        "desired_goals": None,
+    }
+
+
+def _recurrent_value_reference(agent, sample, num_envs):
+    """Independently forward ``agent.model``'s value branch, sequence-mode,
+    over the full rollout -- the same call shape every recurrent on-policy
+    ``learn()`` makes before any minibatch update touches the weights.
+
+    Must be called BEFORE ``agent.learn(...)`` so it captures the pre-update
+    weights (a freshly constructed agent's ``_rollout_start_hidden`` is
+    ``None``, so both this call and the agent's own internal one fall back to
+    ``agent.model.init_hidden(num_envs)`` -- the same zero hidden state).
+
+    Returns:
+        ``(masked_mean, unmasked_mean)`` as plain Python floats.
+    """
+    states_seq = sample["states"].transpose(0, 1).contiguous()
+    start_mask = sample["first_steps"].transpose(0, 1).bool()
+    hidden0 = agent.model.init_hidden(num_envs)
+    with T.no_grad():
+        out, _ = agent.model(states_seq, branches=("value",), hidden=hidden0,
+                              start_mask=start_mask, mode="sequence")
+    values_et = out["value"].squeeze(-1)
+    valid_mask = (~start_mask).float()
+    valid_count = valid_mask.sum().clamp(min=1.0)
+    masked_mean = ((values_et * valid_mask).sum() / valid_count).item()
+    unmasked_mean = values_et.mean().item()
+    return masked_mean, unmasked_mean
+
+
+def _reinforce_learns_trainer_config(save_dir: str) -> dict:
+    """Tiny REINFORCE trainer config that actually learns: a fixed 4-step
+    episode env (``PhoenXMemory-v0``), a ``TrajectoryBuffer``, and
+    ``learn_every_unit: "episode"`` / ``learn_every: 1`` so the first
+    completed episode triggers a real ``learn()`` call before the run ends. A
+    value branch is present so the value-prediction metric's capability gate
+    is satisfied."""
+    dev = "cuda" if T.cuda.is_available() else "cpu"
+    dense = lambda u: {"type": "dense", "params": {"units": u, "kernel": "orthogonal",
+                                                     "kernel_params": {"gain": 1.41421356}}}
+    relu = {"type": "relu"}
+    out = [{"type": "dense", "params": {"kernel": "orthogonal", "kernel_params": {"gain": 0.01}}}]
+    return {
+        "save_dir": save_dir,
+        "log_level": "ERROR",
+        "schedule": {
+            "stop_unit": "episode", "stop_units": 2, "learn_every_unit": "episode",
+            "learn_every": 1, "updates_per_learn": 1, "batch_size": 1,
+            "mini_batch_size": 1, "learning_epochs": 1, "warmup_steps": 0, "seed": 11,
+        },
+        "agent": {"type": "Reinforce", "config": {
+            "name": "Reinforce",
+            "model": {
+                "branches": {
+                    "policy": {"type": "StochasticDiscreteHead",
+                               "layer_config": [dense(8), relu], "output_config": out,
+                               "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}},
+                               "distribution": "categorical", "device": dev},
+                    "value": {"type": "ValueHead",
+                              "layer_config": [dense(8), relu], "output_config": out,
+                              "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": dev},
+                },
+            },
+            "discount": 0.99, "auto_entropy_tuning": False, "entropy_coefficient": 0.01,
+            "device": dev, "log_level": "ERROR",
+        }},
+        "env": {"type": "gymnasium", "config": {
+            "cfg": "PhoenXMemory-v0", "num_envs": 1, "obs_key": None, "goal_key": None,
+            "ach_goal_key": None, "wrappers": [], "render_mode": None, "seed": 11}},
+        "buffer": {"type": "TrajectoryBuffer", "config": {"buffer_size": 8}},
+    }
+
+
+# --------------------------------------------------------------------------- #
+# CONTRACT 1: value/pred_mean reaches Trainer.on_train_step_end for each
+# on-policy agent, driven through a real Trainer.train() loop with a
+# recording callback (not a bare agent.learn() + record_many() + collect()
+# substitute -- that would skip the integration point this contract exists to
+# protect). Not marked slow: must run under the fast-suite gate.
+# --------------------------------------------------------------------------- #
+def test_value_pred_mean_reaches_on_train_step_end_for_ppo(tmp_path):
+    """CONTRACT 1a."""
+    config = _ppo_trainer_config(str(tmp_path / "run") + os.sep)
+    trainer = build_trainer_from_config(config)
+    cb = _RecordingCallback()
+    trainer.callbacks = [cb]
+    trainer.train()
+    assert cb.step_logs, "on_train_step_end was never called"
+    assert any("value/pred_mean" in log for log in cb.step_logs), (
+        "value/pred_mean never reached on_train_step_end for a real PPO train"
+    )
+
+
+def test_value_pred_mean_reaches_on_train_step_end_for_actor_critic(tmp_path):
+    """CONTRACT 1b."""
+    config = _actor_critic_auto_entropy_trainer_config(str(tmp_path / "run") + os.sep)
+    trainer = build_trainer_from_config(config)
+    cb = _RecordingCallback()
+    trainer.callbacks = [cb]
+    trainer.train()
+    assert cb.step_logs, "on_train_step_end was never called"
+    assert any("value/pred_mean" in log for log in cb.step_logs), (
+        "value/pred_mean never reached on_train_step_end for a real "
+        "ActorCritic train"
+    )
+
+
+def test_value_pred_mean_reaches_on_train_step_end_for_reinforce(tmp_path):
+    """CONTRACT 1c."""
+    config = _reinforce_learns_trainer_config(str(tmp_path / "run") + os.sep)
+    trainer = build_trainer_from_config(config)
+    cb = _RecordingCallback()
+    trainer.callbacks = [cb]
+    trainer.train()
+    assert cb.step_logs, "on_train_step_end was never called"
+    assert any("value/pred_mean" in log for log in cb.step_logs), (
+        "value/pred_mean never reached on_train_step_end for a real "
+        "REINFORCE train"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CONTRACT 2: value/pred_mean and critic/value_pred_mean are mutually
+# exclusive by capability gate, and a real short train never cross-emits the
+# other one's legacy alias (the unified-single-spec regression this pair of
+# specs is designed to prevent).
+# --------------------------------------------------------------------------- #
+def test_value_pred_mean_enabled_for_ppo_and_critic_value_pred_mean_is_not(ppo_agent, cartpole_env):
+    """CONTRACT 2a."""
+    mm = MetricsManager()
+    mm.bind(agent=ppo_agent, env=cartpole_env, buffer=None)
+    assert "value/pred_mean" in mm.enabled_keys()
+    assert "critic/value_pred_mean" not in mm.enabled_keys()
+
+
+def test_critic_value_pred_mean_enabled_for_sac_and_value_pred_mean_is_not(sac_agent, pendulum_env):
+    """CONTRACT 2b."""
+    mm = MetricsManager()
+    mm.bind(agent=sac_agent, env=pendulum_env, buffer=None)
+    assert "critic/value_pred_mean" in mm.enabled_keys()
+    assert "value/pred_mean" not in mm.enabled_keys()
+
+
+def test_ppo_short_train_emits_no_critic_predictions_key(tmp_path):
+    """CONTRACT 2c."""
+    config = _ppo_trainer_config(str(tmp_path / "run") + os.sep)
+    trainer = build_trainer_from_config(config)
+    cb = _RecordingCallback()
+    trainer.callbacks = [cb]
+    trainer.train()
+    seen_keys = set()
+    for log in cb.step_logs:
+        seen_keys.update(log.keys())
+    assert cb.step_logs, "on_train_step_end was never called"
+    assert "critic_predictions" not in seen_keys, (
+        "a PPO run must never emit the has_critic-gated legacy alias "
+        "'critic_predictions' -- a unified spec would put it on every PPO run"
+    )
+
+
+def test_sac_short_train_emits_no_value_predictions_key(tmp_path):
+    """CONTRACT 2d."""
+    config = _sac_auto_entropy_trainer_config(str(tmp_path / "run") + os.sep)
+    trainer = build_trainer_from_config(config)
+    cb = _RecordingCallback()
+    trainer.callbacks = [cb]
+    trainer.train()
+    seen_keys = set()
+    for log in cb.step_logs:
+        seen_keys.update(log.keys())
+    assert cb.step_logs, "on_train_step_end was never called"
+    assert "value_predictions" not in seen_keys, (
+        "a SAC run must never emit the has_value-gated legacy alias "
+        "'value_predictions' -- a unified spec would put it on every SAC run"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# CONTRACT 3: the emitted value is the pre-update value tensor over the valid
+# population -- not an in-loop/last-minibatch tensor, and not the unmasked
+# tensor. Each test uses a value head whose output varies across samples (a
+# real ValueHead evaluated on non-constant states already varies), at least
+# one phantom row carrying an outlier value, and -- where the agent actually
+# loops over minibatches/epochs -- multiple minibatches across >=2 epochs so
+# an in-loop tensor has demonstrably moved from the pre-update one.
+# --------------------------------------------------------------------------- #
+def test_ppo_feedforward_value_pred_mean_is_preepoch_masked_not_inloop_or_unmasked(cartpole_env):
+    """CONTRACT 3a."""
+    T.manual_seed(101)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs = 4, 4
+    total = traj_len * num_envs
+    sample = _value_masking_ff_sample(traj_len, num_envs, obs_dim, outlier_flat_idx=0)
+    agent = PPO(policy=_d_policy(cartpole_env), value=_value_head(cartpole_env),
+                optimizer_params=OPT, auto_entropy_tuning=False, device=DEVICE)
+
+    states_flat = flatten_leading(sample["states"], 2)
+    with T.no_grad():
+        pre_out, _ = agent.model(states_flat, branches=("value",))
+    pre_values_flat = pre_out["value"].reshape(total)
+    valid_idx = sample["valid_indices"].squeeze(-1)
+    expected_masked_mean = pre_values_flat[valid_idx].mean().item()
+    unmasked_mean = pre_values_flat.mean().item()
+
+    # 15 valid samples / mini_batch_size=5 -> 3 minibatches/epoch, 2 epochs:
+    # 6 gradient steps move the in-loop decoy tensor well away from the
+    # pre-epoch tensor this contract requires being logged instead.
+    metrics = agent.learn(0, sample, learning_epochs=2, mini_batch_size=5)
+
+    assert metrics["value_predictions"] == pytest.approx(expected_masked_mean, rel=1e-6, abs=0)
+    assert metrics["value_predictions"] != pytest.approx(unmasked_mean, rel=1e-6, abs=0)
+
+
+def test_ppo_recurrent_value_pred_mean_is_preepoch_masked_not_inloop_or_unmasked(cartpole_env):
+    """CONTRACT 3b."""
+    T.manual_seed(202)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs = 5, 6
+    agent = _recurrent_ppo_agent(cartpole_env)
+    sample = _recurrent_value_masking_sample(traj_len, num_envs, obs_dim, outlier_env=0)
+    masked_mean, unmasked_mean = _recurrent_value_reference(agent, sample, num_envs)
+
+    metrics = agent.learn(0, sample, learning_epochs=2, mini_batch_size=2)
+
+    assert metrics["value_predictions"] == pytest.approx(masked_mean, rel=1e-6, abs=0)
+    assert metrics["value_predictions"] != pytest.approx(unmasked_mean, rel=1e-6, abs=0)
+
+
+def test_actor_critic_feedforward_value_pred_mean_is_masked_not_unmasked(cartpole_env):
+    """CONTRACT 3c. ActorCritic's feedforward update has a single forward
+    (no epoch/minibatch loop), so the only two candidate tensors are the
+    masked and unmasked value tensor -- both are exercised here."""
+    T.manual_seed(404)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs = 4, 4
+    total = traj_len * num_envs
+    sample = _value_masking_ff_sample(traj_len, num_envs, obs_dim, outlier_flat_idx=0)
+    agent = ActorCritic(policy=_d_policy(cartpole_env), value=_value_head(cartpole_env),
+                         optimizer_params=OPT, auto_entropy_tuning=False, device=DEVICE)
+
+    states_flat = flatten_leading(sample["states"], 2)
+    with T.no_grad():
+        pre_out, _ = agent.model(states_flat, branches=("value",))
+    pre_values_flat = pre_out["value"].reshape(total)
+    valid_idx = sample["valid_indices"].squeeze(-1)
+    expected_masked_mean = pre_values_flat[valid_idx].mean().item()
+    unmasked_mean = pre_values_flat.mean().item()
+
+    metrics = agent.learn(0, sample)
+
+    assert metrics["value_predictions"] == pytest.approx(expected_masked_mean, rel=1e-6, abs=0)
+    assert metrics["value_predictions"] != pytest.approx(unmasked_mean, rel=1e-6, abs=0)
+
+
+def test_actor_critic_recurrent_value_pred_mean_is_masked_not_unmasked(cartpole_env):
+    """CONTRACT 3d. Also covers 4b: ActorCritic's recurrent update has no
+    minibatch loop and no mini_batch_size parameter at all -- only one mask,
+    valid_mask/valid_count, ever exists, so there is no second mask to rule
+    out beyond what this test already proves."""
+    T.manual_seed(505)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs = 5, 4
+    agent = _recurrent_actor_critic_agent(cartpole_env)
+    sample = _recurrent_value_masking_sample(traj_len, num_envs, obs_dim, outlier_env=0)
+    masked_mean, unmasked_mean = _recurrent_value_reference(agent, sample, num_envs)
+
+    metrics = agent.learn(0, sample)
+
+    assert metrics["value_predictions"] == pytest.approx(masked_mean, rel=1e-6, abs=0)
+    assert metrics["value_predictions"] != pytest.approx(unmasked_mean, rel=1e-6, abs=0)
+
+
+# --------------------------------------------------------------------------- #
+# CONTRACT 4: the recurrent update masks with the full-rollout valid_mask /
+# valid_count, not a per-minibatch mask -- distinguishable only when
+# mini_batch_size (env units) is strictly less than num_envs; at
+# mini_batch_size >= num_envs the two masks coincide and the test could not
+# tell them apart.
+# --------------------------------------------------------------------------- #
+def test_ppo_recurrent_value_pred_mean_uses_full_rollout_mask_not_minibatch_mask(cartpole_env):
+    """CONTRACT 4a. num_envs (6) is strictly greater than mini_batch_size (2)
+    in env units, so the per-minibatch mask covers only a 2-env subset while
+    the correct expression is weighted over the full 6-env rollout."""
+    T.manual_seed(303)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs, mini_batch_size = 5, 6, 2
+    agent = _recurrent_ppo_agent(cartpole_env)
+    sample = _recurrent_value_masking_sample(traj_len, num_envs, obs_dim, outlier_env=1)
+    masked_mean, _ = _recurrent_value_reference(agent, sample, num_envs)
+
+    metrics = agent.learn(0, sample, learning_epochs=2, mini_batch_size=mini_batch_size)
+
+    assert metrics["value_predictions"] == pytest.approx(masked_mean, rel=1e-4, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# CONTRACT 5: a REINFORCE agent with no value branch neither enables the
+# metric nor emits the key.
+# --------------------------------------------------------------------------- #
+def test_reinforce_without_value_branch_does_not_enable_value_pred_mean(cartpole_env):
+    """CONTRACT 5a."""
+    agent = Reinforce(policy=_d_policy(cartpole_env), optimizer_params=OPT,
+                       auto_entropy_tuning=False, device=DEVICE)
+    mm = MetricsManager()
+    mm.bind(agent=agent, env=cartpole_env, buffer=None)
+    assert "value/pred_mean" not in mm.enabled_keys()
+
+
+def test_reinforce_with_value_branch_emits_value_predictions_key(reinforce_agent, cartpole_env):
+    """CONTRACT 5b (positive side): the agent itself -- not record_many() --
+    must be the thing that emits the key, proven here at the learn() return
+    dict of a value-head agent. Paired with 5a's negative side (a
+    no-value-head agent, asserted at bind() rather than learn() because a
+    no-value-head Reinforce cannot reach learn() at all at BASE_REF -- it
+    raises AttributeError on ``value_loss.item()`` where ``value_loss`` is
+    the plain int ``0``, a pre-existing defect this feature does not touch),
+    this establishes the emission is conditional on the branch existing."""
+    trajectories = [
+        {"states": T.randn(8, 4), "actions": T.randint(0, 2, (8, 1)), "rewards": T.randn(8)}
+        for _ in range(2)
+    ]
+    metrics = reinforce_agent.learn(0, trajectories)
+    assert "value_predictions" in metrics
+
+
+# --------------------------------------------------------------------------- #
+# CONTRACT 6: every emitted value_predictions is a plain Python float,
+# checked on the learn() RETURN DICT itself (not only after the manager's own
+# coercion, which would not distinguish a tensor left in the agent's dict).
+# --------------------------------------------------------------------------- #
+def test_ppo_value_predictions_is_a_python_float_on_learn_return(ppo_agent, cartpole_env):
+    """CONTRACT 6 (PPO)."""
+    sample = _rollout_sample(cartpole_env, discrete=True)
+    metrics = ppo_agent.learn(0, sample, learning_epochs=2, mini_batch_size=4)
+    assert type(metrics["value_predictions"]) is float
+
+
+def test_actor_critic_value_predictions_is_a_python_float_on_learn_return(actor_critic_agent, cartpole_env):
+    """CONTRACT 6 (ActorCritic feedforward, state_values_flat site)."""
+    sample = _rollout_sample(cartpole_env, discrete=True)
+    metrics = actor_critic_agent.learn(0, sample)
+    assert type(metrics["value_predictions"]) is float
+
+
+def test_actor_critic_recurrent_value_predictions_is_a_python_float_on_learn_return(cartpole_env):
+    """CONTRACT 6 (ActorCritic recurrent, values_et site): the site computes
+    (values_et * valid_mask).sum().item() / valid_count.item(), a Python
+    float only if both .item() calls survive."""
+    T.manual_seed(606)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs = 5, 4
+    agent = _recurrent_actor_critic_agent(cartpole_env)
+    sample = _recurrent_value_masking_sample(traj_len, num_envs, obs_dim, outlier_env=0)
+    metrics = agent.learn(0, sample)
+    assert type(metrics["value_predictions"]) is float
+
+
+def test_reinforce_value_predictions_is_a_python_float_on_learn_return(reinforce_agent, cartpole_env):
+    """CONTRACT 6 (REINFORCE)."""
+    trajectories = [
+        {"states": T.randn(8, 4), "actions": T.randint(0, 2, (8, 1)), "rewards": T.randn(8)}
+        for _ in range(2)
+    ]
+    metrics = reinforce_agent.learn(0, trajectories)
+    assert type(metrics["value_predictions"]) is float

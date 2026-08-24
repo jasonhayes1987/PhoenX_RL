@@ -155,6 +155,7 @@ _SPECS: tuple[MetricSpec, ...] = (
     _spec("loss/critic", Reduction.MEAN, requires=("has_critic",), aliases=("critic_loss",)),
     _spec("critic/td_error_mean", Reduction.MEAN, aliases=("temporal_difference", "td_error")),
     _spec("critic/value_pred_mean", Reduction.MEAN, requires=("has_critic",), aliases=("critic_predictions",)),
+    _spec("value/pred_mean", Reduction.MEAN, requires=("has_value",), aliases=("value_predictions",)),
     _spec("critic/return_mean_batch", Reduction.MEAN, aliases=("returns",)),
     _spec("policy/advantage_mean", Reduction.MEAN, requires=("on_policy",), aliases=("advantages",)),
     _spec("policy/entropy", Reduction.MEAN, aliases=("entropy",)),
