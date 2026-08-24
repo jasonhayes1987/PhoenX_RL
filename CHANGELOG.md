@@ -6,6 +6,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- A Metrics Reference guide (`docs/how-to/metrics-reference.md`) documenting
+  every metric PhoenX can log, what it measures, and how to read it — including
+  the interpretation traps: `buffer/fill` has one definition but three
+  behaviors across the buffer types, `buffer/is_ready` is not the warmup gate,
+  `optim/updates_per_env_step` is not the replay ratio of the literature and is
+  not comparable across algorithm families, and a missing key means "not
+  recorded" rather than zero. Also lists the legacy flat names still emitted
+  alongside the namespaced keys, and the diagnostics that are deliberately not
+  implemented yet.
 - A centralized, logger-agnostic metrics system: `phoenx.metrics`
   (`MetricsManager`, `MetricSpec`, `METRIC_REGISTRY`, `NullRecorder`) owns
   namespacing, windowed reduction, cadence, and capability gating for a
