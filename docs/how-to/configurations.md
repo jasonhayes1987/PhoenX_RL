@@ -611,7 +611,14 @@ not changed.
   replay ratio, since off-policy agents call `step()` twice per `learn()`
   (critic modules, then policy) while on-policy agents call it once per
   minibatch; the temperature (`entropy_optimizer`) and intrinsic-motivation
-  optimizers are not counted.
+  optimizers are not counted. A *run segment* is the stretch since the
+  current `train()` call began — on a fresh run that is the whole run, and
+  after `Trainer.load` it is everything since the resume. Both the numerator
+  and the denominator are scoped that way on purpose: the trainer's step
+  counter is restored from `trainer_state.pt` while the optimizer counter is
+  not, so dividing one by the other would report a ratio collapsing toward
+  zero the moment you resume a long run. Expect the series to restart from
+  its own baseline after a resume rather than continuing the prior curve.
 
 **Scope.** Covers rollout/perf metrics, buffer occupancy and readiness, a
 single optimizer-activity counter (`optim/updates_per_env_step`),
