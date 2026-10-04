@@ -1,0 +1,121 @@
+# =============================================================================
+# LunarLanderContinuous-v3 SAC multi-phase Ray Tune sweep.
+#
+# Three phases run in series, each promoting its winner into the next:
+#   1. architecture  - random search + ASHA over branches.policy /
+#                       branches.value depth (block grammar), plus one plain
+#                       dotted search_space key (an output-layer init gain).
+#   2. optimizers     - Optuna over each branch's own learning rate.
+#   3. refine         - random search over PPO's core training scalars.
+#
+# Run it:
+#   phoenx-tune --config lunarlander_sac.yml
+#
+# Validate the schema only (no Ray, no training):
+#   phoenx-tune --config lunarlander_sac.yml --validate-only
+#
+# Resume from a later phase once earlier phases have completed and written
+# their best_config.yml:
+#   phoenx-tune --config lunarlander_sac.yml --from-phase optimizers
+#
+# This sweep does not use PBT (Population Based Training); scheduler.type:
+# pbt is rejected in this delivery pass (it needs checkpoint plumbing).
+# =============================================================================
+
+base_config: E:\Documents\Programming\Projects\Reinforcement\PhoenX_RL\configs\LunarLanderContinuous-v3\sac.yml
+
+# Constant for every trial of every phase.
+overrides:
+  schedule.stop_units: 500000
+  # Set schedulers in base config to null
+  agent.config.model.branches.policy.lr_scheduler: null
+  agent.config.model.branches.critic.lr_scheduler: null
+  # Turn off auto entropy tuning in base config
+  agent.config.auto_entropy_tuning: false
+  log_level: ERROR
+
+# Inherited by every phase; any phase may override any key.
+defaults:
+  metric: avg_reward
+  mode: max
+  resources: {cpu: 1, gpu: 0.1}
+  max_concurrent_trials: 4
+  report: {every: 20000, unit: timestep}
+  auto_learn_every: false
+  # wandb: {project: LunarLanderContinuous-v3-sweep-test}
+
+# Reusable block library referenced by the architecture phase.
+blocks:
+  dense_block:
+    layers:
+      - type: dense
+        params:
+          units: {dist: choice, values: [64, 128, 256, 512]}
+          kernel: {dist: choice, values: [orthogonal, default]}
+          kernel_params: {dist: fixed, value: {gain: 1.41421356}}
+      - type: {dist: choice, values: [relu, tanh]}
+
+phases:
+  - name: architecture
+    architecture:
+      branches.policy:
+        depth: {dist: randint, lower: 1, upper: 4}
+        blocks: [dense_block]
+      branches.critic:
+        depth: {dist: randint, lower: 1, upper: 4}
+        blocks: [dense_block]
+    search_space:
+      agent.config.model.branches.policy.output_config.0.params:
+        dist: choice
+        values:
+          - {kernel: default, kernel_params: {}}
+          - {kernel: orthogonal, kernel_params: {gain: 0.01}}
+          - {kernel: orthogonal, kernel_params: {gain: 0.1}}
+          - {kernel: orthogonal, kernel_params: {gain: 1.0}}
+      agent.config.model.branches.critic.output_config.0.params:
+        dist: choice
+        values:
+          - {kernel: default, kernel_params: {}}
+          - {kernel: orthogonal, kernel_params: {gain: 0.01}}
+          - {kernel: orthogonal, kernel_params: {gain: 0.1}}
+          - {kernel: orthogonal, kernel_params: {gain: 1.0}}
+      agent.config.model.branches.critic.merged_config.0.params.units:
+        {dist: choice, values: [128, 256, 512]}
+      agent.config.model.branches.critic.merged_config.0.params.kernel:
+        {dist: choice, values: [default, orthogonal]}
+      agent.config.model.branches.critic.merged_config.0.params.kernel_params:
+        {dist: fixed, value: {gain: 1.41421356}}
+    tune:
+      num_samples: 128
+      search_alg: {type: random}
+      # max_t must be >= grace_period and matches overrides.schedule.stop_units,
+      # since time_attr is the timestep count a trial reports.
+      scheduler: {type: asha, time_attr: timestep, grace_period: 50000, max_t: 500000, reduction_factor: 2}
+      stop: [{type: TrialPlateauStopper, metric: avg_reward, std: 5.0, num_results: 5}]
+    promote: {mode: best}
+
+  - name: optimizers
+    optimizers:
+      branches.policy: {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
+      branches.critic:  {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
+    tune:
+      num_samples: 48
+      search_alg: {type: optuna}
+      # max_t must be >= grace_period and matches overrides.schedule.stop_units,
+      # since time_attr is the timestep count a trial reports.
+      scheduler: {type: asha, time_attr: timestep, grace_period: 100000, max_t: 500000, reduction_factor: 2}
+    promote: {mode: best}
+
+  - name: refine
+    search_space:
+      agent.config.discount:            {dist: uniform, low: 0.95, high: 0.999}
+      agent.config.tau:                 {dist: uniform, low: 1.0e-3, high: 1.0}
+      agent.config.entropy_coefficient: {dist: uniform, low: 1.0e-2, high: 1.0}
+      agent.config.policy_grad_clip:    {dist: uniform, low: 0.5, high: 1.0}
+      agent.config.critic_grad_clip:     {dist: uniform, low: 0.5, high: 1.0}
+      agent.config.critic_huber_delta:   {dist: uniform, low: 0.5, high: 1.0}
+    tune:
+      num_samples: 256
+      search_alg: {type: optuna}
+      scheduler: {type: asha, time_attr: timestep, grace_period: 200000, max_t: 500000, reduction_factor: 2}
+    promote: {mode: best}

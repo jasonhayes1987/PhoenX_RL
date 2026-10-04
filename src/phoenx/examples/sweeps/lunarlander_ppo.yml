@@ -27,22 +27,25 @@
 # pbt is rejected in this delivery pass (it needs checkpoint plumbing).
 # =============================================================================
 
-base_config: LunarLanderContinuous-v3/ppo.yml
+base_config: E:\Documents\Programming\Projects\Reinforcement\PhoenX_RL\configs\LunarLanderContinuous-v3\ppo.yml
 
 # Constant for every trial of every phase.
 overrides:
-  schedule.stop_units: 300000
+  schedule.stop_units: 500000
+  # Set schedulers in base config to null
+  agent.config.model.branches.policy.lr_scheduler: null
+  agent.config.entropy_schedule: null
   log_level: ERROR
 
 # Inherited by every phase; any phase may override any key.
 defaults:
   metric: avg_reward
   mode: max
-  resources: {cpu: 1, gpu: 0.25}
+  resources: {cpu: 1, gpu: 0.1}
   max_concurrent_trials: 4
   report: {every: 20000, unit: timestep}
   auto_learn_every: true
-  wandb: {project: LunarLanderContinuous-v3-sweep-test}
+  # wandb: {project: LunarLanderContinuous-v3-sweep-test}
 
 # Reusable block library referenced by the architecture phase.
 blocks:
@@ -69,34 +72,40 @@ phases:
       agent.config.model.branches.policy.output_config.0.params.kernel_params.gain:
         {dist: choice, values: [0.01, 0.1, 1.0]}
     tune:
-      num_samples: 100
+      num_samples: 128
       search_alg: {type: random}
       # max_t must be >= grace_period and matches overrides.schedule.stop_units,
       # since time_attr is the timestep count a trial reports.
-      scheduler: {type: asha, time_attr: timestep, grace_period: 40000, max_t: 300000, reduction_factor: 2}
+      scheduler: {type: asha, time_attr: timestep, grace_period: 50000, max_t: 500000, reduction_factor: 2}
       stop: [{type: TrialPlateauStopper, metric: avg_reward, std: 5.0, num_results: 5}]
-    promote: {mode: best, seed_next: 5}
+    promote: {mode: best}
 
   - name: optimizers
     optimizers:
       branches.policy: {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
       branches.value:  {lr: {dist: loguniform, low: 1.0e-5, high: 1.0e-3}}
     tune:
-      num_samples: 100
+      num_samples: 48
       search_alg: {type: optuna}
       # max_t must be >= grace_period and matches overrides.schedule.stop_units,
       # since time_attr is the timestep count a trial reports.
-      scheduler: {type: asha, time_attr: timestep, grace_period: 40000, max_t: 300000, reduction_factor: 2}
-    promote: {mode: best, seed_next: 5}
+      scheduler: {type: asha, time_attr: timestep, grace_period: 100000, max_t: 500000, reduction_factor: 2}
+    promote: {mode: best}
 
   - name: refine
     search_space:
       agent.config.discount:            {dist: uniform, low: 0.95, high: 0.999}
       agent.config.gae_coefficient:     {dist: uniform, low: 0.9, high: 0.99}
-      agent.config.entropy_coefficient: {dist: loguniform, low: 1.0e-4, high: 0.05}
+      agent.config.entropy_coefficient: {dist: loguniform, low: 1.0e-2, high: 1.0e-1}
+      agent.config.kl_coefficient:      {dist: uniform, low: 0.0, high: 1.0}
       agent.config.policy_clip:         {dist: uniform, low: 0.1, high: 0.4}
+      agent.config.policy_grad_clip:    {dist: uniform, low: 0.5, high: 1.0}
+      agent.config.value_clip:          {dist: uniform, low: 0.1, high: 0.4}
+      agent.config.value_grad_clip:     {dist: uniform, low: 0.5, high: 1.0}
+      agent.config.value_coef:          {dist: uniform, low: 0.0, high: 1.0}
       schedule.learning_epochs:         {dist: randint, lower: 3, upper: 11}
     tune:
-      num_samples: 100
-      search_alg: {type: random}       # no scheduler declared here -> FIFO
+      num_samples: 256
+      search_alg: {type: optuna}
+      scheduler: {type: asha, time_attr: timestep, grace_period: 200000, max_t: 500000, reduction_factor: 2}
     promote: {mode: best}

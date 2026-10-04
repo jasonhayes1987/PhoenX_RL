@@ -93,7 +93,7 @@ class SelfAttention(nn.Module):
     """Self-attention wrapper around ``nn.MultiheadAttention`` (batch_first).
 
     Operates on ``(B, tokens, embed_dim)`` inputs (intra-step attention over
-    feature tokens). For temporal (causal) attention use ``transformer_encoder``
+    feature tokens). For temporal (causal) attention use ``TransformerEncoderBlock``
     with ``causal: true`` in the trunk.
     """
 
@@ -1788,6 +1788,14 @@ class SubNetwork(nn.Module):
     ``ModularModel`` rejects them in roots and branch bodies.
     """
 
+    #: layer types that imply image-like (channelled) inputs; used to gate the
+    #: legacy grayscale/HWC preprocessing heuristics per root.
+    _IMAGE_LAYER_TYPES = frozenset({
+        'conv1d', 'conv2d', 'conv3d', 'convtranspose2d', 'pool', 'maxpool1d',
+        'maxpool2d', 'avgpool1d', 'avgpool2d', 'adaptiveavgpool2d',
+        'adaptivemaxpool2d', 'batchnorm2d', 'batchnorm3d', 'dropout2d',
+    })
+
     def __init__(
         self,
         layer_config: List[Dict] | None = None,
@@ -1830,14 +1838,6 @@ class SubNetwork(nn.Module):
             k for k, m in self.layers.items()
             if isinstance(m, TransformerEncoderBlock) and m.causal
         ]
-
-    #: layer types that imply image-like (channelled) inputs; used to gate the
-    #: legacy grayscale/HWC preprocessing heuristics per root.
-    _IMAGE_LAYER_TYPES = frozenset({
-        'conv1d', 'conv2d', 'conv3d', 'convtranspose2d', 'pool', 'maxpool1d',
-        'maxpool2d', 'avgpool1d', 'avgpool2d', 'adaptiveavgpool2d',
-        'adaptivemaxpool2d', 'batchnorm2d', 'batchnorm3d', 'dropout2d',
-    })
 
     @property
     def is_recurrent(self) -> bool:
@@ -3107,7 +3107,7 @@ class ModularModel(nn.Module):
         """Per-input preprocessing: device/dtype and shape normalization.
 
         Extends the legacy ``Model._preprocess_state`` with uint8 image
-        scaling (cast to float and divide by 255, SB3 convention). The
+        scaling (cast to float and divide by 255). The
         image-shape heuristics (grayscale channel dim, HWC->CHW permute) are
         applied for the legacy flat path (``subnet is None``) and for roots
         whose stacks contain convolutional layers; token (embedding) roots
@@ -3227,7 +3227,7 @@ class ModularModel(nn.Module):
             ]
             features = feats[0] if len(feats) == 1 else T.cat(feats, dim=-1)
             # When goal is passed but not consumed by any root via input_keys,
-            # concatenate it to the fused features (legacy-style conditioning).
+            # concatenate it to the fused features.
             if goal is not None and not any(
                 root.input_keys and GOAL_INPUT_KEY in root.input_keys
                 for root in self.roots.values()

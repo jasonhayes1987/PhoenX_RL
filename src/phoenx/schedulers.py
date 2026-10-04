@@ -74,9 +74,8 @@ class ScheduleWrapper:
             )
 
         elif self.schedule_type == "cosine":
-            if self.end_value is None or self.start_value is None or self.steps is None:
-                raise ValueError("End value, start value, and steps are required for cosine scheduler.")
-            # end_factor = self.end_value / self.start_value
+            if self.end_value is None or self.steps is None:
+                raise ValueError("End value and steps are required for cosine scheduler.")
             self.scheduler = lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
                 T_max=self.steps,

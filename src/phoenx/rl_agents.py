@@ -39,7 +39,7 @@ import torch as T
 # import torch.nn.functional as F
 
 from phoenx.agent_utils import compute_n_step_return, compute_advantages_and_returns, compute_monte_carlo_returns, compute_q_retrace, grad_norm_from_optimizer, setup_auto_entropy, soft_update
-from phoenx.obs_utils import flatten_leading, flatten_obs, tree_index, unflatten_leading
+from phoenx.obs_utils import flatten_leading, flatten_obs, tree_index, unflatten_leading, obs_batch_size
 
 
 ## Base Agent Class ##
@@ -354,7 +354,6 @@ class Agent(ABC):
         if not self.model.is_temporal:
             outputs, _ = self.model(states, goal=goals, branches=branches)
             return outputs
-        from phoenx.obs_utils import obs_batch_size
         batch_size = obs_batch_size(states)
         if self._hidden is None:
             self._hidden = self.model.init_hidden(batch_size)
