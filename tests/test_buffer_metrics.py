@@ -8,7 +8,7 @@ Covers ``Buffer.fill`` (and its four concrete formulas), ``env_steps``,
 save/load key set, and where in ``Trainer.train()`` each of these metrics is
 and is not computed. Each test below is an independent oracle: either a
 closed-form value computed here, or a behavioral assertion transcribed
-directly from the specification's normative text.
+directly from the contract it tests.
 
 Two construction strategies are used, chosen per contract:
 

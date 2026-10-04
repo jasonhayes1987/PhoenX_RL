@@ -1,9 +1,10 @@
 """Unit tests for packaged example configs and ``load_config`` fallback.
 
 Covers ``available_example_configs`` and the on-disk-then-bundled resolution
-in ``phoenx.builder.load_config``. The top-level ``configs/`` tree is personal
-and untracked (absent in a fresh clone); packaged examples live under
-``phoenx.examples``.
+in ``phoenx.builder.load_config``. Packaged examples live under
+``phoenx.examples`` and are shipped as package data; that every bundled name
+resolves, parses, and speaks the current schema is covered by
+``tests/test_builders.py::TestBundledConfigSchema``.
 """
 
 from __future__ import annotations
@@ -21,8 +22,6 @@ EXPECTED_EXAMPLE_CONFIGS = [
     "LunarLanderContinuous-v3/ppo.yml",
     "LunarLanderContinuous-v3/sac.yml",
 ]
-
-REPO_CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 
 def test_available_example_configs_lists_bundled_names():
@@ -95,26 +94,3 @@ def test_missing_absolute_path_does_not_resolve_bundled(tmp_path):
     message = str(exc_info.value)
     assert str(missing) in message or missing.as_posix() in message
     assert "Bundled examples:" in message
-
-
-@pytest.mark.parametrize("name", EXPECTED_EXAMPLE_CONFIGS)
-def test_packaged_matches_repo_configs(name, tmp_path, monkeypatch):
-    """Each packaged example parses identically to the author's local configs/ copy.
-
-    The top-level configs/ tree is personal and untracked, so this comparison
-    only runs on a machine that has it; fresh clones skip.
-    """
-    if not REPO_CONFIGS_DIR.is_dir():
-        pytest.skip(
-            "top-level configs/ directory absent "
-            "(personal/untracked; not present in a fresh clone)"
-        )
-
-    repo_path = REPO_CONFIGS_DIR.joinpath(*name.split("/"))
-    assert repo_path.is_file(), f"expected repo original missing: {repo_path}"
-
-    with open(repo_path, encoding="utf-8") as file_obj:
-        repo_cfg = yaml.safe_load(file_obj)
-
-    monkeypatch.chdir(tmp_path)
-    assert load_config(name) == repo_cfg

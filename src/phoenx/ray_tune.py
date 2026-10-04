@@ -2548,9 +2548,9 @@ def run_phase(
 
     counter_handle = counter_name = None
     try:
-        # AMENDMENT B (F2): only a phase that will actually name W&B runs
-        # pays for a counter round trip; _inject_trial_callbacks gates on
-        # exactly this condition, so the driver must use the same one.
+        # Only a phase that will actually name W&B runs pays for a counter
+        # round trip; _inject_trial_callbacks gates on exactly this condition,
+        # so the driver must use the same one.
         if phase.get("wandb"):
             counter_handle, counter_name = _start_phase_counter(sweep_name, phase_name)
 

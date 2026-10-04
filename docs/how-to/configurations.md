@@ -551,7 +551,7 @@ constructor kwargs — there is no nesting:
 |-----|------|---------|--------|
 | `tiers` | list[int] | `[0, 1, 2]` | Cost tiers enabled by default (every registered metric is currently tier 0) |
 | `emit_every` | int | `1` | `collect()` calls between emitting calls; raise to cut logging traffic |
-| `include` | list[str] \| null | `null` | Exact-key allow-list applied **after** capability gating; when set, it *replaces* the tier gate rather than widening it |
+| `include` | list[str] \| null | `null` | Exact-key allow-list applied **after** capability gating; when non-empty it *replaces* the tier gate rather than widening it. `null` **or `[]`** means "no allow-list" |
 | `exclude` | list[str] | `[]` | Exact keys to suppress, along with their legacy aliases |
 | `dual_emit` | bool | `true` | Also emit each aliased metric under its legacy flat name |
 

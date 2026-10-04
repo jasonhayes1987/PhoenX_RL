@@ -1,5 +1,6 @@
-"""Recurrent (temporal) training tests — Phase 4 (on-policy) and Phase 5
-(off-policy R2D2-style + temporal transformer).
+"""Recurrent (temporal) training tests: on-policy PPO/ActorCritic rollout and
+learn wiring, plus off-policy recurrence (R2D2-style stored state) and
+causal-transformer context windows.
 
 All tests use the REAL production classes. Model-level step==sequence and
 masked-reset exactness live in test_modular_model.py; this file covers the
@@ -243,7 +244,7 @@ class TestRecurrentLearn:
 
 
 # =============================================================================
-# Phase 5: off-policy recurrence (R2D2 stored state + burn-in)
+# Off-policy recurrence (R2D2 stored state + burn-in)
 # =============================================================================
 from phoenx.buffer import ReplayBuffer
 from phoenx.env_wrapper import Action
@@ -408,7 +409,7 @@ class TestOffPolicyRecurrent:
 
 
 # =============================================================================
-# Phase 5: causal-transformer context-window inference
+# Causal-transformer context-window inference
 # =============================================================================
 class TestCausalContextInference:
     @pytest.fixture()
@@ -482,7 +483,7 @@ class TestCausalContextInference:
             assert T.allclose(outputs["policy"].logits[0:1], ref["policy"].logits, atol=1e-5)
 
     def test_causal_ppo_recurrent_learn_path(self, causal_ppo, cartpole):
-        """Causal trunks train through the Phase-4 sequence path (stateless)."""
+        """Causal trunks train through the same stateless sequence-learn path as the on-policy recurrent PPO/ActorCritic tests above."""
         agent = causal_ppo
         E = cartpole.num_envs
         traj_len = 5

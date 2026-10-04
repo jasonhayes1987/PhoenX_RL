@@ -1,7 +1,5 @@
 #PPO tuned for LunarLanderContinuous-v3
 
-#TODO: Add ICM
-
 device: &device cuda
 save_dir: &save_dir ./Trained_Models/LunarLanderContinuous/PPO/
 log_level: INFO
@@ -151,6 +149,15 @@ buffer:
 renderer:
   render_freq: 1000
   save_dir: *save_dir
+
+metrics:
+  tiers: [0, 1, 2]
+  emit_every: 1
+  # include: an exact allow-list. Leave it null/empty for "no allow-list";
+  # naming keys here restricts logging to exactly those.
+  include: null
+  exclude: []
+  dual_emit: false
 
 callbacks:
   - type: WandbCallback

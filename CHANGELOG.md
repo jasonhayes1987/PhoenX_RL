@@ -7,14 +7,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - A Metrics Reference guide (`docs/how-to/metrics-reference.md`) documenting
-  every metric PhoenX can log, what it measures, and how to read it — including
-  the interpretation traps: `buffer/fill` has one definition but three
-  behaviors across the buffer types, `buffer/is_ready` is not the warmup gate,
-  `optim/updates_per_env_step` is not the replay ratio of the literature and is
-  not comparable across algorithm families, and a missing key means "not
-  recorded" rather than zero. Also lists the legacy flat names still emitted
-  alongside the namespaced keys, and the diagnostics that are deliberately not
-  implemented yet.
+  the metrics PhoenX can log, what each one measures, and how to read it —
+  including the interpretation traps: `buffer/fill` has one definition but
+  three behaviors across the buffer types, `buffer/is_ready` is not the
+  warmup gate, `optim/updates_per_env_step` is not the replay ratio of the
+  literature and is not comparable across algorithm families, and a missing
+  key means "not recorded" rather than zero. Also lists the legacy flat names
+  still emitted alongside the namespaced keys, and the diagnostics that are
+  deliberately not implemented yet. Coverage is not exhaustive by
+  construction — the guide names its own gaps rather than claiming to be a
+  complete list.
 - A centralized, logger-agnostic metrics system: `phoenx.metrics`
   (`MetricsManager`, `MetricSpec`, `METRIC_REGISTRY`, `NullRecorder`) owns
   namespacing, windowed reduction, cadence, and capability gating for a
@@ -33,9 +35,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/how-to/configurations.md`. This does not yet cover per-module
   gradient norms, pre-clip norms, param norms, or update/weight ratios — see
   the single optimizer-activity counter added below for the only optimizer
-  telemetry so far — nor metrics needing new computation inside `learn()`,
-  recurrent-specific metrics, or a held-out evaluation harness for
-  off-policy explained variance.
+  telemetry so far — nor recurrent-specific metrics or a held-out evaluation
+  harness for off-policy explained variance. Metrics that need new
+  computation inside `learn()` are not out of scope in general — see
+  `value/pred_mean` below, added later in this same section — but per-module
+  gradient/pre-clip/param norms, update/weight ratios, recurrent-specific
+  diagnostics, and the held-out evaluation harness remain unimplemented.
+- `value/pred_mean`: mean predicted state value V(s), gated on the agent
+  having a `value` branch (`has_value`) and dual-emitted under the legacy
+  name `value_predictions`. `REINFORCE`, `ActorCritic`, and `PPO` now report
+  it from five `learn()` code paths: one in `Reinforce.learn`, one each in
+  `ActorCritic`'s feedforward and recurrent update paths, and one each in
+  `PPO`'s feedforward and recurrent update paths. It is a separate spec from
+  the existing off-policy `critic/value_pred_mean` — the two measure
+  different quantities, V(s) versus Q(s, a), and giving one spec both
+  aliases would have put a spurious `critic_predictions` series on every
+  on-policy run and a spurious `value_predictions` series on every
+  off-policy run.
 - Buffer occupancy/readiness and optimizer-activity metrics: `buffer/fill`,
   `buffer/env_steps`, `buffer/is_ready` (every buffer), and
   `buffer/pending_trajectories` (`TrajectoryBuffer` only), gated on the
@@ -157,8 +173,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the former top-level `*_lr_schedule` blocks are per-branch
   `lr_scheduler` entries (PPO policy 3e-4 → 1e-5; SAC policy/critic/critic_b
   7.3e-4 → 0.0).
-- Phase 4 of the docstring-and-docs-completion plan finished the eight how-to
-  TODOs across `docs/how-to/configurations.md` (config anatomy, the builder
+- Finished the eight outstanding how-to TODOs across
+  `docs/how-to/configurations.md` (config anatomy, the builder
   key reference, Isaac `cfg` resolution, and new-environment steps),
   `docs/how-to/getting-started.md` (training console output, checkpoint and
   log locations, W&B behavior, and agent evaluation), and
@@ -201,12 +217,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `phoenx.distributions`, `phoenx.builder`, `phoenx.her`, `phoenx.trainer`,
   `phoenx.rl_callbacks`, `phoenx.normalizer`, `phoenx.buffer`,
   `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.intrinsic_motivation`,
-  `phoenx.env_wrapper`, `phoenx.models`, and `phoenx.rl_agents`
-  (docstring-and-docs-completion plan). `rl_agents` was the last of the 15 nav
-  modules: `ruff --select D` on it went from 42 to zero across three class-group
-  passes, and `mkdocs build --strict` now completes with zero griffe warnings
-  for the first time in this plan (it was at 2, both from this file, and 53 when
-  the plan started). Across the three passes the prose was corrected to match
+  `phoenx.env_wrapper`, `phoenx.models`, and `phoenx.rl_agents`. `rl_agents`
+  was the last of the 15 nav modules: `ruff --select D` on it went from 42 to
+  zero across three class-group passes, and `mkdocs build --strict` now
+  completes with zero griffe warnings for the first time (it was at 2, both
+  from this file, and 53 when this documentation effort began). Across the
+  three passes the prose was corrected to match
   the code: `_setup_save_dir` no longer claims to append the agent name (it
   returns the requested path unchanged); on-policy class docs stopped referring to a
   nonexistent `curiosity` field and legacy `Stochastic*Policy` / `ValueModel`
@@ -259,6 +275,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unchanged either way, and nothing in the package reads this field.
 
 ### Removed
+- `tests/test_example_configs.py::test_packaged_matches_repo_configs`, which
+  asserted that each bundled example under `phoenx.examples` parsed identically
+  to a same-named file in the repository's top-level `configs/` directory. That
+  directory is personal and untracked, so the test skipped on every fresh clone
+  and in CI and only ever ran on one machine, and it coupled shipped package
+  data to a working tree that is deliberately not part of the project. Its only
+  failure mode was a maintainer intentionally diverging an example from their
+  own copy. No coverage is lost:
+  `tests/test_builders.py::TestBundledConfigSchema` is already parametrized
+  over `available_example_configs()` and loads every bundled name, so the
+  properties worth pinning — each name resolves, parses, and speaks the current
+  schema — remain covered.
 - The `offpolicy/buffer_fill` and `offpolicy/replay_ratio` metrics, gated on
   the agent's class name being DDPG/TD3/SAC even though buffer occupancy is
   a property of the buffer, declared on the `Buffer` ABC, not of the agent
@@ -308,6 +336,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- `metrics.include: []` in a training YAML disabled every metric instead of
+  meaning "no allow-list". Because an unrecognized key still passes through
+  `MetricsManager` under its own flat name, the result was a run logging *only*
+  legacy flat metrics and no namespaced ones — the exact opposite of what the
+  block was configured for, and easy to write by accident since `exclude: []`
+  immediately below it *is* a correct no-op. An empty `include` (list or tuple)
+  now means "no allow-list, gate on `tiers`"; a non-empty one still restricts
+  logging to exactly those keys. `MetricsManager` additionally logs a warning
+  whenever gating leaves zero metrics enabled, since that state always produces
+  the same misleading legacy-only output however it is reached — an `include`
+  naming no registered key, an empty `tiers`, or an `exclude` covering
+  everything.
 - `_trial_dirname_creator`'s docstring and the hyperparameter-sweeps how-to's
   "Windows paths" note both claimed trial directories are always
   `trial_<zero-padded index>` (e.g. `trial_00001`). That shape only holds

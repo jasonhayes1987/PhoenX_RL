@@ -155,8 +155,8 @@ class TestBuildScheduler:
 
     @pytest.mark.parametrize("pbt_name", ["pbt", "population_based_training"])
     def test_pbt_raises_informative_value_error(self, pbt_name):
-        """The plan's own example sweep (refine phase) uses PBT; a user will
-        hit this, so the message must clearly say PBT is not supported yet."""
+        """PBT is a natural scheduler choice for a sweep's refine phase; a user
+        will hit this, so the message must clearly say PBT is not supported yet."""
         with pytest.raises(ValueError) as excinfo:
             build_scheduler({"tune": {"scheduler": {"type": pbt_name}}})
         message = str(excinfo.value)
@@ -318,7 +318,7 @@ class TestTrialOrdinalHelpers:
         assert _resolve_trial_ordinal({}, "optimizers", "local") is None
 
     def test_resolve_ordinal_falls_back_and_logs_warning_when_actor_lookup_raises(self, monkeypatch, caplog):
-        """C3(e) / AMENDMENT A: a raising `ray.get_actor` never escapes, and -- once a phase HAS a counter -- resolution must return `None` for BOTH id shapes, never falling through to the trial-id `_NNNNN` index. Actor ordinals are trial *start* order; the trial-id index is Ray's *creation* order. Mixing them on a dead counter collides: a trial that started third already holds actor ordinal 3, and a surviving trial `x_00002` would independently compute `int("00002")+1 == 3` from its own index -- two different runs both named `...-0003of0010`. The index fallback is legitimate ONLY when the phase has no counter at all (see the sibling test above), where it is the phase's only numbering and so is collision-free. Still logs a WARNING naming the phase and the trial id."""
+        """C3(e): a raising `ray.get_actor` never escapes, and -- once a phase HAS a counter -- resolution must return `None` for BOTH id shapes, never falling through to the trial-id `_NNNNN` index. Actor ordinals are trial *start* order; the trial-id index is Ray's *creation* order. Mixing them on a dead counter collides: a trial that started third already holds actor ordinal 3, and a surviving trial `x_00002` would independently compute `int("00002")+1 == 3` from its own index -- two different runs both named `...-0003of0010`. The index fallback is legitimate ONLY when the phase has no counter at all (see the sibling test above), where it is the phase's only numbering and so is collision-free. Still logs a WARNING naming the phase and the trial id."""
         import phoenx.ray_tune as ray_tune_mod
 
         def _raise_runtime_error(name):
@@ -384,10 +384,9 @@ class TestTrialOrdinalHelpers:
         assert isinstance(result, int)
 
     # -------------------------------------------------------------------
-    # C3b: _resolve_trial_ordinal never raises, for hostile input. Folds in
-    # (and corrects, per AMENDMENT A) the earlier Phase B exploration of
-    # this same territory: the with-counter cases below now assert `None`
-    # rather than a trial-id-index fallback.
+    # C3b: _resolve_trial_ordinal never raises, for hostile input. The
+    # with-counter cases below assert `None` rather than a trial-id-index
+    # fallback.
     # -------------------------------------------------------------------
     @pytest.mark.parametrize(
         "trial_id,expected",
@@ -416,7 +415,7 @@ class TestTrialOrdinalHelpers:
         assert _resolve_trial_ordinal({}, "optimizers", trial_id) == expected
 
     def test_c3b_non_string_phase_counter_with_failing_lookup_returns_none(self, monkeypatch, caplog):
-        """C3b + AMENDMENT A: `sweep["_phase_counter"]` holding a non-string (e.g. a stray int from a malformed sweep dict) is still merely truthy to the `if counter_name:` check; a real `ray.get_actor` would reject it, that rejection must be swallowed (not propagate as a `TypeError`), and -- because the phase HAS a counter -- the result must be `None`, not a trial-id-index guess."""
+        """C3b: `sweep["_phase_counter"]` holding a non-string (e.g. a stray int from a malformed sweep dict) is still merely truthy to the `if counter_name:` check; a real `ray.get_actor` would reject it, that rejection must be swallowed (not propagate as a `TypeError`), and -- because the phase HAS a counter -- the result must be `None`, not a trial-id-index guess."""
         import phoenx.ray_tune as ray_tune_mod
 
         def _fake_get_actor(name):
@@ -430,7 +429,7 @@ class TestTrialOrdinalHelpers:
         assert result is None
 
     def test_c3b_actor_ordinal_remote_call_itself_raising_returns_none(self, monkeypatch):
-        """C3b + AMENDMENT A: distinct from C3(e) (which raises inside `ray.get_actor`), this raises while evaluating `actor.ordinal.remote(trial_id)` itself -- i.e. before `ray.get` is even reached -- and must be caught by the same `except Exception` and resolve to `None`, not the trial-id index."""
+        """C3b: distinct from C3(e) (which raises inside `ray.get_actor`), this raises while evaluating `actor.ordinal.remote(trial_id)` itself -- i.e. before `ray.get` is even reached -- and must be caught by the same `except Exception` and resolve to `None`, not the trial-id index."""
         import phoenx.ray_tune as ray_tune_mod
 
         class _BrokenOrdinalRemote:
@@ -447,7 +446,7 @@ class TestTrialOrdinalHelpers:
         assert result is None
 
     def test_c3b_actor_answer_not_int_convertible_returns_none(self, monkeypatch):
-        """C3b + AMENDMENT A: the actor answering with a value `int()` rejects (e.g. a non-numeric string) must resolve to `None`, not fall back to the trial-id index -- once a phase has a counter, "the actor said something unusable" means "position unknown", not "ask the trial id instead"."""
+        """C3b: the actor answering with a value `int()` rejects (e.g. a non-numeric string) must resolve to `None`, not fall back to the trial-id index -- once a phase has a counter, "the actor said something unusable" means "position unknown", not "ask the trial id instead"."""
         import phoenx.ray_tune as ray_tune_mod
 
         class _StubOrdinalRemote:
@@ -465,9 +464,9 @@ class TestTrialOrdinalHelpers:
         assert result is None
 
     # -------------------------------------------------------------------
-    # PHASE B: `_format_trial_ordinal` when the ordinal is WIDER than the
-    # total -- an errored trial still consumed an ordinal, so ordinal > total
-    # is a legitimate runtime state, not just an input-validation curiosity.
+    # `_format_trial_ordinal` when the ordinal is WIDER than the total --
+    # an errored trial still consumed an ordinal, so ordinal > total is a
+    # legitimate runtime state, not just an input-validation curiosity.
     # -------------------------------------------------------------------
     @pytest.mark.parametrize(
         "ordinal,total,expected",
@@ -477,7 +476,7 @@ class TestTrialOrdinalHelpers:
         ],
     )
     def test_format_trial_ordinal_wider_than_total_is_not_truncated(self, ordinal, total, expected):
-        """PHASE B: an ordinal wider than `total` renders in full (Python's `d` format only pads to a MINIMUM width; it never truncates), so a phase whose planned total undershoots reality still gets a sane, readable run-name suffix instead of a truncated or raising one."""
+        """An ordinal wider than `total` renders in full (Python's `d` format only pads to a MINIMUM width; it never truncates), so a phase whose planned total undershoots reality still gets a sane, readable run-name suffix instead of a truncated or raising one."""
         assert _format_trial_ordinal(ordinal, total) == expected
 
 
@@ -515,7 +514,7 @@ class TestPhaseTrialTotal:
         [5, None, 3.14, True],
     )
     def test_unsized_grid_search_value_is_skipped_not_raising(self, grid_search_value):
-        """PHASE B: a malformed `grid_search` value with no `len()` (an int/None/float/bool instead of a list) hits the `except TypeError: continue` branch -- Phase A's matrix only covered proper lists (including the empty-list case); a scalar `grid_search:` value is a plausible hand-authored YAML typo this must not crash on."""
+        """A malformed `grid_search` value with no `len()` (an int/None/float/bool instead of a list) hits the `except TypeError: continue` branch -- the matrix above only covers proper lists (including the empty-list case); a scalar `grid_search:` value is a plausible hand-authored YAML typo this must not crash on."""
         space = {"a": {"grid_search": grid_search_value}}
         assert _phase_trial_total(space, 10, expand_grid=True, num_seed_points=0) == 10
 
@@ -778,7 +777,7 @@ class TestInjectTrialCallbacks:
         assert len([cb for cb in config["callbacks"] if cb.get("type") == "RayTuneCallback"]) == 1
 
     def test_c13_dead_counter_degrades_without_raising_and_logs_a_warning(self, monkeypatch, caplog):
-        """C13 / AMENDMENT A (CORRECTED): a dead/unreachable actor never fails a trial, and -- because the phase HAS a counter -- BOTH id shapes must degrade all the way to the raw trial id, with NO `ray/trial_ordinal`. A random-shaped id must NOT fall back to its own `_NNNNN` index once a counter is configured: actor ordinals are trial *start* order and the trial-id index is Ray's *creation* order, so inventing a number from the id after the actor has died would collide with start-order ordinals the actor already issued to other trials before it died (contrast C5, where NO counter is configured and the index fallback is the phase's only, collision-free, numbering). Both cases log a WARNING naming the phase and the trial id."""
+        """C13: a dead/unreachable actor never fails a trial, and -- because the phase HAS a counter -- BOTH id shapes must degrade all the way to the raw trial id, with NO `ray/trial_ordinal`. A random-shaped id must NOT fall back to its own `_NNNNN` index once a counter is configured: actor ordinals are trial *start* order and the trial-id index is Ray's *creation* order, so inventing a number from the id after the actor has died would collide with start-order ordinals the actor already issued to other trials before it died (contrast C5, where NO counter is configured and the index fallback is the phase's only, collision-free, numbering). Both cases log a WARNING naming the phase and the trial id."""
         import phoenx.ray_tune as ray_tune_mod
 
         def _raise_runtime_error(name):
@@ -811,7 +810,7 @@ class TestInjectTrialCallbacks:
     def test_extra_config_survives_build_trainer_from_config_and_get_config_round_trip(
         self, monkeypatch, tmp_path, force_cpu
     ):
-        """PHASE B integration: the `extra_config` `_inject_trial_callbacks` builds
+        """Integration check: the `extra_config` `_inject_trial_callbacks` builds
         must survive a real `build_trainer_from_config` -> `Trainer.get_config()`
         round trip (`_inject_trial_callbacks`'s own docstring names `rl_trainable`
         as its caller, and `rl_trainable` immediately hands the mutated config to
@@ -819,10 +818,10 @@ class TestInjectTrialCallbacks:
         round trip in isolation (already pinned by C9 in `test_rl_callbacks.py`).
         Also confirms the WHOLE resulting trial config -- `sweep_params` and
         `extra_config` together -- is still `json.dumps`-able, matching what
-        `Trainer.save()`'s plain `json.dump` needs mid-run. Phase A could not
-        anticipate this because it is a cross-module path (`ray_tune` ->
-        `builder` -> `rl_callbacks`) invisible from any single function's
-        contract text."""
+        `Trainer.save()`'s plain `json.dump` needs mid-run. This is a
+        cross-module path (`ray_tune` -> `builder` -> `rl_callbacks`) invisible
+        from any single function's contract text, so it needs its own
+        integration-level test."""
         import phoenx.ray_tune as ray_tune_mod
 
         monkeypatch.setattr(ray_tune_mod.tune, "get_context", lambda: _FakeTrialContext("2c7b5_00006"))
@@ -973,7 +972,7 @@ class TestRunPhaseCounterLifecycle:
     def test_c11a_stashes_counter_name_and_correctly_gated_phase_trial_total(
         self, monkeypatch, tmp_path, search_alg_type, expected_total
     ):
-        """C11a (CORRECTED): `run_phase` stashes the counter's NAME (never its handle, checked by walking the ENTIRE captured `with_parameters` kwargs recursively -- risk R7 is about a handle reaching the object store from any depth, not just the top level), the sweep name, and a phase trial total that expands a 3-value grid only for `random`/`variant_generator` searchers -- not for e.g. `optuna`. All three phases now declare a `wandb:` block (AMENDMENT B / C16: with no `wandb:` block, `run_phase` must not even call `_start_phase_counter`, so a wandb-less phase here would no longer exercise this contract once that gating lands)."""
+        """C11a: `run_phase` stashes the counter's NAME (never its handle, checked by walking the ENTIRE captured `with_parameters` kwargs recursively, since an actor handle can reach the object store from any depth, not just the top level), the sweep name, and a phase trial total that expands a 3-value grid only for `random`/`variant_generator` searchers -- not for e.g. `optuna`. All three phases now declare a `wandb:` block (C16: with no `wandb:` block, `run_phase` must not even call `_start_phase_counter`, so a wandb-less phase here would no longer exercise this contract once that gating lands)."""
         sentinel_handle, _stop_calls, calls = self._patch(monkeypatch)
         phase = self._grid_phase(search_alg_type, wandb=True)
 
@@ -988,7 +987,7 @@ class TestRunPhaseCounterLifecycle:
         assert not self._contains_value(calls[0], sentinel_handle)
 
     def test_c11a_num_seed_points_gated_to_random_searcher_only(self, monkeypatch, tmp_path):
-        """FINDING 7: `num_seed_points` (the overshoot-bail-out input to `_phase_trial_total`) must be counted only for `search_alg.type == "random"` -- verified against Ray 2.52, only `BasicVariantGenerator` can run more trials than `num_samples`, and only when actually handed presets; `_POINTS_TO_EVALUATE_SUPPORTED` drops a `variant_generator` phase's seeds outright, and every other searcher's `SearchGenerator.is_finished` hard-caps at `num_samples`. An `optuna` phase seeded with 11 points and `num_samples=10` must therefore stash `_phase_trial_total == 10` (the seed count must NOT be forwarded and trigger the overshoot-guard's `None`)."""
+        """`num_seed_points` (the overshoot-bail-out input to `_phase_trial_total`) must be counted only for `search_alg.type == "random"` -- verified against Ray 2.52, only `BasicVariantGenerator` can run more trials than `num_samples`, and only when actually handed presets; `_POINTS_TO_EVALUATE_SUPPORTED` drops a `variant_generator` phase's seeds outright, and every other searcher's `SearchGenerator.is_finished` hard-caps at `num_samples`. An `optuna` phase seeded with 11 points and `num_samples=10` must therefore stash `_phase_trial_total == 10` (the seed count must NOT be forwarded and trigger the overshoot-guard's `None`)."""
         _sentinel_handle, _stop_calls, calls = self._patch(monkeypatch)
         phase = {
             "name": "p1",
@@ -1039,7 +1038,7 @@ class TestRunPhaseCounterLifecycle:
         assert stop_calls == [sentinel_handle]
 
     def test_c16_no_wandb_block_never_starts_a_counter(self, monkeypatch, tmp_path):
-        """C16 / AMENDMENT B: `run_phase` must create NO counter actor for a phase with no `wandb:` block -- every phase of every sweep paying for a counter round trip (and blocking the driver on it) it will never read from would violate invariant 7, "sweeps with no wandb: block behave exactly as today". Uses a call-COUNTING recorder in place of `_start_phase_counter` rather than the unconditional lambda `_patch` installs, so a call that happens despite the missing `wandb:` block is visible. Also asserts clause (a)'s second half: the sweep dict handed to the trainable carries no live `_phase_counter`, so `_resolve_trial_ordinal` cannot mistake this phase for one that has a counter configured."""
+        """C16: `run_phase` must create NO counter actor for a phase with no `wandb:` block -- every phase of every sweep paying for a counter round trip (and blocking the driver on it) it will never read from would break the guarantee that a sweep with no `wandb:` block behaves exactly as it did before counters existed. Uses a call-COUNTING recorder in place of `_start_phase_counter` rather than the unconditional lambda `_patch` installs, so a call that happens despite the missing `wandb:` block is visible. Also asserts that the sweep dict handed to the trainable carries no live `_phase_counter`, so `_resolve_trial_ordinal` cannot mistake this phase for one that has a counter configured."""
         import phoenx.ray_tune as ray_tune_mod
 
         _sentinel_handle, _stop_calls, calls = self._patch(monkeypatch)
@@ -1109,14 +1108,14 @@ class TestRunPhaseCounterLifecycle:
 
 
 # =============================================================================
-# 5c. PHASE B: _start_phase_counter / _stop_phase_counter / _phase_counter_name
-# failure paths and name shape -- no Ray cluster. C11a-C11c (above) only drove
-# these through `run_phase`'s wrapper with `_start_phase_counter` itself
-# stubbed out entirely; these test the two private helpers directly.
+# 5c. _start_phase_counter / _stop_phase_counter / _phase_counter_name failure
+# paths and name shape -- no Ray cluster. C11a-C11c (above) only drove these
+# through `run_phase`'s wrapper with `_start_phase_counter` itself stubbed
+# out entirely; these test the two private helpers directly.
 # =============================================================================
 class TestPhaseCounterLifecycleHelpers:
     def test_phase_counter_name_shape_and_uniqueness_across_start_calls(self, monkeypatch):
-        """PHASE B: `_phase_counter_name`'s exact f-string shape, and that two
+        """`_phase_counter_name`'s exact f-string shape, and that two
         `_start_phase_counter` calls for the SAME sweep/phase never collide
         (the random token is what prevents two concurrent sweeps under one
         Ray namespace from colliding on the same actor name)."""
@@ -1164,7 +1163,7 @@ class TestPhaseCounterLifecycleHelpers:
     def test_start_phase_counter_returns_none_none_when_actor_creation_itself_raises(
         self, monkeypatch, caplog
     ):
-        """PHASE B: `_PhaseTrialCounter.options(name=...).remote()` raising (e.g. the cluster is out of resources) must degrade to `(None, None)`, log a WARNING naming the phase, and never call `ray.kill` -- no actor handle was ever created, so there is nothing to kill."""
+        """`_PhaseTrialCounter.options(name=...).remote()` raising (e.g. the cluster is out of resources) must degrade to `(None, None)`, log a WARNING naming the phase, and never call `ray.kill` -- no actor handle was ever created, so there is nothing to kill."""
         import phoenx.ray_tune as ray_tune_mod
 
         class _StubOptions:
@@ -1191,7 +1190,7 @@ class TestPhaseCounterLifecycleHelpers:
     def test_start_phase_counter_kills_half_created_actor_when_readiness_wait_fails(
         self, monkeypatch, caplog
     ):
-        """PHASE B: when actor creation SUCCEEDS but the readiness `ray.get(..., timeout=...)` raises (e.g. it times out), `_start_phase_counter` must still return `(None, None)` AND kill the half-created actor via the real `_stop_phase_counter` -- otherwise a phase that "fails to start a counter" would silently leak a live actor for the rest of the Ray session."""
+        """When actor creation SUCCEEDS but the readiness `ray.get(..., timeout=...)` raises (e.g. it times out), `_start_phase_counter` must still return `(None, None)` AND kill the half-created actor via the real `_stop_phase_counter` -- otherwise a phase that "fails to start a counter" would silently leak a live actor for the rest of the Ray session."""
         import phoenx.ray_tune as ray_tune_mod
 
         sentinel_handle = object()
@@ -1219,7 +1218,7 @@ class TestPhaseCounterLifecycleHelpers:
         assert kill_calls == [sentinel_handle]
 
     def test_stop_phase_counter_swallows_a_raising_ray_kill(self, monkeypatch, caplog):
-        """PHASE B: `ray.kill(handle)` raising (e.g. the actor already died on its own) must not propagate out of `_stop_phase_counter` -- it runs from `run_phase`'s `finally`, where a raised exception would mask (or replace) the trial failure already being handled."""
+        """`ray.kill(handle)` raising (e.g. the actor already died on its own) must not propagate out of `_stop_phase_counter` -- it runs from `run_phase`'s `finally`, where a raised exception would mask (or replace) the trial failure already being handled."""
         import phoenx.ray_tune as ray_tune_mod
 
         monkeypatch.setattr(
@@ -1231,7 +1230,7 @@ class TestPhaseCounterLifecycleHelpers:
             ray_tune_mod._stop_phase_counter(object())  # must not raise
 
     def test_stop_phase_counter_none_handle_is_a_pure_noop(self, monkeypatch):
-        """PHASE B: `_stop_phase_counter(None)` (the shape `_start_phase_counter` returns on its own failure path) must not touch `ray.kill` at all."""
+        """`_stop_phase_counter(None)` (the shape `_start_phase_counter` returns on its own failure path) must not touch `ray.kill` at all."""
         import phoenx.ray_tune as ray_tune_mod
 
         monkeypatch.setattr(

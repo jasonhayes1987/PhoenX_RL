@@ -1,6 +1,6 @@
 """Smoke training gates: short seeded runs that prove the library still learns.
 
-Run with ``pytest -m smoke``. See ``.cursor/skills/behavior-gates/SKILL.md``.
+Run with ``pytest -m smoke``.
 
 These are the only tests in the suite that would notice a silent numerical
 defect. A sign error in an advantage, a bootstrap across a truncation boundary,
@@ -25,8 +25,8 @@ WIRING
 train/eval path and returns the mean evaluation return. The three learning
 tests (``test_ppo_learns_cartpole``, ``test_sac_learns_pendulum``,
 ``test_td3_learns_pendulum``) are skipped until thresholds measured on seeds 0
-and 1 are approved (Phase 4b); ``test_training_is_seed_deterministic`` is not
-skipped and must pass today.
+and 1 are approved; ``test_training_is_seed_deterministic`` is not skipped and
+must pass today.
 """
 
 from __future__ import annotations

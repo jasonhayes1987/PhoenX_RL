@@ -1,6 +1,6 @@
 """Golden numerical tests: PhoenX against independently written references.
 
-Run with ``pytest -m golden``. See ``.cursor/skills/run-tests/SKILL.md``.
+Run with ``pytest -m golden``.
 
 The rule that makes this file worth anything: **every expected value here is
 produced by code written independently of PhoenX** — a closed-form identity or
@@ -386,10 +386,10 @@ def test_normalizer_incremental_matches_batch(seed):
 def test_normalizer_round_trips_through_checkpoint(tmp_path):
     """Save/restore preserves statistics exactly and the next update agrees.
 
-    This is the regression test for the trial-boundary serialization defect in
-    the hazard ledger. Identical statistics after a reload is necessary but not
-    sufficient — the second half asserts that the RESTORED object continues to
-    behave like the one that was never interrupted.
+    This is the regression test for a trial-boundary serialization defect.
+    Identical statistics after a reload is necessary but not sufficient — the
+    second half asserts that the RESTORED object continues to behave like the
+    one that was never interrupted.
     """
     rng = np.random.default_rng(0)
     warmup = rng.normal(size=(200, 4))
@@ -423,9 +423,9 @@ def test_normalizer_statistics_frozen_during_evaluation(training):
     """Neither train- nor eval-mode ``normalize`` calls may move running stats.
 
     ``RunningNorm.normalize`` always reads tracked ``running_mean`` /
-    ``running_std`` regardless of ``training`` (decision 2 in the plan) — only
-    ``add`` / ``update`` change them. This checks both modes so a future
-    change that makes ``normalize`` train-mode-sensitive gets caught.
+    ``running_std`` regardless of ``training`` — only ``add`` / ``update``
+    change them. This checks both modes so a future change that makes
+    ``normalize`` train-mode-sensitive gets caught.
     """
     rng = np.random.default_rng(1)
     norm = PhoenxNormalizer(4)

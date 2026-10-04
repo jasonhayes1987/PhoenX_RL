@@ -791,6 +791,9 @@ class Reinforce(Agent):
 
         Returns:
             Metrics dict (policy/value loss, advantages, returns, entropy, LRs).
+                ``value_predictions`` (mean predicted state value) is present
+                only when this agent has a value head, i.e. when it was built
+                with a ``value`` branch.
         """
         self._learn_count += 1
         if self._diag_freq is not None:
@@ -1162,7 +1165,8 @@ class ActorCritic(Agent):
             **kwargs: Unused; accepted for ``Agent.learn`` API compatibility.
 
         Returns:
-            Metrics dict (losses, TD error, advantages, returns, entropy, LRs).
+            Metrics dict (losses, TD error, advantages, returns, mean
+                predicted state value as ``value_predictions``, entropy, LRs).
         """
         self._learn_count += 1
         if self._diag_freq is not None:
@@ -1779,8 +1783,9 @@ class PPO(Agent):
             **kwargs: Unused; accepted for ``Agent.learn`` API compatibility.
 
         Returns:
-            Metrics dict (losses, entropy, KL, clips, coefficients, LRs, and
-            optional intrinsic-motivation scalars).
+            Metrics dict (losses, entropy, KL, clips, coefficients, LRs, mean
+                predicted state value as ``value_predictions``, and optional
+                intrinsic-motivation scalars).
         """
         self._learn_count += 1
         if self._diag_freq is not None:

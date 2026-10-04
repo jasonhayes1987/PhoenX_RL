@@ -1,6 +1,7 @@
 # Metrics Reference
 
-Every metric PhoenX can log, what it measures, and how to read it.
+What PhoenX can log, what it measures, and how to read it. Coverage is not yet
+exhaustive — see [Not yet implemented](#not-yet-implemented) for the gaps.
 
 Metrics are collected by `MetricsManager` and handed to whatever callbacks are
 configured. `WandbCallback` forwards them to Weights & Biases verbatim, so the
@@ -157,15 +158,41 @@ good; for PPO it often just means the clipping is saturated.
 |---|---|---|
 | `critic/td_error_mean` | all | Mean temporal-difference error on the training batch. |
 | `critic/value_pred_mean` | agents with a critic | Mean predicted value/Q over the batch. |
+| `value/pred_mean` | on-policy agents with a value head | Mean predicted state value V(s) over the batch. |
 | `critic/return_mean_batch` | all | Mean target return over the same batch. |
 
-**Read the last two together.** `critic/value_pred_mean` drifting persistently
-above `critic/return_mean_batch` is the classic signature of Q-value
+**`critic/value_pred_mean` versus `critic/return_mean_batch` (off-policy
+only).** `critic/value_pred_mean` drifting persistently above
+`critic/return_mean_batch` is the classic signature of Q-value
 overestimation, which is what twin critics exist to suppress. A widening gap on
 an off-policy run is worth acting on well before the return curve degrades.
+This reading applies only to the off-policy critic key: `REINFORCE`,
+`ActorCritic`, and `PPO` never log `critic/value_pred_mean` at all, since none
+of them owns a `critic` branch.
 
 `critic/td_error_mean` is a *signed* mean, so cancellation can hide large
 errors; it trending away from zero indicates systematic bias rather than noise.
+
+**`value/pred_mean` is a scale check, not a calibration pair with
+`critic/return_mean_batch`.** On-policy returns are built as
+`returns = advantages + values`, so over the same batch
+`mean(returns) - mean(value_pred)` is exactly `mean(advantages)` —
+already logged as `policy/advantage_mean` — for both GAE-based agents
+(`ActorCritic`, `PPO`) and REINFORCE's Monte Carlo returns. Comparing
+`value/pred_mean` against `critic/return_mean_batch` on an on-policy run tells
+you nothing that `policy/advantage_mean` does not already tell you more
+directly. What `value/pred_mean` genuinely gives you is the **absolute scale
+and drift of the value function**: a value head exploding toward large
+magnitudes or collapsing toward zero shows up here and nowhere else —
+`policy/advantage_mean` stays small either way, and `loss/value` is
+scale-confounded, since a large loss can mean a large error or simply a large
+target. It is also the natural sanity check against reward scale and discount:
+a bounded-reward task with a given `gamma` has a knowable range for V(s), and a
+value head far outside that range is misconfigured. Because V(s) and Q(s, a)
+are different quantities, on-policy runs chart `value/pred_mean` and
+off-policy runs chart `critic/value_pred_mean` — treat them as two distinct
+metrics that happen to serve a similar diagnostic purpose, not one metric
+under two names.
 
 ---
 
@@ -388,6 +415,7 @@ charts keep working. Prefer the new names for anything you build now.
 | `critic_loss` | `loss/critic` |
 | `temporal_difference`, `td_error` | `critic/td_error_mean` |
 | `critic_predictions` | `critic/value_pred_mean` |
+| `value_predictions` | `value/pred_mean` |
 | `returns` | `critic/return_mean_batch` |
 | `advantages` | `policy/advantage_mean` |
 | `entropy` | `policy/entropy` |
@@ -426,8 +454,19 @@ metrics:
   emit_every: 1        # env steps between emissions; raise to cut W&B traffic
   dual_emit: true      # also emit the legacy names above
   exclude: []          # exact keys to suppress, aliases included
-  include: null        # exact allow-list; null means "use tiers"
+  include: null        # exact allow-list; null or [] means "no allow-list"
 ```
+
+`include` is the one key here that is not a filter you can leave empty and
+forget. Setting it to a **non-empty** list restricts logging to exactly those
+keys; `null` and `[]` both mean "no allow-list, gate on `tiers` instead".
+
+If a run ever logs only flat legacy names and no namespaced ones, the cause is
+almost always that gating enabled nothing — an `include` naming no registered
+key, an empty `tiers`, or an `exclude` covering everything. With no metric
+enabled, values still reach the logger through the unmapped passthrough under
+their own flat names, so the failure looks like "the old metrics came back"
+rather than like silence. `MetricsManager` logs a warning when this happens.
 
 Raising `emit_every` is the first thing to reach for if W&B logging becomes a
 bottleneck — window state is retained across suppressed emissions, so

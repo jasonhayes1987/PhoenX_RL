@@ -29,7 +29,9 @@ Two construction strategies are used, chosen per contract:
 from __future__ import annotations
 
 import gc
+import itertools
 import json
+import logging
 import os
 import statistics
 import subprocess
@@ -77,7 +79,7 @@ OPT = {"type": "Adam", "params": {"lr": 1e-3}}
 
 
 # =============================================================================
-# Frozen legacy key sets (mandatory members only -- the plan marks some keys
+# Frozen legacy key sets (mandatory members only -- some keys are marked
 # optional per-agent with parentheses; those are omitted here unless the
 # fixture agent below is specifically configured to trigger them).
 # =============================================================================
@@ -951,7 +953,7 @@ def test_episode_completion_control_flow_unchanged_for_truncation_only(tmp_path)
 # CONTRACT: Evaluation steps do not contribute to the next training window and
 #           do not grow manager state without bound.
 #
-# VERIFY (amended -- see plan): part (b) must respect the pre-existing
+# VERIFY (amended): part (b) must respect the pre-existing
 # `valid_steps = ~self._prev_done` mask. A stub env that finishes an episode
 # on EVERY eval step leaves `_prev_done` True, which makes the immediately
 # following training step a phantom step whose reward is deliberately not
@@ -1125,7 +1127,7 @@ def test_rate_absent_on_first_emitting_collect():
 
 
 # =============================================================================
-# Bonus coverage implied (but not separately stated) by the normative text:
+# Bonus coverage implied by the documented behavior, but not separately stated:
 # record() vs record_many()'s differing treatment of unrecognized keys, the
 # reset()/collect() window-vs-persistent-state distinction, the pinned
 # Reduction/MetricSpec/METRIC_REGISTRY shapes, and build_metrics().
@@ -1413,7 +1415,7 @@ def test_record_many_when_canonical_key_and_its_alias_both_appear_together():
 
 def test_record_many_ambiguous_alias_falls_through_to_unmapped_bucket():
     """``entropy_coefficient`` aliases both ``onpolicy/entropy_coef`` and
-    ``sac/alpha``, but the plan guarantees (Table B note) they are never
+    ``sac/alpha``, but they are never
     simultaneously enabled since ``agent:sac`` and ``on_policy`` are disjoint
     capability tags -- so no real ``bind()`` call can reach the
     ``len(candidates) != 1`` fallback the algorithm's step 3 pins. Force it
@@ -1661,7 +1663,7 @@ def test_trainer_metrics_block_round_trips_byte_for_byte_through_save_load(tmp_p
 # rl_callbacks.py; the input it receives from collect() changed)
 # --------------------------------------------------------------------------- #
 def test_raytune_accumulate_aggregates_a_coerced_float_that_was_previously_a_tensor():
-    """Plan's "Accepted behavior change #1": ``entropy_coefficient`` used to
+    """Accepted behavior change: ``entropy_coefficient`` used to
     arrive at ``_accumulate`` as a live 0-dim tensor (silently skipped by its
     ``isinstance(value, (int, float))`` check) and now arrives as the plain
     float ``collect()`` always produces, so it is aggregated."""
@@ -1675,8 +1677,8 @@ def test_raytune_accumulate_aggregates_a_coerced_float_that_was_previously_a_ten
 
 
 def test_raytune_accumulate_still_skips_a_live_tensor_unchanged_by_this_feature():
-    """``rl_callbacks.py`` has no code changes (plan: "No changes"); a value
-    that is still literally a live tensor is skipped exactly as before. The
+    """``rl_callbacks.py`` is unchanged, so a value that is still literally a
+    live tensor is skipped exactly as before. The
     behavior change is entirely in what ``metrics.record()`` now hands this
     callback, never in ``_accumulate`` itself."""
     from phoenx.rl_callbacks import RayTuneCallback
@@ -1697,7 +1699,7 @@ def test_raytune_accumulate_still_skips_a_live_tensor_unchanged_by_this_feature(
 # dropped by `record`'s dim()!=0 check instead of being coerced.
 # --------------------------------------------------------------------------- #
 def test_f1_record_many_coerces_log_alpha_exp_instead_of_dropping_it(sac_agent, pendulum_env):
-    """Plan VERIFY: log_alpha = torch.zeros(1, requires_grad=True);
+    """log_alpha = torch.zeros(1, requires_grad=True);
     record_many({"entropy_coefficient": log_alpha.exp()}) on a manager bound
     to a SAC agent; assert collect()["sac/alpha"] == 1.0 and
     collect()["entropy_coefficient"] == 1.0."""
@@ -1719,7 +1721,7 @@ def test_f1_record_many_coerces_log_alpha_exp_instead_of_dropping_it(sac_agent, 
 
 @pytest.mark.slow
 def test_f1_entropy_coefficient_reaches_on_train_step_end_for_sac(tmp_path):
-    """Plan VERIFY (end-to-end half): a real short SAC train with
+    """End-to-end half: a real short SAC train with
     auto_entropy_tuning=True must deliver "entropy_coefficient" to
     on_train_step_end. PPO is deliberately excluded (pre-existing,
     unrelated RuntimeError at rl_agents.py:2004 when auto_entropy_tuning is
@@ -1744,7 +1746,7 @@ def test_f1_entropy_coefficient_reaches_on_train_step_end_for_sac(tmp_path):
 
 @pytest.mark.slow
 def test_f1_entropy_coefficient_reaches_on_train_step_end_for_actor_critic(tmp_path):
-    """Plan VERIFY (end-to-end half), ActorCritic side."""
+    """End-to-end half, ActorCritic side."""
     config = _actor_critic_auto_entropy_trainer_config(str(tmp_path / "run") + os.sep)
     trainer = build_trainer_from_config(config)
     cb = _RecordingCallback()
@@ -1770,7 +1772,7 @@ def test_f1_entropy_coefficient_reaches_on_train_step_end_for_actor_critic(tmp_p
 # cannot see this).
 # --------------------------------------------------------------------------- #
 def test_f2_exclude_suppresses_the_alias_too_when_driven_through_record_many():
-    """Plan VERIFY: MetricsManager(exclude=["loss/policy"]);
+    """MetricsManager(exclude=["loss/policy"]);
     record_many({"policy_loss": 0.5}); assert collect() == {} apart from
     health/non_finite, and specifically that "policy_loss" is absent."""
     mm = MetricsManager(exclude=["loss/policy"])
@@ -1805,7 +1807,7 @@ def test_f3_include_is_a_true_allowlist_that_replaces_the_tier_gate():
 
 
 def test_f3_include_sac_alpha_bound_to_ppo_enables_nothing(ppo_agent, cartpole_env):
-    """Plan VERIFY: MetricsManager(include=["sac/alpha"]) bound to a PPO
+    """MetricsManager(include=["sac/alpha"]) bound to a PPO
     agent enables nothing (it cannot force a disabled spec onto the wrong
     agent, AND it must not fall back to widening the tier gate for every
     other tier-0 spec)."""
@@ -1824,7 +1826,7 @@ def test_f3_include_sac_alpha_bound_to_ppo_enables_nothing(ppo_agent, cartpole_e
 # being dropped.
 # --------------------------------------------------------------------------- #
 def test_f4_record_many_drops_a_disabled_canonical_key_instead_of_unmapping_it():
-    """Plan VERIFY: MetricsManager() (unbound, so sac/alpha disabled);
+    """MetricsManager() (unbound, so sac/alpha disabled);
     record_many({"sac/alpha": 0.2}); assert "sac/alpha" not in collect()."""
     mm = MetricsManager()
     assert "sac/alpha" not in mm.enabled_keys()  # precondition: unbound, disabled
@@ -1842,11 +1844,11 @@ def test_f4_record_many_drops_a_disabled_canonical_key_instead_of_unmapping_it()
 # WINDOW_STD, which needs >=2 values recorded in the SAME collect() window;
 # at the default emit_every=1 a window is one env step, making the metric
 # structurally unreachable on a single-env run (it would need >=2 parallel
-# envs finishing episodes on the same step). The amended plan introduces
+# envs finishing episodes on the same step). The corrected contract uses
 # Reduction.ROLLING_STD, backed by a deque that survives collect().
 # --------------------------------------------------------------------------- #
 def test_f5_rollout_return_std_reachable_on_a_single_env_run_across_episodes(tmp_path):
-    """Plan VERIFY: drive a single-env stub trainer through 3 complete
+    """Drive a single-env stub trainer through 3 complete
     episodes with differing returns, calling collect() after each; assert
     rollout/return_std is present and equals the population std of the
     returns seen so far. Also assert absence after only one episode.
@@ -1893,8 +1895,8 @@ def test_f5_rollout_return_std_reachable_on_a_single_env_run_across_episodes(tmp
                 f"({returns_seen}) -- WINDOW_STD needs >=2 values in the SAME "
                 f"collect() window, which is structurally unreachable here "
                 f"since only one value is recorded between collect() calls; "
-                f"the amended plan requires a deque-backed ROLLING_STD that "
-                f"survives collect() instead."
+                f"a deque-backed ROLLING_STD is required instead, so that the "
+                f"window survives collect()."
             )
             assert collected["rollout/return_std"] == pytest.approx(expected), (
                 f"rollout/return_std == {collected.get('rollout/return_std')}, "
@@ -1923,6 +1925,98 @@ def test_f5_rollout_return_std_reachable_on_a_single_env_run_across_episodes(tmp
 # absolute step) rather than by accident, before the diagnostic edit was
 # reverted.
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# F7 (BLOCKER) -- `include=[]` was read as an allow-list of nothing, enabling
+# zero specs, instead of "no allow-list" (the natural YAML reading, matching
+# `exclude: []`'s existing no-op semantics). With zero specs enabled, every
+# legacy key an agent emits falls through record_many's unmapped bucket, so
+# a run configured this way logged ONLY legacy flat metrics and ZERO
+# namespaced ones -- the opposite of what dual_emit: false plus an "empty
+# filter" is meant to produce.
+# --------------------------------------------------------------------------- #
+def test_f7_empty_include_list_matches_none_and_omitted_for_a_bound_ppo_agent(ppo_agent, cartpole_env):
+    """MetricsManager(include=[]) must enable exactly the same keys as
+    MetricsManager(include=None) and MetricsManager() (include omitted), and
+    -- fed the identical PPO learn() return dict with dual_emit=False --
+    collect() to the identical result: namespaced keys present and every
+    PPO_FROZEN_KEYS legacy flat name absent (each of them aliases a spec
+    that is enabled under all three configurations for this agent, so none
+    fall through to the unmapped bucket)."""
+    sample = _rollout_sample(cartpole_env, discrete=True)
+    learn_output = ppo_agent.learn(0, sample, learning_epochs=2, mini_batch_size=4)
+
+    def _bind_and_collect(**kwargs):
+        mm = MetricsManager(dual_emit=False, **kwargs)
+        mm.bind(agent=ppo_agent, env=cartpole_env, buffer=None)
+        mm.record_many(learn_output)
+        return mm.enabled_keys(), mm.collect()
+
+    empty_enabled, empty_collected = _bind_and_collect(include=[])
+    none_enabled, none_collected = _bind_and_collect(include=None)
+    omitted_enabled, omitted_collected = _bind_and_collect()
+
+    assert empty_enabled, "expected a non-empty enabled set for a bound PPO agent"
+    assert empty_enabled == none_enabled == omitted_enabled
+    assert empty_collected == none_collected == omitted_collected
+
+    leaked = PPO_FROZEN_KEYS & empty_collected.keys()
+    assert not leaked, f"legacy flat keys leaked into collect() with include=[]: {leaked}"
+    namespaced = {k for k in empty_collected if "/" in k}
+    assert namespaced, "expected namespaced keys to be present with include=[]"
+
+
+def test_f7_empty_include_tuple_matches_none_for_a_bound_ppo_agent(ppo_agent, cartpole_env):
+    """Same property as above for `include=()`, since that is what a caller
+    constructing the manager directly in Python would plausibly pass instead
+    of a list."""
+    sample = _rollout_sample(cartpole_env, discrete=True)
+    learn_output = ppo_agent.learn(0, sample, learning_epochs=2, mini_batch_size=4)
+
+    def _bind_and_collect(**kwargs):
+        mm = MetricsManager(dual_emit=False, **kwargs)
+        mm.bind(agent=ppo_agent, env=cartpole_env, buffer=None)
+        mm.record_many(learn_output)
+        return mm.enabled_keys(), mm.collect()
+
+    tuple_enabled, tuple_collected = _bind_and_collect(include=())
+    none_enabled, none_collected = _bind_and_collect(include=None)
+
+    assert tuple_enabled, "expected a non-empty enabled set for a bound PPO agent"
+    assert tuple_enabled == none_enabled
+    assert tuple_collected == none_collected
+
+    leaked = PPO_FROZEN_KEYS & tuple_collected.keys()
+    assert not leaked, f"legacy flat keys leaked into collect() with include=(): {leaked}"
+
+
+def test_f7_bind_warns_when_gating_leaves_zero_specs_enabled(caplog):
+    """A gate that leaves enabled_keys() empty after bind() must log a
+    WARNING naming the misleading consequence -- reached here via `tiers=[]`
+    since the include=[] path no longer produces this state at all."""
+    mm = MetricsManager(tiers=[])
+    with caplog.at_level(logging.WARNING):
+        mm.bind(agent=object(), env=object(), buffer=None)
+
+    assert mm.enabled_keys() == frozenset()
+    warnings_ = [rec.message for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert any("legacy" in msg.lower() for msg in warnings_), (
+        f"expected a WARNING mentioning that only legacy names will be "
+        f"logged when gating enables nothing; got: {warnings_}"
+    )
+
+
+def test_f7_bind_does_not_warn_on_a_normal_default_bind(ppo_agent, cartpole_env, caplog):
+    """The zero-enabled warning must not fire on an ordinary bind, or it
+    becomes noise on every run and gets tuned out."""
+    mm = MetricsManager()
+    with caplog.at_level(logging.WARNING):
+        mm.bind(agent=ppo_agent, env=cartpole_env, buffer=None)
+
+    assert mm.enabled_keys()
+    warnings_ = [rec.message for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert not warnings_, f"unexpected WARNING on a normal bind: {warnings_}"
 
 
 # =============================================================================
@@ -2316,7 +2410,46 @@ def test_ppo_recurrent_value_pred_mean_uses_full_rollout_mask_not_minibatch_mask
 
     metrics = agent.learn(0, sample, learning_epochs=2, mini_batch_size=mini_batch_size)
 
-    assert metrics["value_predictions"] == pytest.approx(masked_mean, rel=1e-4, abs=1e-6)
+    assert metrics["value_predictions"] == pytest.approx(masked_mean, rel=1e-6, abs=0)
+
+
+def test_ppo_recurrent_value_pred_mean_differs_from_every_minibatch_env_subset(cartpole_env):
+    """CONTRACT 4a (negative side). ``T.randperm`` inside the agent makes the
+    specific last minibatch's env subset unobservable from outside, so this
+    enumerates every possible subset instead of trying to catch the one the
+    agent picked: with num_envs=6 and mini_batch_size=2 there are C(6, 2) =
+    15 candidate subsets, and the emitted value must differ from the
+    pre-epoch masked mean of each of them. That is the property a
+    per-minibatch-mask bug would violate for whichever subset it landed on,
+    and no single-subset assertion can state it."""
+    T.manual_seed(303)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs, mini_batch_size = 5, 6, 2
+    agent = _recurrent_ppo_agent(cartpole_env)
+    sample = _recurrent_value_masking_sample(traj_len, num_envs, obs_dim, outlier_env=1)
+
+    states_seq = sample["states"].transpose(0, 1).contiguous()
+    start_mask = sample["first_steps"].transpose(0, 1).bool()
+    hidden0 = agent.model.init_hidden(num_envs)
+    with T.no_grad():
+        out, _ = agent.model(states_seq, branches=("value",), hidden=hidden0,
+                              start_mask=start_mask, mode="sequence")
+    values_et = out["value"].squeeze(-1)
+    valid_mask = (~start_mask).float()
+
+    subset_means = []
+    for envs in itertools.combinations(range(num_envs), mini_batch_size):
+        idx = list(envs)
+        sub_mask = valid_mask[idx]
+        sub_count = sub_mask.sum().clamp(min=1.0)
+        subset_means.append(((values_et[idx] * sub_mask).sum() / sub_count).item())
+    assert len(subset_means) == 15
+
+    metrics = agent.learn(0, sample, learning_epochs=2, mini_batch_size=mini_batch_size)
+    emitted = metrics["value_predictions"]
+
+    for subset_mean in subset_means:
+        assert emitted != pytest.approx(subset_mean, rel=1e-6, abs=0)
 
 
 # --------------------------------------------------------------------------- #
@@ -2358,6 +2491,19 @@ def test_ppo_value_predictions_is_a_python_float_on_learn_return(ppo_agent, cart
     """CONTRACT 6 (PPO)."""
     sample = _rollout_sample(cartpole_env, discrete=True)
     metrics = ppo_agent.learn(0, sample, learning_epochs=2, mini_batch_size=4)
+    assert type(metrics["value_predictions"]) is float
+
+
+def test_ppo_recurrent_value_predictions_is_a_python_float_on_learn_return(cartpole_env):
+    """CONTRACT 6 (PPO recurrent, cur_values_et site): the site computes
+    (cur_values_et * valid_mask).sum().item() / valid_count.item(), a Python
+    float only if both .item() calls survive."""
+    T.manual_seed(707)
+    obs_dim = cartpole_env.single_observation_space.shape[0]
+    traj_len, num_envs = 5, 6
+    agent = _recurrent_ppo_agent(cartpole_env)
+    sample = _recurrent_value_masking_sample(traj_len, num_envs, obs_dim, outlier_env=0)
+    metrics = agent.learn(0, sample, learning_epochs=2, mini_batch_size=2)
     assert type(metrics["value_predictions"]) is float
 
 

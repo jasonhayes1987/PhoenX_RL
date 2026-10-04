@@ -774,7 +774,7 @@ def test_extra_config_merges_last_and_wins_over_colliding_sweep_param(monkeypatc
 
 
 def test_no_extra_config_and_no_sweep_params_leaves_config_as_plain_logs(monkeypatch, tmp_path):
-    """C8 (second case, CORRECTED): with neither `sweep_params` nor `extra_config` set, the recorded config IS `logs` -- identity, not merely equality. `==` would also pass an implementation that copies `logs` when there is nothing to merge; W1 requires the object itself pass through unchanged."""
+    """C8 (second case): with neither `sweep_params` nor `extra_config` set, the recorded config IS `logs` -- identity, not merely equality. `==` would also pass an implementation that copies `logs` when there is nothing to merge; the object itself must pass through unchanged."""
     cb = WandbCallback(project_name="p", run_name="r", group="g")
     init_recorder = _make_wandb_init_recorder()
     monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
@@ -786,10 +786,10 @@ def test_no_extra_config_and_no_sweep_params_leaves_config_as_plain_logs(monkeyp
 
 
 # -----------------------------------------------------------------------------
-# PHASE B: `extra_config` internal branches Phase A's contract text did not
-# force a test for -- an empty (falsy) dict, colliding with a real `logs`
-# key (not just a `sweep/`-prefixed one), and that adding `extra_config`
-# does not disturb the unrelated `self.tags` combination logic.
+# `extra_config`'s remaining internal branches: an empty (falsy) dict,
+# colliding with a real `logs` key (not just a `sweep/`-prefixed one), and
+# confirming that adding `extra_config` does not disturb the unrelated
+# `self.tags` combination logic.
 # -----------------------------------------------------------------------------
 def test_empty_extra_config_dict_behaves_as_absent(monkeypatch, tmp_path):
     """C8 (third case): `extra_config={}` is falsy and must be treated exactly like `extra_config=None` -- the recorded config IS `logs` (identity), not merely equal to it."""
@@ -818,7 +818,7 @@ def test_constructor_copies_extra_config_mutating_callers_dict_after_does_not_le
 def test_extra_config_can_override_a_real_logs_key_not_just_a_sweep_key(
     monkeypatch, tmp_path
 ):
-    """PHASE B: `extra_config` is merged in last against the FULL config (`logs` merged with any flattened `sweep_params`), so it can override a genuine `logs` key like `save_dir`, not only a `sweep/`-prefixed one -- Phase A's C8 test only exercised a `sweep/` collision."""
+    """`extra_config` is merged in last against the FULL config (`logs` merged with any flattened `sweep_params`), so it can override a genuine `logs` key like `save_dir`, not only a `sweep/`-prefixed one -- C8's other test only exercises a `sweep/` collision."""
     cb = WandbCallback(
         project_name="p",
         run_name="r",
@@ -837,7 +837,7 @@ def test_extra_config_can_override_a_real_logs_key_not_just_a_sweep_key(
 
 
 def test_extra_config_present_does_not_change_tag_combination(monkeypatch, tmp_path):
-    """PHASE B: `extra_config` being set must not interfere with the unrelated `self.tags` + call-site-`tags` + agent-type combination logic (a merge implemented by mutating the wrong dict, e.g. `logs` itself, could plausibly leak into `tags` handling too)."""
+    """`extra_config` being set must not interfere with the unrelated `self.tags` + call-site-`tags` + agent-type combination logic (a merge implemented by mutating the wrong dict, e.g. `logs` itself, could plausibly leak into `tags` handling too)."""
     cb = WandbCallback(
         "proj",
         run_name="r",

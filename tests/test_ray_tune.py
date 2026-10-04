@@ -1723,12 +1723,12 @@ def _ask_phase_counter(name: str, trial_id: str) -> int:
 @pytest.mark.slow
 class TestPhaseTrialCounterActor:
     def test_actor_preserves_ledger_contract_under_concurrency_and_stop_is_idempotent(self):
-        """FINDING 8 (C2b, CORRECTED): the Ray actor preserves 1-based/memoized/unique-per-id ordinals under REAL concurrency, and `_stop_phase_counter` is safe to call twice (and with `None`) without raising.
+        """C2b: the Ray actor preserves 1-based/memoized/unique-per-id ordinals under REAL concurrency, and `_stop_phase_counter` is safe to call twice (and with `None`) without raising.
 
-        The previous version submitted all 50 `ordinal.remote` asks from the
-        driver to a single-threaded actor; Ray orders those FIFO, so that
-        version could not fail regardless of whether the actor were safe under
-        concurrency -- it was not testing concurrency at all. This version fans
+        An earlier version of this test submitted all 50 `ordinal.remote` asks
+        from the driver to a single-threaded actor; Ray orders those FIFO, so
+        that version could not fail regardless of whether the actor were safe
+        under concurrency -- it was not testing concurrency at all. This version fans
         the asks out through `_ask_phase_counter.remote(...)` remote tasks
         instead, which also makes it a genuine cross-process test: the actual
         production caller (`_resolve_trial_ordinal`) runs inside a trial worker,
@@ -1763,11 +1763,11 @@ class TestPhaseTrialCounterActor:
                 ray.shutdown()
 
     def test_start_phase_counter_returns_an_immediately_resolvable_name(self):
-        """FINDING 9 (C15, CORRECTED): once `_start_phase_counter` returns a name, that name is immediately resolvable FROM ANOTHER PROCESS -- no sleep, no retry -- so the first trial of a phase cannot race actor registration.
+        """C15: once `_start_phase_counter` returns a name, that name is immediately resolvable FROM ANOTHER PROCESS -- no sleep, no retry -- so the first trial of a phase cannot race actor registration.
 
-        The previous version asserted `ray.get_actor(name)` on the DRIVER that
-        created the actor; a reviewer ran 20 iterations of create-then-lookup
-        with the readiness wait deleted and got 20/20 immediate resolution, so
+        An earlier version of this test asserted `ray.get_actor(name)` on the
+        DRIVER that created the actor; 20 iterations of create-then-lookup with
+        the readiness wait deleted gave 20/20 immediate resolution, so
         that assertion passes with or without the behavior it claims to pin --
         `ray.get_actor` on the creating process is simply not the thing that can
         race. The production caller is a trial WORKER, a different process; this

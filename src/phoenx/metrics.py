@@ -344,14 +344,24 @@ class MetricsManager(MetricsRecorder):
                 ``1`` emits every call (today's per-step behavior).
             include: Optional exact-key allow-list applied AFTER capability
                 gating; it cannot force a disabled spec (wrong agent/missing
-                capability) to enable.
+                capability) to enable. ``None`` **or empty** means "no
+                allow-list, gate on ``tiers`` instead" -- an empty list is not
+                read as "enable nothing", because that has no use and because
+                ``include: []`` is the natural way to write "no filter" in
+                YAML, symmetrically with ``exclude: []``.
             exclude: Exact keys to force-disable regardless of tier/capability.
             dual_emit: When ``True``, ``collect()`` also emits every alias of
                 an enabled spec under its legacy flat name.
         """
         self._tiers = tuple(tiers)
         self.emit_every = int(emit_every)
-        self._include = tuple(include) if include is not None else None
+        # An EMPTY include is "no allow-list", not "enable nothing". Enabling
+        # nothing does not silence the manager -- every legacy key an agent
+        # emits would fall through to the unmapped bucket and be logged under
+        # its own flat name, so the observable result is a flood of legacy
+        # metrics and zero namespaced ones, which is the opposite of what
+        # anyone writing `include: []` intends.
+        self._include = tuple(include) if include else None
         self._exclude = tuple(exclude)
         self.dual_emit = bool(dual_emit)
 
@@ -440,6 +450,19 @@ class MetricsManager(MetricsRecorder):
 
         self._capabilities = frozenset(caps)
         self._enabled_keys = self._compute_enabled_keys()
+
+        # Enabling nothing is almost never intended, and it fails loudly in the
+        # wrong direction: with no spec enabled, every legacy key an agent emits
+        # falls through to the unmapped bucket, so the run logs ONLY flat legacy
+        # names and no namespaced ones. Warn rather than let that look like the
+        # metrics system is working.
+        if not self._enabled_keys:
+            logger.warning(
+                "MetricsManager enabled 0 metrics for this run, so only legacy "
+                "flat key names will be logged (unmapped values still pass "
+                "through). Check `tiers`, `include` and `exclude`: an "
+                "`include` naming no registered key disables everything."
+            )
 
     def capabilities(self) -> frozenset[str]:
         """Return the capability tag set from the last ``bind()`` call.
