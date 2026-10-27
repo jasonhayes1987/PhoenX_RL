@@ -15,12 +15,13 @@ rather than raising, so callers can pass the result straight through.
 from importlib import resources
 from pathlib import Path
 
+import math
 import gymnasium as gym
 import numpy as np
 import yaml
 
 from phoenx.models import modular_parts_from_config
-from phoenx.buffer import Buffer
+from phoenx.buffer import Buffer, RolloutBuffer, TrajectoryBuffer
 from phoenx.her import HindsightRelabeler
 from phoenx.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
 from phoenx.rl_agents import Agent
@@ -310,7 +311,8 @@ def build_renderer(config: dict) -> Renderer | None:
     return Renderer(**renderer_kwargs)
 
 
-def build_buffer(config: dict, env: EnvWrapper) -> Buffer:
+def build_buffer(config: dict, env: EnvWrapper,
+                 schedule: TrainingSchedule | None = None) -> Buffer:
     """Build the replay / rollout buffer from the top-level config.
 
     Args:
@@ -324,6 +326,7 @@ def build_buffer(config: dict, env: EnvWrapper) -> Buffer:
             injecting ``env`` into the hindsight spec).
         env: Environment injected into the buffer kwargs (and into any
             ``hindsight`` spec before constructing ``HindsightRelabeler``).
+        schedule: Training schedule, used to validate the buffer capacity if using a RolloutBuffer.
 
     Returns:
         Constructed buffer instance.
@@ -337,6 +340,15 @@ def build_buffer(config: dict, env: EnvWrapper) -> Buffer:
 
     buffer_kwargs = dict(buffer_spec.get("config", {}))
     buffer_kwargs["env"] = env
+    # Derive RolloutBuffer's buffer size from the schedule if buffer size is None
+    if buffer_spec["type"] == "RolloutBuffer" and buffer_kwargs.get("buffer_size") is None:
+        if schedule is None or schedule.learn_every_unit != "timestep":
+            raise ValueError(
+                "RolloutBuffer.buffer_size can only be derived when "
+                "schedule.learn_every_unit is 'timestep'."
+            )
+        buffer_kwargs["buffer_size"] = math.ceil(schedule.learn_every / env.num_envs)
+        
     # Instantiate HindsightRelabeler if hindsight in config
     hindsight_spec = buffer_kwargs.get("hindsight", None)
     if hindsight_spec is not None:
@@ -344,7 +356,6 @@ def build_buffer(config: dict, env: EnvWrapper) -> Buffer:
         buffer_kwargs["hindsight"] = HindsightRelabeler(**hindsight_spec)
 
     return Buffer.create_instance(buffer_spec["type"], **buffer_kwargs)
-
 
 def build_schedule(config: dict) -> TrainingSchedule:
     """Build the training schedule from the top-level config.
@@ -467,8 +478,8 @@ def build_trainer_from_config(config: dict, log_level: str | None = None) -> Tra
 
     env = create_env(config)
     agent = build_agent(config, env)
-    buffer = build_buffer(config, env)
     schedule = build_schedule(config)
+    buffer = build_buffer(config, env, schedule)
     callbacks = build_callbacks(config)
     renderer = build_renderer(config)
     success_criterion = build_success_criterion(config)

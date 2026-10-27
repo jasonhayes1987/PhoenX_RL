@@ -189,12 +189,13 @@ class VectorNStepReward(VectorWrapper):
         """
         self.current_action = action
 
-    def set_intrinsic_motivation(self, intrinsic_motivation: "IntrinsicMotivation") -> None:
+    def set_intrinsic_motivation(self, intrinsic_motivation: "IntrinsicMotivation", state_normalizer: "BaseNormalizer") -> None:
         """Attach an intrinsic-motivation module for per-step rollout rewards.
 
         Args:
             intrinsic_motivation: Module whose ``compute_rollout_reward`` is
                 called inside ``step``, or any object with that API.
+            state_normalizer: Normalizer for the state observations.
         """
         self.intrinsic_motivation = intrinsic_motivation
     
@@ -2038,7 +2039,7 @@ class IsaacSimWrapper(EnvWrapper):
             render_mode: Kit launch mode; ``"headless"`` runs without a display
                 window, any other value launches headed.
             seed: RNG seed stored on the env config; when ``None``, a random
-                31-bit seed is drawn by the base class.
+                seed is drawn by the base class.
             distance_threshold: Sparse-goal success radius forwarded to
                 ``IsaacLabAdapter``. ``None`` means the sparse goal reward is
                 unconfigured; set a real value for HER runs on

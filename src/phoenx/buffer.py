@@ -6,8 +6,11 @@ N-step windows, optional R2D2 stored state and HER). On-policy paths use
 completed-episode lists). ``SumTree`` backs proportional prioritized sampling.
 """
 
-from typing import Optional, Tuple, List, Any, Dict
+from typing import Optional, Tuple, List, Any, Dict, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .trainer import TrainingSchedule # type hint only; avoids a circular import
 from abc import ABC, abstractmethod
+import math
 import torch as T
 import numpy as np
 import gymnasium as gym
@@ -234,6 +237,10 @@ class Buffer(ABC):
             "state_achieved_goals": [], "next_state_achieved_goals": [],
             "desired_goals": [], "trajectory_lengths": [],
         }
+
+    def validate_schedule(self, schedule: "TrainingSchedule") -> None:
+        """Raise if ''schedule'' can't run against this buffer. Default: no constraints."""
+        return None
 
     @abstractmethod
     def add(self, *args: Any, **kwargs: Any) -> None:
@@ -1262,7 +1269,7 @@ class RolloutBuffer(Buffer):
     def __init__(
         self,
         env: EnvWrapper,
-        buffer_size: int,
+        buffer_size: int | None = None,
         hindsight: HindsightRelabeler | None = None,
         device: str | T.device | None = None
     ):
@@ -1270,7 +1277,7 @@ class RolloutBuffer(Buffer):
 
         Args:
             env: Wrapped environment (``num_envs`` sizes the second axis).
-            buffer_size: Horizon length (timesteps) stored per env.
+            buffer_size: Horizon length (timesteps) stored per env. If None, will be derived from the schedule.
             hindsight: Optional HER relabeler (unused by this class's
                 ``record`` / ``add`` path; subclasses may use it).
             device: Torch device; ``None`` resolves via ``get_device``.
@@ -1464,6 +1471,25 @@ class RolloutBuffer(Buffer):
             **kwargs: Ignored; accepted for interface symmetry.
         """
         return True
+
+    def validate_schedule(self, schedule: "TrainingSchedule") -> None:
+        if schedule.learn_every_unit != "timestep":
+            raise ValueError("RolloutBuffer requires schedule.learn_every_unit: timestep.")
+        
+        if schedule.warmup_steps > 0:
+            raise ValueError(
+                f"schedule.warmup_steps={schedule.warmup_steps} is not supported for "
+                "on-policy (RolloutBuffer) training; set it to 0."
+            )
+
+        req_size = math.ceil(schedule.learn_every / self.env.num_envs)
+        if req_size > self.buffer_size:
+            raise ValueError(
+                f"buffer.config.buffer_size={self.buffer_size} is too small: "
+                f"learn_every={schedule.learn_every} across {self.env.num_envs} envs "
+                f"needs {req_size} steps per env. Set buffer_size >= {req_size}, or omit it "
+                "to derive it automatically."
+            )
 
     @property
     def fill(self) -> float:
@@ -1681,3 +1707,7 @@ class TrajectoryBuffer(RolloutBuffer):
         """Clear write indices and discard any completed trajectories."""
         super().reset()
         self.completed_trajectories = []
+
+    def validate_schedule(self, schedule: "TrainingSchedule") -> None:
+        # buffer_size is max episode length + 1; the schedule doesn't affect capacity
+        return None

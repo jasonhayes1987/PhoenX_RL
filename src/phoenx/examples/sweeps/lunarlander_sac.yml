@@ -6,7 +6,7 @@
 #                       branches.value depth (block grammar), plus one plain
 #                       dotted search_space key (an output-layer init gain).
 #   2. optimizers     - Optuna over each branch's own learning rate.
-#   3. refine         - random search over PPO's core training scalars.
+#   3. refine         - random search over SACs core training scalars.
 #
 # Run it:
 #   phoenx-tune --config lunarlander_sac.yml

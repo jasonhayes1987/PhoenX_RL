@@ -127,7 +127,7 @@ agent:
     #   kl_tolerance_low: 0.5
 
 env:
-  type: envpool # "isaacsim" or "gymnasium" or "envpool"
+  type: gymnasium # "isaacsim" or "gymnasium" or "envpool"
   config:
     # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
     cfg: LunarLanderContinuous-v3
@@ -143,22 +143,22 @@ env:
 buffer:
   type: RolloutBuffer
   config:
-    buffer_size: 128
+    # buffer_size: 128 # now auto derived if RolloutBuffer buffer_size == None
     device: *device
 
-renderer:
-  render_freq: 1000
-  save_dir: *save_dir
+# renderer:
+#   render_freq: 1000
+#   save_dir: *save_dir
 
-metrics:
-  tiers: [0, 1, 2]
-  emit_every: 1
-  # include: an exact allow-list. Leave it null/empty for "no allow-list";
-  # naming keys here restricts logging to exactly those.
-  include: null
-  exclude: []
-  dual_emit: false
+# metrics:
+#   tiers: [0, 1, 2]
+#   emit_every: 1
+#   # include: an exact allow-list. Leave it null/empty for "no allow-list";
+#   # naming keys here restricts logging to exactly those.
+#   include: null
+#   exclude: []
+#   dual_emit: false
 
-callbacks:
-  - type: WandbCallback
-    config: {project_name: LunarLanderContinuous-v3}
+# callbacks:
+#   - type: WandbCallback
+#     config: {project_name: LunarLanderContinuous-v3}

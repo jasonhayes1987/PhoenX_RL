@@ -259,6 +259,9 @@ class Trainer:
         self.schedule = schedule
         self.success_criterion = success_criterion
         self.buffer = buffer
+        # validate buffer size against the schedule
+        if self.buffer is not None:
+            self.buffer.validate_schedule(self.schedule)
         self.renderer = renderer
         self.callbacks = callbacks
         self.log_level = log_level
@@ -976,8 +979,7 @@ class Trainer:
                     # re-normalizes the stored raw rollout, so the stats it
                     # uses must be the ones the policy acted under. Updating
                     # here means the next rollout is collected — and then
-                    # learned — under the refreshed statistics (SB3/RSL-RL
-                    # collection-time normalization semantics).
+                    # learned — under the refreshed statistics.
                     self.update_normalizers()
                     # Merge n-step boundary diagnostics
                     nstep_diag = {}
