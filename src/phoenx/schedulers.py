@@ -19,8 +19,8 @@ class ScheduleWrapper:
         self,
         schedule_type: str,
         steps: int,
-        start_value: float,
         end_value: float,
+        start_value: float | None = None,
         optimizer: Optimizer|None = None,
         **kwargs
     ):
@@ -35,8 +35,8 @@ class ScheduleWrapper:
             schedule_type: Scheduler kind: ``"linear"``, ``"cosine"``, or
                 ``"exponential"``.
             steps: Number of steps over which the schedule runs.
-            start_value: Starting value of the schedule.
             end_value: Ending value of the schedule.
+            start_value: Starting value of the schedule. Use default value of None for non learning rate schedules.
             optimizer: Optimizer whose learning rate is scheduled, or ``None``
                 to use an internal dummy optimizer.
             kwargs (dict): Extra keyword arguments forwarded to the underlying
@@ -57,13 +57,24 @@ class ScheduleWrapper:
             self.optimizer = optim.SGD([self._param], lr=1.0)
 
         self._create_scheduler()
+
+    def _is_dummy_optimizer(self) -> bool:
+        """Return True if the optimizer is a the dummy optimizer (SGD w/ lr=1.0)"""
+        if self._param is None or self.optimizer is None:
+            return False
+
+        return any(
+            param is self._param
+            for group in self.optimizer.param_groups
+            for param in group["params"]
+        )
         
     def _create_scheduler(self):
         """Creates scheduler."""
         # Map scheduler type to PyTorch's built-in schedulers
         if self.schedule_type == "linear":
-            if self.end_value is None or self.start_value is None or self.steps is None:
-                raise ValueError("End value, start value, and steps are required for linear scheduler.")
+            if self.start_value is None:
+                raise ValueError("Start value is required for linear scheduler.")
             end_factor = self.end_value / self.start_value
             self.scheduler = lr_scheduler.LinearLR(
                 self.optimizer,
@@ -74,18 +85,24 @@ class ScheduleWrapper:
             )
 
         elif self.schedule_type == "cosine":
-            if self.end_value is None or self.steps is None:
-                raise ValueError("End value and steps are required for cosine scheduler.")
+            if self._is_dummy_optimizer():
+                # end value needs to be divided by start value for correct eta min value
+                if self.start_value is None:
+                    raise ValueError("Start value is required for cosine scheduler with dummy optimizer.")
+                eta_min = self.end_value / self.start_value
+            else:
+                eta_min = self.end_value
+
             self.scheduler = lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
                 T_max=self.steps,
-                eta_min=self.end_value,
+                eta_min=eta_min,
                 **self.kwargs
             )
 
         elif self.schedule_type == "exponential":
-            if self.end_value is None or self.start_value is None or self.steps is None:
-                raise ValueError("End value, start value, and steps are required for exponential scheduler.")
+            if self.start_value is None:
+                raise ValueError("Start value is required for exponential scheduler.")
             gamma = (self.end_value / self.start_value) ** (1.0 / self.steps)
             self.scheduler = lr_scheduler.ExponentialLR(
                 self.optimizer,

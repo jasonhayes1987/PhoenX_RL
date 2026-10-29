@@ -17,21 +17,27 @@ since it is the whole reason ``get_state`` / ``set_state`` exist.
 from __future__ import annotations
 
 import pytest
+import torch as T
 
 from phoenx.schedulers import ScheduleWrapper
 
 # -----------------------------------------------------------------------------
-# A single (start, end, steps, stepped-iters) shape whose factor lands clearly
-# between the start and end value for every schedule kind: linear interpolates
-# directly, cosine anneals from the dummy optimizer's base LR (1.0) down to
-# ``end_value``, and exponential decays geometrically from the same base LR.
+# Resume tests use start_value 1.0 so every kind's factor moves from 1.0
+# toward 0.1. end/start equals end_value in that special case, which hides
+# the cosine coefficient bug. Endpoint coverage for start_value != 1 is in
+# TestScheduleWrapperEndpoints.
 # -----------------------------------------------------------------------------
 SCHEDULE_TYPES = ["linear", "cosine", "exponential"]
 TOTAL_STEPS = 100
 STEPPED_ITERS = 30
 START_VALUE = 1.0
 END_VALUE = 0.1
-
+COEFF_STEPS = 1000
+COEFF_START = 0.02
+COEFF_END = 0.001
+LR_STEPS = 1000
+LR_START = 3.0e-4
+LR_END = 1.0e-5
 
 def _build_wrapper(schedule_type: str) -> ScheduleWrapper:
     """Construct a ``ScheduleWrapper`` of ``schedule_type`` with no optimizer.
@@ -48,6 +54,88 @@ def _build_wrapper(schedule_type: str) -> ScheduleWrapper:
         start_value=START_VALUE,
         end_value=END_VALUE,
     )
+
+def _coefficient_wrapper(schedule_type: str) -> ScheduleWrapper:
+    """Build a no-optimizer wrapper, the coefficient-schedule path.
+    Args:
+        schedule_type: One of ``"linear"``, ``"cosine"``, ``"exponential"``.
+    Returns:
+        A wrapper over the internal dummy SGD.
+    """
+    return ScheduleWrapper(
+        schedule_type=schedule_type,
+        steps=COEFF_STEPS,
+        start_value=COEFF_START,
+        end_value=COEFF_END,
+    )
+
+def _learning_rate_wrapper(schedule_type: str):
+    """Build a wrapper and attach a real Adam, the learning-rate path.
+    The wrapper is constructed with no optimizer first. ``attach_optimizer``
+    then rebinds it, which is the order ``ModularModel`` uses. That second
+    construction is what a ``self._param is not None`` check gets wrong.
+    Args:
+        schedule_type: One of ``"linear"``, ``"cosine"``, ``"exponential"``.
+    Returns:
+        The attached wrapper and the Adam optimizer it now drives.
+    """
+    param = T.nn.Parameter(T.zeros(1))
+    optimizer = T.optim.Adam([param], lr=LR_START)
+    wrapper = ScheduleWrapper(
+        schedule_type=schedule_type,
+        steps=LR_STEPS,
+        start_value=LR_START,
+        end_value=LR_END,
+    )
+    wrapper.attach_optimizer(optimizer)
+    return wrapper, optimizer
+
+def test_cosine_coefficient_midpoint_is_halfway_between_endpoints():
+    """A cosine coefficient is halfway in value at half the horizon.
+    With the dummy optimizer, half of 1,000 steps from 0.02 toward 0.001 is
+    0.0105. That is the closed cosine midpoint, so the whole curve is scaled
+    by ``end / start``, not only the final sample.
+    """
+    wrapper = _coefficient_wrapper("cosine")
+    wrapper.step(COEFF_STEPS // 2)
+    midpoint = 0.5 * (COEFF_START + COEFF_END)
+    assert COEFF_START * wrapper.get_factor() == pytest.approx(midpoint)
+
+
+@pytest.mark.parametrize("schedule_type", SCHEDULE_TYPES)
+class TestScheduleWrapperEndpoints:
+    """Pin the finished value of every schedule kind.
+    Coefficient schedules scale ``start_value`` by ``get_factor()`` and must
+    finish at ``end_value``. Learning-rate schedules are attached to a real
+    optimizer whose base lr is ``start_value``, and that lr must finish at
+    ``end_value`` too.
+    """
+    def test_coefficient_starts_at_start_value_and_ends_at_end_value(
+        self, schedule_type
+    ):
+        """``start_value * get_factor()`` runs from the start value to the end value.
+        Args:
+            schedule_type: Parametrized schedule kind under test.
+        """
+        wrapper = _coefficient_wrapper(schedule_type)
+        assert COEFF_START * wrapper.get_factor() == pytest.approx(COEFF_START)
+        wrapper.step(COEFF_STEPS)
+        assert wrapper.scheduler.last_epoch == COEFF_STEPS
+        assert COEFF_START * wrapper.get_factor() == pytest.approx(COEFF_END)
+    def test_attached_optimizer_learning_rate_ends_at_end_value(self, schedule_type):
+        """An attached optimizer's lr runs from the start value to the end value.
+        Args:
+            schedule_type: Parametrized schedule kind under test.
+        """
+        wrapper, optimizer = _learning_rate_wrapper(schedule_type)
+        learning_rate = optimizer.param_groups[0]["lr"]
+        assert learning_rate == pytest.approx(LR_START)
+        assert wrapper.get_factor() == pytest.approx(LR_START)
+        wrapper.step(LR_STEPS)
+        learning_rate = optimizer.param_groups[0]["lr"]
+        assert wrapper.scheduler.last_epoch == LR_STEPS
+        assert learning_rate == pytest.approx(LR_END)
+        assert wrapper.get_factor() == pytest.approx(learning_rate)
 
 
 @pytest.mark.parametrize("schedule_type", SCHEDULE_TYPES)
