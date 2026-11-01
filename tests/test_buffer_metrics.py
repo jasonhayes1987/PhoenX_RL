@@ -1186,7 +1186,7 @@ def _tiny_ppo_config(save_dir):
         "log_level": "ERROR",
         "schedule": {
             "stop_unit": "timestep", "stop_units": 1, "learn_every_unit": "timestep",
-            "learn_every": 10 ** 9, "updates_per_learn": 1, "batch_size": 1,
+            "learn_every": 2, "updates_per_learn": 1, "batch_size": 1,
             "mini_batch_size": 1, "learning_epochs": 1, "warmup_steps": 0, "seed": 3,
         },
         "agent": {"type": "PPO", "config": {

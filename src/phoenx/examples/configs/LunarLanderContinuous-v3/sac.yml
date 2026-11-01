@@ -91,6 +91,7 @@ agent:
     entropy_lr: 0.0003
     policy_grad_clip: 1.0
     critic_grad_clip: 1.0
+    critic_huber_delta: 1.0
     N: &n 1
     log_level: DEBUG
     _diag_freq: 1000

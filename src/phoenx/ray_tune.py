@@ -86,13 +86,13 @@ def available_example_sweeps() -> list[str]:
 
     Returns:
         Sorted list of relative sweep paths, e.g.
-        ``["isaac_franka_cube_lift.yml", "lunarlander_ppo.yml"]``. Empty
+        ``["isaac_franka_cube_lift.yml", "lunarlander_ppo.yml", "lunarlander_sac.yml"]``. Empty
         when the packaged ``sweeps`` directory is absent.
 
     Example:
         >>> from phoenx.ray_tune import available_example_sweeps
         >>> available_example_sweeps()  # doctest: +SKIP
-        ['isaac_franka_cube_lift.yml', 'lunarlander_ppo.yml']
+        ['isaac_franka_cube_lift.yml', 'lunarlander_ppo.yml', 'lunarlander_sac.yml']
     """
     sweeps_root = resources.files("phoenx.examples").joinpath("sweeps")
     if not sweeps_root.is_dir():

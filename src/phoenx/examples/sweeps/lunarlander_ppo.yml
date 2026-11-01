@@ -27,7 +27,7 @@
 # pbt is rejected in this delivery pass (it needs checkpoint plumbing).
 # =============================================================================
 
-base_config: E:\Documents\Programming\Projects\Reinforcement\PhoenX_RL\configs\LunarLanderContinuous-v3\ppo.yml
+base_config: LunarLanderContinuous-v3/ppo.yml
 
 # Constant for every trial of every phase.
 overrides:

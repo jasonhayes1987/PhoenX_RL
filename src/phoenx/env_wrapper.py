@@ -140,6 +140,7 @@ class VectorNStepReward(VectorWrapper):
         self.device = get_device()
 
         # Set internal attributes
+        self._training = True
         self._step = 0
         self._diag_freq = None
         self._log_diag = False
@@ -148,9 +149,11 @@ class VectorNStepReward(VectorWrapper):
             for key, value in self.kwargs.items():
                 setattr(self, key, value)
 
-        # Instantiate internal reference to Agent Intrinsic Motivation object
+        # Instantiate internal reference to Agent Intrinsic Motivation object and state normalizer
         # Set via set_intrinsic_motivation call in Trainer._initialize_run
         self.intrinsic_motivation = None
+        self.state_normalizer = None
+        self.last_intrinsic_rewards = None
 
         # Buffer pointers
         self.head = T.zeros(self.num_envs, dtype=T.long, device=self.device)
@@ -189,15 +192,21 @@ class VectorNStepReward(VectorWrapper):
         """
         self.current_action = action
 
-    def set_intrinsic_motivation(self, intrinsic_motivation: "IntrinsicMotivation", state_normalizer: "BaseNormalizer") -> None:
+    def set_intrinsic_motivation(
+        self,
+        intrinsic_motivation: "IntrinsicMotivation",
+        state_normalizer: "BaseNormalizer | None" = None,
+        ) -> None:
         """Attach an intrinsic-motivation module for per-step rollout rewards.
 
         Args:
             intrinsic_motivation: Module whose ``compute_rollout_reward`` is
                 called inside ``step``, or any object with that API.
-            state_normalizer: Normalizer for the state observations.
+            state_normalizer: Normalizer for the state observations. ``None``
+                leaves those observations unnormalized.
         """
         self.intrinsic_motivation = intrinsic_motivation
+        self.state_normalizer = state_normalizer
     
     def reset(self, **kwargs):
         """Reset the vector env and clear ring pointers.
@@ -292,17 +301,28 @@ class VectorNStepReward(VectorWrapper):
             ach_goals_b = T.as_tensor(self.current_states[self.ach_goal_key], device=self.device)
             next_ach_goals_b = T.as_tensor(next_states[self.ach_goal_key], device=self.device)
 
-        if self.intrinsic_motivation is not None:
+        if self.intrinsic_motivation is not None and self._training:
+            im_state = state_b
+            im_next_state = next_state_b
+            if self.state_normalizer is not None:
+                im_state = self.state_normalizer.normalize(im_state)
+                im_next_state = self.state_normalizer.normalize(im_next_state)
             with T.no_grad():
                 intrinsic_rewards = self.intrinsic_motivation.compute_rollout_reward(
-                    flatten_obs(state_b), flatten_obs(next_state_b), actions, env_indices = T.arange(self.env.num_envs, device=self.intrinsic_motivation.device)
+                    flatten_obs(im_state),
+                    flatten_obs(im_next_state),
+                    actions,
+                    env_indices = T.arange(self.env.num_envs, device=self.intrinsic_motivation.device),
                 )
             intrinsic_rewards = T.as_tensor(intrinsic_rewards, device=self.device).float()
             if intrinsic_rewards.ndim > 1:
                 intrinsic_rewards = intrinsic_rewards.view(self.num_envs)
+
         else:
             intrinsic_rewards = T.zeros_like(rewards)
-        
+
+        self.last_intrinsic_rewards = intrinsic_rewards
+
         # If first-time allocation (buf = None) set shapes from tensors
         if self._buf_states is None:
             self._buf_states = self._alloc_like(state_b)

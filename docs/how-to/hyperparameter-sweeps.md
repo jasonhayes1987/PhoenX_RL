@@ -32,6 +32,7 @@ from training configs under `phoenx/examples/configs/`). List them with
 | Bundled name | Role |
 |--------------|------|
 | `lunarlander_ppo.yml` | Three-phase PPO sweep on LunarLanderContinuous-v3 |
+| `lunarlander_sac.yml` | Three-phase SAC sweep on LunarLanderContinuous-v3 |
 | `isaac_franka_cube_lift.yml` | Three-phase PPO sweep on Franka cube-lift (Isaac) |
 
 An on-disk path always wins; otherwise a relative `--config` is looked up
@@ -336,19 +337,14 @@ Recommend `--validate-only` as the first command on any new sweep.
 ## Operational notes
 
 **Windows paths.** Trial directories are deliberately short —
-`trial_<suffix>`, where `suffix` is the part of the Ray trial id *after
-its last underscore* (`trial.trial_id.rsplit("_", 1)[-1]`, see
-`_trial_dirname_creator`), not the full trial id. For a
-`random`/`variant_generator` phase, whose trial ids are shaped
-`<uuid-prefix>_00001`, that suffix is the zero-padded index alone, so the
-directory is `trial_00001` — never `trial_<uuid-prefix>_00001`. For every
-other searcher the trial id (e.g. `c6a5bab2`) has no underscore at all, so
-the split is a no-op and the directory is the whole id, `trial_c6a5bab2`.
-Ray's default naming embeds every sampled param in the path and would
-exceed `MAX_PATH` mid-sweep either way. This is the raw Ray trial id (or
-its suffix), not the W&B run-name ordinal described below (under
-"Weights & Biases"); to map a run back to its directory from a run's
-`ray/trial_id` config value, apply the same rule.
+`trial_<ray trial id>`. For a `random`/`variant_generator` phase that's a
+zero-padded index (`trial_00001`), because that's what those searchers'
+own Ray trial ids are; for every other searcher the Ray trial id carries
+no index at all, so the directory is `trial_<uuid8>` (e.g.
+`trial_c6a5bab2`). Ray's default naming embeds every sampled param in the
+path and would exceed `MAX_PATH` mid-sweep either way. This is the raw Ray
+trial id, not the W&B run-name ordinal described above; a run's
+`ray/trial_id` config value is what maps it back to this directory.
 
 **Weights & Biases.** Add `wandb: {project: my-project}` under `defaults`
 or a phase. Each trial gets a full-fidelity `WandbCallback` run with a
@@ -373,32 +369,22 @@ is therefore an upper bound: a stopper or `time_budget_s` can end the
 phase early, and an errored trial still consumes an ordinal.
 
 `TOTAL` is **omitted** (leaving a bare `0007`, no `of...` suffix) whenever
-it cannot be computed — `num_samples: -1`; a `random` phase seeded with
-more `points_to_evaluate` than its `num_samples` (only
-`BasicVariantGenerator` can overshoot `num_samples`, so seed points are
-counted for `random` alone — an `optuna` phase seeded past its
-`num_samples` still prints its `num_samples`); or a `--resume`'d phase,
-where the total is suppressed unconditionally, not just possibly wrong:
-`Tuner.restore` takes neither `param_space` nor `tune_config`, so Ray
-replays the persisted experiment spec and this invocation's `num_samples`
-may not be what actually runs, and a resumed phase therefore never prints
-a total. The ordinal itself falls all the way back to the raw Ray trial id
-(today's pre-ordinal shape, `{sweep}-{phase}-{trial_id}`) only when the
-phase's ordinal counter cannot be reached at all. The case you will
-actually hit: **`--resume` restarts the per-phase counter from 1**, so a
-resumed phase's ordinals do not continue where the interrupted run left
-off, and can repeat numbers already used by that run's own trials.
+it cannot be computed — `num_samples: -1`, or a phase seeded with more
+`points_to_evaluate` than its `num_samples`. The ordinal itself falls all
+the way back to the raw Ray trial id (today's pre-ordinal shape,
+`{sweep}-{phase}-{trial_id}`) only when the phase's ordinal counter cannot
+be reached at all. The case you will actually hit: **`--resume` restarts
+the per-phase counter from 1**, so a resumed phase's ordinals (and any
+printed total) do not continue where the interrupted run left off, and can
+repeat numbers already used by that run's own trials.
 
 The raw Ray trial id is not lost — it moves into the run's W&B config
 table as `ray/trial_id` (plus `ray/phase`, and `ray/trial_ordinal` when an
 ordinal resolved), instead of living in the run name. If you were using
 the old run name to find a trial's on-disk directory, that id is where it
 went: trial directory names themselves are unchanged (see "Windows paths"
-above). To map a run back to its directory, take `ray/trial_id`'s value,
-keep only the part after its last underscore (or the whole value when
-there is none), and prefix it with `trial_` — the same rule
-`_trial_dirname_creator` used to name the directory in the first place —
-to get `<storage_path>/<sweep>/<phase>/trial_<suffix>/`.
+below), so `ray/trial_id` is what maps a W&B run back to
+`<storage_path>/<sweep>/<phase>/trial_<id>/`.
 
 The base config's `schedule.save_every` cooldown (default `50_000`
 timesteps) applies per trial automatically, and since uploads follow

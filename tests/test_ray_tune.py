@@ -1337,14 +1337,14 @@ class TestBundledExampleSweeps:
     def test_available_example_sweeps_returns_both_bundled_names(self):
         names = available_example_sweeps()
         assert names == sorted(names)
-        assert set(names) == {"isaac_franka_cube_lift.yml", "lunarlander_ppo.yml"}
+        assert set(names) == {"isaac_franka_cube_lift.yml", "lunarlander_ppo.yml", "lunarlander_sac.yml"}
 
-    @pytest.mark.parametrize("name", ["lunarlander_ppo.yml", "isaac_franka_cube_lift.yml"])
+    @pytest.mark.parametrize("name", ["lunarlander_ppo.yml", "lunarlander_sac.yml", "isaac_franka_cube_lift.yml"])
     def test_bundled_sweep_loads_and_validates(self, name):
         sweep = load_sweep_config(name)
         validate_sweep_config(sweep)  # must not raise
 
-    @pytest.mark.parametrize("name", ["lunarlander_ppo.yml", "isaac_franka_cube_lift.yml"])
+    @pytest.mark.parametrize("name", ["lunarlander_ppo.yml", "lunarlander_sac.yml", "isaac_franka_cube_lift.yml"])
     def test_bundled_sweep_resolves_one_sampled_trial_per_phase(self, name):
         """Pure dict resolution -- the Isaac sweep's base_config is loaded via
         plain YAML parsing (``load_config``), never booting Isaac Sim."""
@@ -1364,7 +1364,7 @@ class TestBundledExampleSweeps:
         with pytest.raises(FileNotFoundError, match="lunarlander_ppo.yml"):
             load_sweep_config("does_not_exist.yml")
 
-    @pytest.mark.parametrize("name", ["lunarlander_ppo.yml", "isaac_franka_cube_lift.yml"])
+    @pytest.mark.parametrize("name", ["lunarlander_ppo.yml", "lunarlander_sac.yml", "isaac_franka_cube_lift.yml"])
     def test_bundled_sweep_every_phase_tune_config_is_fully_constructible(self, name):
         """The regression this whole class was missing: both bundled sweeps
         once declared an ASHA ``scheduler.grace_period`` with no explicit

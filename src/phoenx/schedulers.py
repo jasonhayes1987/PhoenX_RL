@@ -216,11 +216,11 @@ class ScheduleWrapper:
                 state match this instance.
         """
         new_wrapper = ScheduleWrapper(
-            self.schedule_type,
-            self.steps,
-            self.start_value,
-            self.end_value,
-            self.optimizer,
+            schedule_type=self.schedule_type,
+            steps=self.steps,
+            start_value=self.start_value,
+            end_value=self.end_value,
+            optimizer=self.optimizer,
             **self.kwargs
         )
         if self.scheduler:

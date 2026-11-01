@@ -261,7 +261,9 @@ class Trainer:
         self.buffer = buffer
         # validate buffer size against the schedule
         if self.buffer is not None:
-            self.buffer.validate_schedule(self.schedule)
+            validate = getattr(self.buffer, "validate_schedule", None)
+            if validate is not None:
+                validate(self.schedule)
         self.renderer = renderer
         self.callbacks = callbacks
         self.log_level = log_level
@@ -343,7 +345,9 @@ class Trainer:
         if im is not None:
             nstep_wrapper = self.env._find_nstep_wrapper()
             if nstep_wrapper is not None:
-                nstep_wrapper.set_intrinsic_motivation(im)
+                nstep_wrapper.set_intrinsic_motivation(im,
+                state_normalizer=getattr(self.agent, "state_normalizer", None),
+                )
 
         # Bind the centralized metrics manager against this agent/env/buffer
         # capability set, then let the agent push into the same instance.
@@ -692,19 +696,28 @@ class Trainer:
         nstep_wrapper = self.env._find_nstep_wrapper()
         if nstep_wrapper is not None:
             nstep_wrapper.set_action(action)
+            nstep_wrapper._training = training
         # Take action in environment and get new Observation
         observation = self.env.step(action.actions)
         # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer (Training Only)
         im = getattr(self.agent, 'intrinsic_motivation', None)
         if training:
-            if im is not None:
+            if nstep_wrapper is not None and nstep_wrapper.intrinsic_motivation is not None:
+                intrinsic_rewards = nstep_wrapper.last_intrinsic_rewards
+            elif im is not None:
                 # Pass normalized (flattened for IM) states to IM if present
                 next_obs_norm = self.normalize_observation(observation)
-                intrinsic_rewards = im.compute_rollout_reward(flatten_obs(obs_norm.states), flatten_obs(next_obs_norm.states), action.actions, env_indices = T.arange(self.env.num_envs, device=im.device))
+                intrinsic_rewards = im.compute_rollout_reward(
+                    flatten_obs(obs_norm.states),
+                    flatten_obs(next_obs_norm.states),
+                    action.actions,
+                    env_indices = T.arange(self.env.num_envs, device=im.device),
+                )
             else:
                 intrinsic_rewards = T.zeros_like(observation.rewards)
         else:
             intrinsic_rewards = T.zeros_like(observation.rewards)
+        
         observation = replace(observation, intrinsic_rewards=intrinsic_rewards)
 
         dones = T.logical_or(observation.terminations, observation.truncations)
@@ -809,6 +822,9 @@ class Trainer:
                 self.save()
                 episode_logs[-1]['saved'] = True
 
+        # clear current episode memory of done episodes if using IM (Episodic Novelty)
+        if done_episodes.numel() > 0 and training and im is not None:
+            im.on_episode_end(done_episodes)
 
         # set _cur_obs to observation
         self._prev_done = dones.clone()

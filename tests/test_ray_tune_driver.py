@@ -55,7 +55,7 @@ from phoenx.ray_tune import (
     write_best_config,
 )
 
-BUNDLED_SWEEPS = ("lunarlander_ppo.yml", "isaac_franka_cube_lift.yml")
+BUNDLED_SWEEPS = ("lunarlander_ppo.yml", "lunarlander_sac.yml", "isaac_franka_cube_lift.yml")
 
 
 # =============================================================================
@@ -1466,7 +1466,7 @@ def _tiny_cartpole_config(save_dir: str) -> dict:
         "save_dir": save_dir,
         "log_level": "ERROR",
         "schedule": {"stop_unit": "timestep", "stop_units": 4, "learn_every_unit": "timestep",
-                     "learn_every": 999_999, "updates_per_learn": 1, "batch_size": 1,
+                     "learn_every": 16, "updates_per_learn": 1, "batch_size": 1,
                      "warmup_steps": 0, "seed": 3},
         "agent": {"type": "ActorCritic", "config": {
             "name": "ActorCritic",
