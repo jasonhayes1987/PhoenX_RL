@@ -31,6 +31,8 @@ import math
 from typing import Any
 from dataclasses import dataclass
 
+import pytest
+
 import numpy as np
 import torch as T
 
@@ -75,6 +77,7 @@ def _reference_compute_q_retrace(
     buf_log_probs: T.Tensor,
     discount: float,
     *,
+    ratio_floor: float = 0.0,
     device: str | T.device | None = None,
 ) -> tuple[T.Tensor, dict[str, T.Tensor]]:
     """Slow reference implementation of the exact Retrace logic.
@@ -82,6 +85,8 @@ def _reference_compute_q_retrace(
     Matches the production ``compute_q_retrace`` signature and behaviour.
     Returns the same (q_retrace, metrics) structure.
     """
+    if not 0.0 <= ratio_floor <= 1.0:
+        raise ValueError(f"ratio_floor must be in [0, 1], got {ratio_floor}")
     device = T.device(device) if device is not None else T.device(DEVICE)
     rewards = rewards.to(device)
     terminations = terminations.to(device)
@@ -101,12 +106,15 @@ def _reference_compute_q_retrace(
         - q_cur.detach()
     )
 
-    # 2. Raw IS ratios + masking (exactly as in production).
-    #    NOTE: production applies BOTH a lower clamp (0.5, a deliberate
-    #    variance-control floor) and the standard Retrace upper clamp (1.0).
-    #    The reference must mirror both — see
-    #    TestComputeQRetrace.test_is_ratio_lower_clamp_matches_reference.
-    is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), min=0.5, max=1.0)
+    # 2. Importance ratios. The upper cap is min(1, π/μ), applied in log space
+    #    so a large positive log-ratio cannot overflow exp. There is no default
+    #    lower floor: ratio_floor 0 is ordinary Retrace, and any other floor in
+    #    [0, 1] is opt-in. A non-finite log-ratio becomes 0, which cuts the
+    #    trace, including when the behavior log-prob is -inf (ratio +inf).
+    raw_log_ratio = cur_log_probs - buf_log_probs
+    is_ratio = T.exp(raw_log_ratio.clamp(max=0.0)).clamp(min=ratio_floor)
+    finite = T.isfinite(raw_log_ratio)
+    is_ratio = T.where(finite, is_ratio, T.zeros_like(is_ratio))
 
     valid = (T.arange(n, device=device).unsqueeze(0) < trajectory_lengths.unsqueeze(1)).float()
     mask = T.ones(batch_size, n, device=device)
@@ -115,6 +123,9 @@ def _reference_compute_q_retrace(
     for k in range(1, n):
         mask[:, k] = mask[:, k - 1] * (1.0 - dones[:, k - 1].float()) * valid[:, k]
 
+    # Count only steps the finished mask keeps. Repeat-padding copies the last
+    # real log-prob, so counting before this loop would count that copy twice.
+    nonfinite_log_ratio = (~finite & mask.bool()).sum()
     is_ratio = is_ratio * mask
 
     # 3. Accumulation (exact same loop ordering and cum_c update timing)
@@ -132,7 +143,7 @@ def _reference_compute_q_retrace(
     # NOTE: the production implementation's per-row boundary-leakage
     # diagnostics ("done_window_final_cum_c" / "done_window_max_leakage") are
     # currently disabled (commented out) for training-loop performance, so the
-    # production metrics dict contains only the four tensor entries below. The
+    # production metrics dict contains only the five tensor entries below. The
     # reference mirrors that contract exactly; boundary behavior is asserted
     # directly on `mask` / `cum_c` by the tests instead.
     metrics = {
@@ -140,6 +151,7 @@ def _reference_compute_q_retrace(
         "mask": mask,
         "is_ratio": is_ratio,
         "cum_c": cum_c,
+        "nonfinite_log_ratio": nonfinite_log_ratio,
     }
     return q_retrace, metrics
 
@@ -164,7 +176,10 @@ def _assert_metrics_match(m: dict, m_ref: dict, atol: float = 1e-6) -> None:
     for k, ref_val in m_ref.items():
         val = m[k]
         if isinstance(ref_val, T.Tensor):
-            assert T.allclose(val, ref_val, atol=atol), f"tensor metric '{k}' mismatch"
+            if ref_val.is_floating_point():
+                assert T.allclose(val, ref_val, atol=atol), f"tensor metric '{k}' mismatch"
+            else:
+                assert T.equal(val, ref_val), f"tensor metric '{k}' mismatch"
         else:
             # list-valued diagnostic: compare element-wise as floats
             assert len(val) == len(ref_val), f"list metric '{k}' length mismatch"
@@ -307,6 +322,7 @@ class TestComputeQRetrace:
         # cum_c is deliberately only the final per-batch value (shape (B,)), not per-step
         assert "cum_c" in metrics
         assert metrics["cum_c"].shape == (1,)
+        assert metrics["nonfinite_log_ratio"].ndim == 0
 
     # -------------------------------------------------------------------------
     # Math correctness — reference implementation + hand-worked cases
@@ -358,48 +374,143 @@ class TestComputeQRetrace:
         assert T.allclose(q, q_ref, atol=1e-5)
         _assert_metrics_match(m, m_ref, atol=1e-5)
 
-    def test_is_ratio_lower_clamp_matches_reference(self):
-        """Drive IS ratios BELOW the 0.5 production floor and verify both the
-        clamp itself and reference agreement.
+    def _delta_ones_batch(
+        self,
+        cur_log_probs: T.Tensor,
+        buf_log_probs: T.Tensor,
+        *,
+        length: int = 3,
+        terminations: T.Tensor | None = None,
+        ratio_floor: float = 0.0,
+    ) -> dict:
+        """One row, every reward 1 and every Q 0, so each TD error is 1.
 
-        With buf_log_probs >> cur_log_probs the raw ratio exp(cur - buf) is
-        far below 0.5 (e.g. exp(-2) ~= 0.135); production clamps it to 0.5.
-        This branch was previously untested (audit finding 10.2.1): no fixture
-        produced a ratio under 0.5, so a regression in the lower clamp would
-        have been invisible.
+        ``c_0`` is stored and never enters the product. With ``γ = 0.9`` the
+        return is ``1 + 0.9·c_1 + 0.81·c_1·c_2``.
         """
-        n = 3
-        rewards = T.tensor([[1.0, 1.0, 1.0]], dtype=T.float32, device=DEVICE)
-        terminations = T.zeros((1, n), dtype=T.bool, device=DEVICE)
-        truncations = T.zeros((1, n), dtype=T.bool, device=DEVICE)
-        trajectory_lengths = T.tensor([3], dtype=T.long, device=DEVICE)
-        q_cur = T.zeros((1, n), dtype=T.float32, device=DEVICE)
-        target_q = T.zeros((1, n), dtype=T.float32, device=DEVICE)
-        cur_log_probs = T.zeros((1, n), dtype=T.float32, device=DEVICE)
-        buf_log_probs = T.full((1, n), 2.0, dtype=T.float32, device=DEVICE)  # ratio = exp(-2) ≈ 0.135
-
-        batch = dict(
-            rewards=rewards, terminations=terminations, truncations=truncations,
-            trajectory_lengths=trajectory_lengths, q_cur=q_cur, target_q=target_q,
-            cur_log_probs=cur_log_probs, buf_log_probs=buf_log_probs,
-            discount=0.9, device=DEVICE,
+        n = cur_log_probs.shape[-1]
+        if terminations is None:
+            terminations = T.zeros((1, n), dtype=T.bool, device=DEVICE)
+        return dict(
+            rewards=T.ones((1, n), dtype=T.float32, device=DEVICE),
+            terminations=terminations,
+            truncations=T.zeros((1, n), dtype=T.bool, device=DEVICE),
+            trajectory_lengths=T.tensor([length], dtype=T.long, device=DEVICE),
+            q_cur=T.zeros((1, n), dtype=T.float32, device=DEVICE),
+            target_q=T.zeros((1, n), dtype=T.float32, device=DEVICE),
+            cur_log_probs=cur_log_probs.to(device=DEVICE, dtype=T.float32),
+            buf_log_probs=buf_log_probs.to(device=DEVICE, dtype=T.float32),
+            discount=0.9,
+            ratio_floor=ratio_floor,
+            device=DEVICE,
         )
+
+    def _assert_retrace_case(self, batch, expected_q, expected_ratio, expected_count) -> None:
         q, m = compute_q_retrace(**batch)
         q_ref, m_ref = _reference_compute_q_retrace(**batch)
+        assert T.allclose(q, T.tensor([expected_q], dtype=T.float32, device=DEVICE), atol=1e-5)
+        assert T.allclose(m["is_ratio"], T.tensor([expected_ratio], dtype=T.float32, device=DEVICE), atol=1e-5)
+        assert int(m["nonfinite_log_ratio"]) == expected_count
+        assert T.allclose(q, q_ref, atol=1e-5)
+        _assert_metrics_match(m, m_ref, atol=1e-5)
 
-        # The floor must be active: every valid ratio equals exactly 0.5
-        assert T.allclose(m["is_ratio"], T.full((1, n), 0.5, device=DEVICE), atol=1e-6)
+    def test_ratio_below_half_is_not_floored(self):
+        """A raw ratio of exp(-2) must enter the product unchanged.
 
-        # Hand-computed expectation with the floor:
-        #   td_k = 1.0 for all k (rewards 1, q_cur/target_q 0)
-        #   cum_c: 1.0 -> 0.5 (after k=0) -> 0.25 (after k=1)
-        #   q = 1*1*1 + 0.9*0.5*1 + 0.81*0.25*1 = 1 + 0.45 + 0.2025 = 1.6525
-        expected = T.tensor([1.6525], dtype=T.float32, device=DEVICE)
-        assert T.allclose(q, expected, atol=1e-6)
+        Every δ is 1 and γ is 0.9, so
+        q = 1 + 0.9·e^{-2} + 0.81·e^{-4}.
+        """
+        n = 3
+        batch = self._delta_ones_batch(
+            T.zeros(1, n),
+            T.full((1, n), 2.0),
+        )
+        raw = math.exp(-2.0)
+        expected_q = 1.0 + 0.9 * raw + 0.81 * (raw ** 2)
+        self._assert_retrace_case(batch, expected_q, [raw, raw, raw], 0)
 
-        # And reference agreement on everything
-        assert T.allclose(q, q_ref, atol=1e-6)
-        _assert_metrics_match(m, m_ref, atol=1e-6)
+    def test_ratio_floor_half_reproduces_the_old_clamp(self):
+        """Passing ratio_floor=0.5 is the opt-in that matches the removed default."""
+        n = 3
+        batch = self._delta_ones_batch(
+            T.zeros(1, n),
+            T.full((1, n), 2.0),
+            ratio_floor=0.5,
+        )
+        # cum_c: 1 -> 0.5 -> 0.25, so q = 1 + 0.9*0.5 + 0.81*0.25 = 1.6525
+        self._assert_retrace_case(batch, 1.6525, [0.5, 0.5, 0.5], 0)
+
+    def test_nonfinite_log_ratio_cuts_the_trace(self):
+        """NaN, -inf, and +inf all cut the trace. +inf used to be trusted fully."""
+        zeros = T.zeros(1, 3)
+        cases = {
+            "nan": T.tensor([[0.0, float("nan"), 0.0]]),
+            "cur -inf": T.tensor([[0.0, float("-inf"), 0.0]]),
+        }
+        for name, cur in cases.items():
+            batch = self._delta_ones_batch(cur, zeros)
+            try:
+                self._assert_retrace_case(batch, 1.0, [1.0, 0.0, 1.0], 1)
+            except AssertionError as exc:
+                raise AssertionError(f"{name}: {exc}") from exc
+        # Behavior log-prob -inf is a +inf log-ratio. Retrace's cap would be 1;
+        # a non-finite stored density is not a real ratio, so the trace is cut.
+        batch = self._delta_ones_batch(zeros, T.tensor([[0.0, float("-inf"), 0.0]]))
+        self._assert_retrace_case(batch, 1.0, [1.0, 0.0, 1.0], 1)
+
+    def test_nonfinite_count_ignores_padding_and_steps_after_done(self):
+        """The count is taken on the finished mask, not on the raw window."""
+        # Length 2: the NaN at k=2 is the repeated pad of the NaN at k=1.
+        batch = self._delta_ones_batch(
+            T.tensor([[0.0, float("nan"), float("nan")]]),
+            T.zeros(1, 3),
+            length=2,
+        )
+        q, m = compute_q_retrace(**batch)
+        assert T.allclose(m["mask"], T.tensor([[1.0, 1.0, 0.0]], device=DEVICE))
+        assert int(m["nonfinite_log_ratio"]) == 1
+        assert T.allclose(q, T.tensor([1.0], device=DEVICE), atol=1e-5)
+        q_ref, m_ref = _reference_compute_q_retrace(**batch)
+        assert T.allclose(q, q_ref, atol=1e-5)
+        _assert_metrics_match(m, m_ref, atol=1e-5)
+
+        # Termination at k=0 zeros the mask from k=1 on, so the NaN there
+        # never enters the product and is not counted.
+        batch = self._delta_ones_batch(
+            T.tensor([[0.0, float("nan"), 0.0]]),
+            T.zeros(1, 3),
+            terminations=T.tensor([[True, False, False]]),
+        )
+        q, m = compute_q_retrace(**batch)
+        assert T.allclose(m["mask"], T.tensor([[1.0, 0.0, 0.0]], device=DEVICE))
+        assert int(m["nonfinite_log_ratio"]) == 0
+        assert T.allclose(m["is_ratio"], T.tensor([[1.0, 0.0, 0.0]], device=DEVICE), atol=1e-5)
+        assert T.allclose(q, T.tensor([1.0], device=DEVICE), atol=1e-5)
+        q_ref, m_ref = _reference_compute_q_retrace(**batch)
+        assert T.allclose(q, q_ref, atol=1e-5)
+        _assert_metrics_match(m, m_ref, atol=1e-5)
+
+    def test_mixed_ratios_around_half_match_hand_and_reference(self):
+        """One ratio above 0.5 and one below, so the reference comparison sees both.
+
+        Log-ratios [0, -0.3, -2]. Column 0 is unused.
+        q = 1 + 0.9·exp(-0.3) + 0.81·exp(-0.3)·exp(-2).
+        """
+        cur = T.tensor([[0.0, -0.3, -2.0]])
+        batch = self._delta_ones_batch(cur, T.zeros(1, 3))
+        c1 = math.exp(-0.3)
+        c2 = math.exp(-2.0)
+        expected_q = 1.0 + 0.9 * c1 + 0.81 * c1 * c2
+        self._assert_retrace_case(batch, expected_q, [1.0, c1, c2], 0)
+
+    def test_ratio_floor_outside_unit_interval_raises(self):
+        batch = self._delta_ones_batch(T.zeros(1, 3), T.zeros(1, 3))
+        for bad in (5.0, -0.1):
+            batch["ratio_floor"] = bad
+            with pytest.raises(ValueError, match="ratio_floor"):
+                compute_q_retrace(**batch)
+            with pytest.raises(ValueError, match="ratio_floor"):
+                _reference_compute_q_retrace(**batch)
 
     def test_n_equals_1_reduces_to_simple_one_step_target(self):
         """When every trajectory has length 1 the retrace target must be

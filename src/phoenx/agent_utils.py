@@ -176,6 +176,7 @@ def compute_q_retrace(
     buf_log_probs: T.Tensor,
     discount: float,
     *,
+    ratio_floor: float = 0.0,
     device: T.device | str | None = None
 ) -> tuple[T.Tensor, dict[str, T.Tensor]]:
     """Computes target Q values as sum of weighted TD errors using importance sampling ratios across the n-step window.
@@ -190,25 +191,38 @@ def compute_q_retrace(
         cur_log_probs: Tensor of current log probabilities [batch_size, n_step_length].
         buf_log_probs: Tensor of log probabilities of the buffer [batch_size, n_step_length].
         discount: Discount factor.
+        ratio_floor: Minimum value for the importance sampling ratio. Non-finite log ratios are set to 0.
         device: Device for tensor operations.
 
     Returns:
         Tensor of Q values [batch_size].
-        Dictionary of metrics [td_errors, mask, is_ratio, cum_c].
+        Dictionary of metrics [td_errors, mask, is_ratio, cum_c, nonfinite_log_ratio].
+
+    Raises:
+        ValueError: If ``ratio_floor`` is outside ``[0, 1]``.
     """
+    # Check if passed ratio floor is in range [0,1]
+    if not 0.0 <= ratio_floor <= 1.0:
+        raise ValueError(f"ratio_floor must be in [0, 1], got {ratio_floor}")
     device = get_device(device)
     batch_size, n_step_length = rewards.shape
     # Compute TD errors across n-step window
     td_errors = rewards + discount * (1 - terminations.float()) * target_q.detach() - q_cur.detach()
 
     # Compute IS ratios
-    is_ratio = T.clamp(T.exp(cur_log_probs - buf_log_probs), min=0.5, max=1.0)
+    raw_log_ratio = cur_log_probs - buf_log_probs
+    # min(1, π/μ) in log space. exp of a positive log-ratio would overflow; the cap is 0.
+    is_ratio = T.exp(raw_log_ratio.clamp(max=0.0)).clamp(min=ratio_floor)
+    finite = T.isfinite(raw_log_ratio)
+    is_ratio = T.where(finite, is_ratio, T.zeros_like(is_ratio))
     # Mask invalid steps and IS ratios from terminated_state +1 : N
     valid = (T.arange(n_step_length, device=device)[None, :] < trajectory_lengths[:, None]).float()
     mask = T.ones(batch_size, n_step_length, device=device)
     dones = T.logical_or(terminations, truncations)
+    
     for k in range(1, n_step_length):
         mask[:, k] = mask[:, k-1] * (1 - dones[:, k-1].float()) * valid[:, k]
+    nonfinite_log_ratio = (~finite & mask.bool()).sum()
     is_ratio = is_ratio * mask
 
     # Compute q retrace
@@ -245,6 +259,7 @@ def compute_q_retrace(
         "mask": mask,
         "is_ratio": is_ratio,
         "cum_c": cum_c,
+        "nonfinite_log_ratio": nonfinite_log_ratio,
         # "done_window_final_cum_c": done_window_final_cum_c,
         # "done_window_max_leakage": done_window_max_leakage,
     }

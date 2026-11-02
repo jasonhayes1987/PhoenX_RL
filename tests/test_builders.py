@@ -38,7 +38,7 @@ from phoenx.builder import (
 from phoenx.env_wrapper import GymnasiumWrapper
 from phoenx.models import StochasticDiscreteHead, ValueHead
 from phoenx.normalizer import BatchNorm, RewardNorm, RunningNorm
-from phoenx.rl_agents import ActorCritic, Reinforce
+from phoenx.rl_agents import ActorCritic, Reinforce, SAC
 from phoenx.schedulers import ScheduleWrapper
 
 DEV = "cuda" if T.cuda.is_available() else "cpu"
@@ -334,3 +334,58 @@ class TestBuildScheduleSaveEvery:
         config = {"schedule": {"stop_unit": "timestep", "stop_units": 10}}
         schedule = build_schedule(config)
         assert schedule.save_every == 50_000
+
+
+def _sac_retrace_config(ratio_floor: float) -> dict:
+    """Minimal SAC config whose only interesting knob is the Retrace floor."""
+    return {
+        "agent": {"type": "SAC", "config": {
+            "name": "SAC",
+            "model": {"branches": {
+                "policy": {"type": "StochasticContinuousHead", "layer_config": [DENSE(16), RELU],
+                           "output_config": OUT, "distribution": "normal",
+                           "optimizer_params": OPT, "device": DEV},
+                "critic": {"type": "ContinuousQHead", "layer_config": [DENSE(16), RELU],
+                           "merged_config": [DENSE(16), RELU],
+                           "output_config": OUT, "optimizer_params": OPT, "device": DEV},
+            }},
+            "discount": 0.99,
+            "auto_entropy_tuning": False,
+            "retrace_ratio_floor": ratio_floor,
+            "device": DEV,
+            "log_level": "ERROR",
+        }},
+        "env": {"type": "gymnasium", "config": {
+            "cfg": "Pendulum-v1", "num_envs": 2, "obs_key": None, "goal_key": None,
+            "ach_goal_key": None, "wrappers": [], "render_mode": None, "seed": 3,
+        }},
+    }
+
+
+class TestSACRetraceRatioFloorConfig:
+    """The floor is a plain SAC constructor arg, so the builder forwards it and a saved config reloads it."""
+
+    def test_yaml_key_reaches_agent_and_survives_get_config(self):
+        config = _sac_retrace_config(0.5)
+        env = create_env(config)
+        try:
+            agent = build_agent(config, env)
+            assert agent.retrace_ratio_floor == 0.5
+            saved = agent.get_config()["config"]
+            assert saved["retrace_ratio_floor"] == 0.5
+            rebuilt = SAC.from_config(saved, env)
+            assert rebuilt.retrace_ratio_floor == 0.5
+            saved.pop("retrace_ratio_floor")
+            legacy = SAC.from_config(saved, env)
+            assert legacy.retrace_ratio_floor == 0.0
+        finally:
+            env.close()
+
+    def test_floor_above_one_raises_while_the_agent_is_built(self):
+        config = _sac_retrace_config(5)
+        env = create_env(config)
+        try:
+            with pytest.raises(ValueError, match="retrace_ratio_floor"):
+                build_agent(config, env)
+        finally:
+            env.close()

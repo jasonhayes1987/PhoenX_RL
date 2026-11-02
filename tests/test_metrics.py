@@ -1277,6 +1277,9 @@ def test_metric_spec_is_frozen_with_pinned_defaults():
     ("optim/lr/critic", Reduction.LAST, frozenset({"critic_learning_rate"}), frozenset({"has_critic"})),
     ("optim/lr/critic_b", Reduction.LAST, frozenset({"critic_b_learning_rate"}), frozenset({"twin_critic"})),
     ("sac/alpha", Reduction.LAST, frozenset({"entropy_coefficient"}), frozenset()),
+    ("retrace/is_ratio_mean", Reduction.MEAN, frozenset(), frozenset()),
+    ("retrace/is_ratio_min", Reduction.MIN, frozenset(), frozenset()),
+    ("retrace/nonfinite_log_ratio", Reduction.SUM, frozenset(), frozenset()),
     ("exploration/noise_anneal", Reduction.LAST, frozenset({"noise_anneal"}), frozenset()),
     ("td3/target_noise_anneal", Reduction.LAST, frozenset({"target_noise_anneal"}), frozenset()),
     ("policy/temperature", Reduction.LAST, frozenset({"temperature"}), frozenset({"discrete"})),
@@ -1288,6 +1291,15 @@ def test_registry_entry_matches_pinned_table(key, expected_reduction, expected_a
     assert spec.reduction == expected_reduction
     assert frozenset(spec.aliases) == expected_aliases
     assert frozenset(spec.requires) == expected_requires
+
+
+@pytest.mark.parametrize("key", [
+    "retrace/is_ratio_mean",
+    "retrace/is_ratio_min",
+    "retrace/nonfinite_log_ratio",
+])
+def test_retrace_metrics_are_gated_to_sac(key):
+    assert METRIC_REGISTRY[key].agents == frozenset({"sac"})
 
 
 def test_build_metrics_absent_block_returns_default_manager():

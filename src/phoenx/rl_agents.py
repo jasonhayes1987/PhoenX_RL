@@ -2777,8 +2777,6 @@ class DDPG(Agent):
             gamma_pow = self.discount ** lengths_eff # correctly discounts bootstrapped values by traj lengths
             targets += no_dones_mask * gamma_pow * target_critic_values
 
-            targets = T.clamp(targets, min=-1/(1-self.discount))
-
         # Get current critic predictions (gradients flow through roots+trunk:
         # the critic loss owns the shared body — SAC-AE/DrQ-v2 rule)
         if temporal:
@@ -3375,9 +3373,6 @@ class TD3(Agent):
             no_dones_mask = (terminations_eff.sum(dim=1) == 0 ).float() # eliminates bootstrapping terminated episodes
             gamma_pow = self.discount ** lengths_eff # correctly discounts bootstrapped values by traj lengths
             targets += no_dones_mask * gamma_pow * target_critic_values
-            
-            
-            targets = T.clamp(targets, min=-1/(1-self.discount))
 
         # Get current critic predictions (one shared forward for both critics;
         # the critic loss owns the shared roots/trunk)
@@ -3621,6 +3616,7 @@ class SAC(Agent):
         shared_update: str | None = None,
         discount: float=0.99,
         tau: float=0.005,
+        retrace_ratio_floor: float = 0.0,
         state_normalizer: BaseNormalizer|None = None,
         goal_normalizer: BaseNormalizer|None = None,
         reward_normalizer: RewardNorm|None = None,
@@ -3659,6 +3655,7 @@ class SAC(Agent):
             tau: Polyak interpolation factor for
                 [soft_update][phoenx.agent_utils.soft_update] of the target
                 critics.
+            retrace_ratio_floor: Minimum value for the importance sampling ratio. Values outside [0,1] raise a ValueError. Non-finite log ratios are set to 0.
             state_normalizer: Optional observation normalizer.
             goal_normalizer: Optional goal normalizer for goal-conditioned envs.
             reward_normalizer: Optional reward normalizer.
@@ -3683,6 +3680,11 @@ class SAC(Agent):
             **kwargs (Any): Extra attributes set on the instance via the base
                 ``Agent`` constructor.
         """
+        if not 0.0 <= retrace_ratio_floor <= 1.0:
+            raise ValueError(
+                f"retrace_ratio_floor must be in [0,1], got {retrace_ratio_floor}"
+            )
+
         super().__init__(save_dir, device, **kwargs)
         self._check_head('policy', policy, StochasticDiscreteHead, StochasticContinuousHead)
         self._check_head('critic', critic, ContinuousQHead, DiscreteQHead)
@@ -3698,6 +3700,7 @@ class SAC(Agent):
         )
         self.discount = discount
         self.tau = tau
+        self.retrace_ratio_floor = retrace_ratio_floor
         self.state_normalizer = state_normalizer
         self.goal_normalizer = goal_normalizer
         self.reward_normalizer = reward_normalizer
@@ -4057,7 +4060,8 @@ class SAC(Agent):
                 cur_log_probs,
                 buf_log_probs,
                 self.discount,
-                device=self.device
+                ratio_floor=self.retrace_ratio_floor,
+                device=self.device,
             )
             # Collect retrace boundary diagnostics
             if q_metrics.get("done_window_final_cum_c") or q_metrics.get("done_window_max_leakage"):
@@ -4065,9 +4069,6 @@ class SAC(Agent):
                     "done_window_final_cum_c": q_metrics["done_window_final_cum_c"],
                     "done_window_max_leakage": q_metrics["done_window_max_leakage"],
                 })
-
-            # Set low bound of q-retrace to -1/1-self.discount
-            q_retrace = T.clamp(q_retrace, min=-1/(1-self.discount))
 
         # Reshape flat states, goals, actions to [batch_size, n-step, *feat]
         states_reshaped = unflatten_leading(states_flat, (batch_size, n_step_length))
@@ -4294,6 +4295,8 @@ class SAC(Agent):
         critic_learning_rate = self.model.learning_rate('branches.critic')
         critic_b_learning_rate = self.model.learning_rate('branches.critic_b')
 
+        kept = q_metrics["mask"].bool()
+        ratios = q_metrics["is_ratio"][kept]
         learn_metrics.update({
             "extrinsic_rewards": extrinsic_rewards.mean().item(),
             "policy_loss": actor_loss.item(),
@@ -4308,6 +4311,9 @@ class SAC(Agent):
             'policy_learning_rate': policy_learning_rate,
             'critic_learning_rate': critic_learning_rate,
             'critic_b_learning_rate': critic_b_learning_rate,
+            "retrace/is_ratio_mean": ratios.mean().item(),
+            "retrace/is_ratio_min": ratios.min().item(),
+            "retrace/nonfinite_log_ratio": q_metrics["nonfinite_log_ratio"].item(),
         })
         
         if self.intrinsic_motivation:
@@ -4339,6 +4345,7 @@ class SAC(Agent):
             "model": self.model.get_config(),
             "discount": self.discount,
             "tau": self.tau,
+            "retrace_ratio_floor": self.retrace_ratio_floor,
             "state_normalizer": self.state_normalizer.get_config() if self.state_normalizer is not None else None,
             "goal_normalizer": self.goal_normalizer.get_config() if self.goal_normalizer is not None else None,
             "reward_normalizer": self.reward_normalizer.get_config() if self.reward_normalizer is not None else None,
