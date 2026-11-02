@@ -184,6 +184,14 @@ class VectorNStepReward(VectorWrapper):
         self._env_idx = T.arange(self.num_envs, device=self.device)
         self._env_idx_nx1 = self._env_idx.unsqueeze(1).expand(self.num_envs, self.n)
 
+    def set_training(self, training: bool) -> None:
+        """Set the training flag.
+
+        Args:
+            training: True if training, False if not.
+        """
+        self._training = training
+
     def set_action(self, action: Action) -> None:
         """Store the ``Action`` for the upcoming ``step`` write.
 
@@ -319,7 +327,7 @@ class VectorNStepReward(VectorWrapper):
                 intrinsic_rewards = intrinsic_rewards.view(self.num_envs)
 
         else:
-            intrinsic_rewards = T.zeros_like(rewards)
+            intrinsic_rewards = T.zeros_like(rewards, dtype=T.float32)
 
         self.last_intrinsic_rewards = intrinsic_rewards
 

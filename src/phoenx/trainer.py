@@ -696,7 +696,7 @@ class Trainer:
         nstep_wrapper = self.env._find_nstep_wrapper()
         if nstep_wrapper is not None:
             nstep_wrapper.set_action(action)
-            nstep_wrapper._training = training
+            nstep_wrapper.set_training(training)
         # Take action in environment and get new Observation
         observation = self.env.step(action.actions)
         # If Agent uses Intrinsic Motivation, calculate intrinsic rewards to store in buffer (Training Only)
