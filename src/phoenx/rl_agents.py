@@ -15,6 +15,7 @@ from collections import deque
 import copy
 
 from .logging_config import get_logger
+from .config_utils import init_param_names, reject_unknown_keys
 from .metrics import MetricsRecorder, NULL_RECORDER
 
 from .intrinsic_motivation import IntrinsicMotivation
@@ -84,6 +85,7 @@ class Agent(ABC):
                  device: Optional[str | T.device] = None,
                  log_level: str = 'INFO',
                  name: str | None = None,
+                 context_length: int = 16,
                  **kwargs
     ):
         """Initialize shared agent bookkeeping and save-path / device setup.
@@ -93,11 +95,25 @@ class Agent(ABC):
             device: Torch device; ``None`` resolves via ``get_device``.
             log_level: Logger level name (uppercased before use).
             name: Logger / display name; defaults to the class name.
-            **kwargs (Any): Extra attributes set on the instance via ``setattr``.
+            context_length: Rolling observation window for causal-transformer
+                trunks at act time; unused by other trunks.
+            **kwargs (Any): Private diagnostic knobs (names starting with
+                ``_``, e.g. ``_diag_freq``) set on the instance via
+                ``setattr``. Any other leftover key is a config typo and
+                raises ``TypeError``.
+
+        Raises:
+            TypeError: If ``kwargs`` holds a key no constructor in the class
+                chain accepts (see
+                [reject_unknown_keys][phoenx.config_utils.reject_unknown_keys]).
         """
+        # Checked before the guarded block below, which logs and swallows
+        # exceptions: a typo must stop the run, not be logged and ignored.
+        reject_unknown_keys(type(self).__name__, kwargs, init_param_names(type(self)))
         self.name = name if name else self.__class__.__name__
         self.logger = get_logger(self.name, level=log_level.upper())
         self.kwargs = kwargs
+        self.context_length = int(context_length)
         self.intrinsic_motivation = None
         try:
             self.save_dir = self._setup_save_dir(save_dir)
@@ -218,6 +234,7 @@ class Agent(ABC):
                 "save_dir": self.save_dir,
                 "name": self.name,
                 "device": self.device.type,
+                "context_length": self.context_length,
             }
         }
 
@@ -378,7 +395,7 @@ class Agent(ABC):
         heads on the window's final position.
         """
         from phoenx.obs_utils import tree_detach_clone, tree_stack
-        window = int(getattr(self, 'context_length', 16))
+        window = self.context_length
         if self._ctx_obs is None:
             self._ctx_obs, self._ctx_goals, self._ctx_starts = [], [], []
         num_envs = (next(iter(states.values())).shape[0]

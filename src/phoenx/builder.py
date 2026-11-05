@@ -20,6 +20,7 @@ import gymnasium as gym
 import numpy as np
 import yaml
 
+from phoenx.config_utils import resolve_n_step
 from phoenx.models import modular_parts_from_config
 from phoenx.buffer import Buffer, RolloutBuffer, TrajectoryBuffer
 from phoenx.her import HindsightRelabeler
@@ -456,7 +457,9 @@ def build_agent(config: dict, env: EnvWrapper) -> Agent:
 def build_trainer_from_config(config: dict, log_level: str | None = None) -> Trainer:
     """Assemble a ``Trainer`` from a full parsed training config.
 
-    Seeds from ``config["schedule"]["seed"]`` when present, then builds env,
+    Seeds from ``config["schedule"]["seed"]`` when present, resolves the
+    n-step horizon with [resolve_n_step][phoenx.config_utils.resolve_n_step]
+    (so ``agent.config.N`` is the only place it needs to be set), then builds env,
     agent, buffer, schedule, callbacks, renderer, and success criterion via
     the factories in this module.
 
@@ -475,6 +478,10 @@ def build_trainer_from_config(config: dict, log_level: str | None = None) -> Tra
     seed = config.get('schedule', {}).get('seed', None)
     if seed is not None:
         set_seed(seed)
+
+    # agent.config.N is the single source of the n-step horizon; fan it out to
+    # the replay buffer, the VectorNStepReward wrapper and HER before building.
+    resolve_n_step(config)
 
     env = create_env(config)
     agent = build_agent(config, env)

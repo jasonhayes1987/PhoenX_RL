@@ -54,6 +54,9 @@ nav:
       - Noise (phoenx.noise): api/noise.md
       - Schedulers (phoenx.schedulers): api/schedulers.md
       - Builder (phoenx.builder): api/builder.md
+      - Config Utilities (phoenx.config_utils): api/config_utils.md
+      - Config Schema (phoenx.config_schema): api/config_schema.md
+      - Layer Specs (phoenx.layer_specs): api/layer_specs.md
       - RL Callbacks (phoenx.rl_callbacks): api/rl_callbacks.md
       - Ray Tune (phoenx.ray_tune): api/ray_tune.md
       - Agent Utils (phoenx.agent_utils): api/agent_utils.md

@@ -47,6 +47,39 @@ pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
 phoenx-train --config LunarLanderContinuous-v3/sac.yml
 ```
 
+## Checking a config
+
+PhoenX generates a JSON Schema for configs straight from its own source: the
+constructor signatures give every key, type and default, and their docstrings
+give the descriptions (see [phoenx.config_schema][]). It never imports torch,
+so it runs instantly.
+
+```bash
+# Check files without building an env or a model
+phoenx-config validate path/to/my_experiment.yml
+
+# Autocomplete, hover docs and inline errors in VS Code
+phoenx-config vscode
+```
+
+`validate` reports misspelled keys with a suggestion
+(`agent.config: unknown key 'polcy_clip' (did you mean 'policy_clip'?)`),
+wrong types, unknown layer / head / normalizer types, missing required layer
+params, and n-step horizon mismatches. `vscode` writes
+`phoenx-config.schema.json` into the project folder and points the
+[YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)
+at it for `**/configs/**/*.yml` and `**/fixtures/*.yml` (change with
+`--glob`). To attach the schema to a single file instead, put this on its
+first line:
+
+```yaml
+# yaml-language-server: $schema=./phoenx-config.schema.json
+```
+
+Regenerate the schema (`phoenx-config schema`) after upgrading PhoenX.
+Building a trainer applies the same unknown-key check at runtime, so a typo
+fails at startup instead of training on a default.
+
 ## Isaac Lab environment classes
 
 Isaac example configs can point at a custom env class via the
@@ -165,7 +198,7 @@ agent:
     entropy_lr: 0.0003
     policy_grad_clip: 1.0
     critic_grad_clip: 1.0
-    N: &n 1                    # must match buffer N and VectorNStepReward n
+    N: 1                       # n-step horizon: set it only here (see below)
     log_level: DEBUG
     _diag_freq: 1000
     state_normalizer:          # under agent.config, not top-level normalizers:
@@ -178,12 +211,10 @@ env:
   config:
     cfg: LunarLanderContinuous-v3   # EnvPool task id (not module:Class)
     num_envs: 64
-    obs_key: &obs_key null
-    goal_key: &goal_key null
-    ach_goal_key: &ach_goal_key null
-    wrappers:
-      - type: VectorNStepReward     # required for ReplayBuffer / PER
-        params: {n: *n, obs_key: *obs_key, goal_key: *goal_key, ach_goal_key: *ach_goal_key}
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
+    wrappers: []                    # VectorNStepReward is added for ReplayBuffer / PER
     render_mode: null
     seed: *seed
 
@@ -199,8 +230,7 @@ buffer:
     priority: proportional
     epsilon: 1.0e-6
     sort_freq: 1000
-    N: *n
-    device: *device
+    device: *device                 # N comes from agent.config.N
 
 # Optional. Forwarded to Renderer; Trainer overwrites renderer.save_dir
 renderer:
@@ -403,7 +433,19 @@ Registered wrapper `type` names include `VectorNStepReward`,
 `OneHotObservationWrapper`, `VectorOneHotObservation`, `AtariPreprocessing`,
 `TimeLimit`, `TimeAwareObservation`, `FrameStackObservation`, and
 `ResizeObservation`. Off-policy replay buffers require `VectorNStepReward` on
-the env. Full wrapper API: [Environment wrappers][phoenx.env_wrapper].
+the env; PhoenX appends it for you (as the outermost wrapper) when it is not
+listed. Full wrapper API: [Environment wrappers][phoenx.env_wrapper].
+
+#### The n-step horizon `N`
+
+Set the n-step horizon once, as `agent.config.N`. Before anything is built,
+[resolve_n_step][phoenx.config_utils.resolve_n_step] copies it to
+`buffer.config.N`, to the `VectorNStepReward` wrapper's `n` (adding the
+wrapper when a replay buffer is used and none is listed), and to an `n_step`
+HER relabeler's `N`. The wrapper's `obs_key` / `goal_key` / `ach_goal_key`
+default to the values in `env.config`. Older configs that repeat `N` in those
+places still load, as long as every copy agrees; a mismatch raises
+`ValueError`.
 
 ### `agent`
 
@@ -482,7 +524,7 @@ Shared / common `config` fields (constructor defaults):
 | Key | Default | Notes |
 |-----|---------|-------|
 | `buffer_size` | `100000` (replay / PER); required for rollout / trajectory | Replay: max windows; Rollout: horizon per env |
-| `N` | `1` | Replay / PER window length; must match `VectorNStepReward` |
+| `N` | `1` | Replay / PER window length; filled in from `agent.config.N` |
 | `device` | `None` → `get_device()` | |
 | `hindsight` | `None` | Mapping → [HindsightRelabeler][phoenx.her.HindsightRelabeler] (`env` injected) |
 
@@ -654,8 +696,8 @@ promotion, architecture search, and the bundled examples:
    [infer_dim][phoenx.builder.infer_dim] for non-dict normalizers) or set it
    to the true feature width — a blind Isaac cfg that drops object pose needs
    `33`, not `36`.
-4. **Match buffer and schedule to the algorithm.** Off-policy replay needs
-   `VectorNStepReward` and matching `N`. On-policy PPO should set
+4. **Match buffer and schedule to the algorithm.** Off-policy replay uses
+   `agent.config.N` for the n-step window (the buffer and wrapper follow it). On-policy PPO should set
    `learn_every` ≈ `buffer.config.buffer_size * num_envs` when counting
    timesteps. Scale `mini_batch_size` / `learning_epochs` with rollout size.
 5. **Update run metadata.** `save_dir`, callback `project_name`, and optional
@@ -673,8 +715,12 @@ promotion, architecture search, and the bundled examples:
 - **`learn_every` vs `num_envs`** — Timestep cadence is global steps. Raising
   `num_envs` without scaling `learn_every` learns more often per env-step of
   experience.
-- **PER / replay without `VectorNStepReward`** — `ReplayBuffer` and
-  `PrioritizedReplayBuffer` raise if the wrapper is missing.
+- **Misspelled keys** — An unknown key under `agent.config`, a normalizer
+  `config`, a head, a `roots` / `trunk` subnetwork, `agent.config.model`, or a
+  layer's `params` raises `TypeError` with a "did you mean" suggestion. Keys
+  that start with `_` (such as `_diag_freq`) are diagnostic knobs and always
+  allowed. Run `phoenx-config validate my_config.yml` to check a file
+  without building anything.
 - **HER keys** — `goal_key` (and usually `ach_goal_key`) must be set;
   `buffer.config.hindsight` must use `output_format` compatible with the
   buffer (`n_step` for replay, `flat` for trajectory).
