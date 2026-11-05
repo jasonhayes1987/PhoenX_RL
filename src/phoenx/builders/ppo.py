@@ -15,14 +15,14 @@ def build(config: dict, env: EnvWrapper):
     # normalizers
     if agent_cfg.get("state_normalizer", None):
         agent_cfg["state_normalizer"] = create_normalizer(
-            agent_cfg["state_normalizer"], env, config["env"]["config"]["obs_key"]
+            agent_cfg["state_normalizer"], env, env.obs_key
         )
     else:
         agent_cfg["state_normalizer"] = None
 
     if agent_cfg.get("goal_normalizer", None):
         agent_cfg["goal_normalizer"] = create_normalizer(
-            agent_cfg["goal_normalizer"], env, config["env"]["config"]["goal_key"]
+            agent_cfg["goal_normalizer"], env, env.goal_key
         )
     else:
         agent_cfg["goal_normalizer"] = None
@@ -65,7 +65,7 @@ def build(config: dict, env: EnvWrapper):
     # intrinsic motivation
     if agent_cfg.get("intrinsic_motivation", None):
         agent_cfg["intrinsic_motivation"] = create_intrinsic_motivation(
-            agent_cfg["intrinsic_motivation"], env, config["env"]["config"]["obs_key"]
+            agent_cfg["intrinsic_motivation"], env, env.obs_key
         )
     else:
         agent_cfg["intrinsic_motivation"] = None

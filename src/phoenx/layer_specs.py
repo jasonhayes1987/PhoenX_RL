@@ -35,6 +35,13 @@ KERNEL_NAMES = (
     "constant", "ones", "zeros", "variance_scaling",
 )
 
+#: Layer types with rank-2+ weight tensors, the only ones ``kernel`` /
+#: ``kernel_params`` affect (see ``phoenx.models.init_module_weights``).
+WEIGHTED_LAYERS = frozenset({
+    "dense", "linear", "conv1d", "conv2d", "conv3d", "convtranspose2d",
+    "embedding", "positional_encoding", "mha", "transformer_encoder", "lstm", "gru",
+})
+
 _INT = "integer"
 _NUM = "number"
 _BOOL = "boolean"

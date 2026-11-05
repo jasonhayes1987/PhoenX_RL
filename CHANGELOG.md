@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- A config editor window, `phoenx-config gui [FILE]` (`phoenx.config_gui`,
+  standard-library tkinter, no torch import). It is generated from the config
+  JSON Schema, so every agent / head / layer / normalizer / buffer setting
+  appears as a field, dropdown or checkbox with its docstring as a tooltip;
+  type dropdowns swap the fields below them; layer lists and model branches
+  have add / remove / reorder controls; optional sections have on/off
+  switches. A live YAML preview shows what Save writes, and a live problems
+  list (bad input, unknown keys, schema errors, n-step mismatches) jumps to
+  the field on double-click. New configs can start from any bundled example.
+  Saved files contain only settings that differ from PhoenX's defaults
+  unless "Write default values" is ticked; unknown keys are carried through,
+  not dropped. Comments and YAML anchors are not preserved on save.
+- `phoenx.config_form`, the GUI-independent form model behind the editor:
+  loads a parsed config into a node tree built from the schema and writes a
+  minimal config back. Tests check that every bundled config round-trips to
+  a valid, stable file, and that the minimal file builds a trainer identical
+  to the original's.
 - `phoenx-config`, a command for checking configs without building
   anything: `phoenx-config validate FILE...` reports misspelled keys (with a
   "did you mean" suggestion), wrong types, unknown layer / head / normalizer
@@ -156,6 +173,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- `StochasticContinuousHead.distribution` and
+  `StochasticDiscreteHead.distribution` are annotated as `Literal` types and
+  checked in the constructor, so a misspelled distribution fails when the
+  head is built instead of at its first forward pass, and the schema / GUI
+  offer it as a dropdown.
+- Agent-level `optimizer_params`, `lr_scheduler` and `shared_update` (which
+  silently override the same keys under `agent.config.model`) are still
+  accepted but hidden from the GUI unless a config uses them.
 - The n-step horizon is now set in one place, `agent.config.N`.
   `phoenx.config_utils.resolve_n_step` (run by `build_trainer_from_config`)
   copies it to `buffer.config.N`, to the `VectorNStepReward` wrapper's `n`,
@@ -373,6 +398,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- The per-algorithm builders read `obs_key` / `goal_key` from the built
+  environment instead of indexing `config["env"]["config"]`, so a config that
+  omits those keys no longer fails with `KeyError`, and Isaac configs that
+  rely on `IsaacSimWrapper`'s `obs_key="policy"` default now hand normalizers
+  and intrinsic motivation `"policy"` rather than `None`.
 - `context_length` (the causal-transformer act-time window) is now a real
   `Agent` constructor parameter and is saved by `get_config`. It previously
   reached the agent only through the leftover-kwargs `setattr`, so a run

@@ -14,7 +14,7 @@ causal transformer) belong in the trunk only.
 # imports
 from abc import abstractmethod
 import math
-from typing import Optional, List, Dict, Iterator, Callable, Any
+from typing import Optional, List, Dict, Iterator, Callable, Any, Literal
 from pathlib import Path
 
 import gymnasium as gym
@@ -1983,6 +1983,14 @@ class SubNetwork(nn.Module):
 # Branch heads
 # -----------------------------------------------------------------------------
 
+def _check_distribution(name: str, allowed: tuple[str, ...], owner: str) -> None:
+    """Fail at construction instead of at the first forward pass."""
+    if name not in allowed:
+        raise ValueError(
+            f"{owner}: unsupported distribution {name!r}; choose one of {', '.join(allowed)}."
+        )
+
+
 class Head(nn.Module):
     """Base class for branch heads: a ``SubNetwork`` body plus env-shaped outputs.
 
@@ -2161,7 +2169,7 @@ class StochasticDiscreteHead(Head):
         output_config: List[Dict] | None = None,
         optimizer_params: dict | None = None,
         lr_scheduler: ScheduleWrapper | None = None,
-        distribution: str = 'categorical',
+        distribution: Literal['categorical'] = 'categorical',
         temperature: float = 1.0,
         temperature_schedule: ScheduleWrapper | None = None,
         device: str | T.device | None = None,
@@ -2180,7 +2188,11 @@ class StochasticDiscreteHead(Head):
             temperature_schedule: Optional multiplier schedule on temperature.
             device: Device to place parameters on.
             name: Display name used in error messages.
+
+        Raises:
+            ValueError: If ``distribution`` is not ``'categorical'``.
         """
+        _check_distribution(distribution, ('categorical',), type(self).__name__)
         self.distribution = distribution
         self.temperature = temperature
         self.temperature_schedule = temperature_schedule
@@ -2238,7 +2250,7 @@ class StochasticContinuousHead(Head):
         output_config: List[Dict] | None = None,
         optimizer_params: dict | None = None,
         lr_scheduler: ScheduleWrapper | None = None,
-        distribution: str = 'beta',
+        distribution: Literal['beta', 'kumaraswamy', 'normal'] = 'beta',
         device: str | T.device | None = None,
         name: str | None = None,
     ):
@@ -2253,7 +2265,11 @@ class StochasticContinuousHead(Head):
             distribution: ``'beta'``, ``'kumaraswamy'``, or ``'normal'``.
             device: Device to place parameters on.
             name: Display name used in error messages.
+
+        Raises:
+            ValueError: If ``distribution`` is not one of the three families.
         """
+        _check_distribution(distribution, ('beta', 'kumaraswamy', 'normal'), type(self).__name__)
         self.distribution = distribution
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device, name)
 

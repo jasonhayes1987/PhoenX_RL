@@ -9,9 +9,12 @@ Subcommands:
   an environment or touching torch.
 * ``vscode`` writes the schema and points the VS Code YAML extension at it,
   for autocomplete, hover docs and inline errors while editing configs.
+* ``gui`` opens the config editor window ([phoenx.config_gui][]).
 
 Example:
     ``phoenx-config validate my_run.yml``
+
+    ``phoenx-config gui my_run.yml``
 """
 
 from __future__ import annotations
@@ -106,6 +109,17 @@ def _cmd_vscode(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_gui(args: argparse.Namespace) -> int:
+    try:
+        from phoenx.config_gui import main as gui_main
+    except ImportError as exc:  # tkinter missing from this Python
+        print(f"The config editor needs tkinter, which this Python lacks ({exc}).\n"
+              "On Windows/macOS, reinstall Python from python.org with Tcl/Tk enabled; "
+              "on Debian/Ubuntu: sudo apt install python3-tk", file=sys.stderr)
+        return 1
+    return gui_main(args.file)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``phoenx-config`` command."""
     parser = argparse.ArgumentParser(
@@ -128,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--glob", nargs="+", default=DEFAULT_GLOBS,
                    help=f"Config file globs (default: {' '.join(DEFAULT_GLOBS)})")
     p.set_defaults(func=_cmd_vscode)
+
+    p = sub.add_parser("gui", help="Open the config editor window")
+    p.add_argument("file", nargs="?", help="Config to open (optional)")
+    p.set_defaults(func=_cmd_gui)
 
     args = parser.parse_args(argv)
     return args.func(args)

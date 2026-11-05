@@ -23,7 +23,7 @@ def build(config: dict, env: EnvWrapper) -> ActorCritic:
     # create state normalizer object if present in config
     if agent_cfg.get('state_normalizer', None):
         agent_cfg['state_normalizer'] = create_normalizer(
-            agent_cfg['state_normalizer'], env, config['env']['config']['obs_key']
+            agent_cfg['state_normalizer'], env, env.obs_key
         )
     else:
         agent_cfg['state_normalizer'] = None
@@ -31,7 +31,7 @@ def build(config: dict, env: EnvWrapper) -> ActorCritic:
     # create goal normalizer object if present in config
     if agent_cfg.get('goal_normalizer', None):
         agent_cfg['goal_normalizer'] = create_normalizer(
-            agent_cfg['goal_normalizer'], env, config['env']['config']['goal_key']
+            agent_cfg['goal_normalizer'], env, env.goal_key
         )
     else:
         agent_cfg['goal_normalizer'] = None

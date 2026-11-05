@@ -57,6 +57,8 @@ nav:
       - Config Utilities (phoenx.config_utils): api/config_utils.md
       - Config Schema (phoenx.config_schema): api/config_schema.md
       - Layer Specs (phoenx.layer_specs): api/layer_specs.md
+      - Config Form (phoenx.config_form): api/config_form.md
+      - Config Editor GUI (phoenx.config_gui): api/config_gui.md
       - RL Callbacks (phoenx.rl_callbacks): api/rl_callbacks.md
       - Ray Tune (phoenx.ray_tune): api/ray_tune.md
       - Agent Utils (phoenx.agent_utils): api/agent_utils.md

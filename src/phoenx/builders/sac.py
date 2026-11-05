@@ -10,13 +10,13 @@ def build(config: dict, env: EnvWrapper):
 
     # create state normalizer object if present in config
     if config['agent']['config'].get('state_normalizer', None):
-        config['agent']['config']['state_normalizer'] = create_normalizer(config['agent']['config']['state_normalizer'], env, config['env']['config']['obs_key'])
+        config['agent']['config']['state_normalizer'] = create_normalizer(config['agent']['config']['state_normalizer'], env, env.obs_key)
     else:
         config['agent']['config']['state_normalizer'] = None
 
     # create goal normalizer object if present in config
     if config['agent']['config'].get('goal_normalizer', None):
-        config['agent']['config']['goal_normalizer'] = create_normalizer(config['agent']['config']['goal_normalizer'], env, config['env']['config']['goal_key'])
+        config['agent']['config']['goal_normalizer'] = create_normalizer(config['agent']['config']['goal_normalizer'], env, env.goal_key)
     else:
         config['agent']['config']['goal_normalizer'] = None
 
@@ -28,7 +28,7 @@ def build(config: dict, env: EnvWrapper):
 
     # create curiosity object if present in config
     if config['agent']['config'].get('intrinsic_motivation', None):
-        config['agent']['config']['intrinsic_motivation'] = create_intrinsic_motivation(config['agent']['config']['intrinsic_motivation'], env, config['env']['config']['obs_key'])
+        config['agent']['config']['intrinsic_motivation'] = create_intrinsic_motivation(config['agent']['config']['intrinsic_motivation'], env, env.obs_key)
     else:
         config['agent']['config']['intrinsic_motivation'] = None
 

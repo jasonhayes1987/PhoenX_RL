@@ -33,7 +33,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from phoenx.layer_specs import KERNEL_NAMES, LAYER_SPECS
+from phoenx.layer_specs import KERNEL_NAMES, LAYER_SPECS, WEIGHTED_LAYERS
 
 SRC = Path(__file__).resolve().parent
 
@@ -386,6 +386,8 @@ def tagged_union(
         "required": ["type"],
         "properties": {"type": {"enum": names}},
         "additionalProperties": False,
+        # Read by the config GUI: where the type-specific fields live.
+        "x-tagged": {"config_key": config_key},
     }
     if description:
         s["description"] = description
@@ -441,17 +443,24 @@ def _layer_def(require: bool) -> dict:
     init_props = {
         "kernel": {"enum": list(KERNEL_NAMES), "description": "Weight initializer."},
         "kernel_params": {"type": "object", "description": "Keyword args for the initializer."},
-        "kernel params": {"type": "object", "description": "Legacy spelling of kernel_params."},
+        "kernel params": {"type": "object", "description": "Legacy spelling of kernel_params.",
+                          "x-hidden": True},
     }
     for layer_type, spec in LAYER_SPECS.items():
         props = {}
         req = []
         for pname, pspec in spec["params"].items():
             ps = {k: v for k, v in pspec.items() if k not in ("required",)}
+            if not require and pname in ("units", "out_features", "out_channels"):
+                ps["x-hidden"] = True  # output widths come from the env
             props[pname] = ps
             if pspec.get("required") and require:
                 req.append(pname)
-        props.update(init_props)
+        if layer_type in WEIGHTED_LAYERS:
+            props.update(init_props)
+        else:
+            # Accepted (init skips weightless layers) but not worth showing.
+            props.update({k: {**v, "x-hidden": True} for k, v in init_props.items()})
         params = {"type": "object", "properties": props,
                   "additionalProperties": "passthrough" in spec}
         if req:
@@ -546,9 +555,9 @@ def _definitions() -> dict:
     }
     defs["model"] = {
         "type": "object",
-        "properties": {"type": {"const": "ModularModel"},
+        "properties": {"type": {"const": "ModularModel", "x-hidden": True},
                        "config": {"type": "object", "properties": model_body,
-                                  "additionalProperties": False},
+                                  "additionalProperties": False, "x-hidden": True},
                        **model_body},
         "additionalProperties": False,
     }
@@ -579,6 +588,15 @@ def _agent_variant(cls: str) -> dict:
                    "lr_scheduler": _nullable(_ref("schedule"))},
         extra={"model": _ref("model")},
     )
+    # Also settable under `model`, and the agent-level copy silently wins
+    # (apply_model_config uses setdefault). Keep them valid for old configs
+    # but out of the GUI unless a file already uses them.
+    for dup in ("optimizer_params", "lr_scheduler", "shared_update"):
+        if dup in s["properties"]:
+            s["properties"][dup]["x-hidden"] = True
+            s["properties"][dup]["description"] = (
+                s["properties"][dup].get("description", "")
+                + " Prefer setting this under agent.config.model.").strip()
     s["required"] = sorted(set(s.get("required", [])) | {"model"})
     if "N" in s["properties"]:
         s["properties"]["N"]["description"] = (

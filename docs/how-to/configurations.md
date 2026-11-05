@@ -47,6 +47,36 @@ pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
 phoenx-train --config LunarLanderContinuous-v3/sac.yml
 ```
 
+## Editing a config in the GUI
+
+```bash
+phoenx-config gui                      # start blank, or New > From example
+phoenx-config gui path/to/my_run.yml   # open an existing config
+```
+
+The editor is generated from the same schema as `phoenx-config validate`, so
+every setting PhoenX understands is there: dropdowns for agent, head, layer,
+normalizer and buffer types (the fields below change with the choice), number
+and text fields that start at the value PhoenX would use anyway, add / remove /
+reorder buttons for layer lists and model branches, and on/off switches for
+optional sections such as normalizers and schedules. Hover a field name for
+the description from the code's docstring.
+
+- **YAML preview** (right): exactly what Save writes. Only settings that
+  differ from their defaults are written, so the file holds the choices that
+  matter. Tick **Write default values** to write everything.
+- **Problems** (bottom): updates as you type: input that doesn't parse, unknown
+  keys, schema errors, n-step mismatches. Double-click one to jump to its
+  field. Save warns before writing a config with problems.
+- **Show only set fields** hides everything still at its default, which is a
+  quick way to see what a config actually changes.
+
+Comments and YAML anchors are not preserved when an existing file is saved;
+anchored values are written out in full. Keys the form has no field for
+(diagnostic `_` knobs, or typos) are kept in each section's *other keys* field
+rather than dropped. The editor needs `tkinter`, which python.org installers
+include; on Debian/Ubuntu install `python3-tk`.
+
 ## Checking a config
 
 PhoenX generates a JSON Schema for configs straight from its own source: the
