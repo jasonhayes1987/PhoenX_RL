@@ -20,34 +20,29 @@ Uses the REAL production stack on the synthetic multi-modal env registered in
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
+import gymnasium as gym
 import torch as T
+from gymnasium import spaces
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.buffer import (  # noqa: E402
+from phoenx.buffer import (
     PrioritizedReplayBuffer,
     ReplayBuffer,
     RolloutBuffer,
     TrajectoryBuffer,
 )
-from app.env_wrapper import Action, GymnasiumWrapper  # noqa: E402
-from app.her import HindsightRelabeler  # noqa: E402
-from app.models import (  # noqa: E402
+from phoenx.env_wrapper import Action, GymnasiumWrapper
+from phoenx.her import HindsightRelabeler
+from phoenx.models import (
     ContinuousQHead,
     StochasticContinuousHead,
     SubNetwork,
     ValueHead,
 )
-from app.normalizer import DictNormalizer, ImageScale, RunningNorm, create_normalizer  # noqa: E402
-from app.obs_utils import flatten_leading, flatten_obs, tree_index  # noqa: E402
-from app.rl_agents import PPO, SAC  # noqa: E402
+from phoenx.normalizer import BatchNorm, DictNormalizer, ImageScale, RunningNorm, create_normalizer
+from phoenx.obs_utils import flatten_leading, flatten_obs, tree_index
+from phoenx.rl_agents import PPO, SAC
 
 DEVICE = "cpu"
 T.manual_seed(0)
@@ -303,6 +298,88 @@ class TestDictBuffers:
 # =============================================================================
 # Storage dtype sync: spaces that lie about observation dtypes
 # =============================================================================
+
+class LyingSpaceTestEnv(gym.Env):
+    """Env whose observation_space lies: rgb is declared float32 but emitted as uint8.
+
+    Mimics IsaacLab manager-based envs that declare float32 Boxes for camera
+    images while the underlying sensor data is uint8. Used to verify buffer
+    storage reconciles to the actual data dtype on first ``add``.
+
+    Args:
+        img_size: Spatial size of the square ``rgb`` observation.
+        vec_dim: Length of the float ``vec`` observation.
+        episode_len: Steps before truncation.
+        render_mode: Unused; accepted for gymnasium registration compatibility.
+
+    Example:
+        >>> env = LyingSpaceTestEnv()
+        >>> obs, _ = env.reset(seed=0)
+        >>> obs["rgb"].dtype
+        dtype('uint8')
+        >>> env.observation_space["rgb"].dtype
+        dtype('float32')
+    """
+
+    metadata = {"render_modes": []}
+
+    def __init__(
+        self,
+        img_size: int = 8,
+        vec_dim: int = 5,
+        episode_len: int = 10,
+        render_mode: str | None = None,
+    ):
+        super().__init__()
+        self.render_mode = render_mode
+        # Deliberately wrong dtype for rgb (float32 declared, uint8 emitted).
+        self.observation_space = spaces.Dict({
+            "rgb": spaces.Box(-np.inf, np.inf, (img_size, img_size, 3), np.float32),
+            "vec": spaces.Box(-np.inf, np.inf, (vec_dim,), np.float32),
+        })
+        self.action_space = spaces.Box(-1.0, 1.0, (2,), np.float32)
+        self._episode_len = episode_len
+        self._t = 0
+        self._img_size = img_size
+        self._vec_dim = vec_dim
+
+    def _obs(self):
+        rgb = self.np_random.integers(0, 256, (self._img_size, self._img_size, 3), dtype=np.uint8)
+        vec = self.np_random.normal(size=(self._vec_dim,)).astype(np.float32)
+        return {"rgb": rgb, "vec": vec}
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self._t = 0
+        return self._obs(), {}
+
+    def step(self, action):
+        self._t += 1
+        reward = float(np.sum(np.asarray(action, dtype=np.float64)))
+        truncated = self._t >= self._episode_len
+        return self._obs(), reward, False, truncated, {}
+
+
+def _register_lying_space(env_id: str, entry_point, **kwargs) -> None:
+    """Register ``env_id`` once if absent (conftest ``_register`` style).
+
+    Args:
+        env_id: Gymnasium environment id to register.
+        entry_point: Env class or import path.
+        **kwargs: Forwarded to ``gym.register`` (e.g. constructor kwargs).
+    """
+    if env_id not in gym.registry:
+        gym.register(
+            id=env_id,
+            entry_point=entry_point,
+            kwargs=kwargs,
+            disable_env_checker=True,
+        )
+
+
+_register_lying_space("PhoenXLyingSpace-v0", LyingSpaceTestEnv)
+
+
 class TestStorageDtypeSyncLyingSpace:
     """IsaacLab manager-based envs declare float32 Boxes for EVERY observation
     group — including uint8 camera images. Buffer storage dtypes must follow
@@ -311,23 +388,30 @@ class TestStorageDtypeSyncLyingSpace:
     uint8 -> [0,1] input scaling and made learn-time camera inputs 255x the
     rollout-time inputs (the PPO-camera NaN bug)."""
 
-    class _LyingSpaceEnv:
-        import gymnasium as gym
-        num_envs = 2
-        obs_key = None
-        goal_key = None
-        ach_goal_key = None
-        # The space CLAIMS float32 for rgb; the env actually emits uint8.
-        single_observation_space = gym.spaces.Dict({
-            "rgb": gym.spaces.Box(-np.inf, np.inf, (8, 8, 3), np.float32),
-            "vec": gym.spaces.Box(-np.inf, np.inf, (5,), np.float32),
-        })
-        observation_space = single_observation_space
-        single_action_space = gym.spaces.Box(-1, 1, (2,), np.float32)
-        action_space = single_action_space
+    @pytest.fixture(scope="class")
+    def lying_env(self):
+        """Lying-space env WITHOUT n-step wrapper (on-policy / RolloutBuffer)."""
+        env = GymnasiumWrapper(cfg="PhoenXLyingSpace-v0", num_envs=2, seed=0)
+        yield env
+        try:
+            env.close()
+        except Exception:
+            pass
 
-        def _find_nstep_wrapper(self):
-            return None
+    @pytest.fixture(scope="class")
+    def lying_nstep_env(self):
+        """Lying-space env WITH VectorNStepReward(n=1) (off-policy / ReplayBuffer)."""
+        env = GymnasiumWrapper(
+            cfg="PhoenXLyingSpace-v0",
+            num_envs=2,
+            seed=0,
+            wrappers=[{"type": "VectorNStepReward", "params": {"n": 1}}],
+        )
+        yield env
+        try:
+            env.close()
+        except Exception:
+            pass
 
     def _rollout_batch(self, E=2):
         return {
@@ -341,9 +425,8 @@ class TestStorageDtypeSyncLyingSpace:
             "truncations": T.zeros(E, dtype=T.bool),
         }
 
-    def test_rollout_buffer_storage_follows_data(self):
-        env = self._LyingSpaceEnv()
-        buf = RolloutBuffer(env=env, buffer_size=4, device=DEVICE)
+    def test_rollout_buffer_storage_follows_data(self, lying_env):
+        buf = RolloutBuffer(env=lying_env, buffer_size=4, device=DEVICE)
         # Pre-add: storage trusts the (lying) space.
         assert buf.states["rgb"].dtype == T.float32
         batches = [self._rollout_batch() for _ in range(2)]
@@ -360,9 +443,8 @@ class TestStorageDtypeSyncLyingSpace:
             assert T.equal(sample["states"]["rgb"][t].cpu(), b["states"]["rgb"])
             assert T.allclose(sample["states"]["vec"][t].cpu(), b["states"]["vec"])
 
-    def test_replay_buffer_storage_follows_data(self):
-        env = self._LyingSpaceEnv()
-        buf = ReplayBuffer(env=env, buffer_size=16, N=1, device=DEVICE)
+    def test_replay_buffer_storage_follows_data(self, lying_nstep_env):
+        buf = ReplayBuffer(env=lying_nstep_env, buffer_size=16, N=1, device=DEVICE)
         assert buf.states["rgb"].dtype == T.float32
         E = 2
         traj = {
@@ -460,6 +542,50 @@ class TestRunningNormMinStd:
         assert cfg["config"]["min_std"] == pytest.approx(0.01)
         rebuilt = create_normalizer(cfg)
         assert rebuilt.min_std == pytest.approx(0.01)
+
+
+class TestBatchNorm:
+    """BatchNorm.normalize: batch stats (with clip) in train, running stats
+    (no clip) in eval — the counterpart to RunningNorm, which always uses
+    running stats regardless of ``training`` (see ``normalizer.py:394-446``).
+    """
+
+    @pytest.mark.golden
+    def test_batchnorm_train_uses_batch_stats_eval_uses_running(self):
+        """Train-mode normalize matches batch mean/std; eval matches running mean/std."""
+        T.manual_seed(0)
+        # Large clip_value so the train-mode clip never engages; this test
+        # is about which stats get used, not the clip bound itself.
+        norm = BatchNorm(num_features=3, clip_value=1e6, device=DEVICE)
+        warmup = T.randn(256, 3) * 2.0 + 5.0
+        norm.add(warmup)
+        norm.update()
+        running_mean = norm.running_mean.clone()
+        running_std = norm.running_std.clone()
+
+        # Train mode: normalize must use THIS batch's own mean/std, not the
+        # running stats accumulated above. The batch is centered far from the
+        # running stats so a bug that used running stats here would be caught.
+        assert norm.training
+        train_batch = T.randn(16, 3) * 0.3 - 10.0
+        got_train = norm.normalize(train_batch)
+
+        batch_mean = train_batch.mean(dim=0, keepdim=True)
+        batch_var = train_batch.var(dim=0, unbiased=False, keepdim=True)
+        batch_std = T.sqrt(batch_var + norm.epsilon**2).clamp(min=1e-4)
+        want_train = (train_batch - batch_mean) / batch_std
+        assert T.allclose(got_train, want_train, rtol=0, atol=1e-4)
+        # Sanity: batch stats really do differ from running stats here, so
+        # the assertion above is not vacuously true.
+        assert not T.allclose(batch_mean.squeeze(0), running_mean, atol=1e-2)
+
+        # Eval mode: normalize must use the tracked running mean/std, and
+        # must not clip.
+        norm.eval()
+        eval_batch = T.randn(16, 3) * 0.3 - 10.0
+        got_eval = norm.normalize(eval_batch)
+        want_eval = (eval_batch - running_mean) / running_std
+        assert T.allclose(got_eval, want_eval, rtol=0, atol=1e-4)
 
 
 # =============================================================================

@@ -1,5 +1,6 @@
-"""Recurrent (temporal) training tests — Phase 4 (on-policy) and Phase 5
-(off-policy R2D2-style + temporal transformer).
+"""Recurrent (temporal) training tests: on-policy PPO/ActorCritic rollout and
+learn wiring, plus off-policy recurrence (R2D2-style stored state) and
+causal-transformer context windows.
 
 All tests use the REAL production classes. Model-level step==sequence and
 masked-reset exactness live in test_modular_model.py; this file covers the
@@ -17,25 +18,19 @@ AGENT/TRAINER-level protocol:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch as T
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
 
-from app.env_wrapper import GymnasiumWrapper  # noqa: E402
-from app.models import (  # noqa: E402
+from phoenx.env_wrapper import GymnasiumWrapper
+from phoenx.models import (
     ModularModel,
     StochasticDiscreteHead,
     SubNetwork,
     ValueHead,
 )
-from app.rl_agents import ActorCritic, PPO, Reinforce  # noqa: E402
+from phoenx.rl_agents import ActorCritic, PPO, Reinforce
 
 DEVICE = "cpu"
 T.manual_seed(0)
@@ -249,12 +244,12 @@ class TestRecurrentLearn:
 
 
 # =============================================================================
-# Phase 5: off-policy recurrence (R2D2 stored state + burn-in)
+# Off-policy recurrence (R2D2 stored state + burn-in)
 # =============================================================================
-from app.buffer import ReplayBuffer  # noqa: E402
-from app.env_wrapper import Action  # noqa: E402
-from app.models import ContinuousQHead, DeterministicActorHead, StochasticContinuousHead  # noqa: E402
-from app.rl_agents import SAC, TD3  # noqa: E402
+from phoenx.buffer import ReplayBuffer
+from phoenx.env_wrapper import Action
+from phoenx.models import ContinuousQHead, DeterministicActorHead, StochasticContinuousHead
+from phoenx.rl_agents import SAC, TD3
 
 
 @pytest.fixture(scope="module")
@@ -375,7 +370,7 @@ class TestOffPolicyRecurrent:
             optimizer_params=OPT, N=3, recurrent_burn_in=1,
             policy_update_delay=1, device=DEVICE,
         )
-        from app.noise import NormalNoise
+        from phoenx.noise import NormalNoise
         agent.noise = NormalNoise(mean=0.0, stddev=0.1, device=DEVICE)
         agent.target_noise = NormalNoise(mean=0.0, stddev=0.2, device=DEVICE)
         buf = ReplayBuffer(env=pendulum_nstep, buffer_size=64, N=3, device=DEVICE)
@@ -414,7 +409,7 @@ class TestOffPolicyRecurrent:
 
 
 # =============================================================================
-# Phase 5: causal-transformer context-window inference
+# Causal-transformer context-window inference
 # =============================================================================
 class TestCausalContextInference:
     @pytest.fixture()
@@ -488,7 +483,7 @@ class TestCausalContextInference:
             assert T.allclose(outputs["policy"].logits[0:1], ref["policy"].logits, atol=1e-5)
 
     def test_causal_ppo_recurrent_learn_path(self, causal_ppo, cartpole):
-        """Causal trunks train through the Phase-4 sequence path (stateless)."""
+        """Causal trunks train through the same stateless sequence-learn path as the on-policy recurrent PPO/ActorCritic tests above."""
         agent = causal_ppo
         E = cartpole.num_envs
         traj_len = 5
@@ -520,7 +515,7 @@ class TestCausalContextInference:
 # =============================================================================
 class TestRecurrentTrainerIntegration:
     def test_recurrent_ppo_short_training_run(self, tmp_path):
-        from scripts.agent import build_trainer_from_config
+        from phoenx.builder import build_trainer_from_config
 
         dev = "cuda" if T.cuda.is_available() else "cpu"
         dense16 = {"type": "dense", "params": {"units": 16}}

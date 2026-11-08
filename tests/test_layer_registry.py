@@ -1,4 +1,4 @@
-"""Unit tests for the layer registry in ``src/app/models.py``.
+"""Unit tests for the layer registry in ``src/phoenx/models.py``.
 
 Imports the *real* production ``LAYER_REGISTRY`` / ``build_layer`` /
 ``init_module_weights`` / ``SubNetwork`` (no test-side copies) and verifies:
@@ -18,19 +18,12 @@ All tests are CPU-only and fast.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch as T
 import torch.nn as nn
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.models import (  # noqa: E402
+from phoenx.models import (
     LAYER_REGISTRY,
     LazyRecurrent,
     PositionalEncoding,

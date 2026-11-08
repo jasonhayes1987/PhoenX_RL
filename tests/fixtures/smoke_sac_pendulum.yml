@@ -1,0 +1,92 @@
+# Smoke fixture: SAC on Pendulum-v1 (off-policy path, public phoenx-train entry point).
+# Shrunk from src/phoenx/examples/configs/LunarLanderContinuous-v3/sac.yml. schedule.seed /
+# env.config.seed are overridden by tests/test_smoke_train.py::train_and_evaluate per run.
+
+device: &device cpu
+save_dir: models/smoke_sac_pendulum/
+log_level: ERROR
+
+schedule:
+  stop_unit: timestep
+  stop_units: 6000
+  learn_every_unit: timestep
+  learn_every: 1
+  updates_per_learn: 1
+  batch_size: 256
+  warmup_steps: 256
+  seed: 0
+  save_every: 0
+
+agent:
+  type: SAC
+  config:
+    name: SAC
+    model:
+      branches:
+        policy:
+          type: StochasticContinuousHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: default, kernel_params: {}}}
+          distribution: normal
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          device: *device
+        critic:
+          type: ContinuousQHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          merged_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: default, kernel_params: {}}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          device: *device
+        critic_b:
+          type: ContinuousQHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          merged_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: default, kernel_params: {}}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          device: *device
+    discount: 0.99
+    tau: 0.02
+    auto_entropy_tuning: true
+    entropy_lr: 0.001
+    policy_grad_clip: 10.0
+    critic_grad_clip: 10.0
+    N: &n 1
+    state_normalizer:
+      type: RunningNorm
+      config: {clip_value: 10.0, device: *device}
+    device: *device
+    log_level: ERROR
+
+env:
+  type: gymnasium
+  config:
+    cfg: Pendulum-v1
+    num_envs: 1
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
+    wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": null, "goal_key": null, "ach_goal_key": null}}]
+    render_mode: null
+    seed: 0
+
+buffer:
+  type: ReplayBuffer
+  config:
+    buffer_size: 5000
+    N: *n
+    device: *device

@@ -1,0 +1,95 @@
+# Smoke fixture: TD3 on Pendulum-v1 (deterministic off-policy path, public
+# phoenx-train entry point). No shipped TD3 example config exists; built from
+# tests/test_roundtrip.py's DDPG fixture plus TD3's twin-critic / target-noise
+# constructor args. schedule.seed / env.config.seed are overridden by
+# tests/test_smoke_train.py::train_and_evaluate per run.
+
+device: &device cpu
+save_dir: models/smoke_td3_pendulum/
+log_level: ERROR
+
+schedule:
+  stop_unit: timestep
+  stop_units: 15000
+  learn_every_unit: timestep
+  learn_every: 1
+  updates_per_learn: 1
+  batch_size: 256
+  warmup_steps: 256
+  seed: 0
+  save_every: 0
+
+agent:
+  type: TD3
+  config:
+    name: TD3
+    model:
+      branches:
+        policy:
+          type: DeterministicActorHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: default, kernel_params: {}}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          device: *device
+        critic:
+          type: ContinuousQHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          merged_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: default, kernel_params: {}}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          device: *device
+        critic_b:
+          type: ContinuousQHead
+          layer_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          merged_config:
+            - {type: dense, params: {units: 64, kernel: default, kernel_params: {}}}
+            - {type: relu}
+          output_config:
+            - {type: dense, params: {kernel: default, kernel_params: {}}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          device: *device
+    discount: 0.99
+    tau: 0.05
+    action_epsilon: 0.0
+    noise: {type: NormalNoise, config: {stddev: 0.2, device: *device}}
+    target_noise: {type: NormalNoise, config: {mean: 0.0, stddev: 0.2, device: *device}}
+    noise_clip: 0.5
+    policy_grad_clip: 10.0
+    critic_grad_clip: 10.0
+    N: &n 1
+    state_normalizer:
+      type: RunningNorm
+      config: {clip_value: 10.0, device: *device}
+    device: *device
+    log_level: ERROR
+
+env:
+  type: gymnasium
+  config:
+    cfg: Pendulum-v1
+    num_envs: 1
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
+    wrappers: [{"type": "VectorNStepReward", "params": {"n": *n, "obs_key": null, "goal_key": null, "ach_goal_key": null}}]
+    render_mode: null
+    seed: 0
+
+buffer:
+  type: ReplayBuffer
+  config:
+    buffer_size: 5000
+    N: *n
+    device: *device

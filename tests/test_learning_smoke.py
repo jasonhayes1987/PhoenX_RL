@@ -6,25 +6,17 @@ run, it must LEARN.
       conftest (``PhoenXMemory-v0``) where a memoryless policy provably cannot
       exceed ~0.5 average success;
     * multi-modal (dict-obs, multi-root) PPO on the synthetic multi-modal env
-      shifts its policy toward the reward-maximizing actions.
+      reaches a strong deterministic episode return toward the reward-maximizing actions.
 
 Run explicitly with:  pytest tests/test_learning_smoke.py -m slow
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-import numpy as np
 import pytest
 import torch as T
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from scripts.agent import build_trainer_from_config  # noqa: E402
+from phoenx.builder import build_trainer_from_config
 
 DEV = "cuda" if T.cuda.is_available() else "cpu"
 
@@ -60,12 +52,18 @@ def test_ppo_cartpole_learns(tmp_path):
     config = _base_config(str(tmp_path) + "/")
     config["agent"] = {"type": "PPO", "config": {
         "name": "PPO",
-        "policy": {"layer_config": [DENSE(64), RELU, DENSE(64), RELU],
-                   "output_config": OUT_POLICY, "distribution": "categorical",
-                   "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
-        "value": {"layer_config": [DENSE(64), RELU, DENSE(64), RELU],
-                  "output_config": OUT_VALUE,
-                  "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
+        "model": {
+            "branches": {
+                "policy": {"type": "StochasticDiscreteHead",
+                           "layer_config": [DENSE(64), RELU, DENSE(64), RELU],
+                           "output_config": OUT_POLICY, "distribution": "categorical",
+                           "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
+                "value": {"type": "ValueHead",
+                          "layer_config": [DENSE(64), RELU, DENSE(64), RELU],
+                          "output_config": OUT_VALUE,
+                          "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": DEV},
+            },
+        },
         "discount": 0.99, "gae_coefficient": 0.95, "auto_entropy_tuning": False,
         "entropy_coefficient": 0.01, "policy_clip": 0.2, "value_clip": 0.2,
         "policy_grad_clip": 0.5, "value_grad_clip": 0.5, "value_coef": 0.5,
@@ -136,8 +134,9 @@ def test_recurrent_ppo_solves_memory_task(tmp_path):
 @pytest.mark.slow
 def test_multimodal_ppo_learns_on_dict_obs(tmp_path):
     """Multi-root PPO on the synthetic dict-obs env: the reward increases with
-    the (continuous) action sum, so a learning policy pushes its mean action
-    up from ~0 toward +1 on both dims."""
+    the (continuous) action sum, so a learning policy pushes actions toward +1
+    on both dims. After training, a deterministic (test-context) rollout of one
+    full episode must score well above random (~0) toward the max of 40.0."""
     config = _base_config(str(tmp_path) + "/")
     config["schedule"].update({"stop_units": 40_000, "learn_every": 512,
                                "mini_batch_size": 256, "learning_epochs": 4, "seed": 7})
@@ -182,13 +181,17 @@ def test_multimodal_ppo_learns_on_dict_obs(tmp_path):
     trainer = build_trainer_from_config(config)
     trainer.train()
 
-    # After training the test-time (mean) action should be clearly positive.
+    # One full episode: 20 steps × 2 dims × action in [-1, 1] → max return 40.0
     obs = trainer.env.reset(seed=99)
-    with T.no_grad():
-        action = trainer.agent.act(obs.states, context="test")
-    mean_action = float(action.actions.float().mean())
+    total_reward = 0.0
+    for _ in range(20):
+        with T.no_grad():
+            action = trainer.agent.act(obs.states, context="test")
+        a = action.actions.float()
+        obs = trainer.env.step(a)
+        total_reward += float(obs.rewards.sum()) / a.shape[0]
     trainer.env.close()
-    assert mean_action > 0.3, (
-        f"multi-modal PPO did not shift toward reward-maximizing actions "
-        f"(mean action {mean_action:.3f})"
+    assert total_reward > 20.0, (
+        f"multi-modal PPO failed to learn (deterministic return {total_reward:.1f}; "
+        f"max 40.0)"
     )

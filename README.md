@@ -1,94 +1,156 @@
 # PhoenX RL
-![](src/assets/Python-3.8+-blue.svg)
-![](src/assets/PyTorch-2.0+-orange.svg)
-![](src/assets/License-MIT-yellow.svg)
+![](https://img.shields.io/badge/Python-3.12-blue.svg)
+![](assets/PyTorch-2.0+-orange.svg)
+![](assets/License-MIT-yellow.svg)
 <table>
   <tr>
-    <td><img src="src/assets/cheetah.gif" alt="Cheetah" width="200"></td>
-    <td><img src="src/assets/lunar.gif" alt="Lunar Lander" width="200"></td>
-    <td><img src="src/assets/pong.gif" alt="Atari Pong" width="200"></td>
-    <td><img src="src/assets/double_pendulum.gif" alt="Inverted Pendulum" width="200"></td>
+    <td><img src="assets/cheetah.gif" alt="Cheetah" width="200"></td>
+    <td><img src="assets/lunar.gif" alt="Lunar Lander" width="200"></td>
+    <td><img src="assets/pong.gif" alt="Atari Pong" width="200"></td>
+    <td><img src="assets/double_pendulum.gif" alt="Inverted Pendulum" width="200"></td>
   </tr>
   <tr>
-    <td><img src="src/assets/reach.gif" alt="Fetch Reach" width="200"></td>
-    <td><img src="src/assets/push.gif" alt="Fetch Push" width="200"></td>
-    <td><img src="src/assets/slide.gif" alt="Fetch Slide" width="200"></td>
-    <td><img src="src/assets/place.gif" alt="Fetch Pick and Place" width="200"></td>
+    <td><img src="assets/reach.gif" alt="Fetch Reach" width="200"></td>
+    <td><img src="assets/push.gif" alt="Fetch Push" width="200"></td>
+    <td><img src="assets/slide.gif" alt="Fetch Slide" width="200"></td>
+    <td><img src="assets/place.gif" alt="Fetch Pick and Place" width="200"></td>
   </tr>
 </table>
 
 ## Overview
-PhoenX RL is a flexible, modular reinforcement learning (RL) framework designed for rapid experimentation and development of RL agents. Built on PyTorch, it supports a variety of on-policy and off-policy algorithms, integrates with Gymnasium environments, and includes components like intrinsic curiosity, N-step returns, replay buffers, schedulers, normalizers, and optional experiment logging via Weights & Biases (WandB).
+PhoenX RL is a flexible, modular reinforcement learning (RL) framework designed for rapid experimentation and development of RL agents. Built on PyTorch, it supports a variety of on-policy and off-policy algorithms, integrates with Gymnasium and IsaacSim environments, and includes components like intrinsic curiosity, N-step returns, replay buffers, schedulers, normalizers, and optional experiment logging via Weights & Biases (WandB).
 
-The framework emphasizes extensibility, allowing users to customize models, noise processes, buffers, and callbacks. It is suitable for both research and practical applications in robotics, games, and control tasks, with support for goal-oriented learning and scaling (Ray-based distributed training support exists in the codebase but is still evolving).
+The framework emphasizes extensibility, allowing users to customize models, noise processes, buffers, and callbacks. It is suitable for both research and practical applications in robotics, games, and control tasks, with support for goal-oriented learning and scaling.
 
 ## Key Features
 - **Supported Algorithms:**
    - **On-Policy**: Reinforce, Actor-Critic, Proximal Policy Optimization (PPO) with adaptive KL divergence.
    - **Off-Policy**: Deep Deterministic Policy Gradient (DDPG), Twin Delayed DDPG (TD3), Soft Actor-Critic (SAC).
-   - **Goal-Oriented**: DDPG, TD3, SAC, PPO.
-   - **Hindsight Experience Replay (HER)**: DDPG/TD3/SAC backends.
+   - **Goal-Oriented**: DDPG, TD3, SAC, PPO, Hindsight Experience Replay (HER) with DDPG/TD3/SAC backends.
+- **Modular roots → trunk → branches networks:** every agent is built on a
+  composite `ModularModel` — user-named per-modality encoder **roots**, an
+  optional shared **trunk** (the single place temporal layers may live), and
+  per-role **branches** (policy / value / critic heads). Per-module optimizers
+  with research-backed gradient ownership: on-policy agents combine losses into
+  ONE backward + coordinated step (SB3 / RSL-RL standard); off-policy agents
+  let the critic loss own the shared body while the policy trains on detached
+  features (SAC-AE / DrQ-v2 standard).
+- **Multi-modal observations:** Dict observation spaces (e.g. camera +
+  proprioception) flow end to end — env wrappers, every buffer, per-key
+  `DictNormalizer`/`ImageScale` normalizers, HER, and intrinsic motivation —
+  with uint8 image storage and per-root `input_keys` routing.
+- **Temporal policies:** LSTM/GRU trunks (recurrent PPO/ActorCritic with
+  sequence minibatching and masked mid-sequence resets; recurrent
+  SAC/TD3/DDPG with R2D2-style stored initial hidden + optional burn-in) and
+  causal-transformer trunks with rolling context-window inference.
 - **Modular Components:**
-   - **Models**: Stochastic policies (discrete/continuous), value functions, actors, and critics with customizable layers (dense, conv, etc...) and initializers.
+   - **Models**: Head classes (stochastic discrete/continuous policies, deterministic actors, value and Q heads) with a data-driven layer registry (dense, conv1d/2d/3d, pooling, norms, activations, embeddings, attention, transformer encoders, LSTM/GRU) and per-layer weight initializers.
    - **Noise Processes**: Ornstein-Uhlenbeck (OU), Normal, Uniform noise for exploration, with optional scheduling.
-   - **Normalizers**: Running statistics for observations/actions/goals, with shared memory support in distributed settings.
-   - **Schedulers**: Learning rate and parameter schedulers (linear, step, cosine annealing, exponential).
-   - **Buffers**: Standard ReplayBuffer, PrioritizedReplayBuffer (proportional or rank-based), with N-step return support and trajectory tracking.
+   - **Normalizers**: Running statistics for observations/actions/goals, per-key Dict normalizers, image scaling.
+   - **Schedulers**: Learning rate and parameter schedulers (linear, step, cosine annealing, exponential), attachable per module.
+   - **Buffers**: Standard ReplayBuffer, PrioritizedReplayBuffer (proportional or rank-based), with N-step return support, trajectory tracking, and R2D2 stored-state support.
    - **Intrinsic Curiosity Module (ICM)**: For exploration in sparse-reward environments.
-   - **Callbacks**: WandB integration for logging, metrics, and artifact saving; extensible for custom hooks, with distributed variants.
+   - **Callbacks**: WandB integration for logging, metrics, and artifact saving; extensible for custom hooks.
 - **Experiment Logging**: Optional Weights & Biases (WandB) callback support for metrics/logging and artifact saving.
-- **Environment Support**: Gymnasium and IsaacSim
+- **Environment Support**: Gymnasium, EnvPool, and IsaacSim
+- **Hyperparameter Sweeps**: Multi-phase Ray Tune sweeps from a standalone YAML (`phoenx-tune`), with block-grammar architecture search, per-module optimizer tuning, phase promotion, and trial constraint validation.
 
 ## Installation
-PhoenX RL is designed to be installed locally via Conda + Poetry. The recommended path is to run the provided PowerShell setup script after cloning.
+PhoenX installs with conda + pip. Two modes share the same order; Isaac Lab mode inserts one extra command. Full detail, extras, and troubleshooting: [`installation.md`](installation.md).
 
-See `installation.md` for the full, up-to-date instructions.
+### Gymnasium mode (~5 min)
+```bash
+conda create -n phoenx python=3.12
+conda activate phoenx
+pip install --upgrade pip
+pip install -U torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu130
+conda install -y -c conda-forge swig
+pip install -e ".[dev,docs]"
+```
+
+### Isaac Lab mode (~30-60 min)
+```bash
+conda create -n phoenx python=3.12
+conda activate phoenx
+pip install --upgrade pip
+pip install uv
+uv pip install --python python "isaaclab[isaacsim,all]==3.0.0" --overrides https://raw.githubusercontent.com/isaac-sim/IsaacLab/v3.0.0/tools/wheel_builder/uv-overrides.txt --extra-index-url https://pypi.nvidia.com --torch-backend cu130 --index-strategy unsafe-best-match
+conda install -y -c conda-forge swig
+pip install -e ".[dev,docs]"
+```
+
+On Windows, SWIG from conda-forge is required before the final `pip install`
+(no cp312 wheel for `box2d-py`; do not use `pip install swig` — that shim
+fails under pip's build isolation). `setup.ps1` installs SWIG for you.
+Isaac Lab mode does not install torch a second time: the overrides file
+already pins torch 2.11.0 and torchvision 0.26.0, and `--torch-backend cu130`
+selects the CUDA 13.0 wheels.
+
+No-clone: replace the final line with
+`pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"`.
 
 ### Quick start (Windows / PowerShell)
-```bash
-git clone <your-repo-url>
+```powershell
+git clone https://github.com/jasonhayes1987/PhoenX_RL.git
 cd PhoenX_RL
 .\setup.ps1
 ```
 
+`.\setup.ps1 -Isaac -Docs` installs everything (including SWIG). See
+`installation.md` for switches.
+
 ## Usage
-PhoenX RL uses a simple two-step workflow:
+Training is driven by a YAML config. Networks live under
+`agent.config.model` (roots → trunk → branches) for every algorithm;
+normalizers and related schedules live under `agent.config`. At least one of
+`--config` or `--agent_dir` is required; if both are passed, `--config` wins.
+Console entry points: `phoenx-train` and `phoenx-test`
+(`python -m phoenx.cli.train` also works).
 
-1. **Create an agent directory from a YAML config** (writes `config.json`, `train_config.json`, and `test_config.json` into `save_dir`)
-2. **Train using `train.py` by pointing at that saved directory**
+### Bundled example configs
+Four portable examples ship inside the package (relative `save_dir` values):
 
-### 1) Edit a YAML config
-Configs live in `src/Configs/`. The ones currently wired up to the YAML build scripts are:
-- `src/Configs/reinforce.yml`
-- `src/Configs/actor_critic.yml`
-- `src/Configs/ddpg.yml`
+- `LunarLander-v3/reinforce.yml`
+- `LunarLanderContinuous-v3/ppo.yml`
+- `LunarLanderContinuous-v3/sac.yml`
+- `IsaacSim/franka/cube_lift/dense/ppo_camera.yml`
 
-Update at least:
-- `save_dir`: where the agent + train/test configs will be written (recommended: change this to a path on your machine)
-- `env`: environment type/config
-- `device`: `"cuda"` or `"cpu"`
+An existing on-disk path always wins; otherwise a relative `--config` is looked
+up among the bundled examples. Works with no clone:
 
-### 2) Build/save the agent from the YAML config
 ```bash
-python src/scripts/reinforce.py --config_file src/Configs/reinforce.yml
-python src/scripts/actor_critic.py --config_file src/Configs/actor_critic.yml
-python src/scripts/ddpg.py --config_file src/Configs/ddpg.yml
+pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
+phoenx-train --config LunarLanderContinuous-v3/sac.yml
 ```
 
-### 3) Train from the saved agent directory
+Keep your own configs anywhere on disk and pass a path when you need something
+beyond the bundled set.
+
+### Train from a config
 ```bash
-python src/scripts/train.py --agent_dir "path/to/your/saved/agent_dir"
+phoenx-train --config LunarLanderContinuous-v3/sac.yml
+phoenx-train --config path/to/my_experiment.yml
 ```
 
-You can override some training options from the CLI (for example `--render_freq`, `--num_episodes`, etc.); otherwise `train.py` reads them from `train_config.json` in the agent directory.
+### Resume from a saved agent directory
+```bash
+phoenx-train --agent_dir path/to/saved/agent_dir
+```
+
+Optional: `--log_level INFO` (or any standard level).
+
+### Evaluate a trained agent
+```bash
+phoenx-test --agent_dir path/to/saved/agent_dir
+```
+
+`phoenx-test` also accepts `--num_episodes`, `--num_envs`, `--render_mode`,
+`--env`, `--seed`, and `--log_level`.
 
 # Roadmap
 PhoenX RL is actively evolving. Future plans include:
-- **Ray Tune for Hyperparameter Optimization**: Incorporating Ray Tune to leverage advanced search algorithms (e.g., Bayesian optimization, HyperBand) for more efficient hyperparameter tuning.
-- **Expanded YAML Config Coverage**: Adding/standardizing YAML configs for PPO/SAC/HER and updating their script entrypoints to use the configs.
 - **MARL**: Adding Multi-Agent variants for DDPG, TD3, PPO, and SAC
 - **HRL**: Adding Hierarchical Reinforcement Learning support (Most likely through Ray RLib)
-- **Transformer Layers Support**: Extending the model architecture to include transformer layers for handling sequential data in RL tasks, such as in partially observable environments or long-horizon planning.
 
 # License
 This project is licensed under the MIT License - see the LICENSE file for details.

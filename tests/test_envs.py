@@ -1,4 +1,4 @@
-"""Tests for ``src/app/env_wrapper.py``.
+"""Tests for ``src/phoenx/env_wrapper.py``.
 
 This is the single pytest module that validates every public class in
 ``env_wrapper.py``. It is built to grow over time, so it must stay importable
@@ -39,21 +39,15 @@ import contextlib
 import importlib.util
 import sys
 import types
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch as T
 
-# Make ``src/`` importable so ``import app.X`` works regardless of the CWD.
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
 import gymnasium as gym
 
-import app.env_wrapper as ew
-from app.env_wrapper import IsaacLabAdapter, IsaacSimWrapper, Observation
+import phoenx.env_wrapper as ew
+from phoenx.env_wrapper import IsaacLabAdapter, IsaacSimWrapper, Observation
 
 DEVICE = "cpu"
 
@@ -388,6 +382,12 @@ class TestIsaacLabAdapter:
         assert adapter.action_space is inner.action_space
         assert adapter.distance_threshold == 0.1
 
+    def test_default_distance_threshold_is_none(self):
+        """Unconfigured is explicit (None), not a silently-wrong 0.05 that
+        IsaacSimWrapper could never actually reach."""
+        adapter = IsaacLabAdapter(_FakeInnerEnv())
+        assert adapter.distance_threshold is None
+
     def test_reset_and_step_forwarded(self):
         inner = _FakeInnerEnv()
         adapter = IsaacLabAdapter(inner)
@@ -406,6 +406,15 @@ class TestIsaacLabAdapter:
         reward = adapter.compute_reward(achieved, desired)
         assert np.allclose(reward, [0.0, -1.0])  # within / outside threshold
         assert reward.dtype == np.float32
+
+    def test_compute_reward_raises_when_threshold_unset(self):
+        """An unconfigured threshold must fail loudly and name the argument
+        to fix, instead of comparing a NumPy array to None."""
+        adapter = IsaacLabAdapter(_FakeInnerEnv(), distance_threshold=None)
+        achieved = np.array([[0.0, 0.0]], dtype=np.float32)
+        desired = np.array([[0.0, 0.0]], dtype=np.float32)
+        with pytest.raises(ValueError, match="distance_threshold"):
+            adapter.compute_reward(achieved, desired)
 
     def test_spec_and_close_forwarded(self):
         inner = _FakeInnerEnv()
@@ -511,10 +520,10 @@ class TestIsaacSimWrapper:
 # =============================================================================
 # IsaacSim integration  (real Isaac Sim + CUDA; auto-skipped otherwise)
 # =============================================================================
-# NOTE: gate only on ``isaaclab`` (+ CUDA). ``isaaclab_tasks`` (which provides
-# FrankaReachEnvCfg) is only put on ``sys.path`` by the extension system once the
-# Kit app boots, so it is undetectable here; a genuinely missing tasks package is
-# caught as ``ModuleNotFoundError`` in the fixture and skipped there instead.
+# NOTE: gate only on ``isaaclab`` (+ CUDA). Isaac Lab 3.0 installs
+# ``isaaclab_tasks`` as a normal package, but the Franka scene still needs the
+# Kit app. A missing tasks package or asset is ``ModuleNotFoundError`` /
+# ``FileNotFoundError`` in the fixture and is skipped there.
 _ISAAC_AVAILABLE = (importlib.util.find_spec("isaaclab") is not None) and T.cuda.is_available()
 
 
@@ -522,8 +531,8 @@ _ISAAC_AVAILABLE = (importlib.util.find_spec("isaaclab") is not None) and T.cuda
 @pytest.mark.skipif(not _ISAAC_AVAILABLE, reason="Isaac Sim / isaaclab + CUDA not available")
 class TestIsaacSimIntegration:
     FRANKA_CFG = (
-        "isaaclab_tasks.manager_based.manipulation.reach.config.franka."
-        "joint_pos_env_cfg:FrankaReachEnvCfg"
+        "isaaclab_tasks.core.reach.config.franka."
+        "franka_reach_env_cfg:FrankaReachEnvCfg"
     )
 
     @pytest.fixture(scope="class")

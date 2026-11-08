@@ -1,12 +1,10 @@
 """Round-trip validation for the unified save/load architecture.
 
-Pytest port of ``src/scripts/roundtrip_test.py`` (which it supersedes),
-extended to the composite roots->trunk->branches models. Exercises the
-``get_config`` / ``from_config`` / ``save_state`` / ``load_state`` contract
+Tests the ``get_config`` / ``from_config`` / ``save_state`` / ``load_state`` contract
 end to end with the REAL production stack:
 
-    1. SAC: build from the production ``src/Configs/sac.yml`` (legacy schema,
-       exercising the config adapter), shrink to a tiny CPU/GPU Pendulum run,
+    1. SAC: build from ``tests/fixtures/sac.yml`` (canonical ``agent.config.model``
+       roots/trunk/branches schema), shrink to a tiny CPU/GPU Pendulum run,
        train ~120 steps, ``Trainer.save``, ``Trainer.load`` and assert:
         - the rebuilt config is byte-identical,
         - every model/target tensor and per-module optimizer state matches,
@@ -14,7 +12,7 @@ end to end with the REAL production stack:
         - the replay buffer is restored,
         - training resumes from the saved step counter.
     2. PPO: same full-trainer round trip on the on-policy path
-       (RolloutBuffer, CartPole) built from an inline legacy-schema config.
+       (RolloutBuffer, CartPole) built from an inline ``agent.config.model`` config.
     3. DDPG: agent-level contract (build -> save_state -> build_agent +
        load_state -> tensor equality) including the target model.
 """
@@ -24,22 +22,17 @@ from __future__ import annotations
 import copy
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
 import torch as T
 import yaml
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+from phoenx.rl_agents import build_agent
+from phoenx.trainer import Trainer
+from phoenx.builder import build_trainer_from_config
 
-from app.rl_agents import build_agent  # noqa: E402
-from app.trainer import Trainer  # noqa: E402
-from scripts.agent import build_trainer_from_config  # noqa: E402
-
-CONFIGS_DIR = _SRC / "Configs"
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 T.manual_seed(0)
 
@@ -72,12 +65,15 @@ def _shrink(config: dict, save_dir: str, env_id: str = "Pendulum-v1") -> dict:
     agent_cfg = config["agent"]["config"]
     agent_cfg["log_level"] = "ERROR"
     agent_cfg["intrinsic_motivation"] = None
-    for model_key in ("policy", "critic", "critic_b"):
-        model = agent_cfg.get(model_key)
-        if not isinstance(model, dict):
+    branches = ((agent_cfg.get("model") or {}).get("branches") or {})
+    for branch in branches.values():
+        if not isinstance(branch, dict):
             continue
+        # `models.build_head` accepts both the flat branch form (head kwargs
+        # inline alongside `type`) and the nested `{"type", "config"}` form.
+        inner = branch.get("config", branch)
         for layers_key in ("layer_config", "merged_config"):
-            layers = model.get(layers_key)
+            layers = inner.get(layers_key)
             if layers:
                 for layer in layers:
                     if layer.get("type") == "dense":
@@ -118,12 +114,12 @@ def _arch(cfg: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 1. SAC: full Trainer round trip from the production sac.yml (legacy schema)
+# 1. SAC: full Trainer round trip from the fixture sac.yml
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
 def test_sac_trainer_round_trip(tmp_path):
     run_dir = str(tmp_path / "sac_run") + os.sep
-    raw = yaml.safe_load((CONFIGS_DIR / "sac.yml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load((FIXTURES_DIR / "sac.yml").read_text(encoding="utf-8"))
     config = _shrink(raw, run_dir)
 
     trainer = build_trainer_from_config(config)
@@ -190,11 +186,17 @@ def _ppo_config(save_dir: str) -> dict:
         },
         "agent": {"type": "PPO", "config": {
             "name": "PPO",
-            "policy": {"layer_config": [dense(16), relu], "output_config": out,
-                       "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}},
-                       "distribution": "categorical", "device": dev},
-            "value": {"layer_config": [dense(16), relu], "output_config": out,
-                      "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": dev},
+            "model": {
+                "branches": {
+                    "policy": {"type": "StochasticDiscreteHead",
+                               "layer_config": [dense(16), relu], "output_config": out,
+                               "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}},
+                               "distribution": "categorical", "device": dev},
+                    "value": {"type": "ValueHead",
+                              "layer_config": [dense(16), relu], "output_config": out,
+                              "optimizer_params": {"type": "Adam", "params": {"lr": 3e-4}}, "device": dev},
+                },
+            },
             "discount": 0.99, "gae_coefficient": 0.95, "auto_entropy_tuning": False,
             "entropy_coefficient": 0.01, "policy_clip": 0.2, "value_clip": 0.2,
             "policy_grad_clip": 1.0, "value_grad_clip": 1.0, "value_coef": 0.5,
@@ -292,10 +294,16 @@ def _ddpg_config(save_dir: str, env_id: str = "Pendulum-v1") -> dict:
         },
         "agent": {"type": "DDPG", "config": {
             "name": "DDPG",
-            "policy": {"layer_config": [dense(16), relu], "output_config": out,
-                       "optimizer_params": {"type": "Adam", "params": {"lr": 1e-3}}, "device": dev},
-            "critic": {"layer_config": [dense(16)], "merged_config": [dense(16)], "output_config": out,
-                       "optimizer_params": {"type": "Adam", "params": {"lr": 1e-3}}, "device": dev},
+            "model": {
+                "branches": {
+                    "policy": {"type": "DeterministicActorHead",
+                               "layer_config": [dense(16), relu], "output_config": out,
+                               "optimizer_params": {"type": "Adam", "params": {"lr": 1e-3}}, "device": dev},
+                    "critic": {"type": "ContinuousQHead",
+                               "layer_config": [dense(16)], "merged_config": [dense(16)], "output_config": out,
+                               "optimizer_params": {"type": "Adam", "params": {"lr": 1e-3}}, "device": dev},
+                },
+            },
             "discount": 0.99, "tau": 0.05, "action_epsilon": 0.0,
             "state_normalizer": {"type": "RunningNorm",
                                  "config": {"name": "DDPG.SN", "clip_value": 10.0, "device": dev}},

@@ -23,19 +23,12 @@ Covers (real production classes only):
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch as T
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from app.env_wrapper import GymnasiumWrapper  # noqa: E402
-from app.models import (  # noqa: E402
+from phoenx.env_wrapper import GymnasiumWrapper
+from phoenx.models import (
     ActorModel,
     ContinuousCritic,
     ContinuousQHead,
