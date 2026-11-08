@@ -216,6 +216,29 @@ class TestReinforceActorCriticNormalizersReachAgent:
         finally:
             env.close()
 
+    def test_reinforce_builds_when_obs_key_is_omitted(self):
+        """GUI configs drop ``obs_key`` when it is left at the default.
+        The builder must use the wrapper's resolved ``env.obs_key`` (``None``
+        for a flat Box) instead of requiring the YAML key to be present."""
+        env_cfg = {
+            "type": "gymnasium",
+            "config": {"cfg": "CartPole-v1", "num_envs": 2, "seed": 3},
+        }
+        config = _normalizer_regression_config(
+            "Reinforce",
+            {"type": "StochasticDiscreteHead", "layer_config": [DENSE(16), RELU],
+             "output_config": OUT, "distribution": "categorical",
+             "optimizer_params": OPT, "device": DEV},
+            env_cfg,
+        )
+        env = create_env(config)
+        try:
+            assert env.obs_key is None
+            agent = build_agent(config, env)
+            assert isinstance(agent.state_normalizer, RunningNorm)
+        finally:
+            env.close()
+
     def test_actor_critic_normalizers_and_entropy_schedule_land_on_agent(self):
         """Uses the ``PhoenXGoal-v0`` synthetic env (registered in
         ``conftest.py``) so ``goal_normalizer`` coverage is cheap: it is a

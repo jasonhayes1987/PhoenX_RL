@@ -404,16 +404,10 @@ effectively running in series
 ([IsaacLab#2989](https://github.com/isaac-sim/IsaacLab/issues/2989)).
 Ray's fractional GPU request is bookkeeping only: it partitions neither
 VRAM nor SM time. The bundled Isaac sweep keeps `max_concurrent_trials: 1`
-and `resources: {gpu: 1}` for that reason. Pass Isaac paths to workers via
-`ray_init`:
-
-```yaml
-ray_init:
-  runtime_env:
-    env_vars:
-      ISAACLAB_PATH: "/absolute/path/to/IsaacLab"
-      PYTHONPATH: "/absolute/path/to/IsaacLab/source"
-```
+and `resources: {gpu: 1}` for that reason. Isaac Lab 3.0 is installed into
+the environment, and the bundled configs import those packages directly.
+Workers started from that environment do not need `ISAACLAB_PATH`. `ray_init`
+is still forwarded to `ray.init` when a worker needs extra env vars.
 
 ## Related
 

@@ -169,7 +169,7 @@ class TestKitRuntime:
         assert sim_app.is_running()
 
     def test_physx_gpu_probe(self, sim_app):
-        """PhysX interface is acquired; GPU pipeline probe when available."""
+        """PhysX interface is acquired. Isaac Sim 6.2 dropped ``get_gpu_found``."""
         physx = None
         try:
             from omni.physx import get_physx_interface
@@ -186,8 +186,8 @@ class TestKitRuntime:
             assert physx.get_gpu_found()
         else:
             pytest.skip(
-                "PhysX interface has no get_gpu_found in this Isaac version; "
-                "definitive GPU proof is TestGpuEnvironment"
+                "omni.physx.PhysX in Isaac Sim 6.2 has no get_gpu_found; "
+                "GPU execution is checked by TestGpuEnvironment"
             )
 
 
@@ -205,7 +205,7 @@ class TestGpuEnvironment:
         except (ModuleNotFoundError, ImportError) as exc:
             pytest.skip(f"isaaclab_tasks unavailable in this install: {exc}")
 
-        assert "Isaac-Cartpole-Direct-v0" in gym.registry
+        assert "Isaac-Cartpole-Direct" in gym.registry
 
     def test_cartpole_reset_and_step(self, sim_app, request):
         """Cartpole env resets and steps on CUDA with finite tensors."""
@@ -237,8 +237,8 @@ class TestGpuEnvironment:
                     timeline.stop()
                 omni.usd.get_context().new_stage()
 
-                env_cfg = parse_env_cfg("Isaac-Cartpole-Direct-v0", device="cuda:0", num_envs=4)
-                env = gym.make("Isaac-Cartpole-Direct-v0", cfg=env_cfg)
+                env_cfg = parse_env_cfg("Isaac-Cartpole-Direct", device="cuda:0", num_envs=4)
+                env = gym.make("Isaac-Cartpole-Direct", cfg=env_cfg)
         except (ModuleNotFoundError, ImportError, FileNotFoundError,
                 ConnectionError, TimeoutError) as exc:
             pytest.skip(f"Isaac deps/assets unavailable, cannot launch env: {exc}")

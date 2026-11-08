@@ -1,5 +1,5 @@
 # PhoenX RL
-![](https://img.shields.io/badge/Python-3.11-blue.svg)
+![](https://img.shields.io/badge/Python-3.12-blue.svg)
 ![](assets/PyTorch-2.0+-orange.svg)
 ![](assets/License-MIT-yellow.svg)
 <table>
@@ -60,28 +60,31 @@ PhoenX installs with conda + pip. Two modes share the same order; Isaac Lab mode
 
 ### Gymnasium mode (~5 min)
 ```bash
-conda create -n phoenx python=3.11
+conda create -n phoenx python=3.12
 conda activate phoenx
 pip install --upgrade pip
-pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+pip install -U torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu130
 conda install -y -c conda-forge swig
 pip install -e ".[dev,docs]"
 ```
 
 ### Isaac Lab mode (~30-60 min)
 ```bash
-conda create -n phoenx python=3.11
+conda create -n phoenx python=3.12
 conda activate phoenx
 pip install --upgrade pip
-pip install "isaaclab[isaacsim,all]==2.3.2.post1" --extra-index-url https://pypi.nvidia.com
-pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+pip install uv
+uv pip install --python python "isaaclab[isaacsim,all]==3.0.0" --overrides https://raw.githubusercontent.com/isaac-sim/IsaacLab/v3.0.0/tools/wheel_builder/uv-overrides.txt --extra-index-url https://pypi.nvidia.com --torch-backend cu130 --index-strategy unsafe-best-match
 conda install -y -c conda-forge swig
 pip install -e ".[dev,docs]"
 ```
 
 On Windows, SWIG from conda-forge is required before the final `pip install`
-(no cp311 wheel for `box2d-py`; do not use `pip install swig` — that shim
+(no cp312 wheel for `box2d-py`; do not use `pip install swig` — that shim
 fails under pip's build isolation). `setup.ps1` installs SWIG for you.
+Isaac Lab mode does not install torch a second time: the overrides file
+already pins torch 2.11.0 and torchvision 0.26.0, and `--torch-backend cu130`
+selects the CUDA 13.0 wheels.
 
 No-clone: replace the final line with
 `pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"`.

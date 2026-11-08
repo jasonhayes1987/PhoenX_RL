@@ -635,7 +635,7 @@ class TestCanonicalConfig:
         """The Franka cube-lift camera training config
         (phoenx.examples configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml)
         must build against IsaacLab-shaped observations: channels-LAST uint8
-        frames from a TiledCamera group ('rgb') plus a 36-dim proprio group
+        frames from the 'rgb' camera group plus a 36-dim proprio group
         ('policy'). The env stub is deliberately NOT a GymnasiumWrapper — the
         HWC->CHW conversion must apply to IsaacSim-sourced images too."""
         import gymnasium as gym

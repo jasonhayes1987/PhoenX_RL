@@ -560,7 +560,10 @@ def parse_search_spec(spec: dict) -> Any:
     if dist == "randint":
         return tune.randint(spec["lower"], spec["upper"])
     if dist == "qrandint":
-        return tune.qrandint(spec["lower"], spec["upper"], spec["q"])
+        # Ray 2.60 includes ``upper`` when ``q != 1``. PhoenX keeps the
+        # exclusive upper bound documented above.
+        upper = spec["upper"] if spec["q"] == 1 else spec["upper"] - 1
+        return tune.qrandint(spec["lower"], upper, spec["q"])
     if dist == "lograndint":
         if "base" in spec:
             return tune.lograndint(spec["lower"], spec["upper"], base=spec["base"])
@@ -1816,7 +1819,7 @@ def _ensure_ray_initialized(sweep: dict) -> None:
         sweep: Parsed sweep config; reads the optional top-level
             ``ray_init`` mapping (e.g. ``{"runtime_env": {"env_vars": {...}}}``)
             and forwards it verbatim as ``ray.init(**sweep['ray_init'])``, so
-            e.g. ``ISAACLAB_PATH`` / ``PYTHONPATH`` reach Ray workers.
+            worker env vars such as ``PYTHONPATH`` reach Ray workers.
 
     Raises:
         ValueError: If ``sweep['ray_init']`` is present but not a mapping.

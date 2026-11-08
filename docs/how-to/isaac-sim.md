@@ -49,17 +49,21 @@ environment id string. Resolution details live under
 [IsaacSimWrapper][phoenx.env_wrapper.IsaacSimWrapper] defaults matter for this
 path: `render_mode='headless'`, `enable_cameras=False`, `obs_key='policy'`,
 and `distance_threshold=None`. `num_envs` is written into
-`cfg.scene.num_envs`. Kit launches via
-`AppLauncher(headless=(render_mode == 'headless'), device="cuda:0", enable_cameras=...)`,
-so `render_mode: headless` runs without a display and any other value opens a
-headed Kit app; the device is hard-coded to `cuda:0`. Set
-`enable_cameras: true` whenever the cfg exposes camera / tiled sensors.
+`cfg.scene.num_envs`. The config class is passed through
+`isaaclab_tasks.utils.hydra.resolve_presets` before `num_envs`, device, and
+seed are written, so Isaac Lab 3 preset nodes are replaced by their defaults.
+Kit launches through `AppLauncher` with `device="cuda:0"`.
+`render_mode: headless` passes `headless=True`. Any other value also passes
+`visualizer=["kit"]`, because Isaac Lab 3.0 forces a headless Kit app unless
+the Kit visualizer is requested. Set
+`enable_cameras: true` whenever the cfg exposes a camera.
 `distance_threshold` is the sparse-goal radius used by HER; `None` means
 “not configured” (HER consumers raise an actionable error rather than a
 `TypeError`).
 
-On an RTX 4090 / Windows 11 machine with warm caches, that config took about
-40 seconds from the first Kit log line to
+The timings below are from the Isaac Lab 2.3.2 / Isaac Sim 5.1 run, not a
+3.0 measurement. On an RTX 4090 / Windows 11 machine with warm caches, that
+config took about 40 seconds from the first Kit log line to
 `[INFO]: Completed setting up the environment...`, and about 50 seconds to
 the first training step. Cold first runs were not measured here — Isaac Sim’s
 first launch on a machine pulls and compiles extensions and shader caches and
@@ -103,11 +107,15 @@ camera cfg.
 ### Cube lift (`custom_franka_cube_lift_cfg`)
 
 The stock base is `FrankaCubeLiftEnvCfg` from
-`isaaclab_tasks.manager_based.manipulation.lift.config.franka.joint_pos_env_cfg`;
+`isaaclab_tasks.contrib.lift.config.franka.joint_pos_env_cfg`;
 the observation-group subclasses extend
-`isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg.ObservationsCfg`
+`isaaclab_tasks.contrib.lift.lift_env_cfg.ObservationsCfg`
 (imported as `LiftObservationsCfg`). The `_PLAY` classes below derive from their
-own custom parents, not from Isaac Lab's stock `_PLAY` variants.
+own custom parents. Isaac Lab 3.0 does not ship a stock `FrankaCubeLiftEnvCfg_PLAY`.
+The table camera is a `CameraCfg`. Its RGB term is `mdp.image_rgb` with
+`normalize=False`. The offset quaternion is xyzw
+`(-0.43534, -0.43534, 0.35355, 0.35355)`, reordered from the previous wxyz
+value, and those components are still not a unit quaternion.
 
 | Class | Role |
 |-------|------|
@@ -118,7 +126,7 @@ own custom parents, not from Isaac Lab's stock `_PLAY` variants.
 | `GoalObservationsCfg` | Extends `LiftObservationsCfg` with `achieved_goal` / `desired_goal` groups for HER. |
 | `FrankaCubeLiftEnvCfg_Custom_Goal` | Limits action space plus `GoalObservationsCfg`. |
 | `FrankaCubeLiftEnvCfg_Custom_Goal_PLAY` | Play variant of Goal. |
-| `CameraObservationsCfg` | Extends `LiftObservationsCfg` with a separate `rgb` group (table-view TiledCamera, uint8). |
+| `CameraObservationsCfg` | Extends `LiftObservationsCfg` with a separate `rgb` group (table-view `CameraCfg`, uint8). |
 | `FrankaCubeLiftCameraEnvCfg` | Limits base + camera sensor + `CameraObservationsCfg`; keeps `object_position` in the policy group (36 features) so vision is optional. |
 | `FrankaCubeLiftCameraBlindEnvCfg` | Same camera scene, but sets `observations.policy.object_position = None` (36 → 33 features) so the cube’s location is only in the image. |
 | `FrankaCubeLiftCameraEnvCfg_PLAY` / `…Blind…_PLAY` | Play variants: `num_envs=16`, `env_spacing=2.5`, policy corruption off. |
@@ -126,7 +134,9 @@ own custom parents, not from Isaac Lab's stock `_PLAY` variants.
 ### Reach (`custom_franka_reach_cfg`)
 
 The stock base is `FrankaReachEnvCfg` from
-`isaaclab_tasks.manager_based.manipulation.reach.config.franka.joint_pos_env_cfg`.
+`isaaclab_tasks.core.reach.config.franka.franka_reach_env_cfg`.
+The custom classes replace `arm_action` after the parent builds the 3.0
+`FrankaArmActionCfg` preset, so they keep a concrete joint-position action.
 
 | Class | Role |
 |-------|------|

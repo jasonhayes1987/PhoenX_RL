@@ -6,30 +6,20 @@
 #   - Increase action_scale to 2.0–3.0 (or higher) for better reachability
 #   - This gives effective joint deltas of ~ ±1.0 to ±1.5 rad per step
 
-import sys
-import os
-
-# Use environment variable for IsaacLab path, with fallback to relative path
-ISAACLAB_PATH = os.environ.get('ISAACLAB_PATH', os.path.join(os.path.dirname(__file__), '..', '..', 'IsaacLab', 'source'))
-ISAACLAB_TASKS_PATH = os.path.join(ISAACLAB_PATH, 'isaaclab_tasks')
-
-sys.path.append(ISAACLAB_PATH)
-sys.path.append(ISAACLAB_TASKS_PATH)
-
 import isaaclab.sim as sim_utils
-from isaaclab.utils import configclass
-import isaaclab_tasks.manager_based.manipulation.lift.mdp as mdp
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import TiledCameraCfg
-from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import (
+from isaaclab.sensors import CameraCfg
+from isaaclab.utils import configclass
+from isaaclab_tasks.contrib.lift import mdp
+from isaaclab_tasks.contrib.lift.config.franka.joint_pos_env_cfg import (
+    FrankaCubeLiftEnvCfg,
+)
+from isaaclab_tasks.contrib.lift.lift_env_cfg import (
     ObservationsCfg as LiftObservationsCfg,
 )
-from isaaclab_tasks.manager_based.manipulation.lift.config.franka.joint_pos_env_cfg import (
-    FrankaCubeLiftEnvCfg,
-    FrankaCubeLiftEnvCfg_PLAY,
-)
+from isaaclab_tasks.utils.presets import set_isaac_rtx_global_settings
 
 
 @configclass
@@ -145,7 +135,7 @@ class FrankaCubeLiftEnvCfg_Custom_Goal_PLAY(FrankaCubeLiftEnvCfg_Custom_Goal):
 # =============================================================================
 # Multi-modal (camera + proprioception) variants
 # =============================================================================
-# Adds a per-env table-view TiledCamera and exposes it as its OWN observation
+# Adds a per-env table-view camera and exposes it as its OWN observation
 # group ('rgb'), alongside the standard 'policy' state group. With the PhoenX
 # wrapper configured as `obs_key: null`, the agent receives a dict observation
 #   { 'policy': (N, 36) float32, 'rgb': (N, H, W, 3) uint8 }
@@ -153,7 +143,7 @@ class FrankaCubeLiftEnvCfg_Custom_Goal_PLAY(FrankaCubeLiftEnvCfg_Custom_Goal):
 # (see phoenx/examples/configs/IsaacSim/franka/cube_lift/dense/ppo_camera.yml).
 #
 # NOTE: requires `enable_cameras: true` in the env config so the Kit app
-# launches with tiled rendering.
+# launches with rendering.
 
 CAMERA_WIDTH = 84
 CAMERA_HEIGHT = 84
@@ -172,9 +162,12 @@ class CameraObservationsCfg(LiftObservationsCfg):
         """
 
         image = ObsTerm(
-            func=mdp.image,
-            params={"sensor_cfg": SceneEntityCfg("table_cam"), "data_type": "rgb",
-                    "normalize": False},
+            func=mdp.image_rgb,
+            params={
+                "sensor_cfg": SceneEntityCfg("table_cam"),
+                "data_type": "rgb",
+                "normalize": False,
+            },
         )
 
         def __post_init__(self):
@@ -197,9 +190,10 @@ class FrankaCubeLiftCameraEnvCfg(FrankaCubeLiftEnvCfg_Custom_Limits):
     def __post_init__(self):
         super().__post_init__()
 
-        # Per-env tiled camera looking at the table workspace (pose adapted
-        # from IsaacLab's Franka stack visuomotor table_cam).
-        self.scene.table_cam = TiledCameraCfg(
+        # Per-env camera looking at the table workspace. Position stays at the
+        # PhoenX pose. rot is xyzw; the 2.x value was wxyz
+        # (0.35355, -0.43534, -0.43534, 0.35355).
+        self.scene.table_cam = CameraCfg(
             prim_path="{ENV_REGEX_NS}/table_cam",
             update_period=0.0,
             height=CAMERA_HEIGHT,
@@ -209,8 +203,8 @@ class FrankaCubeLiftCameraEnvCfg(FrankaCubeLiftEnvCfg_Custom_Limits):
                 focal_length=24.0, focus_distance=400.0,
                 horizontal_aperture=32.0, clipping_range=(0.1, 2.0),
             ),
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(1.3, 0.0, 0.4), rot=(0.35355, -0.43534, -0.43534, 0.35355),
+            offset=CameraCfg.OffsetCfg(
+                pos=(1.3, 0.0, 0.4), rot=(-0.43534, -0.43534, 0.35355, 0.35355),
                 convention="ros",
             ),
         )
@@ -221,9 +215,11 @@ class FrankaCubeLiftCameraEnvCfg(FrankaCubeLiftEnvCfg_Custom_Limits):
 
         # Fresh camera frames for the spliced terminal/reset observations the
         # NextStep autoreset conversion captures.
-        self.rerender_on_reset = True
-        # Disable DLSS antialiasing for tiled-render throughput.
-        self.sim.render.antialiasing_mode = "OFF"
+        self.num_rerenders_on_reset = 1
+        # sim.render is unset in 3.0. Antialiasing lives on the camera renderer.
+        set_isaac_rtx_global_settings(
+            self.scene.table_cam.renderer_cfg, antialiasing_mode="Off"
+        )
 
 
 @configclass

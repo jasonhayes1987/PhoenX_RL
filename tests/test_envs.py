@@ -520,10 +520,10 @@ class TestIsaacSimWrapper:
 # =============================================================================
 # IsaacSim integration  (real Isaac Sim + CUDA; auto-skipped otherwise)
 # =============================================================================
-# NOTE: gate only on ``isaaclab`` (+ CUDA). ``isaaclab_tasks`` (which provides
-# FrankaReachEnvCfg) is only put on ``sys.path`` by the extension system once the
-# Kit app boots, so it is undetectable here; a genuinely missing tasks package is
-# caught as ``ModuleNotFoundError`` in the fixture and skipped there instead.
+# NOTE: gate only on ``isaaclab`` (+ CUDA). Isaac Lab 3.0 installs
+# ``isaaclab_tasks`` as a normal package, but the Franka scene still needs the
+# Kit app. A missing tasks package or asset is ``ModuleNotFoundError`` /
+# ``FileNotFoundError`` in the fixture and is skipped there.
 _ISAAC_AVAILABLE = (importlib.util.find_spec("isaaclab") is not None) and T.cuda.is_available()
 
 
@@ -531,8 +531,8 @@ _ISAAC_AVAILABLE = (importlib.util.find_spec("isaaclab") is not None) and T.cuda
 @pytest.mark.skipif(not _ISAAC_AVAILABLE, reason="Isaac Sim / isaaclab + CUDA not available")
 class TestIsaacSimIntegration:
     FRANKA_CFG = (
-        "isaaclab_tasks.manager_based.manipulation.reach.config.franka."
-        "joint_pos_env_cfg:FrankaReachEnvCfg"
+        "isaaclab_tasks.core.reach.config.franka."
+        "franka_reach_env_cfg:FrankaReachEnvCfg"
     )
 
     @pytest.fixture(scope="class")
