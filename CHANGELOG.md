@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- A **Run** tab in `phoenx-config gui` (`phoenx.run_panel`): Train, Resume
+  (with a new training limit), Test and Sweep, each started as a separate
+  process with the same command the terminal would run, which is shown and
+  copyable. Live log, progress bar from the Trainer's `[progress]` lines,
+  agent-folder summaries (best checkpoint step, best reward, limit), Stop
+  (graceful interrupt, then kill of the process tree after 15 s), and the
+  trained folder filled in for Resume / Test afterwards.
+- `phoenx.process_runner.ProcessRunner`: Tk-free child-process control used
+  by the Run tab (streamed UTF-8 output, two-stage stop on Linux, macOS and
+  Windows).
+- Plain-text progress when the Trainer's output is not a terminal: Rich's
+  live dashboard draws nothing into a pipe or file, so `train()` / `test()`
+  now print `[progress]` / `[test]` lines every 5 s and `[checkpoint]` lines
+  after saves (also limited to one per 5 s). Terminal output is unchanged.
 - `phoenx-train --stop_units N` overrides `schedule.stop_units`; with
   `--agent_dir` it trains a saved run past its original limit. A target the
   checkpoint has already reached is refused instead of silently stopping at
@@ -185,6 +199,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- The `phoenx-train` / `phoenx-test` / `phoenx-tune` console scripts point
+  at a new `run()` in each CLI module, which turns Ctrl+C (and, on Windows,
+  Ctrl+Break) into exit code 130 with a one-line message instead of a
+  traceback. Reinstall (`pip install -e .`) to pick up the new entry points.
 - `validate_sweep_config` rejects unknown keys at the sweep, phase /
   `defaults`, and `tune` levels with a "did you mean" suggestion. A
   misspelled phase key (e.g. `serach_space`) used to be merged and never
@@ -437,6 +455,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- Interrupting training (Ctrl+C) lost a best checkpoint still waiting out
+  `save_every`, and left the env open. `Trainer.train` now catches the
+  interrupt, runs the existing pending-best flush, closes the env, and
+  re-raises.
 - `phoenx-train --agent_dir DIR --log_level LEVEL` crashed with `NameError`
   (`config` was only read from `config.json` when no log level was given).
 - `ModularModel.shared_update` is documented as what it is today: recorded

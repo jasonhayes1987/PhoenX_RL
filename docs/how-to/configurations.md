@@ -77,6 +77,42 @@ anchored values are written out in full. Keys the form has no field for
 rather than dropped. The editor needs `tkinter`, which python.org installers
 include; on Debian/Ubuntu install `python3-tk`.
 
+## Running from the GUI
+
+The same window has a **Run** tab that starts the PhoenX commands for you:
+
+| Mode | Runs |
+|------|------|
+| Train | `phoenx-train --config FILE` (**Use editor's config** saves and picks the file open in the Config tab) |
+| Resume | `phoenx-train --agent_dir DIR --stop_units N` |
+| Test | `phoenx-test --agent_dir DIR ...` |
+| Sweep | `phoenx-tune --config SWEEP ...` |
+
+Each run is a separate process started with the same Python as the GUI,
+exactly as the terminal would run it; the full command is shown (with a
+**Copy** button) before you press **Start**. Relative paths in the config,
+such as `save_dir: ./Trained_Models/...`, resolve against the **Working
+folder**.
+
+- The log pane shows the command's output. Progress drives the progress bar,
+  and saved checkpoints appear as one updating green line.
+- Choosing an agent folder (a run's `save_dir`) shows where its best
+  checkpoint is, its best reward, and its training limit. For Resume, *Train
+  until* must be past the checkpoint; it is prefilled with the original
+  limit, or the checkpoint plus that limit once the run has already reached it.
+- **Stop** interrupts the run the way Ctrl+C does: training saves a best
+  checkpoint that is still waiting out `save_every`, then exits. If the
+  process has not exited after 15 seconds (Isaac Sim's Kit can ignore the
+  interrupt), Stop becomes **Kill**, and the whole process tree, including
+  Ray workers, is killed.
+- After a training run finishes, its folder is filled in for Resume and Test.
+
+When a run's output is not a terminal (the Run tab, `nohup`, or
+`phoenx-train ... > train.log`), the Trainer prints plain lines instead of
+the live dashboard: `[progress] timestep 14,596/40,000 episodes=499
+avg_reward=43.10 elapsed=0:00:05` every 5 seconds, `[checkpoint] ...` after
+saves, and `[test] episode 10/10 avg_reward=...` when testing.
+
 ## Checking a config
 
 PhoenX generates a JSON Schema for configs straight from its own source: the

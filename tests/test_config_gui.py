@@ -148,3 +148,109 @@ def test_show_only_set_fields_hides_defaults(editor):
     editor.rerender()
     assert "agent.config.discount" not in editor.view.widgets
     assert "agent.config.entropy_coefficient" in editor.view.widgets  # changed in the file
+
+
+# =============================================================================
+# Run tab (PhoenxApp)
+# =============================================================================
+
+FIXTURE = ROOT / "tests/fixtures/smoke_ppo_cartpole.yml"
+
+
+@pytest.fixture()
+def app(monkeypatch):
+    from phoenx import config_gui, run_panel
+
+    for mod in (config_gui, run_panel):
+        monkeypatch.setattr(mod.messagebox, "askyesno", lambda *a, **k: True)
+        monkeypatch.setattr(mod.messagebox, "showerror",
+                            lambda *a, **k: pytest.fail(f"unexpected error dialog: {a}"))
+    monkeypatch.setattr(config_gui.messagebox, "askyesnocancel", lambda *a, **k: False)
+    root = tk.Tk()
+    root.withdraw()
+    a = config_gui.PhoenxApp(root)
+    yield a
+    a.run_panel.runner.kill()
+    a.editor.dirty = False
+    root.destroy()
+
+
+def _wait(app, predicate, timeout=240):
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.master.update()
+        if predicate():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out; status={app.run_panel.status.cget('text')!r}")
+
+
+def _finished(rp):
+    return not rp.runner.running and rp._current_mode is None
+
+
+def test_run_tab_train_stop_resume_test(app, tmp_path):
+    """Train from the Run tab, Stop mid-run (checkpoint flushed), resume past
+    the checkpoint, then test the saved agent."""
+    cfg = yaml.safe_load(FIXTURE.read_text(encoding="utf-8"))
+    cfg["save_dir"] = "run"
+    cfg["schedule"]["stop_units"] = 5_000_000
+    cfg["schedule"]["save_every"] = 2_000
+    cfg["env"]["config"]["num_envs"] = 4
+    (tmp_path / "c.yml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    rp = app.run_panel
+    app.show_tab("run")
+    rp.vars["cwd"].set(str(tmp_path))
+    rp.vars["config"].set("c.yml")
+    assert rp.command()[-2:] == ["--config", "c.yml"]
+    rp.start()
+    _wait(app, lambda: "timestep" in rp.status.cget("text"))   # [progress] reached the GUI
+    _wait(app, lambda: (tmp_path / "run" / "trainer_state.pt").exists())
+    rp.stop()
+    _wait(app, lambda: _finished(rp))
+    assert rp.runner.returncode == 130
+    assert rp.status.cget("text").startswith("Stopped")
+    log = rp.log.get("1.0", "end")
+    assert "[interrupted]" in log and "[checkpoint]" in log
+
+    rp.mode.set("resume")
+    rp._show_mode()
+    rp.vars["agent_dir"].set(str(tmp_path / "run"))
+    _wait(app, lambda: str(tmp_path / "run") in rp.run_infos, timeout=120)
+    reached = rp.run_infos[str(tmp_path / "run")]["progress"]
+    rp.vars["stop_units"].set(str(reached + 2048))
+    rp.start()
+    _wait(app, lambda: _finished(rp))
+    assert rp.runner.returncode == 0, rp.log.get("1.0", "end")[-2000:]
+
+    rp.mode.set("test")
+    rp._show_mode()
+    rp.vars["test_agent_dir"].set(str(tmp_path / "run"))
+    rp.vars["render_mode"].set("rgb_array")
+    rp.vars["num_episodes"].set("2")
+    rp.start()
+    _wait(app, lambda: _finished(rp))
+    assert rp.runner.returncode == 0
+    assert "[test] episode" in rp.log.get("1.0", "end")
+
+
+def test_resume_refuses_target_at_checkpoint(app, tmp_path, monkeypatch):
+    from phoenx import run_panel
+
+    errors = []
+    monkeypatch.setattr(run_panel.messagebox, "showerror", lambda *a, **k: errors.append(a[1]))
+    rp = app.run_panel
+    run = tmp_path / "r"
+    (run / "agent").mkdir(parents=True)
+    (run / "config.json").write_text("{}")
+    rp.mode.set("resume")
+    rp._show_mode()
+    rp.vars["cwd"].set(str(tmp_path))
+    rp.vars["agent_dir"].set("r")
+    rp.run_infos["r"] = {"progress": 1000}
+    rp.vars["stop_units"].set("1000")
+    rp.start()
+    assert errors and "must be past the checkpoint" in errors[0]
+    assert not rp.runner.running

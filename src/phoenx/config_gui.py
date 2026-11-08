@@ -1,6 +1,8 @@
-"""Tkinter editor for PhoenX training configs.
+"""Tkinter editor for PhoenX training configs, plus a Run tab.
 
 Run it with ``phoenx-config gui`` (optionally followed by a file to open).
+The window has two tabs: **Config** (this module's editor) and **Run**
+([phoenx.run_panel][]), which starts training, resuming, testing and sweeps.
 
 The window is generated from the config schema
 ([phoenx.config_schema][]) through the GUI-independent form model in
@@ -620,11 +622,17 @@ def bundled_examples() -> dict[str, str]:
 
 
 class ConfigEditor:
-    """The editor window. ``ConfigEditor(tk.Tk()).run()`` or ``main()``."""
+    """The config editor.
 
-    def __init__(self, master: tk.Tk, path: str | None = None):
-        """Create the node / widget; see the class docstring."""
+    It is the Config tab of [PhoenxApp][phoenx.config_gui.PhoenxApp], or a
+    window of its own when ``parent`` is omitted (``ConfigEditor(tk.Tk()).run()``).
+    """
+
+    def __init__(self, master: tk.Tk, path: str | None = None, parent: tk.Widget | None = None):
+        """Build the editor into ``parent`` (default: the window itself)."""
         self.master = master
+        self.frame = parent if parent is not None else master
+        self.standalone = parent is None
         self.schema = build_schema()
         self.form = build_form(self.schema)
         self.path: Path | None = None
@@ -640,7 +648,8 @@ class ConfigEditor:
         master.minsize(900, 560)
         self._styles()
         self._layout()
-        master.protocol("WM_DELETE_WINDOW", self.quit)
+        if self.standalone:
+            master.protocol("WM_DELETE_WINDOW", self.quit)
         for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             master.bind_all(seq, self._wheel, add="+")
             # Don't let the wheel silently change a dropdown while scrolling.
@@ -664,7 +673,7 @@ class ConfigEditor:
         style.configure("Toolbar.TFrame", padding=(6, 4))
 
     def _layout(self) -> None:
-        bar = ttk.Frame(self.master, style="Toolbar.TFrame")
+        bar = ttk.Frame(self.frame, style="Toolbar.TFrame")
         bar.pack(fill="x")
         self.new_btn = ttk.Menubutton(bar, text="New")
         menu = tk.Menu(self.new_btn, tearoff=False)
@@ -694,7 +703,7 @@ class ConfigEditor:
         ttk.Button(bar, text="Collapse all", command=lambda: self._set_all_collapsed(True)).pack(
             side="right", padx=2)
 
-        vpane = ttk.PanedWindow(self.master, orient="vertical")
+        vpane = ttk.PanedWindow(self.frame, orient="vertical")
         vpane.pack(fill="both", expand=True)
         def place_sashes(_e=None):
             vpane.sashpos(0, max(200, vpane.winfo_height() - 130))
@@ -727,7 +736,7 @@ class ConfigEditor:
         self.problem_list = tk.Listbox(bottom, height=4, activestyle="none")
         self.problem_list.pack(fill="both", expand=True)
         self.problem_list.bind("<Double-Button-1>", self._jump_to_problem)
-        self.status = ttk.Label(self.master, anchor="w", padding=(8, 2))
+        self.status = ttk.Label(self.frame, anchor="w", padding=(8, 2))
         self.status.pack(fill="x")
 
     def _wheel(self, event):
@@ -735,6 +744,8 @@ class ConfigEditor:
         if isinstance(widget, (tk.Text, tk.Listbox)) or (
                 isinstance(widget, str)):
             return None
+        if not self.scroll.winfo_ismapped():
+            return None  # another tab is showing
         return self.scroll.scroll(event)
 
     # -- form lifecycle ----------------------------------------------------
@@ -923,7 +934,7 @@ class ConfigEditor:
 
     def _update_title(self) -> None:
         name = self.path.name if self.path else "untitled"
-        self.master.title(f"{'*' if self.dirty else ''}{name} - PhoenX Config Editor")
+        self.master.title(f"{'*' if self.dirty else ''}{name} - PhoenX")
 
     def set_status(self, text: str) -> None:
         """Show ``text`` in the status bar."""
@@ -934,10 +945,61 @@ class ConfigEditor:
         self.master.mainloop()
 
 
+class PhoenxApp:
+    """The PhoenX window: a Config tab (the editor) and a Run tab.
+
+    The Run tab ([phoenx.run_panel][]) starts training, resuming, testing and
+    sweeps as separate processes using the same commands as the terminal.
+    """
+
+    def __init__(self, master: tk.Tk, path: str | None = None):
+        """Build both tabs; open ``path`` in the editor if given."""
+        from phoenx.run_panel import RunPanel
+
+        self.master = master
+        self.notebook = ttk.Notebook(master)
+        self.notebook.pack(fill="both", expand=True)
+        config_tab = ttk.Frame(self.notebook)
+        self.notebook.add(config_tab, text="  Config  ")
+        self.editor = ConfigEditor(master, path, parent=config_tab)
+        run_tab = ttk.Frame(self.notebook)
+        self.notebook.add(run_tab, text="  Run  ")
+        self.run_panel = RunPanel(self, run_tab)
+        master.protocol("WM_DELETE_WINDOW", self.quit)
+
+    def show_tab(self, name: str) -> None:
+        """Switch to the ``"config"`` or ``"run"`` tab."""
+        index = {"config": 0, "run": 1}[name]
+        self.notebook.select(index)
+
+    def editor_path(self, save_first: bool = True) -> Path | None:
+        """Path of the config open in the editor, saving it first if needed."""
+        ed = self.editor
+        if ed.path is not None and not ed.dirty:
+            return ed.path
+        if not save_first:
+            return ed.path
+        if not messagebox.askyesno(
+                "Save the config first?",
+                "The editor's config has unsaved changes (or was never saved). Save it now "
+                "so the run uses what you see?", parent=self.master):
+            return None
+        return ed.path if ed.save() else None
+
+    def quit(self) -> None:
+        """Close the window: stop a running command and offer to save edits first."""
+        if self.run_panel.confirm_close() and self.editor._confirm_discard():
+            self.master.destroy()
+
+    def run(self) -> None:
+        """Enter the Tk main loop."""
+        self.master.mainloop()
+
+
 def main(path: str | None = None) -> int:
-    """Open the editor window (optionally on ``path``) and block until closed."""
+    """Open the PhoenX window (optionally on ``path``) and block until closed."""
     root = tk.Tk()
-    ConfigEditor(root, path).run()
+    PhoenxApp(root, path).run()
     return 0
 
 

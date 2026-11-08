@@ -62,6 +62,7 @@ def read_run_info(run_dir: str | Path) -> dict[str, Any]:
         "agent_type": (config.get("agent") or {}).get("type"),
         "env": env_cfg.get("cfg") if isinstance(env_cfg, dict) else None,
         "env_type": env.get("type") if isinstance(env, dict) else None,
+        "buffer_type": (config.get("buffer") or {}).get("type"),
         "stop_unit": schedule.get("stop_unit", "timestep"),
         "stop_units": schedule.get("stop_units"),
         "step": None,

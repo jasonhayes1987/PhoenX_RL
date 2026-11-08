@@ -52,9 +52,9 @@ dev = [
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
 
 [project.scripts]
-phoenx-train = "phoenx.cli.train:main"
-phoenx-test  = "phoenx.cli.test:main"
-phoenx-tune  = "phoenx.cli.tune:main"
+phoenx-train = "phoenx.cli.train:run"
+phoenx-test  = "phoenx.cli.test:run"
+phoenx-tune  = "phoenx.cli.tune:run"
 phoenx-config = "phoenx.cli.config:main"
 
 [project.urls]

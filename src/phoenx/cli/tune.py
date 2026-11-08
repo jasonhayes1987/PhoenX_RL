@@ -9,6 +9,7 @@ only from here.
 
 import argparse
 
+from phoenx.process_runner import run_interruptible
 from phoenx.logging_config import configure_logging
 from phoenx.ray_tune import load_sweep_config, run_sweep, validate_only
 
@@ -131,5 +132,10 @@ def main() -> None:
     logger.info("Sweep complete. Final config written to %s", result["final_config_path"])
 
 
+def run() -> None:
+    """Console-script entry point: ``main`` with clean Ctrl+C / Stop handling."""
+    run_interruptible(main)
+
+
 if __name__ == "__main__":
-    main()
+    run()

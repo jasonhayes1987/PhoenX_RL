@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import json
 
+from phoenx.process_runner import run_interruptible
 from phoenx.builder import build_trainer_from_config, load_config
 from phoenx.logging_config import configure_logging
 from phoenx.run_info import read_run_info
@@ -76,5 +77,10 @@ def main() -> None:
     trainer.train()
 
 
+def run() -> None:
+    """Console-script entry point: ``main`` with clean Ctrl+C / Stop handling."""
+    run_interruptible(main)
+
+
 if __name__ == "__main__":
-    main()
+    run()
