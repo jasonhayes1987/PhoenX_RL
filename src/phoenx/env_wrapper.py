@@ -2064,8 +2064,9 @@ class IsaacSimWrapper(EnvWrapper):
             ach_goal_key: Dict key for the achieved goal, or ``None`` if unused.
             wrappers: Optional list of wrapper specs from ``WRAPPER_REGISTRY``,
                 each a dict with ``type`` and optional ``params``.
-            render_mode: Kit launch mode; ``"headless"`` runs without a display
-                window, any other value launches headed.
+            render_mode: Kit launch mode. ``"headless"`` runs without a display
+                window. Any other value requests the Kit visualizer, which is
+                what opens the Isaac Sim viewport on Isaac Lab 3.0.
             seed: RNG seed stored on the env config; when ``None``, a random
                 seed is drawn by the base class.
             distance_threshold: Sparse-goal success radius forwarded to
@@ -2098,8 +2099,9 @@ class IsaacSimWrapper(EnvWrapper):
 
         Reuses an already-running Kit app when present; otherwise launches via
         ``AppLauncher``. Instantiates the config class from ``self.env_id``,
-        builds ``NextStepManagerBasedRLEnv``, wraps it in ``IsaacLabAdapter``,
-        then applies ``WRAPPER_REGISTRY`` entries from ``self.wrappers``.
+        resolves its Isaac Lab presets, builds ``NextStepManagerBasedRLEnv``,
+        wraps it in ``IsaacLabAdapter``, then applies ``WRAPPER_REGISTRY``
+        entries from ``self.wrappers``.
 
         Returns:
             env (Any): Adapted Isaac Lab environment, possibly further wrapped.
@@ -2126,10 +2128,19 @@ class IsaacSimWrapper(EnvWrapper):
                 except (ModuleNotFoundError, ImportError) as e:
                     raise ModuleNotFoundError(
                         "Isaac Lab is required for Isaac Sim environments but could not be imported. "
-                        "Install Isaac Lab / Isaac Sim Python packages, or ensure ISAACLAB_PATH is set "
-                        "to IsaacLab's `source/` directory so `isaaclab` (or `omni.isaac.lab`) is on PYTHONPATH."
+                        "Install isaaclab[isaacsim,all]==3.0.0 into this environment. "
+                        "See installation.md."
                     ) from e
-            app_launcher = AppLauncher(headless=(self.render_mode=='headless'), device="cuda:0", enable_cameras=self.enable_cameras)
+            # Isaac Lab 3.0 forces headless unless a visualizer is requested,
+            # even when headless=False. The Kit visualizer is the viewport.
+            launcher_kwargs = {
+                "headless": self.render_mode == "headless",
+                "device": "cuda:0",
+                "enable_cameras": self.enable_cameras,
+            }
+            if self.render_mode != "headless":
+                launcher_kwargs["visualizer"] = ["kit"]
+            app_launcher = AppLauncher(**launcher_kwargs)
             self.app = app_launcher.app
 
         # Lazy create NextStepManagerBasedRLEnv class
@@ -2138,6 +2149,8 @@ class IsaacSimWrapper(EnvWrapper):
         module_path, class_name = self.env_id.split(':')
         cfg_class = getattr(importlib.import_module(module_path), class_name)
         cfg = cfg_class()
+        from isaaclab_tasks.utils.hydra import resolve_presets  # type: ignore[reportMissingImports]
+        cfg = resolve_presets(cfg)
         cfg.scene.num_envs = self.num_envs
         cfg.sim.device = "cuda:0"
         cfg.seed = self.seed

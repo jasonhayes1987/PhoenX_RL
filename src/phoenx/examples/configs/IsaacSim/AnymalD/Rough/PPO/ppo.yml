@@ -1,0 +1,94 @@
+device: &device cuda
+save_dir: ./Trained_Models/IsaacSim/AnymalD/Rough/PPO/
+log_level: INFO
+
+learning_rate: &learning_rate 1.0e-3
+
+schedule:
+  stop_unit: timestep
+  stop_units: 196608000          # 2000 iterations
+  learn_every_unit: timestep
+  learn_every: 98304             # 24 steps * 4096 envs
+  mini_batch_size: 24576         # rollout / 4 mini-batches
+  learning_epochs: 5
+  updates_per_learn: 1
+  warmup_steps: 0
+  seed: &seed 42
+
+agent:
+  type: PPO
+  config:
+    model:
+      device: *device
+      roots: null
+      trunk: null
+      branches:
+        policy:
+          type: StochasticContinuousHead
+          distribution: normal
+          layer_config:
+            - type: dense
+              params: {units: 512, kernel: default, kernel_params: {}}
+            - type: elu
+            - type: dense
+              params: {units: 256, kernel: default, kernel_params: {}}
+            - type: elu
+            - type: dense
+              params: {units: 128, kernel: default, kernel_params: {}}
+            - type: elu
+          output_config:
+            - type: dense
+              params: {kernel: default, kernel_params: {}}
+          optimizer_params: {type: Adam, params: {lr: *learning_rate}}
+        value:
+          type: ValueHead
+          layer_config:
+            - type: dense
+              params: {units: 512, kernel: default, kernel_params: {}}
+            - type: elu
+            - type: dense
+              params: {units: 256, kernel: default, kernel_params: {}}
+            - type: elu
+            - type: dense
+              params: {units: 128, kernel: default, kernel_params: {}}
+            - type: elu
+          output_config:
+            - type: dense
+              params: {kernel: default, kernel_params: {}}
+          optimizer_params: {type: Adam, params: {lr: *learning_rate}}
+    discount: 0.99
+    gae_coefficient: 0.95
+    entropy_coefficient: 0.005
+    auto_entropy_tuning: false
+    kl_coefficient: 0.0
+    policy_clip: 0.2
+    policy_grad_clip: 1.0
+    value_clip: 0.2
+    value_grad_clip: 1.0
+    value_coef: 1.0
+    reward_clip: .inf
+    bootstrap_truncations: true
+    advantage_normalizer:
+      type: BatchNorm
+      config:
+        clip_value: .inf
+        device: *device
+
+env:
+  type: isaacsim
+  config:
+    cfg: isaaclab_tasks.core.velocity.config.anymal_d.rough_env_cfg:AnymalDRoughEnvCfg
+    num_envs: 4096
+    obs_key: policy
+    goal_key: null
+    ach_goal_key: null
+    wrappers: []
+    render_mode: human
+    seed: *seed
+    enable_cameras: false
+
+buffer:
+  type: RolloutBuffer
+  config:
+    buffer_size: 24
+    device: *device

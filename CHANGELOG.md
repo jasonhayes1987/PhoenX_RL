@@ -140,6 +140,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- Isaac Lab target is 3.0.0 with Isaac Sim 6.2, Python 3.12, and torch
+  2.11.0+cu130. `setup.ps1 -Isaac` installs `isaaclab[isaacsim,all]==3.0.0`
+  through uv and the v3.0.0 overrides file; Gymnasium mode is the only path
+  that installs torch itself. Gymnasium is pinned to 1.4.0 without the
+  `other` extra, so moviepy 2.x does not pull Pillow below the 12.3 that
+  Isaac Lab requires. `video_stitcher.py` still imports `moviepy.editor`,
+  which that extra used to provide. Cube lift now subclasses
+  `isaaclab_tasks.contrib.lift`, uses `CameraCfg` and `mdp.image_rgb`, and
+  sets antialiasing with `set_isaac_rtx_global_settings`. The table-camera
+  quaternion is xyzw `(-0.43534, -0.43534, 0.35355, 0.35355)` and is still
+  not unit length. Reach subclasses
+  `isaaclab_tasks.core.reach.config.franka.franka_reach_env_cfg.FrankaReachEnvCfg`.
+  `IsaacSimWrapper` calls `resolve_presets` before applying `num_envs`,
+  device, and seed. The Isaac integration tests use that reach path and the
+  gym id `Isaac-Cartpole-Direct`. `PhysX.get_gpu_found` is absent in Isaac
+  Sim 6.2, so the PhysX probe skips that assertion. Ray 2.60's
+  `tune.qrandint` includes `upper` when `q != 1`; PhoenX still treats that
+  bound as exclusive and passes `upper - 1` in that case.
 - `phoenx-tune` sweep trial W&B run names now end in a 1-based per-phase
   ordinal with the phase's planned trial total, e.g.
   `ppo_sweep-optimizers-0007of0010`, identically for every search algorithm,

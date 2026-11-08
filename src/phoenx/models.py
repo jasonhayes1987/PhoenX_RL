@@ -3138,7 +3138,7 @@ class ModularModel(nn.Module):
             if x.dim() == 3:
                 x = x.unsqueeze(1)
             # Channels-last -> channels-first for ANY env source: IsaacLab
-            # cameras (TiledCamera/Camera) and Gymnasium image envs both emit
+            # cameras and Gymnasium image envs both emit
             # (N, H, W, C). Skipped when the input is already channels-first
             # (dim 1 channel-like), which real camera frames never are.
             if x.dim() == 4 and x.shape[-1] in (1, 3, 4) and x.shape[1] not in (1, 3, 4):

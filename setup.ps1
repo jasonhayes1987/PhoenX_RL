@@ -4,9 +4,10 @@
 
 .DESCRIPTION
     Creates a conda environment, then installs packages in this order: optional
-    Isaac Sim / Isaac Lab, CUDA PyTorch, then PhoenX from pyproject.toml.
-    Isaac first + torch -U last among those two keeps the cu128 build; PhoenX
-    last so its floor constraints see already-satisfied versions.
+    Isaac Sim / Isaac Lab, CUDA PyTorch (Gymnasium mode only), then PhoenX
+    from pyproject.toml. Isaac mode installs through uv with Isaac Lab 3.0's
+    overrides, which already pin torch 2.11.0 and the cu130 wheels. PhoenX
+    installs last so its floor constraints see already-satisfied versions.
 
 .EXAMPLE
     .\setup.ps1
@@ -44,9 +45,8 @@ param(
     # Conda environment name. Override to build a throwaway test env.
     [string]$EnvName = "phoenx",
 
-    # Python version. Must match your Isaac Sim release:
-    #   Isaac Sim 4.5 -> 3.10   |   5.X -> 3.11   |   6.X -> 3.12
-    [string]$PythonVersion = "3.11",
+    # Python version. Isaac Lab 3.0 / Isaac Sim 6.X require 3.12.
+    [string]$PythonVersion = "3.12",
 
     # Root of the conda installation to use. Defaults to Miniforge in the user profile;
     # point it at an existing installation to build the env there instead.
@@ -104,10 +104,13 @@ $minicondaInstaller = "Miniforge3-26.3.2-3-Windows-x86_64.exe"
 $minicondaUrl       = "https://github.com/conda-forge/miniforge/releases/download/26.3.2-3/$minicondaInstaller"
 
 # Pinned versions — these are known-good on this machine. Bump deliberately.
-$torchSpec    = @("torch==2.7.0", "torchvision==0.22.0")
-$torchIndex   = "https://download.pytorch.org/whl/cu128"
-$isaaclabSpec = "isaaclab[isaacsim,all]==2.3.2.post1"
+$torchSpec    = @("torch==2.11.0", "torchvision==0.26.0")
+$torchIndex   = "https://download.pytorch.org/whl/cu130"
+$isaaclabSpec = "isaaclab[isaacsim,all]==3.0.0"
 $nvidiaIndex  = "https://pypi.nvidia.com"
+# pip has no equivalent of uv's --overrides. This file pins torch 2.11.0,
+# torchvision 0.26.0, and numpy>=2 for the Isaac Lab 3.0 stack.
+$isaacOverrides = "https://raw.githubusercontent.com/isaac-sim/IsaacLab/v3.0.0/tools/wheel_builder/uv-overrides.txt"
 
 function Assert-Success {
     param([string]$What)
@@ -164,29 +167,46 @@ Assert-Success "pip upgrade"
 # Step 2: Optional Isaac Sim / Isaac Lab
 # -----------------------------------------------------------------------------
 if ($Isaac) {
-    Write-Host "Installing Isaac Lab + Isaac Sim (large, be patient) ..." -ForegroundColor Yellow
-    Invoke-EnvPython -m pip install $isaaclabSpec --extra-index-url $nvidiaIndex
-    Assert-Success "pip install isaaclab"
+    Write-Host "Installing uv ..." -ForegroundColor Yellow
+    Invoke-EnvPython -m pip install uv
+    Assert-Success "pip install uv"
 
-    # Isaac's resolver commonly downgrades filelock. Restore it afterwards.
-    Invoke-EnvPython -m pip install -U "filelock>=3.20.1"
-    Assert-Success "pip install filelock"
+    Write-Host "Installing Isaac Lab + Isaac Sim (large, be patient) ..." -ForegroundColor Yellow
+    $envPython = Join-Path $envPrefix "python.exe"
+    & $condaExe run --no-capture-output -p $envPrefix uv pip install --python $envPython $isaaclabSpec --overrides $isaacOverrides --extra-index-url $nvidiaIndex --torch-backend cu130 --index-strategy unsafe-best-match
+    Assert-Success "uv pip install isaaclab"
+
+    # Isaac Sim 5.1's pip resolver always downgraded filelock. The 3.0 uv
+    # overrides do not pin it, so restore the floor only when the install
+    # left it missing or below 3.20.1.
+    # One line: conda run rejects python -c arguments that contain newlines.
+    $filelockCode = "import importlib.metadata as m; d={x.metadata['Name'].lower(): x.version for x in m.distributions()}; v=d.get('filelock',''); print('missing' if not v else (('ok' if tuple(int(p) for p in v.split('.')[:3])>=(3,20,1) else 'low')+' '+v))"
+    $filelockReport = & $condaExe run -p $envPrefix python -c $filelockCode
+    Assert-Success "filelock version check"
+    $filelockLine = ($filelockReport | Out-String).Trim().Split("`n")[-1].Trim()
+    Write-Host "filelock after Isaac install: $filelockLine" -ForegroundColor DarkGray
+    if ($filelockLine -notlike "ok *") {
+        Write-Host "Restoring filelock>=3.20.1 ..." -ForegroundColor Yellow
+        Invoke-EnvPython -m pip install -U "filelock>=3.20.1"
+        Assert-Success "pip install filelock"
+    }
 }
 
 # -----------------------------------------------------------------------------
-# Step 3: PyTorch with CUDA — AFTER Isaac (so this cu128 build survives
-# isaacsim's own torch pin) and BEFORE PhoenX (so pyproject's torch>=2.5
-# floor is already satisfied and the project install leaves it alone).
-# Unconditional: PyPI torch on Windows is CPU-only; the cu128 index is what
-# makes CUDA work in both Gymnasium and Isaac modes.
+# Step 3: PyTorch with CUDA — Gymnasium mode only.
+# Isaac mode already received torch 2.11.0 cu130 from the uv overrides.
+# PyPI torch on Windows is CPU-only; the cu130 index is what makes CUDA work.
+# Installed before PhoenX so pyproject's torch>=2.5 floor is already met.
 # -----------------------------------------------------------------------------
-Write-Host "Installing PyTorch (CUDA) ..." -ForegroundColor Yellow
-Invoke-EnvPython -m pip install -U @torchSpec --index-url $torchIndex
-Assert-Success "pip install torch"
+if (-not $Isaac) {
+    Write-Host "Installing PyTorch (CUDA) ..." -ForegroundColor Yellow
+    Invoke-EnvPython -m pip install -U @torchSpec --index-url $torchIndex
+    Assert-Success "pip install torch"
+}
 
 # -----------------------------------------------------------------------------
 # Step 4: Build prerequisites
-# gymnasium[box2d] pins box2d-py==2.3.5, which ships no cp311 Windows wheel and
+# gymnasium[box2d] pins box2d-py==2.3.5, which ships no cp312 Windows wheel and
 # so builds from source — and that build shells out to SWIG. Installed from
 # conda-forge rather than PyPI on purpose: the pip `swig` package is a Python
 # console-script shim that dies with "No module named 'swig'" inside pip's build

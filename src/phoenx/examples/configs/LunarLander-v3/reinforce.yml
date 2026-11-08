@@ -97,7 +97,7 @@ agent:
 env:
   type: envpool # "isaacsim" or "gymnasium" or "envpool"
   config:
-    # cfg: "isaaclab_tasks.manager_based.classic.cartpole.cartpole_env_cfg:CartpoleEnvCfg"
+    # cfg: "isaaclab_tasks.core.cartpole.cartpole_manager_env_cfg:CartpoleEnvCfg"
     cfg: LunarLander-v3
     num_envs: 8
     obs_key: null

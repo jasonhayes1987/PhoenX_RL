@@ -14,10 +14,10 @@ Full install sequences, extras, `setup.ps1`, and troubleshooting:
 From a clone (editable, with test tooling):
 
 ```bash
-conda create -n phoenx python=3.11
+conda create -n phoenx python=3.12
 conda activate phoenx
 pip install --upgrade pip
-pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+pip install -U torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu130
 conda install -y -c conda-forge swig
 pip install -e ".[dev,docs]"
 ```
@@ -30,20 +30,23 @@ pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
 
 ## Install — Isaac Lab mode
 
-Same sequence with one extra command before PyTorch (PhoenX still last):
+Isaac Lab 3.0 is installed with `uv`, because the published stack needs
+`--overrides` and pip has no equivalent. That install already pins torch
+2.11.0 / torchvision 0.26.0 on CUDA 13.0, so there is no separate torch
+command. PhoenX still installs last:
 
 ```bash
-conda create -n phoenx python=3.11
+conda create -n phoenx python=3.12
 conda activate phoenx
 pip install --upgrade pip
-pip install "isaaclab[isaacsim,all]==2.3.2.post1" --extra-index-url https://pypi.nvidia.com
-pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+pip install uv
+uv pip install --python python "isaaclab[isaacsim,all]==3.0.0" --overrides https://raw.githubusercontent.com/isaac-sim/IsaacLab/v3.0.0/tools/wheel_builder/uv-overrides.txt --extra-index-url https://pypi.nvidia.com --torch-backend cu130 --index-strategy unsafe-best-match
 conda install -y -c conda-forge swig
 pip install -e ".[dev,docs]"
 ```
 
 Or install Isaac Lab first (see
-[NVIDIA's pip installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html)),
+[NVIDIA's installation guide](https://docs.nvidia.com/isaaclab/isaac-lab/installation)),
 then install PhoenX into that same environment (SWIG first on Windows). Verify
 with `pytest tests/test_isaac_setup.py -v` (see
 [Isaac Sim Environments](isaac-sim.md)).

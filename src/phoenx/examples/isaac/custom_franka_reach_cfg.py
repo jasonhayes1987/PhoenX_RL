@@ -8,22 +8,10 @@
 #   - Increase action_scale to 2.0–3.0 (or higher) for better reachability
 #   - This gives effective joint deltas of ~ ±1.0 to ±1.5 rad per step
 
-import sys
-import os
-
-# Use environment variable for IsaacLab path, with fallback to relative path
-ISAACLAB_PATH = os.environ.get('ISAACLAB_PATH', os.path.join(os.path.dirname(__file__), '..', '..', 'IsaacLab', 'source'))
-ISAACLAB_TASKS_PATH = os.path.join(ISAACLAB_PATH, 'isaaclab_tasks')
-
-sys.path.append(ISAACLAB_PATH)
-sys.path.append(ISAACLAB_TASKS_PATH)
-
+import isaaclab.envs.mdp as mdp
 from isaaclab.utils import configclass
-
-import isaaclab_tasks.manager_based.manipulation.reach.mdp as mdp
-from isaaclab_tasks.manager_based.manipulation.reach.config.franka.joint_pos_env_cfg import (
+from isaaclab_tasks.core.reach.config.franka.franka_reach_env_cfg import (
     FrankaReachEnvCfg,
-    FrankaReachEnvCfg_PLAY,
 )
 
 

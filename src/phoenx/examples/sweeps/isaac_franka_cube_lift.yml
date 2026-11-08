@@ -33,13 +33,14 @@
 # Run it (needs a real Isaac Sim / IsaacLab install and a GPU):
 #   phoenx-tune --config isaac_franka_cube_lift.yml
 #
-# Uncomment and fill in for a multi-worker run so ISAACLAB_PATH / PYTHONPATH
-# reach Ray workers (ray_init is forwarded verbatim to ray.init()):
+# Isaac Lab 3.0 is installed into the environment. Bundled configs import
+# those packages directly, so workers using this env do not need ISAACLAB_PATH.
+# ray_init is still forwarded verbatim to ray.init() when a worker needs
+# extra env vars:
 # ray_init:
 #   runtime_env:
 #     env_vars:
-#       ISAACLAB_PATH: "/absolute/path/to/IsaacLab"
-#       PYTHONPATH: "/absolute/path/to/IsaacLab/source"
+#       PYTHONPATH: "/absolute/path/to/extra/modules"
 #
 # This sweep does not use PBT (Population Based Training); scheduler.type:
 # pbt is rejected in this delivery pass (it needs checkpoint plumbing).

@@ -6,14 +6,14 @@
 # Env observation groups (obs_key: null -> dict observation):
 #   policy : (N, 36) float32   joint pos/vel (9+9), object position (3),
 #                              target pose command (7), last action (8)
-#   rgb    : (N, 84, 84, 3) uint8   table-view TiledCamera frames
+#   rgb    : (N, 84, 84, 3) uint8   table-view camera frames
 #
 # Notes vs. the state-only ppo.yml:
 #   - num_envs 1024 (camera rendering + uint8 rollout storage; the state-only
 #     run used 4096). Rollout buffer VRAM for images:
 #       24 steps * 1024 envs * 84*84*3 bytes * 2 (states+next) ~= 1.04 GB.
 #   - learn cadence preserved per-env: learn_every = 24 * 1024 = 24576 steps.
-#   - enable_cameras: true is REQUIRED (Kit app tiled rendering).
+#   - enable_cameras: true is REQUIRED (Kit launches with rendering).
 #   - To force vision to carry the object location (the true test), switch the
 #     env cfg class to FrankaCubeLiftCameraBlindEnvCfg and change the state
 #     normalizer num_features from 36 -> 33 (object_position removed).
