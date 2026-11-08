@@ -184,11 +184,17 @@ def _wait(app, predicate, timeout=240):
         if predicate():
             return
         time.sleep(0.05)
-    raise AssertionError(f"timed out; status={app.run_panel.status.cget('text')!r}")
+    raise AssertionError(f"timed out\n{_why(app.run_panel)}")
 
 
 def _finished(rp):
     return not rp.runner.running and rp._current_mode is None
+
+
+def _why(rp) -> str:
+    """Status and log tail, so an intermittent failure explains itself."""
+    tail = "\n".join(rp.log.get("1.0", "end").strip().splitlines()[-25:])
+    return f"exit={rp.runner.returncode} status={rp.status.cget('text')!r}\n{tail}"
 
 
 def test_run_tab_train_stop_resume_test(app, tmp_path):
@@ -211,10 +217,10 @@ def test_run_tab_train_stop_resume_test(app, tmp_path):
     _wait(app, lambda: (tmp_path / "run" / "trainer_state.pt").exists())
     rp.stop()
     _wait(app, lambda: _finished(rp))
-    assert rp.runner.returncode == 130
-    assert rp.status.cget("text").startswith("Stopped")
+    assert rp.runner.returncode == 130, _why(rp)
+    assert rp.status.cget("text").startswith("Stopped"), _why(rp)
     log = rp.log.get("1.0", "end")
-    assert "[interrupted]" in log and "[checkpoint]" in log
+    assert "[interrupted]" in log and "[checkpoint]" in log, _why(rp)
 
     rp.mode.set("resume")
     rp._show_mode()
@@ -224,7 +230,7 @@ def test_run_tab_train_stop_resume_test(app, tmp_path):
     rp.vars["stop_units"].set(str(reached + 2048))
     rp.start()
     _wait(app, lambda: _finished(rp))
-    assert rp.runner.returncode == 0, rp.log.get("1.0", "end")[-2000:]
+    assert rp.runner.returncode == 0, _why(rp)
 
     rp.mode.set("test")
     rp._show_mode()
@@ -233,8 +239,8 @@ def test_run_tab_train_stop_resume_test(app, tmp_path):
     rp.vars["num_episodes"].set("2")
     rp.start()
     _wait(app, lambda: _finished(rp))
-    assert rp.runner.returncode == 0
-    assert "[test] episode" in rp.log.get("1.0", "end")
+    assert rp.runner.returncode == 0, _why(rp)
+    assert "[test] episode" in rp.log.get("1.0", "end"), _why(rp)
 
 
 def test_resume_refuses_target_at_checkpoint(app, tmp_path, monkeypatch):
@@ -320,3 +326,48 @@ def test_sweep_tab_tree_add_and_double_add(app, monkeypatch):
     assert refine["search_space"][path]["dist"] == "choice"
     sw._add_selected("search")
     assert infos == ["Already searched"]
+
+
+# =============================================================================
+# Guards against mixing up training configs and sweeps
+# =============================================================================
+
+def test_saving_a_sweep_over_a_training_config_warns(app, tmp_path, monkeypatch):
+    from phoenx import config_gui
+
+    asked = []
+    monkeypatch.setattr(config_gui.messagebox, "askyesno",
+                        lambda title, *a, **k: (asked.append(title), False)[1])
+    target = tmp_path / "sac.yml"
+    target.write_text(PPO.read_text(encoding="utf-8"), encoding="utf-8")
+    app.sweep.open(str(SWEEP))
+    assert app.sweep._write(target) is False
+    assert asked == ["Replace a training config?"]
+    assert "agent:" in target.read_text(encoding="utf-8")  # untouched
+
+
+def test_run_tab_rejects_the_wrong_kind_of_file(app, tmp_path, monkeypatch):
+    from phoenx import run_panel
+
+    errors = []
+    monkeypatch.setattr(run_panel.messagebox, "showerror", lambda *a, **k: errors.append(a[1]))
+    rp = app.run_panel
+    rp.vars["cwd"].set(str(tmp_path))
+    (tmp_path / "train.yml").write_text(PPO.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "sweep.yml").write_text(SWEEP.read_text(encoding="utf-8"), encoding="utf-8")
+
+    rp.mode.set("sweep")
+    rp._show_mode()
+    rp.vars["sweep"].set("train.yml")
+    rp.start()
+    rp.mode.set("train")
+    rp._show_mode()
+    rp.vars["config"].set("sweep.yml")
+    rp.start()
+    assert "train.yml is a training config, not a sweep" in errors[0]
+    assert "sweep.yml is a sweep, not a training config" in errors[1]
+    assert not rp.runner.running
+    # Bundled example names are resolved by the command itself, so they pass.
+    assert rp._precheck(str(tmp_path)) is not None
+    rp.vars["config"].set("LunarLanderContinuous-v3/ppo.yml")
+    assert rp._precheck(str(tmp_path)) is None

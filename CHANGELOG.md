@@ -475,6 +475,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- The config GUI let a sweep be saved over a training config (or the
+  reverse) with only the OS's generic replace prompt. Saving over the other
+  kind of file now asks with an explicit warning, the Run tab refuses a
+  training config in Sweep mode and a sweep in Train mode before starting,
+  and Save As for a new file starts in the Run tab's working folder.
 - Interrupting training (Ctrl+C) lost a best checkpoint still waiting out
   `save_every`, and left the env open. `Trainer.train` now catches the
   interrupt, runs the existing pending-best flush, closes the env, and

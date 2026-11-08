@@ -26,6 +26,7 @@ imported.
 from __future__ import annotations
 
 import copy
+import os
 import sys
 import tkinter as tk
 from importlib import resources
@@ -48,6 +49,7 @@ from phoenx.config_form import (
     _fmt,
     build_form,
     dump_config,
+    file_kind,
 )
 from phoenx.config_schema import build_schema, validate_config
 from phoenx.config_utils import resolve_n_step
@@ -905,13 +907,30 @@ class ConfigEditor:
         initial = self.path.name if self.path else f"{self.NOUN}.yml"
         path = filedialog.asksaveasfilename(
             parent=self.master, title=f"Save PhoenX {self.NOUN}", defaultextension=".yml",
-            initialfile=initial, initialdir=str(self.path.parent) if self.path else None,
+            initialfile=initial, initialdir=str(self.path.parent) if self.path else self._save_dir(),
             filetypes=[("YAML config", "*.yml *.yaml"), ("All files", "*.*")])
         if not path:
             return False
         return self._write(Path(path))
 
+    def _save_dir(self) -> str | None:
+        """Folder Save As starts in for a never-saved file: the Run tab's working folder."""
+        panel = getattr(self.app, "run_panel", None) if self.app is not None else None
+        if panel is not None and panel.vars.get("cwd") is not None:
+            folder = panel.vars["cwd"].get().strip()
+            return folder if folder and os.path.isdir(folder) else None
+        return None
+
     def _write(self, path: Path) -> bool:
+        existing = file_kind(path) if path.exists() else None
+        if existing is not None and existing != self.NOUN:
+            other = "training config" if existing == "config" else "sweep"
+            if not messagebox.askyesno(
+                    f"Replace a {other}?",
+                    f"{path.name} is a {other}, and you are saving a {self.NOUN} over it. "
+                    f"The {other} will be lost (unless it is committed in git).\n\n"
+                    f"Replace it anyway?", icon="warning", default="no", parent=self.master):
+                return False
         self.validate_now()
         if self.problems:
             ok = messagebox.askyesno(

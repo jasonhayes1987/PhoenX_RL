@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Callable
 
 import yaml
 
+from phoenx.config_form import file_kind
 from phoenx.process_runner import ProcessRunner, parse_progress, python_command
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -479,6 +480,23 @@ class RunPanel:
             path = Path(p)
             return path if path.is_absolute() else Path(cwd) / path
 
+        expected = {"train": ("config", "Config file", "a training config"),
+                    "sweep": ("sweep", "Sweep file", "a sweep")}.get(mode)
+        if expected:
+            key = "config" if mode == "train" else "sweep"
+            path = resolve(v[key])
+            if not path.is_file():
+                from phoenx.config_gui import bundled_examples
+                bundled = bundled_examples("configs" if mode == "train" else "sweeps")
+                if v[key].strip().replace("\\", "/") in bundled:
+                    return None  # a bundled example name; the command resolves it
+                return f"{expected[1]} not found: {path}"
+            kind = file_kind(path)
+            if kind is not None and kind != expected[0]:
+                actual = "a sweep" if kind == "sweep" else "a training config"
+                return (f"{path.name} is {actual}, not {expected[2]}. "
+                        + ("Sweep files have base_config and phases."
+                           if mode == "sweep" else "Use Sweep mode to run a sweep."))
         if mode in ("resume", "test"):
             d = resolve(v["agent_dir"])
             if not (d / "config.json").is_file():

@@ -34,6 +34,7 @@ another front end could reuse it.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import yaml
@@ -733,6 +734,25 @@ def find_field(root: Node, path: str) -> ScalarNode | None:
     for p, node in iter_fields(root):
         if p == path:
             return node
+    return None
+
+
+def file_kind(path: str | Path) -> str | None:
+    """``"sweep"``, ``"config"`` (training config), or None if unreadable / neither.
+
+    A sweep has ``base_config`` or ``phases``; a training config has any of
+    ``agent`` / ``env`` / ``buffer`` / ``schedule``.
+    """
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if "base_config" in data or "phases" in data:
+        return "sweep"
+    if any(k in data for k in ("agent", "env", "buffer", "schedule")):
+        return "config"
     return None
 
 
