@@ -33,7 +33,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from phoenx.layer_specs import KERNEL_NAMES, LAYER_SPECS, WEIGHTED_LAYERS
+from phoenx.layer_specs import KERNEL_NAMES, LAYER_SPECS, WEIGHTED_LAYERS, layer_param_doc
 
 SRC = Path(__file__).resolve().parent
 
@@ -343,6 +343,15 @@ def param_schema(p: Param) -> dict:
     return s
 
 
+def class_summary(class_name: str) -> str:
+    """First paragraph of a class's docstring, on one line ("" if none)."""
+    cls = _class_index().get(class_name)
+    doc = ast.get_docstring(cls) if cls is not None else None
+    if not doc:
+        return ""
+    return " ".join(doc.strip().split("\n\n")[0].split())
+
+
 def object_schema(
     class_name: str,
     exclude: set[str] = frozenset(),
@@ -361,6 +370,9 @@ def object_schema(
             if desc and "description" not in v:
                 props[k]["description"] = desc
     schema: dict = {"type": "object", "properties": props, "additionalProperties": False}
+    summary = class_summary(class_name)
+    if summary:
+        schema["description"] = summary
     if allow_private:
         schema["patternProperties"] = {"^_": {"description": "Private diagnostic knob."}}
     required = [n for n, p in params.items() if p.required and n not in exclude]
@@ -451,6 +463,9 @@ def _layer_def(require: bool) -> dict:
         req = []
         for pname, pspec in spec["params"].items():
             ps = {k: v for k, v in pspec.items() if k not in ("required",)}
+            doc = layer_param_doc(layer_type, pname)
+            if doc:
+                ps["description"] = doc
             if not require and pname in ("units", "out_features", "out_channels"):
                 ps["x-hidden"] = True  # output widths come from the env
             props[pname] = ps
@@ -502,8 +517,9 @@ def _definitions() -> dict:
         "properties": {
             "type": {"enum": list(OPTIMIZER_TYPES) + [t.lower() for t in OPTIMIZER_TYPES],
                      "description": "Optimizer name (case-insensitive)."},
-            "params": {"type": "object", "description": "Keyword args, e.g. {lr: 3.0e-4}.",
-                       "properties": {"lr": {"type": "number"}}},
+            "params": {"type": "object",
+                       "description": "Keyword args for the torch optimizer, e.g. {lr: 3.0e-4}.",
+                       "properties": {"lr": {"type": "number", "description": "Learning rate."}}},
         },
         "additionalProperties": False,
     }
@@ -527,32 +543,28 @@ def _definitions() -> dict:
         }) for k in INTRINSIC_CLASSES})
     defs["hindsight"] = object_schema("HindsightRelabeler", exclude=_INJECTED)
 
-    defs["subnetwork"] = {
-        "type": "object",
-        "properties": {
+    defs["subnetwork"] = object_schema(
+        "SubNetwork", exclude={"name"}, allow_private=False,
+        overrides={
             "layer_config": {"type": "array", "items": _ref("layer")},
-            "input_keys": {"type": ["array", "null"], "items": {"type": "string"},
-                           "description": "Observation-dict keys this subnetwork reads."},
+            "input_keys": {"type": ["array", "null"], "items": {"type": "string"}},
             "optimizer_params": _nullable(_ref("optimizer")),
             "lr_scheduler": _nullable(_ref("schedule")),
-        },
-        "additionalProperties": False,
-    }
+        })
     defs["head"] = tagged_union(_head_variants(), config_key=None,
                                 description="Branch head: a HEAD_REGISTRY type plus its settings.")
-    model_body = {
-        "device": {"type": ["string", "null"]},
-        "roots": {"anyOf": [{"type": "object", "additionalProperties": _ref("subnetwork")},
-                            {"type": "null"}],
-                  "description": "Per-modality encoders, by name (null for flat observations)."},
-        "trunk": {"anyOf": [_ref("subnetwork"), {"type": "null"}],
-                  "description": "Shared fusion network (null for none)."},
-        "branches": {"type": "object", "additionalProperties": _ref("head"),
-                     "description": "Heads by role (policy, value, critic, ...)."},
-        "optimizer_params": _nullable(_ref("optimizer")),
-        "lr_scheduler": _nullable(_ref("schedule")),
-        "shared_update": {"type": ["string", "null"]},
-    }
+    # Read from ModularModel's constructor like every other section, so its
+    # descriptions, defaults and choices come from the code.
+    model_body = object_schema(
+        "ModularModel", exclude=_INJECTED | {"name"}, allow_private=False,
+        overrides={
+            "roots": {"anyOf": [{"type": "object", "additionalProperties": _ref("subnetwork")},
+                                {"type": "null"}]},
+            "trunk": {"anyOf": [_ref("subnetwork"), {"type": "null"}]},
+            "branches": {"type": "object", "additionalProperties": _ref("head")},
+            "optimizer_params": _nullable(_ref("optimizer")),
+            "lr_scheduler": _nullable(_ref("schedule")),
+        })["properties"]
     defs["model"] = {
         "type": "object",
         "properties": {"type": {"const": "ModularModel", "x-hidden": True},
@@ -569,7 +581,8 @@ def _definitions() -> dict:
         "properties": {
             "type": {"type": "string", "examples": wrapper_names,
                      "description": "WRAPPER_REGISTRY name or any gymnasium wrapper class name."},
-            "params": {"type": "object"},
+            "params": {"type": "object",
+                       "description": "Keyword args for the wrapper's constructor."},
         },
         "additionalProperties": False,
     }
@@ -586,7 +599,9 @@ def _agent_variant(cls: str) -> dict:
         cls, exclude=built | {"roots", "trunk"},
         overrides={"optimizer_params": _nullable(_ref("optimizer")),
                    "lr_scheduler": _nullable(_ref("schedule"))},
-        extra={"model": _ref("model")},
+        extra={"model": {**_ref("model"), "description": (
+            "The network: optional per-modality encoders (roots), an optional "
+            "shared trunk, and one head per role under branches.")}},
     )
     # Also settable under `model`, and the agent-level copy silently wins
     # (apply_model_config uses setdefault). Keep them valid for old configs
@@ -652,11 +667,16 @@ def _build_schema() -> dict:
                                   description="Algorithm and its hyperparameters."),
             "env": tagged_union(env_variants, description="Environment backend and settings."),
             "buffer": tagged_union(buffer_variants, description="Experience buffer."),
-            "renderer": _nullable(object_schema("Renderer", allow_private=False)),
+            "renderer": _nullable(object_schema(
+                "Renderer", allow_private=False,
+                # The Trainer overwrites it with the run's save_dir.
+                overrides={"save_dir": {"type": "string", "x-hidden": True}})),
             "metrics": _nullable(object_schema("MetricsManager", allow_private=False)),
             "success_criterion": _nullable(object_schema("SuccessCriterion", allow_private=False)),
             "callbacks": {"anyOf": [{"type": "array", "items": tagged_union(callback_variants)},
-                                    {"type": "null"}]},
+                                    {"type": "null"}],
+                          "description": "Hooks run during training, e.g. WandbCallback to log "
+                                         "to Weights & Biases."},
         },
         # Extra top-level keys are allowed: configs park YAML anchors there
         # (``policy_lr: &policy_lr 3.0e-4``) and the builder ignores them.

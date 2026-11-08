@@ -164,6 +164,68 @@ LAYER_SPECS: dict[str, dict] = {
 }
 
 
+#: Help text for layer params, by name. Shown as GUI tooltips and schema
+#: descriptions; ``LAYER_PARAM_DOCS_BY_LAYER`` overrides an entry where a
+#: name means something different for one layer type.
+LAYER_PARAM_DOCS: dict[str, str] = {
+    "units": "Output width (number of neurons). Input width is inferred.",
+    "in_features": "Input width.",
+    "out_features": "Output width.",
+    "bias": "Add a learned bias term.",
+    "out_channels": "Number of output channels (filters). Input channels are inferred.",
+    "kernel_size": "Size of the sliding window (an int, or one value per spatial dim).",
+    "stride": "Step between window positions (defaults to kernel_size for pooling).",
+    "padding": "Zero-padding added to each side of the input.",
+    "output_size": "Target output size after adaptive pooling.",
+    "eps": "Small constant added to the variance for numerical stability.",
+    "momentum": "Weight of each new batch in the running mean / variance.",
+    "normalized_shape": "Shape of the trailing dims to normalize over (usually the feature width).",
+    "num_groups": "Number of channel groups to normalize separately.",
+    "num_channels": "Number of input channels (must be divisible by num_groups).",
+    "negative_slope": "Slope used for negative inputs.",
+    "approximate": "'tanh' uses the faster tanh approximation of GELU.",
+    "alpha": "Saturation value for negative inputs.",
+    "dim": "Dimension the operation is applied along (-1 = last).",
+    "beta": "Sharpness of the Softplus curve (higher is closer to ReLU).",
+    "threshold": "Inputs above this are passed through linearly.",
+    "p": "Probability of zeroing each element during training.",
+    "start_dim": "First dimension to flatten.",
+    "end_dim": "Last dimension to flatten.",
+    "sizes": "Shape to unflatten dimension `dim` into, e.g. [3, 64, 64].",
+    "num_embeddings": "Number of distinct token ids (vocabulary size).",
+    "embedding_dim": "Width of each embedding vector.",
+    "d_model": "Feature width of the tokens (must match the incoming width).",
+    "max_len": "Longest sequence the encoding supports.",
+    "learned": "Learn the positional embedding instead of using fixed sinusoids.",
+    "embed_dim": "Feature width of the tokens (must be divisible by num_heads).",
+    "num_heads": "Number of attention heads.",
+    "nhead": "Number of attention heads per encoder layer.",
+    "num_layers": "Number of stacked layers.",
+    "dim_feedforward": "Hidden width of each encoder layer's feed-forward block.",
+    "dropout": "Dropout probability inside the layer.",
+    "activation": "Activation of the feed-forward block.",
+    "causal": ("Attend over the time axis without looking ahead (temporal "
+               "attention). Only allowed in the trunk; False attends across "
+               "feature tokens within one step and is allowed anywhere."),
+    "norm_first": "Apply layer norm before attention / feed-forward (pre-norm) instead of after.",
+    "hidden_size": "Hidden-state width (also the output width).",
+    "input_size": "Input width. Leave empty to infer it from the first batch.",
+}
+
+LAYER_PARAM_DOCS_BY_LAYER: dict[tuple[str, str], str] = {
+    ("lstm", "dropout"): "Dropout between stacked layers (ignored when num_layers is 1).",
+    ("gru", "dropout"): "Dropout between stacked layers (ignored when num_layers is 1).",
+    ("mha", "dropout"): "Dropout on the attention weights.",
+    ("transformer_encoder", "dropout"): "Dropout inside each encoder layer.",
+    ("lstm", "hidden_size"): "Hidden and cell state width (also the output width).",
+}
+
+
+def layer_param_doc(layer_type: str, name: str) -> str:
+    """Help text for one layer param ("" if undocumented)."""
+    return LAYER_PARAM_DOCS_BY_LAYER.get((layer_type, name), LAYER_PARAM_DOCS.get(name, ""))
+
+
 def unknown_layer_params(layer_type: str, params: dict | None) -> list[str]:
     """Return param names a strict layer type would silently ignore.
 

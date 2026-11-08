@@ -51,6 +51,7 @@ from ray import tune
 
 from .builder import load_config
 from .logging_config import get_logger
+from .sweep_schema import check_sweep_keys
 
 logger = get_logger("ray_tune")
 
@@ -238,7 +239,9 @@ def validate_sweep_config(sweep: dict) -> None:
 
     Raises:
         ValueError: On any structural problem: missing/invalid
-            ``base_config``, non-mapping ``overrides``/``defaults``/``tune``,
+            ``base_config``, an unknown key at the sweep / phase / ``tune``
+            level (see [check_sweep_keys][phoenx.sweep_schema.check_sweep_keys]),
+            non-mapping ``overrides``/``defaults``/``tune``,
             a non-mapping ``promote``, an unsupported ``promote.mode``, an
             unknown ``promote`` key, ``promote.seed_next`` set without
             ``promote.mode: "best"``, an invalid ``optimizers`` field, or
@@ -257,6 +260,9 @@ def validate_sweep_config(sweep: dict) -> None:
         )
     if "overrides" in sweep and not isinstance(sweep["overrides"], dict):
         raise ValueError("sweep['overrides'] must be a mapping of dotted-path -> value")
+    # A misspelled key (e.g. a phase's `serach_space`) would otherwise be
+    # merged and never read, silently running that phase with nothing to search.
+    check_sweep_keys(sweep)
 
     blocks = parse_block_library(sweep.get("blocks"))
     phases = normalize_phases(sweep)

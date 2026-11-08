@@ -59,6 +59,8 @@ nav:
       - Layer Specs (phoenx.layer_specs): api/layer_specs.md
       - Config Form (phoenx.config_form): api/config_form.md
       - Config Editor GUI (phoenx.config_gui): api/config_gui.md
+      - Run Info (phoenx.run_info): api/run_info.md
+      - Sweep Schema (phoenx.sweep_schema): api/sweep_schema.md
       - RL Callbacks (phoenx.rl_callbacks): api/rl_callbacks.md
       - Ray Tune (phoenx.ray_tune): api/ray_tune.md
       - Agent Utils (phoenx.agent_utils): api/agent_utils.md

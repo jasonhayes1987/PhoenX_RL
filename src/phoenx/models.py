@@ -2708,7 +2708,7 @@ class ModularModel(nn.Module):
         branches: Dict[str, Head] | None = None,
         optimizer_params: dict | None = None,
         lr_scheduler: ScheduleWrapper | None = None,
-        shared_update: str = 'combined',
+        shared_update: Literal['combined', 'critic', 'policy'] = 'combined',
         device: str | T.device | None = None,
         name: str | None = None,
     ):
@@ -2723,8 +2723,13 @@ class ModularModel(nn.Module):
                 own; defaults to Adam with ``lr=0.001``.
             lr_scheduler: Default ``ScheduleWrapper`` cloned per module that
                 has no scheduler of its own.
-            shared_update: Ownership hint for agents — ``'combined'``,
-                ``'critic'``, or ``'policy'``.
+            shared_update: Intended rule for which loss updates the shared
+                roots / trunk (``'combined'``, ``'critic'`` or ``'policy'``).
+                Currently recorded and saved only: each agent's ``learn``
+                hard-codes the routing (on-policy agents use the combined
+                loss; off-policy agents train shared modules from the critic
+                loss and detach them for the actor), so changing it has no
+                effect yet.
             device: Device for parameters (``None`` = framework default).
             name: Display name used in error messages.
 

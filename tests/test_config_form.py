@@ -289,3 +289,59 @@ def test_dump_uses_blocks_for_sections_and_flow_for_leaves(schema):
     assert "schedule:\n  stop_units: 10\n" in text
     assert "- {type: dense, params: {units: 64}}" in text
     assert yaml.safe_load(text) == cfg
+
+
+# =============================================================================
+# Every field the GUI shows has help text
+# =============================================================================
+
+def _visible_fields_without_help(schema) -> list[str]:
+    """Walk the whole form as the GUI renders it, visiting every type choice and
+    one fresh item of every list / map, and list fields that have no tooltip."""
+    missing: list[str] = []
+    seen_variants: set[tuple] = set()
+
+    def check(node, path):
+        if not node.hidden and not node.description:
+            missing.append(path)
+
+    def visit(node, path, depth=0):
+        if depth > 12:
+            return
+        if isinstance(node, OptionalNode):
+            check(node, path)
+            visit_inner(node.inner, path, depth)
+        elif isinstance(node, (ScalarNode,)):
+            if node.name != "type":
+                check(node, path)
+        else:
+            check(node, path)
+            visit_inner(node, path, depth)
+
+    def visit_inner(node, path, depth):
+        if isinstance(node, ObjectNode):
+            for child in node.visible_children():
+                visit(child, f"{path}.{child.name}", depth + 1)
+        elif isinstance(node, TaggedNode):
+            for choice in node.choices:
+                key = (id(node.variant_schemas[choice]),)
+                if key in seen_variants:
+                    continue
+                seen_variants.add(key)
+                node.set_type(choice)
+                visit_inner(node.variant, f"{path}<{choice}>", depth + 1)
+        elif isinstance(node, ListNode):
+            visit_inner(node.new_item(), f"{path}[]", depth + 1)
+        elif isinstance(node, MapNode):
+            entry = __import__("phoenx.config_form", fromlist=["make_node"]).make_node(
+                "x", node.value_schema, node.root, required=True)
+            visit_inner(entry, f"{path}.<name>", depth + 1)
+
+    form = build_form(schema)
+    for child in form.visible_children():
+        visit(child, child.name)
+    return sorted(set(missing))
+
+
+def test_every_visible_field_has_help_text(schema):
+    assert _visible_fields_without_help(schema) == []

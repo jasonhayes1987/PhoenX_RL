@@ -315,6 +315,7 @@ combination fails in milliseconds with an actionable message.
 | Reject `mini_batch_size` larger than the feedforward rollout batch | Feedforward PPO computes `num_valid // mini_batch_size`; zero batches means zero learning while a sweep misreads it as a bad hyperparameter. |
 | Reject non-positive `mini_batch_size` | Same division would raise or yield zero batches. |
 | For recurrent models, `mini_batch_size` is in env units and must divide `num_envs` | The silent fallback to all envs makes the swept value a lie. |
+| Reject unknown keys at the sweep, phase / `defaults`, and `tune` levels | A misspelled key such as a phase's `serach_space` was merged and never read, so the phase ran with nothing to search. Keys starting with `_` are internal and allowed. |
 | SAC N triple must agree: `agent.config.N`, `buffer.config.N`, and `VectorNStepReward` wrapper `n` | Otherwise the return computation, replay window, and reward wrapper disagree about the horizon. |
 
 ## CLI flags

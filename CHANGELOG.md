@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `phoenx-train --stop_units N` overrides `schedule.stop_units`; with
+  `--agent_dir` it trains a saved run past its original limit. A target the
+  checkpoint has already reached is refused instead of silently stopping at
+  once.
+- `phoenx.run_info`: `read_run_info(DIR)` (and `python -m phoenx.run_info DIR`,
+  printing JSON) summarizes a saved run (agent, env, step, episodes, best
+  reward, stop limit, whether a buffer was saved) without building it.
+- `phoenx.sweep_schema`: the sweep / phase / `tune` key sets with
+  descriptions and the search-spec distributions, importable without Ray.
+- Every field the config editor shows now has help text, enforced by a test
+  that walks the whole form (every type choice, every list / map item).
+  Layer params get descriptions from `phoenx.layer_specs.LAYER_PARAM_DOCS`.
 - A config editor window, `phoenx-config gui [FILE]` (`phoenx.config_gui`,
   standard-library tkinter, no torch import). It is generated from the config
   JSON Schema, so every agent / head / layer / normalizer / buffer setting
@@ -173,6 +185,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- `validate_sweep_config` rejects unknown keys at the sweep, phase /
+  `defaults`, and `tune` levels with a "did you mean" suggestion. A
+  misspelled phase key (e.g. `serach_space`) used to be merged and never
+  read, so that phase ran with nothing to search.
+- The `model:` and `roots` / `trunk` sections of the config schema are read
+  from `ModularModel` / `SubNetwork`'s constructors instead of being written
+  by hand, so their descriptions, defaults and choices come from the code.
+  `ModularModel.shared_update` is annotated `Literal['combined', 'critic',
+  'policy']`, and section descriptions come from class docstrings.
 - `StochasticContinuousHead.distribution` and
   `StochasticDiscreteHead.distribution` are annotated as `Literal` types and
   checked in the constructor, so a misspelled distribution fails when the
@@ -416,6 +437,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- `phoenx-train --agent_dir DIR --log_level LEVEL` crashed with `NameError`
+  (`config` was only read from `config.json` when no log level was given).
+- `ModularModel.shared_update` is documented as what it is today: recorded
+  and saved, but not read by any agent's `learn`, which hard-codes the
+  routing (combined loss on-policy; critic-owned shared modules off-policy).
+- `Renderer` documents its fields. `renderer.save_dir` is overwritten by the
+  Trainer with the run's `save_dir`, so it is now hidden in the editor and
+  documented as having no effect.
 - The per-algorithm builders read `obs_key` / `goal_key` from the built
   environment instead of indexing `config["env"]["config"]`, so a config that
   omits those keys no longer fails with `KeyError`, and Isaac configs that
