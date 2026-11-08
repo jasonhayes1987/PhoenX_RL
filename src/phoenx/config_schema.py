@@ -386,20 +386,23 @@ def tagged_union(
     config_key: str | None = "config",
     description: str = "",
     extra_props: dict[str, dict] | None = None,
+    tag: str = "type",
 ) -> dict:
     """``{type: <choice>, config: {...}}`` with ``config`` chosen by ``type``.
 
     With ``config_key=None`` the variant's fields sit beside ``type`` (the
-    flat form heads and layers use).
+    flat form heads and layers use). ``tag`` names the choosing key; sweep
+    search specs use ``dist``.
     """
     names = list(variants)
     s: dict = {
         "type": "object",
-        "required": ["type"],
-        "properties": {"type": {"enum": names}},
+        "required": [tag],
+        "properties": {tag: {"enum": names}},
         "additionalProperties": False,
-        # Read by the config GUI: where the type-specific fields live.
-        "x-tagged": {"config_key": config_key},
+        # Read by the config GUI: which key picks the variant, and where the
+        # variant's fields live.
+        "x-tagged": {"config_key": config_key, "tag": tag},
     }
     if description:
         s["description"] = description
@@ -416,7 +419,7 @@ def tagged_union(
             then["properties"] = variant.get("properties", {})
             for key in variant.get("properties", {}):
                 s["properties"].setdefault(key, {})
-        branches.append({"if": {"properties": {"type": {"const": name}}, "required": ["type"]},
+        branches.append({"if": {"properties": {tag: {"const": name}}, "required": [tag]},
                          "then": then})
     if branches:
         s["allOf"] = branches

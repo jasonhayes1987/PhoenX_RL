@@ -143,10 +143,11 @@ def test_jump_to_problem_focuses_the_field(editor):
 def test_show_only_set_fields_hides_defaults(editor):
     editor.open(str(PPO))
     _pump(editor)
-    assert "agent.config.discount" in editor.view.widgets  # at its default
+    assert "agent.config.context_length" in editor.view.widgets  # not in the file
     editor.only_set.set(True)
     editor.rerender()
-    assert "agent.config.discount" not in editor.view.widgets
+    assert "agent.config.context_length" not in editor.view.widgets
+    assert "agent.config.discount" in editor.view.widgets  # in the file, even at its default
     assert "agent.config.entropy_coefficient" in editor.view.widgets  # changed in the file
 
 
@@ -254,3 +255,68 @@ def test_resume_refuses_target_at_checkpoint(app, tmp_path, monkeypatch):
     rp.start()
     assert errors and "must be past the checkpoint" in errors[0]
     assert not rp.runner.running
+
+
+# =============================================================================
+# Sweep tab
+# =============================================================================
+
+SWEEP = ROOT / "src/phoenx/examples/sweeps/lunarlander_ppo.yml"
+
+
+def test_sweep_tab_opens_bundled_sweep_with_no_problems(app):
+    app.sweep.open(str(SWEEP))
+    app.show_tab("sweep")
+    _pump(app.sweep)
+    assert app.sweep.problems == []
+    assert "bundled example" in app.sweep.base_label_var.get()
+    assert len(app.sweep._tree_fields) > 50
+
+
+def test_sweep_this_from_config_tab(app, tmp_path, monkeypatch):
+    """Right-click 'Sweep this' in the Config tab: sets base_config, adds a spec;
+    a field at its default is first written into the base config file."""
+    from phoenx import sweep_editor
+    from phoenx.config_form import find_field
+
+    monkeypatch.setattr(sweep_editor.messagebox, "askyesno", lambda *a, **k: True)
+    base = tmp_path / "base.yml"
+    base.write_text(PPO.read_text(encoding="utf-8"), encoding="utf-8")
+    app.run_panel.vars["cwd"].set(str(tmp_path))
+    app.editor.open(str(base))
+    sw = app.sweep
+    sw.add_from_config("agent.config.policy_clip",
+                       find_field(app.editor.form, "agent.config.policy_clip"), "search")
+    sw.add_from_config("agent.config.context_length",
+                       find_field(app.editor.form, "agent.config.context_length"), "search")
+    sw.add_from_config("schedule.stop_units",
+                       find_field(app.editor.form, "schedule.stop_units"), "override")
+    _pump(sw)
+    cfg = sw.current_config()
+    assert cfg["base_config"] == "base.yml"
+    space = cfg["phases"][0]["search_space"]
+    assert space["agent.config.policy_clip"] == {"dist": "uniform", "low": 0.1, "high": 0.4}
+    assert space["agent.config.context_length"]["dist"] == "randint"
+    assert cfg["overrides"] == {"schedule.stop_units": 2000000}
+    # context_length was at its default, so it was written into the base file.
+    assert yaml.safe_load(base.read_text(encoding="utf-8"))["agent"]["config"]["context_length"] == 16
+    assert sw.problems == []
+
+
+def test_sweep_tab_tree_add_and_double_add(app, monkeypatch):
+    from phoenx import sweep_editor
+
+    infos = []
+    monkeypatch.setattr(sweep_editor.messagebox, "showinfo", lambda *a, **k: infos.append(a[0]))
+    sw = app.sweep
+    sw.open(str(SWEEP))
+    _pump(sw)
+    path = "agent.config.model.branches.policy.layer_config.0.params.units"
+    leaf = next(i for i, (p, _) in sw._tree_fields.items() if p == path)
+    sw.phase_var.set("refine")
+    sw.tree.selection_set(leaf)
+    sw._add_selected("search")
+    refine = next(p for p in sw.current_config()["phases"] if p["name"] == "refine")
+    assert refine["search_space"][path]["dist"] == "choice"
+    sw._add_selected("search")
+    assert infos == ["Already searched"]

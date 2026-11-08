@@ -214,14 +214,18 @@ class FormView:
     # -- scalars ---------------------------------------------------------------
 
     def scalar_row(self, node: ScalarNode, frame: ttk.Frame, path: str,
-                   inline: bool = False) -> tk.Widget:
+                   inline: bool = False, natural_label: bool = False) -> tk.Widget:
         """Render a label + input row for a scalar."""
         row = ttk.Frame(frame)
         row.pack(side="left" if inline else "top", fill="x" if not inline else None,
                  anchor="w", pady=1, padx=(0, 10) if inline else 0)
         label = ttk.Label(row, text=self._label(node) + (" *" if node.required else ""),
-                          width=None if inline else LABEL_WIDTH, anchor="w")
+                          width=None if inline or natural_label else LABEL_WIDTH, anchor="w")
         label.pack(side="left")
+        menu = getattr(self.editor, "field_menu", None)
+        if menu is not None:
+            for seq in ("<Button-3>", "<Button-2>" if sys.platform == "darwin" else "<Control-Button-1>"):
+                label.bind(seq, lambda e, n=node, p=path: menu(n, p, e))
         tip = node.description
         if node.default is not UNSET:
             tip = f"{tip}\n\nDefault: {_fmt(node.default)}".strip()
@@ -241,6 +245,7 @@ class FormView:
 
             def on_bool(*_):
                 node.text = "true" if var.get() else "false"
+                node.pinned = True  # toggling is a choice, even back to unchecked
                 self.changed()
 
             var.trace_add("write", on_bool)
@@ -415,12 +420,18 @@ class FormView:
             ttk.Button(header, text="+ Add", width=7, command=add).pack(side="left")
         elif isinstance(node, MapNode):
             name_var = tk.StringVar()
-            entry = ttk.Entry(header, textvariable=name_var, width=14)
+            path_keys = bool(node.schema.get("x-path-keys"))
+            entry = ttk.Entry(header, textvariable=name_var, width=44 if path_keys else 14)
             entry.pack(side="left")
-            Tooltip(entry, "Name for the new entry (for branches: policy, value, critic, ...).")
+            Tooltip(entry, "Dotted path into the base config, e.g. agent.config.discount "
+                           "(list items by index: ...layer_config.0.params.units)."
+                    if path_keys else
+                    "Name for the new entry (for branches: policy, value, critic, ...).")
 
             def add():
                 try:
+                    if path_keys and not name_var.get().strip():
+                        raise ValueError("type a dotted config path first")
                     node.add(name_var.get() or self._next_name(node))
                 except ValueError as exc:
                     messagebox.showerror("Can't add", str(exc), parent=self.parent)
@@ -575,7 +586,11 @@ class FormView:
             Tooltip(remove, f"Remove {key}")
             content = ttk.Frame(box)
             content.pack(side="left", fill="x", expand=True)
-            self.section(entry, content, f"{path}.{key}")
+            if isinstance(entry, ScalarNode):
+                # A plain value per key (overrides, blocks): one labelled row.
+                self.scalar_row(entry, content, f"{path}.{key}", natural_label=True)
+            else:
+                self.section(entry, content, f"{path}.{key}")
 
     # -- navigation --------------------------------------------------------
 
@@ -600,11 +615,11 @@ class FormView:
 # Main window
 # =============================================================================
 
-def bundled_examples() -> dict[str, str]:
-    """``{relative name: YAML text}`` for the configs shipped with PhoenX."""
+def bundled_examples(folder: str = "configs") -> dict[str, str]:
+    """``{relative name: YAML text}`` for the configs (or ``"sweeps"``) shipped with PhoenX."""
     out: dict[str, str] = {}
     try:
-        root = resources.files("phoenx.examples").joinpath("configs")
+        root = resources.files("phoenx.examples").joinpath(folder)
     except ModuleNotFoundError:
         return out
 
@@ -628,12 +643,73 @@ class ConfigEditor:
     window of its own when ``parent`` is omitted (``ConfigEditor(tk.Tk()).run()``).
     """
 
-    def __init__(self, master: tk.Tk, path: str | None = None, parent: tk.Widget | None = None):
+    #: What this editor edits, for dialog titles and messages.
+    NOUN = "config"
+    BLANK_NOTE = ("New config. Pick an agent type and add model branches, or start from an "
+                  "example (New menu).")
+
+    # -- hooks a subclass (the sweep editor) overrides ------------------------
+
+    def make_schema(self) -> dict:
+        """JSON Schema the form is generated from."""
+        return build_schema()
+
+    def examples(self) -> dict[str, str]:
+        """Bundled files offered under New, ``{name: YAML text}``."""
+        return bundled_examples()
+
+    def check(self, config: dict) -> list[str]:
+        """Problems beyond bad input: schema errors and cross-section rules."""
+        problems = list(validate_config(config))
+        try:
+            resolve_n_step(copy.deepcopy(config))
+        except ValueError as exc:
+            problems.append(f"agent.config.N: {exc}")
+        return problems
+
+    def dump(self, config: dict) -> str:
+        """YAML text that Save writes."""
+        return dump_config(config)
+
+    def prepare_loaded(self, config: dict) -> tuple[dict, str]:
+        """Adjust a just-opened file before loading it; returns ``(config, note)``."""
+        return config, ""
+
+    def extra_toolbar(self, bar: ttk.Frame) -> None:
+        """Add editor-specific toolbar buttons (none for configs)."""
+
+    def field_menu(self, node: ScalarNode, path: str, event) -> None:
+        """Right-click menu on a field: send it to the Sweep tab."""
+        sweep = getattr(self.app, "sweep", None) if self.app is not None else None
+        if sweep is None or sweep is self:
+            return
+        menu = tk.Menu(self.master, tearoff=False)
+        menu.add_command(label=f"Sweep {path}",
+                         command=lambda: sweep.add_from_config(path, node, "search"))
+        menu.add_command(label="Fix this value for the whole sweep (override)",
+                         command=lambda: sweep.add_from_config(path, node, "override"))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def build_side_pane(self, parent: ttk.Frame) -> None:
+        """Right-hand pane: the YAML preview."""
+        ttk.Label(parent, text="YAML preview (what Save writes)").pack(anchor="w")
+        self.preview = tk.Text(parent, wrap="none", font=("TkFixedFont", 9), state="disabled",
+                               background="#fafafa", relief="flat")
+        pv = ttk.Scrollbar(parent, orient="vertical", command=self.preview.yview)
+        ph = ttk.Scrollbar(parent, orient="horizontal", command=self.preview.xview)
+        self.preview.configure(yscrollcommand=pv.set, xscrollcommand=ph.set)
+        pv.pack(side="right", fill="y")
+        ph.pack(side="bottom", fill="x")
+        self.preview.pack(fill="both", expand=True)
+
+    def __init__(self, master: tk.Tk, path: str | None = None, parent: tk.Widget | None = None,
+                 app: "PhoenxApp | None" = None):
         """Build the editor into ``parent`` (default: the window itself)."""
         self.master = master
+        self.app = app
         self.frame = parent if parent is not None else master
         self.standalone = parent is None
-        self.schema = build_schema()
+        self.schema = self.make_schema()
         self.form = build_form(self.schema)
         self.path: Path | None = None
         self.dirty = False
@@ -678,7 +754,7 @@ class ConfigEditor:
         self.new_btn = ttk.Menubutton(bar, text="New")
         menu = tk.Menu(self.new_btn, tearoff=False)
         menu.add_command(label="Blank config", command=self.new_blank)
-        examples = bundled_examples()
+        examples = self.examples()
         if examples:
             menu.add_separator()
             for name, text in examples.items():
@@ -698,6 +774,7 @@ class ConfigEditor:
         c2.pack(side="left", padx=8)
         Tooltip(c2, "Also write settings left at their default. Off keeps the file to the "
                     "choices that matter.")
+        self.extra_toolbar(bar)
         ttk.Button(bar, text="Expand all", command=lambda: self._set_all_collapsed(False)).pack(
             side="right", padx=2)
         ttk.Button(bar, text="Collapse all", command=lambda: self._set_all_collapsed(True)).pack(
@@ -705,11 +782,17 @@ class ConfigEditor:
 
         vpane = ttk.PanedWindow(self.frame, orient="vertical")
         vpane.pack(fill="both", expand=True)
+        placed = {"done": False}
+
         def place_sashes(_e=None):
+            # Runs when this pane is first shown (tabs other than the first are
+            # mapped only when selected), once it has a real size.
+            if placed["done"] or vpane.winfo_height() < 100:
+                return
+            placed["done"] = True
             vpane.sashpos(0, max(200, vpane.winfo_height() - 130))
             hpane.sashpos(0, int(hpane.winfo_width() * 0.6))
-            self.master.unbind("<Map>")
-        self.master.bind("<Map>", lambda e: self.master.after(50, place_sashes))
+        vpane.bind("<Configure>", lambda e: self.master.after(30, place_sashes), add="+")
         hpane = ttk.PanedWindow(vpane, orient="horizontal")
         vpane.add(hpane, weight=8)
 
@@ -719,15 +802,7 @@ class ConfigEditor:
 
         right = ttk.Frame(hpane, padding=(6, 4))
         hpane.add(right, weight=3)
-        ttk.Label(right, text="YAML preview (what Save writes)").pack(anchor="w")
-        self.preview = tk.Text(right, wrap="none", font=("TkFixedFont", 9), state="disabled",
-                               background="#fafafa", relief="flat")
-        pv = ttk.Scrollbar(right, orient="vertical", command=self.preview.yview)
-        ph = ttk.Scrollbar(right, orient="horizontal", command=self.preview.xview)
-        self.preview.configure(yscrollcommand=pv.set, xscrollcommand=ph.set)
-        pv.pack(side="right", fill="y")
-        ph.pack(side="bottom", fill="x")
-        self.preview.pack(fill="both", expand=True)
+        self.build_side_pane(right)
 
         bottom = ttk.Frame(vpane, padding=(8, 2))
         vpane.add(bottom, weight=1)
@@ -776,14 +851,14 @@ class ConfigEditor:
         """Start an empty config."""
         if not self._confirm_discard():
             return
-        self._set_form(None, None, "New config. Pick an agent type and add model branches, "
-                                   "or start from an example (New menu).")
+        self._set_form(None, None, self.BLANK_NOTE)
 
     def new_from_text(self, text: str, name: str) -> None:
         """Start a new config from a bundled example."""
         if not self._confirm_discard():
             return
-        self._set_form(yaml.safe_load(text), None, f"New config from example {name}.")
+        config, note = self.prepare_loaded(yaml.safe_load(text))
+        self._set_form(config, None, f"New {self.NOUN} from example {name}. {note}".strip())
         self.dirty = True
         self._update_title()
 
@@ -793,7 +868,7 @@ class ConfigEditor:
             return
         if path is None:
             path = filedialog.askopenfilename(
-                parent=self.master, title="Open PhoenX config",
+                parent=self.master, title=f"Open PhoenX {self.NOUN}",
                 filetypes=[("YAML config", "*.yml *.yaml"), ("All files", "*.*")])
             if not path:
                 return
@@ -807,7 +882,8 @@ class ConfigEditor:
         if not isinstance(config, dict):
             messagebox.showerror("Can't open", f"{p} is not a YAML mapping.", parent=self.master)
             return
-        note = f"Opened {p}."
+        config, extra_note = self.prepare_loaded(config)
+        note = f"Opened {p}. {extra_note}".strip()
         if "&" in text or any(line.lstrip().startswith("#") for line in text.splitlines()):
             note += (" Note: comments and YAML anchors (&name / *name) are not kept when "
                      "saving; anchored values are written out in full.")
@@ -826,9 +902,9 @@ class ConfigEditor:
 
     def save_as(self) -> bool:
         """Ask for a file name and save."""
-        initial = self.path.name if self.path else "config.yml"
+        initial = self.path.name if self.path else f"{self.NOUN}.yml"
         path = filedialog.asksaveasfilename(
-            parent=self.master, title="Save PhoenX config", defaultextension=".yml",
+            parent=self.master, title=f"Save PhoenX {self.NOUN}", defaultextension=".yml",
             initialfile=initial, initialdir=str(self.path.parent) if self.path else None,
             filetypes=[("YAML config", "*.yml *.yaml"), ("All files", "*.*")])
         if not path:
@@ -840,13 +916,13 @@ class ConfigEditor:
         if self.problems:
             ok = messagebox.askyesno(
                 "Save with problems?",
-                f"This config has {len(self.problems)} problem(s), listed at the bottom of "
-                "the window. PhoenX will refuse to train it until they are fixed.\n\n"
+                f"This {self.NOUN} has {len(self.problems)} problem(s), listed at the bottom "
+                "of the window. PhoenX will refuse to run it until they are fixed.\n\n"
                 "Save anyway?", parent=self.master)
             if not ok:
                 return False
         try:
-            path.write_text(dump_config(self.current_config()), encoding="utf-8")
+            path.write_text(self.dump(self.current_config()), encoding="utf-8")
         except OSError as exc:
             messagebox.showerror("Can't save", f"{path}\n\n{exc}", parent=self.master)
             return False
@@ -860,7 +936,7 @@ class ConfigEditor:
         if not self.dirty:
             return True
         answer = messagebox.askyesnocancel(
-            "Unsaved changes", "Save changes to the current config first?", parent=self.master)
+            "Unsaved changes", f"Save changes to the current {self.NOUN} first?", parent=self.master)
         if answer is None:
             return False
         if answer:
@@ -889,14 +965,10 @@ class ConfigEditor:
         config = self.current_config()
         problems = self.form.problems()
         bad_paths = {p.split(":", 1)[0] for p in problems}
-        for err in validate_config(config):
+        for err in self.check(config):
             # Bad input already reported; skip the schema's echo of the same field.
             if err.split(":", 1)[0] not in bad_paths:
                 problems.append(err)
-        try:
-            resolve_n_step(copy.deepcopy(config))
-        except ValueError as exc:
-            problems.append(f"agent.config.N: {exc}")
         self.problems = problems
 
         self.problem_list.delete(0, "end")
@@ -909,7 +981,7 @@ class ConfigEditor:
         self.preview.configure(state="normal")
         top = self.preview.yview()[0]
         self.preview.delete("1.0", "end")
-        self.preview.insert("1.0", dump_config(config))
+        self.preview.insert("1.0", self.dump(config))
         self.preview.yview_moveto(top)
         self.preview.configure(state="disabled")
         return problems
@@ -933,7 +1005,7 @@ class ConfigEditor:
                 pass
 
     def _update_title(self) -> None:
-        name = self.path.name if self.path else "untitled"
+        name = self.path.name if self.path else f"untitled {self.NOUN}"
         self.master.title(f"{'*' if self.dirty else ''}{name} - PhoenX")
 
     def set_status(self, text: str) -> None:
@@ -946,49 +1018,75 @@ class ConfigEditor:
 
 
 class PhoenxApp:
-    """The PhoenX window: a Config tab (the editor) and a Run tab.
+    """The PhoenX window: Config, Sweep and Run tabs.
 
-    The Run tab ([phoenx.run_panel][]) starts training, resuming, testing and
+    The Sweep tab ([phoenx.sweep_editor][]) builds Ray Tune sweep files; the
+    Run tab ([phoenx.run_panel][]) starts training, resuming, testing and
     sweeps as separate processes using the same commands as the terminal.
     """
 
-    def __init__(self, master: tk.Tk, path: str | None = None):
-        """Build both tabs; open ``path`` in the editor if given."""
+    TABS = ("config", "sweep", "run")
+
+    def __init__(self, master: tk.Tk, path: str | None = None, sweep: str | None = None):
+        """Build the tabs; open ``path`` in the Config tab and ``sweep`` in the Sweep tab."""
         from phoenx.run_panel import RunPanel
+        from phoenx.sweep_editor import SweepEditor
 
         self.master = master
         self.notebook = ttk.Notebook(master)
         self.notebook.pack(fill="both", expand=True)
         config_tab = ttk.Frame(self.notebook)
-        self.notebook.add(config_tab, text="  Config  ")
-        self.editor = ConfigEditor(master, path, parent=config_tab)
+        sweep_tab = ttk.Frame(self.notebook)
         run_tab = ttk.Frame(self.notebook)
+        self.notebook.add(config_tab, text="  Config  ")
+        self.notebook.add(sweep_tab, text="  Sweep  ")
         self.notebook.add(run_tab, text="  Run  ")
+        self.sweep = None
+        self.run_panel = None
+        self.editor = ConfigEditor(master, path, parent=config_tab, app=self)
         self.run_panel = RunPanel(self, run_tab)
+        self.sweep = SweepEditor(master, sweep, parent=sweep_tab, app=self)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab)
         master.protocol("WM_DELETE_WINDOW", self.quit)
+        self.editor._update_title()
+
+    def _on_tab(self, _event=None) -> None:
+        tab = self.TABS[self.notebook.index(self.notebook.select())]
+        if tab == "sweep" and self.sweep is not None:
+            self.sweep._tree_for = None  # base config may have changed in the Config tab
+            self.sweep.validate_now()
+            self.sweep._update_title()
+        elif tab == "config":
+            self.editor._update_title()
 
     def show_tab(self, name: str) -> None:
-        """Switch to the ``"config"`` or ``"run"`` tab."""
-        index = {"config": 0, "run": 1}[name]
-        self.notebook.select(index)
+        """Switch to the ``"config"``, ``"sweep"`` or ``"run"`` tab."""
+        self.notebook.select(self.TABS.index(name))
+
+    def sweep_path(self, save_first: bool = True) -> Path | None:
+        """Path of the sweep open in the Sweep tab, saving it first if needed."""
+        return self._saved_path(self.sweep, save_first)
 
     def editor_path(self, save_first: bool = True) -> Path | None:
         """Path of the config open in the editor, saving it first if needed."""
-        ed = self.editor
+        return self._saved_path(self.editor, save_first)
+
+    def _saved_path(self, ed: "ConfigEditor", save_first: bool) -> Path | None:
         if ed.path is not None and not ed.dirty:
             return ed.path
         if not save_first:
             return ed.path
         if not messagebox.askyesno(
-                "Save the config first?",
-                "The editor's config has unsaved changes (or was never saved). Save it now "
-                "so the run uses what you see?", parent=self.master):
+                f"Save the {ed.NOUN} first?",
+                f"The {ed.NOUN} has unsaved changes (or was never saved). Save it now so the "
+                "run uses what you see?", parent=self.master):
             return None
         return ed.path if ed.save() else None
 
     def quit(self) -> None:
         """Close the window: stop a running command and offer to save edits first."""
-        if self.run_panel.confirm_close() and self.editor._confirm_discard():
+        if (self.run_panel.confirm_close() and self.editor._confirm_discard()
+                and self.sweep._confirm_discard()):
             self.master.destroy()
 
     def run(self) -> None:
@@ -997,9 +1095,24 @@ class PhoenxApp:
 
 
 def main(path: str | None = None) -> int:
-    """Open the PhoenX window (optionally on ``path``) and block until closed."""
+    """Open the PhoenX window and block until closed.
+
+    ``path`` opens in the Config tab, or in the Sweep tab when the file is a
+    sweep (it has a ``base_config`` key).
+    """
     root = tk.Tk()
-    PhoenxApp(root, path).run()
+    sweep = None
+    if path:
+        try:
+            data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            data = None
+        if isinstance(data, dict) and "base_config" in data:
+            path, sweep = None, path
+    app = PhoenxApp(root, path, sweep)
+    if sweep:
+        app.show_tab("sweep")
+    app.run()
     return 0
 
 

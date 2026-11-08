@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- A **Sweep** tab in `phoenx-config gui` (`phoenx.sweep_editor`) for building
+  Ray Tune sweep files: the config form generated from a new sweep schema
+  (`phoenx.sweep_schema.build_sweep_schema`, with a `dist` dropdown per
+  search spec), plus a *Base config fields* tree of every field in the
+  sweep's `base_config` with its dotted path. Double-click a field to add it
+  to a phase's search space with a starting spec chosen from its type and
+  value (`suggest_spec`), or add it as an override; right-click a field in
+  the Config tab for the same. **Dry run** runs
+  `phoenx-tune --validate-only` in the Run tab.
+- `phoenx.sweep_schema.validate_sweep`: Ray-free sweep checks against the
+  base config (every override / search path must exist in it, spec ranges,
+  block names, and a sample trial per phase, including every `choice`
+  option, validated with the training-config schema).
+- `phoenx.config_form.iter_fields` / `find_field`: every value field of a
+  form with its sweep-style dotted path.
 - A **Run** tab in `phoenx-config gui` (`phoenx.run_panel`): Train, Resume
   (with a new training limit), Test and Sweep, each started as a separate
   process with the same command the terminal would run, which is shown and
@@ -199,6 +214,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- The config editor writes back every key an opened file had, even one equal
+  to its default, and explicit `null`s; previously such keys were dropped on
+  save, which broke any sweep over them (a sweep can only change values its
+  base config sets). A field never set is still written only once it
+  differs from the default, and clearing a field removes it.
 - The `phoenx-train` / `phoenx-test` / `phoenx-tune` console scripts point
   at a new `run()` in each CLI module, which turns Ctrl+C (and, on Windows,
   Ctrl+Break) into exit code 130 with a one-line message instead of a

@@ -73,34 +73,14 @@ def test_load_save_round_trip_is_valid_and_stable(schema, path):
 
 
 @pytest.mark.parametrize("path", CONFIG_FILES, ids=lambda p: str(p.relative_to(ROOT)))
-def test_every_non_default_setting_survives(schema, path):
-    """Whatever the minimal output drops must equal the default it falls back to."""
+def test_open_and_save_changes_nothing(schema, path):
+    """Every key a file had is written back unchanged, defaults and nulls included.
+
+    Sweeps depend on this: a sweep can only change values its base config sets
+    explicitly, so dropping an explicit default on save would break them.
+    """
     original = _load(path)
-    form = _form(schema, original)
-    full = form.value(include_defaults=True)
-    minimal = form.value()
-
-    def walk(orig, out_full, path=""):
-        if isinstance(orig, dict):
-            for k, v in orig.items():
-                if k not in out_full and v in (None, [], {}):
-                    continue  # the builders read empty/null and absent the same way
-                assert k in out_full, f"{path}.{k} lost"
-                walk(v, out_full[k], f"{path}.{k}")
-        elif isinstance(orig, list):
-            assert len(orig) == len(out_full), path
-            for i, (a, b) in enumerate(zip(orig, out_full)):
-                walk(a, b, f"{path}[{i}]")
-        elif isinstance(orig, float) and orig != orig:
-            pass
-        elif orig is None and out_full is None:
-            pass
-        else:
-            assert orig == out_full, f"{path}: {orig!r} != {out_full!r}"
-
-    # With defaults written out, nothing from the original is missing or changed.
-    walk({k: v for k, v in original.items() if k in full}, full)
-    assert json.dumps(minimal, default=str)  # serializable
+    assert _form(schema, original).value() == original
 
 
 def test_minimal_config_builds_the_same_trainer(tmp_path):
@@ -173,13 +153,28 @@ def test_int_rejects_float_text(schema):
     assert node.problems()
 
 
-def test_defaults_are_omitted_unless_requested(schema):
-    form = _form(schema, {"agent": {"type": "PPO", "config": {"discount": 0.99, "gae_coefficient": 0.9}}})
+def test_defaults_are_omitted_unless_set_or_requested(schema):
+    form = _form(schema, {"agent": {"type": "PPO", "config": {"discount": 0.99}}})
+    agent = _agent_cfg(form)
+    agent.children["gae_coefficient"].text = "0.9"   # typed, differs from the default
+    agent.children["value_coef"].text = "0.5"        # typed, equals the default
     cfg = form.value()["agent"]["config"]
-    assert "discount" not in cfg           # equals the default
-    assert cfg["gae_coefficient"] == 0.9   # differs
+    assert cfg["discount"] == 0.99          # was in the file: kept even though default
+    assert cfg["gae_coefficient"] == 0.9
+    assert "value_coef" not in cfg          # never in the file and at its default
+    agent.children["discount"].text = ""    # clearing a field un-sets it
+    assert "discount" not in form.value()["agent"]["config"]
     full = form.value(include_defaults=True)["agent"]["config"]
-    assert full["discount"] == 0.99
+    assert full["value_coef"] == 0.5 and full["discount"] == 0.99
+
+
+def test_explicit_nulls_survive(schema):
+    cfg = {"agent": {"type": "PPO", "config": {"model": {"roots": None, "trunk": None, "branches": {}},
+                                               "entropy_schedule": None}},
+           "env": {"type": "gymnasium", "config": {"cfg": "CartPole-v1", "wrappers": None}},
+           "buffer": {"type": "RolloutBuffer", "config": {}},
+           "schedule": {}}
+    assert _form(schema, cfg).value() == cfg
 
 
 def test_fields_start_at_the_code_default(schema):

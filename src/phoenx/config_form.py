@@ -16,10 +16,13 @@
   optional section (a normalizer, a schedule, the renderer).
 
 Each node can ``load`` part of a parsed YAML config and produce its
-``value``. The value is *minimal* by default: a field is written only when it
-is required or differs from the default the code would use anyway, so a
-saved config holds exactly the settings that matter. Pass
-``include_defaults=True`` to write every known default too.
+``value``. The value is *minimal* by default: a field you never set is
+written only when it differs from the default the code would use anyway.
+Anything that was in a loaded file stays written (it is *pinned*), even when
+it equals the default, so opening and saving a file never drops a key; sweep
+configs rely on that, since a sweep can only change values its base config
+sets explicitly. Clearing a field un-sets it. Pass ``include_defaults=True``
+to write every known default too.
 
 Keys the form does not know (``_diag_freq``-style knobs, or typos) are kept
 as each object's ``extra`` mapping, so loading and saving a file never drops
@@ -175,6 +178,11 @@ class Node:
         self.description = schema.get("description", "")
         self.default = schema.get("default", UNSET)
         self.hidden = bool(schema.get("x-hidden"))
+        #: Written even when equal to the default (set by ``load``, or by
+        #: the GUI when a field must be explicit, e.g. to sweep it).
+        self.pinned = False
+        #: A loaded explicit ``null``, written back as ``null``.
+        self.null_loaded = False
 
     def load(self, value: Any) -> None:
         """Populate this node from part of a parsed config."""
@@ -219,6 +227,7 @@ class ScalarNode(Node):
     def load(self, value):
         """Populate from part of a parsed config."""
         self.text = _fmt(value)
+        self.pinned = True
 
     def parse(self) -> Any:
         """Parse ``text`` into a value; raises ``ValueError`` on bad input."""
@@ -265,8 +274,12 @@ class ScalarNode(Node):
             if include_defaults and self.default is not UNSET:
                 return self.default
             return UNSET
+        if self.kind == "bool" and self.default is UNSET and not self.required \
+                and not self.pinned:
+            # A checkbox starts unchecked; that is not a choice until touched.
+            return UNSET
         if v == self.default and type(v) is type(self.default) and not self.required \
-                and not include_defaults:
+                and not self.pinned and not include_defaults:
             return UNSET
         return v
 
@@ -308,7 +321,10 @@ class ObjectNode(Node):
         super().__init__(name, schema, root, required, nullable)
         props = schema.get("properties", {})
         req = set(schema.get("required", []))
-        order = [k for k in props if k in req] + [k for k in props if k not in req]
+        if schema.get("x-keep-order"):
+            order = list(props)
+        else:
+            order = [k for k in props if k in req] + [k for k in props if k not in req]
         self.children: dict[str, Node] = {
             k: make_node(k, props[k], root, required=k in req) for k in order}
         self.extra: dict = {}
@@ -319,6 +335,7 @@ class ObjectNode(Node):
         """Populate from part of a parsed config."""
         if not isinstance(value, dict):
             return
+        self.pinned = True
         self.extra = {}
         for k, v in value.items():
             if k in self.children:
@@ -334,7 +351,7 @@ class ObjectNode(Node):
             if v is not UNSET:
                 out[k] = v
         out.update(self.extra)
-        if not out and not self.required:
+        if not out and not self.required and not self.pinned:
             return UNSET
         return out
 
@@ -383,6 +400,7 @@ class OptionalNode(Node):
         """Populate from part of a parsed config."""
         if value is None:
             self.enabled = False
+            self.null_loaded = True
             return
         self.enabled = True
         self.inner.load(value)
@@ -390,7 +408,7 @@ class OptionalNode(Node):
     def value(self, include_defaults=False):
         """Config value to write, or ``UNSET`` to omit."""
         if not self.enabled:
-            return UNSET
+            return None if self.null_loaded else UNSET
         return self.inner.value(include_defaults)
 
     def problems(self, path=""):
@@ -418,12 +436,15 @@ class TaggedNode(Node):
         """Create the node / widget; see the class docstring."""
         super().__init__(name, schema, root, required, nullable)
         self.config_key = schema.get("x-tagged", {}).get("config_key", "config")
-        type_schema = schema["properties"]["type"]
+        #: Key holding the variant's name: ``type`` (agents, layers, ...) or
+        #: ``dist`` (sweep search specs).
+        self.tag = schema.get("x-tagged", {}).get("tag", "type")
+        type_schema = schema["properties"][self.tag]
         self.type_node = ScalarNode("type", type_schema, root, required=True, kind="enum")
         self.choices = list(type_schema["enum"])
         self.variant_schemas: dict[str, dict] = {}
         for branch in schema.get("allOf", []):
-            const = branch.get("if", {}).get("properties", {}).get("type", {}).get("const")
+            const = branch.get("if", {}).get("properties", {}).get(self.tag, {}).get("const")
             if const is None:
                 continue
             then = branch.get("then", {})
@@ -466,15 +487,15 @@ class TaggedNode(Node):
         """Populate from part of a parsed config."""
         if not isinstance(value, dict):
             return
-        if "type" in value:
-            self.type_node.text = _fmt(value["type"])
+        if self.tag in value:
+            self.type_node.load(value[self.tag])
         variant = self.variant
         if variant is None:
             return
         if self.config_key is not None:
             variant.load(value.get(self.config_key) or {})
         else:
-            variant.load({k: v for k, v in value.items() if k != "type"})
+            variant.load({k: v for k, v in value.items() if k != self.tag})
 
     def value(self, include_defaults=False):
         """Config value to write, or ``UNSET`` to omit."""
@@ -482,7 +503,7 @@ class TaggedNode(Node):
         if t is UNSET:
             return UNSET
         variant = self.variant
-        out: dict = {"type": t}
+        out: dict = {self.tag: t}
         if variant is None:
             return out
         body = variant.value(include_defaults)
@@ -499,7 +520,7 @@ class TaggedNode(Node):
 
     def problems(self, path=""):
         """Input errors under this node, as ``path: message`` strings."""
-        out = self.type_node.problems(f"{path}.type" if path else "type")
+        out = self.type_node.problems(f"{path}.{self.tag}" if path else self.tag)
         if self.variant is not None:
             sub = f"{path}.{self.config_key}" if self.config_key else path
             out += self.variant.problems(sub)
@@ -525,6 +546,7 @@ class ListNode(Node):
         self.items: list[Node] = []
         if isinstance(self.default, list) and self.default:
             self.load(self.default)
+            self.pinned = False  # a default is not something the user set
 
     def new_item(self) -> Node:
         """Create (but do not append) an empty item."""
@@ -549,6 +571,8 @@ class ListNode(Node):
     def load(self, value):
         """Populate from part of a parsed config."""
         self.items = []
+        self.pinned = True
+        self.null_loaded = value is None
         for v in value or []:
             self.add().load(v)
 
@@ -556,9 +580,12 @@ class ListNode(Node):
         """Config value to write, or ``UNSET`` to omit."""
         values = [item.value(include_defaults) for item in self.items]
         values = [{} if v is UNSET else v for v in values]
-        if not values and not self.required:
+        if not values and self.null_loaded:
+            return None
+        if not values and not self.required and not self.pinned:
             return UNSET
-        if values == self.default and not include_defaults and not self.required:
+        if values == self.default and not include_defaults and not self.required \
+                and not self.pinned:
             return UNSET
         return values
 
@@ -615,6 +642,8 @@ class MapNode(Node):
     def load(self, value):
         """Populate from part of a parsed config."""
         self.entries = {}
+        self.pinned = isinstance(value, dict)
+        self.null_loaded = value is None
         for k, v in (value or {}).items():
             self.add(str(k)).load(v)
 
@@ -624,7 +653,9 @@ class MapNode(Node):
         for k, node in self.entries.items():
             v = node.value(include_defaults)
             out[k] = {} if v is UNSET else v
-        if not out and not self.required:
+        if not out and self.null_loaded:
+            return None
+        if not out and not self.required and not self.pinned:
             return UNSET
         return out
 
@@ -660,6 +691,49 @@ def make_node(name: str, schema: dict, root: dict, required: bool = False) -> No
     if not required:
         return OptionalNode(node)
     return node
+
+
+def iter_fields(node: Node, path: str = "") -> Iterator[tuple[str, ScalarNode]]:
+    """Yield ``(dotted_path, node)`` for every value field under ``node``.
+
+    Paths use the sweep syntax (``agent.config.model.branches.policy.
+    layer_config.0.params.units``): list items by index, a tagged section's
+    fields under its config key (``config`` / ``params``), and the choosing
+    key itself (``...layer_config.1.type``). Disabled optional sections are
+    skipped, since they are not in the config at all.
+    """
+    def join(a: str, b: str) -> str:
+        return f"{a}.{b}" if a else b
+
+    if isinstance(node, ScalarNode):
+        yield path, node
+    elif isinstance(node, OptionalNode):
+        if node.enabled:
+            yield from iter_fields(node.inner, path)
+    elif isinstance(node, ObjectNode):
+        for child in node.children.values():
+            if child.hidden and not child.is_set():
+                continue
+            yield from iter_fields(child, join(path, child.name))
+    elif isinstance(node, TaggedNode):
+        yield join(path, node.tag), node.type_node
+        if node.variant is not None:
+            sub = join(path, node.config_key) if node.config_key else path
+            yield from iter_fields(node.variant, sub)
+    elif isinstance(node, ListNode):
+        for i, item in enumerate(node.items):
+            yield from iter_fields(item, join(path, str(i)))
+    elif isinstance(node, MapNode):
+        for key, entry in node.entries.items():
+            yield from iter_fields(entry, join(path, key))
+
+
+def find_field(root: Node, path: str) -> ScalarNode | None:
+    """The value field at ``path`` (as named by ``iter_fields``), or None."""
+    for p, node in iter_fields(root):
+        if p == path:
+            return node
+    return None
 
 
 def build_form(schema: dict | None = None) -> ObjectNode:
@@ -721,10 +795,10 @@ _ConfigDumper.add_representer(_FlowList, lambda d, data: d.represent_sequence(
     "tag:yaml.org,2002:seq", data, flow_style=True))
 
 HEADER = ("# PhoenX training config, written by `phoenx-config gui`.\n"
-          "# Settings left at their defaults are omitted.\n")
+          "# Settings you have not set are omitted (PhoenX uses its defaults).\n")
 
 
-def dump_config(config: dict) -> str:
+def dump_config(config: dict, header: str = HEADER) -> str:
     """Serialize a config dict to readable YAML (keys keep their order)."""
-    return HEADER + yaml.dump(_mark_flow(config), Dumper=_ConfigDumper, sort_keys=False,
+    return header + yaml.dump(_mark_flow(config), Dumper=_ConfigDumper, sort_keys=False,
                               allow_unicode=True, width=100)

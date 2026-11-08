@@ -60,6 +60,7 @@ nav:
       - Config Form (phoenx.config_form): api/config_form.md
       - Config Editor GUI (phoenx.config_gui): api/config_gui.md
       - Run Info (phoenx.run_info): api/run_info.md
+      - Sweep Tab (phoenx.sweep_editor): api/sweep_editor.md
       - Run Tab (phoenx.run_panel): api/run_panel.md
       - Process Runner (phoenx.process_runner): api/process_runner.md
       - Sweep Schema (phoenx.sweep_schema): api/sweep_schema.md

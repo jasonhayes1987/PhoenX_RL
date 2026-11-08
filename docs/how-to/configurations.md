@@ -62,14 +62,18 @@ reorder buttons for layer lists and model branches, and on/off switches for
 optional sections such as normalizers and schedules. Hover a field name for
 the description from the code's docstring.
 
-- **YAML preview** (right): exactly what Save writes. Only settings that
-  differ from their defaults are written, so the file holds the choices that
-  matter. Tick **Write default values** to write everything.
+- **YAML preview** (right): exactly what Save writes. Every key the opened
+  file had is written back, even one equal to its default (sweeps can only
+  change values a config sets explicitly). A field you never set is written
+  only if you change it from the default; clearing a field removes it. Tick
+  **Write default values** to write everything.
 - **Problems** (bottom): updates as you type: input that doesn't parse, unknown
   keys, schema errors, n-step mismatches. Double-click one to jump to its
   field. Save warns before writing a config with problems.
-- **Show only set fields** hides everything still at its default, which is a
-  quick way to see what a config actually changes.
+- **Show only set fields** hides everything the config does not set, which is
+  a quick way to see what it actually changes.
+- **Right-click a field name** to send it to the Sweep tab (see
+  [Hyperparameter sweeps](hyperparameter-sweeps.md#building-a-sweep-in-the-gui)).
 
 Comments and YAML anchors are not preserved when an existing file is saved;
 anchored values are written out in full. Keys the form has no field for
