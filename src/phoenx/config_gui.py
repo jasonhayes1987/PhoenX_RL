@@ -29,7 +29,6 @@ import copy
 import os
 import sys
 import tkinter as tk
-from importlib import resources
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
@@ -53,6 +52,7 @@ from phoenx.config_form import (
 )
 from phoenx.config_schema import build_schema, validate_config
 from phoenx.config_utils import resolve_n_step
+from phoenx.example_files import bundled_examples
 
 #: Sections at this depth (count of path segments) and deeper start collapsed.
 COLLAPSE_DEPTH = 3
@@ -616,27 +616,6 @@ class FormView:
 # =============================================================================
 # Main window
 # =============================================================================
-
-def bundled_examples(folder: str = "configs") -> dict[str, str]:
-    """``{relative name: YAML text}`` for the configs (or ``"sweeps"``) shipped with PhoenX."""
-    out: dict[str, str] = {}
-    try:
-        root = resources.files("phoenx.examples").joinpath(folder)
-    except ModuleNotFoundError:
-        return out
-
-    def walk(node, prefix):
-        for entry in sorted(node.iterdir(), key=lambda e: e.name):
-            rel = f"{prefix}/{entry.name}" if prefix else entry.name
-            if entry.is_dir():
-                walk(entry, rel)
-            elif entry.name.endswith(".yml"):
-                out[rel] = entry.read_text(encoding="utf-8")
-
-    if root.is_dir():
-        walk(root, "")
-    return out
-
 
 class ConfigEditor:
     """The config editor.

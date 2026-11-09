@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Callable
 import yaml
 
 from phoenx.config_form import file_kind
+from phoenx.launch_cmd import build_command, describe_run, command_text as _join
 from phoenx.process_runner import ProcessRunner, parse_progress, python_command
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -45,7 +46,6 @@ if TYPE_CHECKING:  # pragma: no cover
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 RENDER_MODES = ("human", "rgb_array", "headless")
 MAX_LOG_LINES = 5000
-REPLAY_BUFFERS = ("ReplayBuffer", "PrioritizedReplayBuffer")
 ERROR_WORDS = ("Traceback", "Error", "ERROR", "Exception", "error:")
 
 MODES = {
@@ -54,92 +54,6 @@ MODES = {
     "test": ("Test", "Run a saved agent without training it."),
     "sweep": ("Sweep", "Run a Ray Tune hyperparameter sweep."),
 }
-
-
-def _join(argv: list[str]) -> str:
-    if sys.platform.startswith("win"):
-        return subprocess.list2cmdline(argv)
-    import shlex
-    return shlex.join(argv)
-
-
-def build_command(mode: str, values: dict[str, str]) -> list[str]:
-    """Turn the Run tab's field values into an argv list.
-
-    Raises ``ValueError`` naming the first missing required field. Empty
-    optional fields are left out so the command's own defaults apply.
-
-    Example:
-        >>> build_command("resume", {"agent_dir": "runs/a", "stop_units": "3000000",
-        ...                          "log_level": ""})[-4:]
-        ['--agent_dir', 'runs/a', '--stop_units', '3000000']
-    """
-    v = {k: (val or "").strip() for k, val in values.items()}
-
-    def need(key: str, label: str) -> str:
-        if not v.get(key):
-            raise ValueError(f"{label} is required")
-        return v[key]
-
-    args: list[str] = []
-
-    def opt(flag: str, key: str) -> None:
-        if v.get(key):
-            args.extend([flag, v[key]])
-
-    if mode == "train":
-        args += ["--config", need("config", "Config file")]
-        opt("--stop_units", "stop_units")
-        opt("--log_level", "log_level")
-        return python_command("phoenx.cli.train", args)
-    if mode == "resume":
-        args += ["--agent_dir", need("agent_dir", "Agent folder")]
-        opt("--stop_units", "stop_units")
-        opt("--log_level", "log_level")
-        return python_command("phoenx.cli.train", args)
-    if mode == "test":
-        args += ["--agent_dir", need("agent_dir", "Agent folder")]
-        for flag, key in (("--num_episodes", "num_episodes"), ("--num_envs", "num_envs"),
-                          ("--render_mode", "render_mode"), ("--env", "env"),
-                          ("--seed", "seed"), ("--log_level", "log_level")):
-            opt(flag, key)
-        return python_command("phoenx.cli.test", args)
-    if mode == "sweep":
-        args += ["--config", need("sweep", "Sweep file")]
-        for flag, key in (("--base-config", "base_config"), ("--num-samples", "num_samples"),
-                          ("--max-concurrent", "max_concurrent"), ("--name", "name"),
-                          ("--storage-path", "storage_path"), ("--from-phase", "from_phase"),
-                          ("--log-level", "log_level")):
-            opt(flag, key)
-        if v.get("resume") == "1":
-            args.append("--resume")
-        if v.get("validate_only") == "1":
-            args.append("--validate-only")
-        return python_command("phoenx.cli.tune", args)
-    raise ValueError(f"unknown mode {mode!r}")
-
-
-def describe_run(info: dict) -> str:
-    """One-paragraph summary of ``read_run_info`` output for the Resume / Test forms."""
-    if info.get("error"):
-        return info["error"]
-    what = f"{info.get('agent_type') or '?'} on {info.get('env') or '?'}"
-    unit = info.get("stop_unit") or "timestep"
-    limit = info.get("stop_units")
-    if info.get("progress") is None:
-        return f"{what}. No trainer_state.pt, so the step reached is unknown (limit {limit:,} {unit}s)." \
-            if isinstance(limit, int) else f"{what}. No trainer_state.pt."
-    text = f"{what}. Best checkpoint at {unit} {info['progress']:,}"
-    if isinstance(limit, int):
-        text += f" of {limit:,}"
-    if info.get("best_reward") is not None:
-        text += f", best avg reward {info['best_reward']:.2f}"
-    text += "."
-    if isinstance(limit, int) and info["progress"] >= limit:
-        text += " It already reached its limit: set 'Train until' higher to train further."
-    if info.get("buffer_type") in REPLAY_BUFFERS and not info.get("has_buffer"):
-        text += " No replay buffer was saved, so resuming refills it from scratch."
-    return text
 
 
 class RunPanel:
