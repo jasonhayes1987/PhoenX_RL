@@ -29,7 +29,7 @@ from phoenx.rl_agents import Agent
 from phoenx.renderer import Renderer
 from phoenx.rl_callbacks import load as callback_load
 from phoenx.trainer import TrainingSchedule, Trainer, SuccessCriterion
-from phoenx.intrinsic_motivation import IntrinsicMotivation
+from phoenx.intrinsic_motivation import COMPOSITE_TYPES, IntrinsicMotivation
 from phoenx.metrics import MetricsManager
 from phoenx.normalizer import create_normalizer as normalizer_factory, RunningNorm, BatchNorm, RewardNorm
 from phoenx.schedulers import ScheduleWrapper
@@ -253,10 +253,14 @@ def create_intrinsic_motivation(config: dict, env: EnvWrapper, key: str | None =
     Args:
         config: Spec with ``type`` and ``config`` keys. ``type`` is dispatched
             by ``IntrinsicMotivation.create_instance``; accepted values are
-            ``"ICM"``, ``"RND"``, and ``"EpisodicNovelty"``. Inside
-            ``config["config"]``, optional ``reward_scheduler`` is wrapped in
-            ``ScheduleWrapper`` and optional ``reward_normalizer`` is built via
-            [create_normalizer][phoenx.builder.create_normalizer]. ``env`` is injected before dispatch.
+            ``"ICM"``, ``"RND"``, ``"EpisodicNovelty"``, and ``"Composite"``.
+            Inside ``config["config"]``, optional ``reward_scheduler`` is
+            wrapped in ``ScheduleWrapper`` and optional ``reward_normalizer``
+            is built via [create_normalizer][phoenx.builder.create_normalizer].
+            A ``Composite`` lists its children under ``components``, each a
+            ``{type, config}`` spec built by this same function; it takes no
+            ``reward_normalizer`` of its own. ``env`` is injected before
+            dispatch.
         env: Environment injected into the IM config and used when building an
             optional reward normalizer.
         key: Present for call-site symmetry with [create_normalizer][phoenx.builder.create_normalizer];
@@ -271,8 +275,19 @@ def create_intrinsic_motivation(config: dict, env: EnvWrapper, key: str | None =
     im_config.update({
         'env': env,
         'reward_scheduler': ScheduleWrapper(**im_config['reward_scheduler']) if im_config.get('reward_scheduler', None) else None,
-        'reward_normalizer': create_normalizer(im_config['reward_normalizer'], env) if im_config.get('reward_normalizer', None) else None,
     })
+    if im_type in COMPOSITE_TYPES:
+        if im_config.get('reward_normalizer'):
+            raise ValueError(
+                "A Composite intrinsic motivation has no reward_normalizer of its own; "
+                "set reward_normalizer on its components instead.")
+        im_config.pop('reward_normalizer', None)
+        im_config['components'] = [
+            create_intrinsic_motivation(component, env, key)
+            for component in im_config.get('components') or []]
+    else:
+        im_config['reward_normalizer'] = (create_normalizer(im_config['reward_normalizer'], env)
+                                          if im_config.get('reward_normalizer', None) else None)
     return IntrinsicMotivation.create_instance(im_type, **im_config)
 
 

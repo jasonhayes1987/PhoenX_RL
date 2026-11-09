@@ -578,6 +578,56 @@ and saved-config reload only**. They do not make legacy YAML loadable.
 `noise_schedule` (DDPG/TD3). Each normalizer is a `{type, config}` mapping;
 see [Normalizers][phoenx.normalizer].
 
+**Intrinsic motivation.** `intrinsic_motivation` is a `{type, config}`
+mapping. `type` is `ICM`, `RND`, `EpisodicNovelty`, or `Composite`, which
+combines several of them. Each network under `model_configs` is a
+`layer_config` list of hidden layers plus a one-item `output_layer` list
+holding a dense layer. The network names depend on the type:
+
+| `type` | `model_configs` networks |
+|---|---|
+| `ICM` | `encoder` (optional), `inverse_model`, `forward_model` |
+| `RND` | `target`, `predictor` |
+| `EpisodicNovelty` | `encoder`, `inverse_model` |
+
+A `Composite` lists its modules under `components`, each written the same way
+as a single module. `combination_rule` merges their rewards: `additive`
+(optional `combination_kwargs.weights`, one per component), `multiplicative`,
+`max`, or `ngu`. `ngu` takes exactly two components, episodic first, and
+gives `episodic * clip(lifelong, 1, L)` with `combination_kwargs.L`
+(default 5.0). Reward normalizers go on the components; the composite has
+no normalizer of its own.
+
+```yaml
+intrinsic_motivation:
+  type: Composite
+  config:
+    combination_rule: ngu
+    combination_kwargs: {L: 5.0}
+    components:
+      - type: EpisodicNovelty
+        config:
+          model_configs:
+            encoder:
+              layer_config: [{type: dense, params: {units: 64}}, {type: relu}]
+              output_layer: [{type: dense, params: {units: 32}}]
+            inverse_model:
+              layer_config: [{type: dense, params: {units: 64}}, {type: relu}]
+              output_layer: [{type: dense}]   # width defaults to the action size
+          optimizer_params: {type: Adam, params: {lr: 1.0e-4}}
+      - type: RND
+        config:
+          model_configs:
+            target:
+              layer_config: [{type: dense, params: {units: 128}}, {type: relu}]
+              output_layer: [{type: dense, params: {units: 64}}]
+            predictor:
+              layer_config: [{type: dense, params: {units: 128}}, {type: relu}]
+              output_layer: [{type: dense, params: {units: 64}}]
+          optimizer_params: {type: Adam, params: {lr: 1.0e-4}}
+          reward_normalizer: {type: RewardNorm, config: {}}
+```
+
 Remaining algorithm hyperparameters (`discount`, clip coefficients, `tau`,
 entropy settings, …) are constructor kwargs for the agent class. See
 [Agents][phoenx.rl_agents] rather than duplicating every field here.

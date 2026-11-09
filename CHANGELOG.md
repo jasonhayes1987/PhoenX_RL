@@ -6,6 +6,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `intrinsic_motivation: {type: Composite, ...}` builds a
+  `CompositeIntrinsicMotivation` from YAML, with its `components` written as
+  ordinary intrinsic-motivation specs. Previously a composite could only be
+  constructed in Python.
+- `IntrinsicMotivation.compute_total_reward`: the full intrinsic reward for
+  a learn batch (learn-time plus rollout-time). Agents now call it instead
+  of adding the two parts themselves, so a composite can merge them with its
+  combination rule.
 - A **Sweep** tab in `phoenx-config gui` (`phoenx.sweep_editor`) for building
   Ray Tune sweep files: the config form generated from a new sweep schema
   (`phoenx.sweep_schema.build_sweep_schema`, with a `dist` dropdown per
@@ -214,6 +222,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- The config editor shows intrinsic-motivation `model_configs` as form fields:
+  one section per network (`encoder`, `inverse_model`, `forward_model`,
+  `target`, `predictor`, depending on the type), each with a `layer_config`
+  list and a one-item dense `output_layer`. `optimizer_params` is the same
+  optimizer section the model uses. Previously both were raw YAML boxes.
+- The `ScheduleWrapper` `start_value` docstring (also shown as the GUI's help
+  text) said to leave it unset for non-learning-rate schedules, which is
+  where it is required. It now says when it is required and that a cosine
+  learning-rate schedule ignores it.
 - The config editor writes back every key an opened file had, even one equal
   to its default, and explicit `null`s; previously such keys were dropped on
   save, which broke any sweep over them (a sweep can only change values its
@@ -475,6 +492,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- `max_concurrent_trials` was ignored for `search_alg: {type: random}` (and
+  `variant_generator`): Ray applies that limit only to `Searcher`s and logged
+  that it would ignore it for the `BasicVariantGenerator`, so every trial
+  that fit the resources ran at once. The limit is now passed to the
+  generator itself.
+- `CompositeIntrinsicMotivation` in agent training: `ngu` raised on the first
+  rollout step (it was applied to the single episodic reward), a composite
+  of only rollout-time modules (e.g. two `EpisodicNovelty`) raised at the
+  first update, and `multiplicative` / `max` added the episodic and
+  learn-time groups instead of combining them. The groups are now merged by
+  the rule, a group with one module passes its reward through, and
+  `combination_kwargs.L` reaches `ngu` (it was never passed). The
+  constructor rejects `ngu` without exactly two components, a `weights` list
+  of the wrong length, and settings the chosen rule does not read.
+- `Agent.from_config` meant to drop the saved `intrinsic_motivation` dict
+  before rebuilding the agent (the module is restored from its own folder in
+  `load_state`), but looped over the characters of the string
+  `"intrinsic_motivation"` instead, so the agent was constructed with the
+  raw dict until `load_state` replaced it.
 - The config GUI let a sweep be saved over a training config (or the
   reverse) with only the OS's generic replace prompt. Saving over the other
   kind of file now asks with an explicit warning, the Run tab refuses a

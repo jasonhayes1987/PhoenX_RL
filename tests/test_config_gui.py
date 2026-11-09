@@ -395,3 +395,51 @@ def test_opening_the_wrong_kind_of_file(app, tmp_path, monkeypatch):
     app.editor.open(str(SWEEP))
     assert app.sweep.path == SWEEP
     assert app.editor.path is None
+
+
+def test_intrinsic_motivation_networks_and_composite_are_form_fields(editor):
+    """model_configs, optimizer_params and a Composite's components render as
+    fields (not raw YAML boxes), and what the GUI writes validates."""
+    from phoenx.config_schema import validate_config
+
+    editor.open(str(PPO))
+    _pump(editor)
+    agent = editor.form.children["agent"].variant
+    im = agent.children["intrinsic_motivation"]
+    im.enabled = True
+    im.inner.set_type("Composite")
+    comps = im.inner.variant.children["components"]
+    for kind, nets in (("EpisodicNovelty", ("encoder", "inverse_model")),
+                       ("RND", ("target", "predictor"))):
+        comp = comps.add()
+        comp.set_type(kind)
+        cfg = comp.variant.children
+        for net in nets:
+            layer = cfg["model_configs"].children[net].children["layer_config"].add()
+            layer.set_type("dense")
+            layer.variant.children["units"].text = "16"
+        cfg["optimizer_params"].children["type"].text = "Adam"
+    im.inner.variant.children["combination_rule"].text = "ngu"
+    editor.rerender()
+    base = "agent.config.intrinsic_motivation.config.components"
+    for path in (f"{base}.0.config.model_configs.encoder.layer_config",
+                 f"{base}.1.config.model_configs.target.output_layer",
+                 f"{base}.0.config.optimizer_params.type"):
+        editor.view.expand_to(path)
+    editor.view.render(editor.form)
+    _pump(editor)
+
+    keys = set(editor.view.widgets)
+    assert "agent.config.intrinsic_motivation.config.combination_rule" in keys
+    assert f"{base}.0.config.model_configs.encoder.layer_config" in keys
+    assert f"{base}.1.config.model_configs.target.output_layer" in keys
+    assert f"{base}.0.config.optimizer_params.type" in keys
+    assert editor.problems == []
+    cfg = editor.current_config()
+    assert validate_config(cfg) == []
+    written = cfg["agent"]["config"]["intrinsic_motivation"]
+    assert written["type"] == "Composite"
+    assert [c["type"] for c in written["config"]["components"]] == ["EpisodicNovelty", "RND"]
+    # The output layer is pre-filled with the one dense layer the networks need.
+    assert written["config"]["components"][1]["config"]["model_configs"]["target"]["output_layer"] \
+        == [{"type": "dense"}]

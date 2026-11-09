@@ -1487,12 +1487,22 @@ _TRIAL_MANAGED_CALLBACK_TYPES = frozenset({"RayTuneCallback", "WandbCallback"})
 _TRIAL_RUNTIME_CALLBACK_TYPES = frozenset({"RayTuneCallback"})
 
 
-def build_search_alg(phase: dict, points_to_evaluate: list[dict] | None = None) -> Any:
+#: Search-alg types that build a ``BasicVariantGenerator``. Ray only applies
+#: ``TuneConfig.max_concurrent_trials`` by wrapping a ``Searcher`` in a
+#: ``ConcurrencyLimiter``; a ``BasicVariantGenerator`` is not a ``Searcher``,
+#: so Ray logs a warning and ignores the limit. These types take the limit
+#: through the generator's own ``max_concurrent`` instead.
+_VARIANT_GENERATOR_TYPES = frozenset({"random", "variant_generator"})
+
+
+def build_search_alg(phase: dict, points_to_evaluate: list[dict] | None = None,
+                     max_concurrent: int | None = None) -> Any:
     """Build the Ray Tune search algorithm for one phase.
 
     ``phase['tune']['search_alg']`` is ``{"type": <name>, ...extras}``
-    (default ``{"type": "random"}`` when absent). ``type: "random"`` builds
-    a ``BasicVariantGenerator`` directly; every other name delegates to
+    (default ``{"type": "random"}`` when absent). ``type: "random"`` (and
+    ``"variant_generator"``) builds a ``BasicVariantGenerator`` directly,
+    carrying the phase's concurrent-trial limit; every other name delegates to
     ``ray.tune.search.create_searcher``, which reaches all of Ray's
     registered searchers (``ax``, ``bayesopt``, ``bohb``, ``hebo``,
     ``hyperopt``, ``nevergrad``, ``optuna``, ``zoopt``, plus
@@ -1514,6 +1524,13 @@ def build_search_alg(phase: dict, points_to_evaluate: list[dict] | None = None) 
             ``ValueError`` on a partial point rather than accepting it; see
             ``_filter_seed_points``, the caller responsible for that
             filtering.
+        max_concurrent: Concurrent-trial limit for ``random`` /
+            ``variant_generator`` phases, passed to the
+            ``BasicVariantGenerator`` as ``max_concurrent`` (``None`` falls
+            back to ``phase['max_concurrent_trials']``). A
+            ``max_concurrent`` key in ``search_alg`` itself wins. Other
+            searchers ignore this argument; ``run_phase`` limits them through
+            ``TuneConfig.max_concurrent_trials``.
 
     Returns:
         A ``ray.tune.search.Searcher`` (or ``SearchAlgorithm``) instance
@@ -1548,7 +1565,10 @@ def build_search_alg(phase: dict, points_to_evaluate: list[dict] | None = None) 
                 alg_type, len(points_to_evaluate),
             )
 
-    if alg_type == "random":
+    if alg_type in _VARIANT_GENERATOR_TYPES:
+        if max_concurrent is None:
+            max_concurrent = phase.get("max_concurrent_trials")
+        extras.setdefault("max_concurrent", max_concurrent or 0)
         return BasicVariantGenerator(**extras)
     return create_searcher(alg_type, **extras)
 
@@ -2548,7 +2568,11 @@ def run_phase(
     reuse_actors = tune_cfg.get("reuse_actors", False)
     time_budget_s = tune_cfg.get("time_budget_s")
 
-    search_alg = build_search_alg(phase, points_to_evaluate)
+    search_alg = build_search_alg(phase, points_to_evaluate, max_concurrent=resolved_max_concurrent)
+    if isinstance(search_alg, BasicVariantGenerator):
+        # The generator already enforces the limit (see build_search_alg);
+        # passing it to TuneConfig as well only makes Ray log that it ignores it.
+        resolved_max_concurrent = None
     scheduler = build_scheduler(phase)
     stopper = build_stopper(phase)
 

@@ -439,6 +439,39 @@ BUFFER_CLASSES = ("ReplayBuffer", "PrioritizedReplayBuffer", "RolloutBuffer", "T
 NOISE_CLASSES = {"Normal": "NormalNoise", "NormalNoise": "NormalNoise",
                  "Uniform": "UniformNoise", "UniformNoise": "UniformNoise"}
 INTRINSIC_CLASSES = ("ICM", "RND", "EpisodicNovelty")
+#: Config ``type`` for a composite, and the class it builds.
+COMPOSITE_INTRINSIC = ("Composite", "CompositeIntrinsicMotivation")
+COMBINATION_RULES = ("additive", "multiplicative", "max", "ngu")
+
+#: Sub-networks each intrinsic-motivation type reads from ``model_configs``:
+#: name -> (required, description, output-width note). Listed in build order
+#: (ICM sizes its forward model from the encoder, so the encoder comes first).
+INTRINSIC_NETWORKS: dict[str, dict[str, tuple[bool, str, str]]] = {
+    "ICM": {
+        "encoder": (False, "Feature encoder φ. Leave it off to run the inverse and forward "
+                           "models on raw observations.",
+                    "Feature size (default 32)."),
+        "inverse_model": (True, "Predicts the action from (φ(s), φ(s')), which shapes the "
+                                "encoder toward features the agent controls.",
+                          "Leave units unset: it defaults to the action size."),
+        "forward_model": (True, "Predicts φ(s') from (φ(s), a); its error is the curiosity reward.",
+                          "Leave units unset: it defaults to the encoder's feature size "
+                          "(or the observation size without an encoder)."),
+    },
+    "RND": {
+        "target": (True, "Randomly initialized network that is never trained.",
+                   "Embedding size; must match the predictor (default 512)."),
+        "predictor": (True, "Trained to match the target; its error is the novelty reward.",
+                      "Embedding size; must match the target (default 512)."),
+    },
+    "EpisodicNovelty": {
+        "encoder": (True, "Embeds observations for the episodic memory's nearest-neighbor lookup.",
+                    "Embedding size (default 32)."),
+        "inverse_model": (True, "Predicts the action from two embeddings, which shapes the "
+                                "encoder toward features the agent controls.",
+                          "Leave units unset: it defaults to the action size."),
+    },
+}
 OPTIMIZER_TYPES = ("Adam", "SGD", "RMSprop", "Adagrad")
 SCHEDULE_TYPES = ("linear", "cosine", "exponential")
 
@@ -490,6 +523,36 @@ def _layer_def(require: bool) -> dict:
                         description="One layer: a LAYER_REGISTRY type plus its params.")
 
 
+def _intrinsic_network(desc: str, out_note: str) -> dict:
+    return {
+        "type": "object", "additionalProperties": False, "description": desc,
+        "required": ["layer_config", "output_layer"],
+        "properties": {
+            "layer_config": {"type": "array", "items": _ref("layer"),
+                             "description": "Hidden layers, in order."},
+            "output_layer": {"type": "array", "items": _ref("intrinsic_output_layer"),
+                             "minItems": 1, "maxItems": 1,
+                             "default": [{"type": "dense", "params": {}}],
+                             "description": "Exactly one dense output layer. " + out_note},
+        },
+    }
+
+
+def _intrinsic_variant(name: str) -> dict:
+    nets = INTRINSIC_NETWORKS[name]
+    model_configs = {
+        "type": "object", "additionalProperties": False, "x-keep-order": True,
+        "properties": {net: _intrinsic_network(desc, note) for net, (_, desc, note) in nets.items()},
+        "required": [net for net, (req, _, _) in nets.items() if req],
+    }
+    return object_schema(name, exclude=_INJECTED, overrides={
+        "model_configs": model_configs,
+        "optimizer_params": _ref("optimizer"),
+        "reward_scheduler": _nullable(_ref("schedule")),
+        "reward_normalizer": _nullable(_ref("normalizer")),
+    })
+
+
 def _head_variants() -> dict[str, dict]:
     heads = registry_classes("models", "HEAD_REGISTRY")
     variants = {}
@@ -539,11 +602,36 @@ def _definitions() -> dict:
         description="Normalizer: a NORMALIZER_CLASSES type plus its constructor config.")
     defs["noise"] = tagged_union(
         {k: object_schema(c, exclude=_INJECTED) for k, c in NOISE_CLASSES.items()})
-    defs["intrinsic_motivation"] = tagged_union(
-        {k: object_schema(k, exclude=_INJECTED, overrides={
-            "reward_scheduler": _nullable(_ref("schedule")),
-            "reward_normalizer": _nullable(_ref("normalizer")),
-        }) for k in INTRINSIC_CLASSES})
+    defs["intrinsic_output_layer"] = tagged_union(
+        {"dense": {"type": "object", "additionalProperties": False,
+                   "description": "Fully connected output layer.",
+                   "properties": {
+                       "units": {"type": "integer", "minimum": 1,
+                                 "description": "Output width; see the network's note for its default."},
+                       **{k: v for k, v in defs["layer"]["allOf"][0]["then"]["properties"]["params"]
+                          ["properties"].items() if k in ("kernel", "kernel_params", "kernel params")},
+                   }}},
+        config_key="params",
+        description="The network's output layer (always fully connected).")
+    im_variants = {k: _intrinsic_variant(k) for k in INTRINSIC_CLASSES}
+    defs["intrinsic_component"] = tagged_union(
+        im_variants, description="One intrinsic-motivation module inside a Composite.")
+    composite_type, composite_class = COMPOSITE_INTRINSIC
+    composite = object_schema(composite_class, exclude=_INJECTED, overrides={
+        "components": {"type": "array", "items": _ref("intrinsic_component"), "minItems": 1},
+        "combination_rule": {"enum": list(COMBINATION_RULES), "default": "additive"},
+        "combination_kwargs": _nullable({
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "weights": {"type": "array", "items": {"type": "number"},
+                            "description": "additive only: one weight per component, in order."},
+                "L": {"type": "number", "default": 5.0,
+                      "description": "ngu only: upper clip on the lifelong reward."},
+            }}),
+        "reward_scheduler": _nullable(_ref("schedule")),
+    })
+    composite["required"] = ["components"]
+    defs["intrinsic_motivation"] = tagged_union({**im_variants, composite_type: composite})
     defs["hindsight"] = object_schema("HindsightRelabeler", exclude=_INJECTED)
 
     defs["subnetwork"] = object_schema(

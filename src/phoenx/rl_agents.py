@@ -493,7 +493,7 @@ class Agent(ABC):
             if key.endswith("_schedule") and isinstance(cfg.get(key), dict):
                 cfg[key] = ScheduleWrapper.from_config(cfg[key])
         # Intrinsic motivation is a self-contained artifact rebuilt in load_state.
-        for key in ("intrinsic_motivation"):
+        for key in ("intrinsic_motivation",):
             if key in cfg:
                 cfg[key] = None
         return cls(**cfg)
@@ -1881,14 +1881,15 @@ class PPO(Agent):
             im_states = flatten_obs(states_flat)
             im_next_states = flatten_obs(next_states_flat)
             im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
-            # Compute intrinsic reward
-            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+            # Learn-time reward merged with the rollout-time reward stored with
+            # each transition (a sum, or a composite's combination rule)
+            im_rewards, im_learn_rewards = self.intrinsic_motivation.compute_total_reward(
                 im_states,
                 im_next_states,
-                actions_flat
+                actions_flat,
+                im_rollout_rewards,
             )
-            # Add intrinsic learn rewards to intrinsic rollout rewards
-            im_rewards = im_learn_rewards.reshape(traj_len, num_envs) + im_rollout_rewards
+            im_rewards = im_rewards.reshape(traj_len, num_envs)
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
                 rewards = extrinsic_rewards_flat.reshape(traj_len, num_envs) + im_rewards
@@ -2711,14 +2712,15 @@ class DDPG(Agent):
             im_states = flatten_obs(states_flat)
             im_next_states = flatten_obs(next_states_flat)
             im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
-            # Compute intrinsic reward
-            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+            # Learn-time reward merged with the rollout-time reward stored with
+            # each transition (a sum, or a composite's combination rule)
+            im_rewards, im_learn_rewards = self.intrinsic_motivation.compute_total_reward(
                 im_states,
                 im_next_states,
-                actions_flat
+                actions_flat,
+                im_rollout_rewards,
             )
-            # Add intrinsic learn rewards to intrinsic rollout rewards
-            im_rewards = im_learn_rewards.reshape(batch_size, n_step_length) + im_rollout_rewards
+            im_rewards = im_rewards.reshape(batch_size, n_step_length)
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
                 rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
@@ -3293,14 +3295,15 @@ class TD3(Agent):
             im_states = flatten_obs(states_flat)
             im_next_states = flatten_obs(next_states_flat)
             im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
-            # Compute intrinsic reward
-            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+            # Learn-time reward merged with the rollout-time reward stored with
+            # each transition (a sum, or a composite's combination rule)
+            im_rewards, im_learn_rewards = self.intrinsic_motivation.compute_total_reward(
                 im_states,
                 im_next_states,
-                actions_flat
+                actions_flat,
+                im_rollout_rewards,
             )
-            # Add intrinsic learn rewards to intrinsic rollout rewards
-            im_rewards = im_learn_rewards.reshape(batch_size, n_step_length) + im_rollout_rewards
+            im_rewards = im_rewards.reshape(batch_size, n_step_length)
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
                 rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
@@ -3937,14 +3940,15 @@ class SAC(Agent):
             im_states = flatten_obs(states_flat)
             im_next_states = flatten_obs(next_states_flat)
             im_loss = self.intrinsic_motivation.train(im_states, im_next_states, actions_flat)
-            # Compute intrinsic reward
-            im_learn_rewards = self.intrinsic_motivation.compute_learn_reward(
+            # Learn-time reward merged with the rollout-time reward stored with
+            # each transition (a sum, or a composite's combination rule)
+            im_rewards, im_learn_rewards = self.intrinsic_motivation.compute_total_reward(
                 im_states,
                 im_next_states,
-                actions_flat
+                actions_flat,
+                im_rollout_rewards,
             )
-            # Add intrinsic learn rewards to intrinsic rollout rewards
-            im_rewards = im_learn_rewards.reshape(batch_size, n_step_length) + im_rollout_rewards
+            im_rewards = im_rewards.reshape(batch_size, n_step_length)
             # Add extrinsic reward if past step threshold
             if self.intrinsic_motivation.use_extrinsic_reward(step):
                 rewards = extrinsic_rewards_flat.reshape(batch_size, n_step_length) + im_rewards
