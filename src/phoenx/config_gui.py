@@ -677,6 +677,22 @@ class ConfigEditor:
         """Adjust a just-opened file before loading it; returns ``(config, note)``."""
         return config, ""
 
+    def wrong_kind(self, path: Path, kind: str) -> bool:
+        """Opening a sweep in the Config tab: offer the Sweep tab instead.
+
+        Returns True when the open was handled (or cancelled) here.
+        """
+        sweep = getattr(self.app, "sweep", None) if self.app is not None else None
+        if sweep is not None and messagebox.askyesno(
+                "This is a sweep",
+                f"{path.name} is a sweep file, not a training config. Open it in the Sweep "
+                "tab instead?", parent=self.master):
+            self.app.show_tab("sweep")
+            sweep.open(str(path))
+        else:
+            self.set_status(f"{path.name} is a sweep file; open it in the Sweep tab.")
+        return True
+
     def extra_toolbar(self, bar: ttk.Frame) -> None:
         """Add editor-specific toolbar buttons (none for configs)."""
 
@@ -883,6 +899,9 @@ class ConfigEditor:
             return
         if not isinstance(config, dict):
             messagebox.showerror("Can't open", f"{p} is not a YAML mapping.", parent=self.master)
+            return
+        kind = file_kind(p)
+        if kind is not None and kind != self.NOUN and self.wrong_kind(p, kind):
             return
         config, extra_note = self.prepare_loaded(config)
         note = f"Opened {p}. {extra_note}".strip()

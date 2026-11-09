@@ -120,6 +120,24 @@ class SweepEditor(ConfigEditor):
         self._refresh_tree(config)
         return problems
 
+    def wrong_kind(self, path: Path, kind: str) -> bool:
+        """Opening a training config here: offer a new sweep that uses it as base_config.
+
+        Editing the training config itself as a sweep is what produced a hybrid
+        file, so it is never loaded into the sweep form.
+        """
+        if messagebox.askyesno(
+                "This is a training config",
+                f"{path.name} is a training config, not a sweep. Start a new sweep that uses "
+                "it as its base_config?\n\n(The training config itself is not changed.)",
+                parent=self.master):
+            self.new_blank()
+            self._set_base(str(path))
+            self.set_status(f"New sweep on {path.name}. Add fields from the Base config pane.")
+        else:
+            self.set_status(f"{path.name} is a training config; open it in the Config tab.")
+        return True
+
     def extra_toolbar(self, bar: ttk.Frame) -> None:
         """Dry-run and Run buttons."""
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)

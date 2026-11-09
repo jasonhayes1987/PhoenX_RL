@@ -480,6 +480,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kind of file now asks with an explicit warning, the Run tab refuses a
   training config in Sweep mode and a sweep in Train mode before starting,
   and Save As for a new file starts in the Run tab's working folder.
+  Opening a training config in the Sweep tab no longer loads it into the
+  sweep form (which produced a hybrid file that plain Save wrote back over
+  the config); it offers a new sweep with that file as `base_config`.
+  Opening a sweep in the Config tab offers the Sweep tab.
 - Interrupting training (Ctrl+C) lost a best checkpoint still waiting out
   `save_every`, and left the env open. `Trainer.train` now catches the
   interrupt, runs the existing pending-best flush, closes the env, and

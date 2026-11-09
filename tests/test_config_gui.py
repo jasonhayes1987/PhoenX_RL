@@ -371,3 +371,27 @@ def test_run_tab_rejects_the_wrong_kind_of_file(app, tmp_path, monkeypatch):
     assert rp._precheck(str(tmp_path)) is not None
     rp.vars["config"].set("LunarLanderContinuous-v3/ppo.yml")
     assert rp._precheck(str(tmp_path)) is None
+
+
+def test_opening_the_wrong_kind_of_file(app, tmp_path, monkeypatch):
+    """A training config opened in the Sweep tab becomes a new sweep's base_config
+    (it is never edited as a sweep); a sweep opened in the Config tab goes to the
+    Sweep tab."""
+    from phoenx import config_gui, sweep_editor
+
+    monkeypatch.setattr(sweep_editor.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(config_gui.messagebox, "askyesno", lambda *a, **k: True)
+    train = tmp_path / "sac.yml"
+    train.write_text(PPO.read_text(encoding="utf-8"), encoding="utf-8")
+    before = train.read_text(encoding="utf-8")
+    app.run_panel.vars["cwd"].set(str(tmp_path))
+
+    app.sweep.open(str(train))
+    cfg = app.sweep.current_config()
+    assert cfg["base_config"] == "sac.yml"
+    assert "agent" not in cfg and app.sweep.path is None
+    assert train.read_text(encoding="utf-8") == before
+
+    app.editor.open(str(SWEEP))
+    assert app.sweep.path == SWEEP
+    assert app.editor.path is None
