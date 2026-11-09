@@ -419,6 +419,23 @@ def test_describe_run_below_limit_shows_zero_reward_and_saved_buffer():
     )
 
 
+def test_describe_run_negative_best_reward_stays_negative():
+    """A negative best reward keeps its minus sign and two decimal places."""
+    text = launch_cmd.describe_run(
+        {
+            "agent_type": "SAC",
+            "env": "Pendulum-v1",
+            "progress": 1,
+            "best_reward": -150.5,
+        }
+    )
+    assert text == (
+        "SAC on Pendulum-v1. Best checkpoint at timestep 1, "
+        "best avg reward -150.50."
+    )
+    assert "-150.50" in text
+
+
 def test_describe_run_past_limit_warns_and_notes_missing_prioritized_buffer():
     """Past the limit, a missing prioritized buffer adds both trailing sentences."""
     assert launch_cmd.describe_run(
