@@ -33,6 +33,7 @@ import envpool
 
 from .torch_utils import get_device
 from .logging_config import get_logger
+from .config_utils import init_param_names, reject_unknown_keys
 from .utils import to_torch, to_numpy
 from .obs_utils import (
     flatten_obs, tree_assign, tree_cat, tree_index, tree_map, tree_stack,
@@ -126,9 +127,11 @@ class VectorNStepReward(VectorWrapper):
             ach_goal_key: Dict key for achieved goals, or ``None`` if unused.
             log_level: Logger level name (uppercased).
             name: Logger name; defaults to the class name.
-            **kwargs (Any): Extra attributes set on ``self`` (e.g. diagnostic
-                knobs such as ``_diag_freq``).
+            **kwargs (Any): Private diagnostic knobs (names starting with
+                ``_``, such as ``_diag_freq``) set on ``self``; any other key
+                raises ``TypeError``.
         """
+        reject_unknown_keys(type(self).__name__, kwargs, init_param_names(type(self)))
         super().__init__(env)
         self.name = name if name else self.__class__.__name__
         self.logger = get_logger(self.name, level=log_level.upper())
@@ -2043,7 +2046,7 @@ class IsaacSimWrapper(EnvWrapper):
         self,
         cfg:str,
         num_envs:int=1,
-        obs_key:str='policy',
+        obs_key:str|None='policy',
         goal_key:str|None=None,
         ach_goal_key:str|None=None,
         wrappers:list[dict]|None=None,

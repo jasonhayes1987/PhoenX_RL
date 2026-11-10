@@ -1788,3 +1788,30 @@ class TestPhaseTrialCounterActor:
         finally:
             if ray.is_initialized():
                 ray.shutdown()
+
+
+class TestRandomSearchConcurrency:
+    """``max_concurrent_trials`` reaches the BasicVariantGenerator itself; Ray
+    ignores ``TuneConfig.max_concurrent_trials`` for that searcher."""
+
+    def test_phase_limit_reaches_the_generator(self):
+        alg = build_search_alg({"max_concurrent_trials": 3, "tune": {"search_alg": {"type": "random"}}})
+        assert alg.max_concurrent == 3
+
+    def test_default_is_unlimited(self):
+        assert build_search_alg({}).max_concurrent == 0
+
+    def test_override_wins_over_phase(self):
+        alg = build_search_alg({"max_concurrent_trials": 3}, max_concurrent=1)
+        assert alg.max_concurrent == 1
+
+    def test_explicit_search_alg_setting_wins(self):
+        alg = build_search_alg({"max_concurrent_trials": 3,
+                                "tune": {"search_alg": {"type": "random", "max_concurrent": 2}}})
+        assert alg.max_concurrent == 2
+
+    def test_variant_generator_alias_gets_the_limit(self):
+        alg = build_search_alg({"max_concurrent_trials": 2,
+                                "tune": {"search_alg": {"type": "variant_generator"}}})
+        assert isinstance(alg, BasicVariantGenerator)
+        assert alg.max_concurrent == 2

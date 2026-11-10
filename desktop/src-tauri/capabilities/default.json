@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "PhoenX window commands",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

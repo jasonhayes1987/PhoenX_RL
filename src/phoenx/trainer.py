@@ -820,6 +820,7 @@ class Trainer:
                 self._last_save = self._step
                 self._best_pending = False
                 self.save()
+                self._announce_checkpoint()
                 episode_logs[-1]['saved'] = True
 
         # clear current episode memory of done episodes if using IM (Episodic Novelty)
@@ -973,121 +974,136 @@ class Trainer:
         # Initialize Rich Console
         console = Console()
         start_time = time.time()
+        self._plain_last = 0.0
+        self._plain = not console.is_terminal
+        self._checkpoint_last = 0.0
+        self._checkpoint_unreported = False
 
+        interrupted = False
         with Live(console=console, refresh_per_second=8, transient=True) as live:
-            while not self.schedule.is_done(step=self._step, episodes=self._completed_episodes.sum().item()):
+            try:
+                while not self.schedule.is_done(step=self._step, episodes=self._completed_episodes.sum().item()):
                 
-                step_result = self.step(training=True)
-                self._step += self.env.num_envs
-                self.metrics.set_context(env_step=self._step, grad_step=self._grad_step)
-                self.add_to_normalizers(self._prev_obs)
-                self.update_schedulers()
-
-                if self.schedule.should_learn(
-                    step=self._step,
-                    episodes=self._completed_episodes.sum().item(),
-                    last_learn_at=self._last_learn
-                ):
-                    self.learn()
+                    step_result = self.step(training=True)
+                    self._step += self.env.num_envs
                     self.metrics.set_context(env_step=self._step, grad_step=self._grad_step)
+                    self.add_to_normalizers(self._prev_obs)
+                    self.update_schedulers()
 
-                    # Update normalizers AFTER learning: agent.learn()
-                    # re-normalizes the stored raw rollout, so the stats it
-                    # uses must be the ones the policy acted under. Updating
-                    # here means the next rollout is collected — and then
-                    # learned — under the refreshed statistics.
-                    self.update_normalizers()
-                    # Merge n-step boundary diagnostics
-                    nstep_diag = {}
-                    if hasattr(self.agent, "get_nstep_diagnostics"):
-                        nstep_diag = self.agent.get_nstep_diagnostics() or {}
-                    nstep_wrapper = self.env._find_nstep_wrapper()
-                    if nstep_wrapper and hasattr(nstep_wrapper, "get_nstep_diagnostics"):
-                        wrapper_stats = nstep_wrapper.get_nstep_diagnostics() or {}
-                        nstep_diag.update(wrapper_stats)
-                    if nstep_diag:
-                        step_result['step_log'].update(nstep_diag)  
+                    if self.schedule.should_learn(
+                        step=self._step,
+                        episodes=self._completed_episodes.sum().item(),
+                        last_learn_at=self._last_learn
+                    ):
+                        self.learn()
+                        self.metrics.set_context(env_step=self._step, grad_step=self._grad_step)
 
-                    # Update target networks
-                    if isinstance(self.agent, HasTargetNetworks):
-                        self.agent.soft_update_targets()
+                        # Update normalizers AFTER learning: agent.learn()
+                        # re-normalizes the stored raw rollout, so the stats it
+                        # uses must be the ones the policy acted under. Updating
+                        # here means the next rollout is collected — and then
+                        # learned — under the refreshed statistics.
+                        self.update_normalizers()
+                        # Merge n-step boundary diagnostics
+                        nstep_diag = {}
+                        if hasattr(self.agent, "get_nstep_diagnostics"):
+                            nstep_diag = self.agent.get_nstep_diagnostics() or {}
+                        nstep_wrapper = self.env._find_nstep_wrapper()
+                        if nstep_wrapper and hasattr(nstep_wrapper, "get_nstep_diagnostics"):
+                            wrapper_stats = nstep_wrapper.get_nstep_diagnostics() or {}
+                            nstep_diag.update(wrapper_stats)
+                        if nstep_diag:
+                            step_result['step_log'].update(nstep_diag)  
 
-                    # Set learn gate
-                    self._last_learn = {
-                        "timestep": self._step,
-                        "episode": self._completed_episodes.sum().item(),
-                    }[self.schedule.learn_every_unit]
+                        # Update target networks
+                        if isinstance(self.agent, HasTargetNetworks):
+                            self.agent.soft_update_targets()
 
-                # optim/updates_per_env_step is recorded HERE -- after the
-                # learn gate above and after this iteration's `self._step`
-                # increment -- rather than inside `step()`, so both the
-                # numerator (optimizer_steps) and the denominator (env
-                # steps) reflect this iteration rather than lagging it by
-                # one. Guarded the same way as the buffer/* metrics: check
-                # should_compute before reading any agent/model attribute,
-                # then read through getattr with a default.
-                if self.metrics.should_compute("optim/updates_per_env_step"):
-                    optimizer_steps = getattr(getattr(self.agent, "model", None), "optimizer_steps", None)
-                    if optimizer_steps is not None:
-                        updates = optimizer_steps - (self._run_start_optimizer_steps or 0)
-                        env_steps_this_segment = self._step - (self._run_start_step or 0)
-                        self.metrics.record(
-                            "optim/updates_per_env_step", updates / max(env_steps_this_segment, 1)
-                        )
+                        # Set learn gate
+                        self._last_learn = {
+                            "timestep": self._step,
+                            "episode": self._completed_episodes.sum().item(),
+                        }[self.schedule.learn_every_unit]
 
-                # Learn-return metrics (Table B) arrive here: MEAN-reduced
-                # keys (e.g. loss/policy) average over every update since the
-                # last collect(); LAST-reduced keys and the unmapped bucket
-                # deliberately reflect only the final update's value, the
-                # same BASE_REF behavior this replaces.
-                step_result['step_log'].update(self.metrics.collect())
+                    # optim/updates_per_env_step is recorded HERE -- after the
+                    # learn gate above and after this iteration's `self._step`
+                    # increment -- rather than inside `step()`, so both the
+                    # numerator (optimizer_steps) and the denominator (env
+                    # steps) reflect this iteration rather than lagging it by
+                    # one. Guarded the same way as the buffer/* metrics: check
+                    # should_compute before reading any agent/model attribute,
+                    # then read through getattr with a default.
+                    if self.metrics.should_compute("optim/updates_per_env_step"):
+                        optimizer_steps = getattr(getattr(self.agent, "model", None), "optimizer_steps", None)
+                        if optimizer_steps is not None:
+                            updates = optimizer_steps - (self._run_start_optimizer_steps or 0)
+                            env_steps_this_segment = self._step - (self._run_start_step or 0)
+                            self.metrics.record(
+                                "optim/updates_per_env_step", updates / max(env_steps_this_segment, 1)
+                            )
 
-                if self.callbacks:
-                    for callback in self.callbacks:
-                        callback.on_train_step_end(self._step, step_result['step_log'])
+                    # Learn-return metrics (Table B) arrive here: MEAN-reduced
+                    # keys (e.g. loss/policy) average over every update since the
+                    # last collect(); LAST-reduced keys and the unmapped bucket
+                    # deliberately reflect only the final update's value, the
+                    # same BASE_REF behavior this replaces.
+                    step_result['step_log'].update(self.metrics.collect())
 
-                # Calculate metrics for dashboard
-                elapsed = time.time() - start_time
-                completed_episodes = self._completed_episodes.sum().item()
-                episodes_per_sec = completed_episodes / elapsed if elapsed > 0 else 0.0
-                avg_reward = sum(self._score_history) / len(self._score_history) if self._score_history else 0.0
-
-                # Build table and update
-                table = Table(
-                    title="Live Training Dashboard",
-                    expand=True,
-                    highlight=True,
-                    border_style="bold blue"
-                )
-                table.add_column("Steps", justify="right", style="cyan")
-                table.add_column("Episodes", justify="right", style="green")
-                table.add_column("Avg Reward", justify="right", style="magenta")
-                table.add_column("Episodes/sec", justify="right", style="yellow")
-                table.add_column("Elapsed", justify="right", style="dim")
-                table.add_row(
-                    f"{self._step:,}",
-                    f"{completed_episodes:,}",
-                    f"{avg_reward:.2f}",
-                    f"{episodes_per_sec:.2f}",
-                    str(timedelta(seconds=int(elapsed)))
-                )
-                live.update(table)
-
-                for episode_log in step_result['episode_logs']:
-                    # Reset episode score and step count to 0
-                    self._episode_scores[episode_log['env']] = 0
-                    self._episode_steps[episode_log['env']] = 0
-                    if self.renderer and self.renderer.should_render(episode_log['episode']):
-                        # Set normalizers to eval mode
-                        self.set_normalizers(context="test")
-                        self.renderer.render_episode(self, episode_log['episode'], self._step, context='train', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
-                        # Set normalizers to train mode
-                        self.set_normalizers(context="train")
                     if self.callbacks:
                         for callback in self.callbacks:
-                            callback.on_train_epoch_end(self._step, episode_log)
+                            callback.on_train_step_end(self._step, step_result['step_log'])
 
-            if self.callbacks:
+                    # Calculate metrics for dashboard
+                    elapsed = time.time() - start_time
+                    completed_episodes = self._completed_episodes.sum().item()
+                    episodes_per_sec = completed_episodes / elapsed if elapsed > 0 else 0.0
+                    avg_reward = sum(self._score_history) / len(self._score_history) if self._score_history else 0.0
+
+                    # Build table and update
+                    table = Table(
+                        title="Live Training Dashboard",
+                        expand=True,
+                        highlight=True,
+                        border_style="bold blue"
+                    )
+                    table.add_column("Steps", justify="right", style="cyan")
+                    table.add_column("Episodes", justify="right", style="green")
+                    table.add_column("Avg Reward", justify="right", style="magenta")
+                    table.add_column("Episodes/sec", justify="right", style="yellow")
+                    table.add_column("Elapsed", justify="right", style="dim")
+                    table.add_row(
+                        f"{self._step:,}",
+                        f"{completed_episodes:,}",
+                        f"{avg_reward:.2f}",
+                        f"{episodes_per_sec:.2f}",
+                        str(timedelta(seconds=int(elapsed)))
+                    )
+                    live.update(table)
+                    self._plain_progress(console, "progress", avg_reward, completed_episodes,
+                                         elapsed)
+
+                    for episode_log in step_result['episode_logs']:
+                        # Reset episode score and step count to 0
+                        self._episode_scores[episode_log['env']] = 0
+                        self._episode_steps[episode_log['env']] = 0
+                        if self.renderer and self.renderer.should_render(episode_log['episode']):
+                            # Set normalizers to eval mode
+                            self.set_normalizers(context="test")
+                            self.renderer.render_episode(self, episode_log['episode'], self._step, context='train', seed=T.randint(high=1000000, size=(1,)).item(), render_mode='rgb_array')
+                            # Set normalizers to train mode
+                            self.set_normalizers(context="train")
+                        if self.callbacks:
+                            for callback in self.callbacks:
+                                callback.on_train_epoch_end(self._step, episode_log)
+            except KeyboardInterrupt:
+                # Ctrl+C, or Stop in the config GUI: fall through to the
+                # pending-best flush below, then re-raise so the caller
+                # still sees an interrupted run.
+                interrupted = True
+                self._plain_line(console, f"[interrupted] at {self.schedule.stop_unit} "
+                                          f"{self._progress_units():,}")
+
+            if self.callbacks and not interrupted:
                 for episode_log in step_result['episode_logs']:
                     for callback in self.callbacks:
                         callback.on_train_end(episode_log)
@@ -1102,8 +1118,13 @@ class Trainer:
                 self._last_save = self._step
                 self._best_pending = False
                 self.save()
+                self._announce_checkpoint(force=True)
+            elif getattr(self, "_checkpoint_unreported", False):
+                self._announce_checkpoint(force=True)
 
         self.env.close()
+        if interrupted:
+            raise KeyboardInterrupt
 
     def test(self, unit: Literal["timestep", "episode"] = "episode", units: int = 1):
         """Run an evaluation loop for a fixed number of timesteps or episodes.
@@ -1122,6 +1143,8 @@ class Trainer:
         # Initialize Rich Console
         console = Console()
         start_time = time.time()
+        self._plain_last = 0.0
+        self._plain = not console.is_terminal
 
         with Live(console=console, refresh_per_second=8, transient=True) as live:
             while not self.schedule.is_done(step=self._step, episodes=self._completed_episodes.sum().item()):
@@ -1158,6 +1181,7 @@ class Trainer:
                     str(timedelta(seconds=int(elapsed)))
                 )
                 live.update(table)
+                self._plain_progress(console, "test", avg_reward, completed_episodes, elapsed)
 
                 for episode_log in step_result['episode_logs']:
                     # Reset episode score and step count to 0
@@ -1200,6 +1224,62 @@ class Trainer:
             'save_dir': self.save_dir,
             'metrics': self.metrics.get_config(),
         }
+
+    # -- plain-text progress (stdout is a pipe / file, not a terminal) --------
+
+    #: Seconds between ``[progress]`` lines when output is not a terminal.
+    PLAIN_PROGRESS_SECONDS = 5.0
+
+    def _progress_units(self) -> int:
+        """Progress so far in ``schedule.stop_unit`` (timesteps or episodes)."""
+        if self.schedule.stop_unit == "episode":
+            return int(self._completed_episodes.sum().item())
+        return int(self._step or 0)
+
+    def _plain_line(self, console: Console, text: str) -> None:
+        """Print ``text`` when output is not a terminal (the Live table is invisible there)."""
+        if not console.is_terminal:
+            print(text, flush=True)
+
+    def _plain_progress(self, console: Console, kind: str, avg_reward: float,
+                        episodes: int, elapsed: float, force: bool = False) -> None:
+        """Emit a ``[progress]`` / ``[test]`` line at most every ``PLAIN_PROGRESS_SECONDS``.
+
+        Rich's ``Live`` table only draws on a terminal, so a run whose output is
+        piped (the config GUI's Run tab, ``nohup``, ``> train.log``) would
+        otherwise print nothing. The format is parsed by
+        ``phoenx.process_runner.parse_progress``.
+        """
+        if console.is_terminal:
+            return
+        now = time.time()
+        done = self._progress_units()
+        total = self.schedule.stop_units
+        if not force and now - self._plain_last < self.PLAIN_PROGRESS_SECONDS and done < total:
+            return
+        self._plain_last = now
+        print(f"[{kind}] {self.schedule.stop_unit} {done:,}/{total:,} episodes={episodes:,} "
+              f"avg_reward={avg_reward:.2f} elapsed={timedelta(seconds=int(elapsed))}",
+              flush=True)
+
+    def _announce_checkpoint(self, force: bool = False) -> None:
+        """Print a ``[checkpoint]`` line after a save when output is not a terminal.
+
+        Limited to one line per ``PLAIN_PROGRESS_SECONDS`` (a run with
+        ``save_every: 0`` saves on every new best); the last unreported save is
+        printed when training ends.
+        """
+        if not getattr(self, "_plain", False):
+            return
+        now = time.time()
+        self._checkpoint_unreported = True
+        if not force and now - getattr(self, "_checkpoint_last", 0.0) < self.PLAIN_PROGRESS_SECONDS:
+            return
+        self._checkpoint_last = now
+        self._checkpoint_unreported = False
+        print(f"[checkpoint] saved best (avg_reward={self._best_reward:.2f}) at "
+              f"{self.schedule.stop_unit} {self._progress_units():,} to {self.save_dir}",
+              flush=True)
 
     def _trainer_state(self) -> dict:
         """Return training counters needed to resume a run.

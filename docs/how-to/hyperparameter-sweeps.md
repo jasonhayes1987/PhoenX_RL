@@ -9,6 +9,42 @@ API surface: [phoenx.ray_tune][]. Trial reporting uses
 [RayTuneCallback][phoenx.rl_callbacks.RayTuneCallback] (injected per trial;
 documented under [RL callbacks][phoenx.rl_callbacks]).
 
+## Building a sweep in the GUI
+
+`phoenx-config gui` has a **Sweep Builder** page (`phoenx-config gui my_sweep.yml`
+opens a sweep there directly). It edits the same file format with the same
+form as Config Builder, plus a **Base config fields** pane listing every
+field of the sweep's `base_config` with its dotted path, value, and whether
+the file sets it:
+
+- **Double-click a field** (or *Add to search space*) to add it to the
+  selected phase's `search_space` with a starting spec chosen from its type
+  and value: `loguniform` over a decade each side for rates and small
+  coefficients, `uniform` 0.9-0.999 for discounts, `choice` of half / same /
+  double for layer widths, `randint` for other integers, `choice` over the
+  options for dropdowns and booleans. Edit the range in the form.
+- **Add as override** puts the field's current value under `overrides`.
+- In **Config Builder**, right-click a field name for the same actions; the
+  sweep's `base_config` is set to that file if it has none.
+
+Because a sweep can only change values its base config sets explicitly (the
+paths are checked strictly to catch typos), fields still at their default are
+shown greyed out as *default*; adding one offers to write it into the base
+config when that file is open in Config Builder.
+
+The problems list checks, without Ray: unknown keys, spec fields per `dist`,
+`low < high` / `lower < upper`, `loguniform` above zero, block names, that
+every `overrides` / `search_space` path exists in the base config, and a
+sample trial per phase (each spec at its low end / first option, plus every
+option of each `choice`) against the training-config schema, so for example
+an unknown layer type in a `choice` is caught before a single trial runs.
+**Dry run** saves and runs `phoenx-tune --validate-only` on the Launch page;
+**Open in Run tab** prepares the real run. Single-phase shorthand files open
+as one phase named `phase_0`, which runs identically.
+
+`base_config` is resolved like `phoenx-tune` does: a path relative to the
+Launch page's working folder, else a bundled example name.
+
 ## Quick start
 
 Validate first — sample and fully resolve trial configs, print the dotted
@@ -315,6 +351,7 @@ combination fails in milliseconds with an actionable message.
 | Reject `mini_batch_size` larger than the feedforward rollout batch | Feedforward PPO computes `num_valid // mini_batch_size`; zero batches means zero learning while a sweep misreads it as a bad hyperparameter. |
 | Reject non-positive `mini_batch_size` | Same division would raise or yield zero batches. |
 | For recurrent models, `mini_batch_size` is in env units and must divide `num_envs` | The silent fallback to all envs makes the swept value a lie. |
+| Reject unknown keys at the sweep, phase / `defaults`, and `tune` levels | A misspelled key such as a phase's `serach_space` was merged and never read, so the phase ran with nothing to search. Keys starting with `_` are internal and allowed. |
 | SAC N triple must agree: `agent.config.N`, `buffer.config.N`, and `VectorNStepReward` wrapper `n` | Otherwise the return computation, replay window, and reward wrapper disagree about the horizon. |
 
 ## CLI flags

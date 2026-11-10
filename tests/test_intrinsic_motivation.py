@@ -1912,3 +1912,137 @@ class TestIntrinsicMotivationBase:
         assert norm.training is True
         icm.set_normalizers_mode("eval")
         assert norm.training is False
+
+
+# -----------------------------------------------------------------------------
+# Composite: the full learn-batch reward agents use, and YAML construction
+# -----------------------------------------------------------------------------
+class TestCompositeTotalReward:
+    """``compute_total_reward`` merges the online (episodic) group with the
+    parametric group by the combination rule, as agents call it."""
+
+    @staticmethod
+    def _composite(env, rule, kwargs=None, weight=1.0):
+        epi = EpisodicNovelty(env=env, model_configs=episodic_configs(embed_dim=4),
+                              optimizer_params=OPT_PARAMS, memory_size=32, k=2,
+                              reward_weight=2.0, device=DEVICE)
+        rnd = RND(env=env, model_configs=rnd_configs(output_dim=8),
+                  optimizer_params=OPT_PARAMS, device=DEVICE)
+        comp = CompositeIntrinsicMotivation(env=env, components=[epi, rnd],
+                                            combination_rule=rule, combination_kwargs=kwargs,
+                                            reward_weight=weight, device=DEVICE)
+        return comp, rnd
+
+    def _check(self, env, rule, expected, kwargs=None, weight=1.0):
+        comp, rnd = self._composite(env, rule, kwargs, weight)
+        batch = _random_batch(env, batch=NUM_ENVS)
+        rollout = comp.compute_rollout_reward(**batch, env_indices=T.arange(NUM_ENVS))
+        # Cold memory: the episodic child returns its reward_weight (2.0).
+        assert T.allclose(rollout, 2.0 * T.ones_like(rollout))
+        lifelong = rnd.compute_learn_reward(**batch)
+        total, learn = comp.compute_total_reward(**batch, rollout_rewards=rollout)
+        assert T.allclose(total, weight * expected(rollout, lifelong), atol=1e-5)
+        assert T.allclose(learn, weight * lifelong, atol=1e-5)
+
+    def test_ngu_uses_episodic_times_clipped_lifelong(self, discrete_env):
+        self._check(discrete_env, "ngu", lambda e, l: e * l.clamp(1.0, 3.0), {"L": 3.0})
+
+    def test_ngu_default_clip(self, discrete_env):
+        self._check(discrete_env, "ngu", lambda e, l: e * l.clamp(1.0, 5.0))
+
+    def test_multiplicative_multiplies_across_groups(self, discrete_env):
+        self._check(discrete_env, "multiplicative", lambda e, l: e * l)
+
+    def test_max_takes_maximum_across_groups(self, discrete_env):
+        self._check(discrete_env, "max", lambda e, l: T.maximum(e, l))
+
+    def test_additive_sums_and_composite_weight_scales(self, discrete_env):
+        self._check(discrete_env, "additive", lambda e, l: e + l, weight=0.5)
+
+    def test_online_only_composite_returns_rollout(self, discrete_env):
+        epi = EpisodicNovelty(env=discrete_env, model_configs=episodic_configs(embed_dim=4),
+                              optimizer_params=OPT_PARAMS, memory_size=32, k=2, device=DEVICE)
+        comp = CompositeIntrinsicMotivation(env=discrete_env, components=[epi], device=DEVICE)
+        batch = _random_batch(discrete_env, batch=NUM_ENVS)
+        rollout = T.full((NUM_ENVS,), 0.7)
+        total, learn = comp.compute_total_reward(**batch, rollout_rewards=rollout)
+        assert T.allclose(total, rollout)
+        assert T.count_nonzero(learn) == 0
+
+    def test_base_total_is_learn_plus_rollout(self, discrete_env):
+        rnd = RND(env=discrete_env, model_configs=rnd_configs(output_dim=8),
+                  optimizer_params=OPT_PARAMS, device=DEVICE)
+        batch = _random_batch(discrete_env, batch=NUM_ENVS)
+        rollout = T.full((NUM_ENVS, 1), 0.25)
+        total, learn = rnd.compute_total_reward(**batch, rollout_rewards=rollout)
+        assert T.allclose(learn, rnd.compute_learn_reward(**batch))
+        assert T.allclose(total, learn + 0.25)
+
+    @pytest.mark.parametrize("rule,kwargs,n,match", [
+        ("ngu", None, 3, "exactly 2 components"),
+        ("additive", {"weights": [1.0]}, 2, "one weight per component"),
+        ("additive", {"L": 2.0}, 2, r"\['L'\] not used"),
+        ("max", {"weights": [1.0, 1.0]}, 2, r"\['weights'\] not used"),
+    ])
+    def test_bad_settings_are_rejected(self, discrete_env, rule, kwargs, n, match):
+        comps = [EpisodicNovelty(env=discrete_env, model_configs=episodic_configs(embed_dim=4),
+                                 optimizer_params=OPT_PARAMS, memory_size=8, k=2, device=DEVICE)
+                 for _ in range(n)]
+        with pytest.raises(ValueError, match=match):
+            CompositeIntrinsicMotivation(env=discrete_env, components=comps,
+                                         combination_rule=rule, combination_kwargs=kwargs,
+                                         device=DEVICE)
+
+
+class TestCompositeFromYaml:
+    @staticmethod
+    def _spec(rule="ngu"):
+        return {"type": "Composite", "config": {
+            "components": [
+                {"type": "EpisodicNovelty", "config": {
+                    "model_configs": episodic_configs(embed_dim=4), "optimizer_params": OPT_PARAMS,
+                    "memory_size": 16, "k": 2, "device": DEVICE}},
+                {"type": "RND", "config": {
+                    "model_configs": rnd_configs(output_dim=8), "optimizer_params": OPT_PARAMS,
+                    "reward_normalizer": {"type": "RewardNorm", "config": {"device": DEVICE}},
+                    "device": DEVICE}},
+            ],
+            "combination_rule": rule, "combination_kwargs": {"L": 4.0},
+            "reward_scheduler": {"schedule_type": "linear", "steps": 100,
+                                 "start_value": 1.0, "end_value": 0.1},
+            "device": DEVICE}}
+
+    def test_builds_children_from_specs(self, discrete_env):
+        from phoenx.builder import create_intrinsic_motivation
+        im = create_intrinsic_motivation(self._spec(), discrete_env)
+        assert isinstance(im, CompositeIntrinsicMotivation)
+        assert [type(c).__name__ for c in im.components] == ["EpisodicNovelty", "RND"]
+        assert isinstance(im.components[1].reward_normalizer, RewardNorm)
+        assert isinstance(im.reward_scheduler, ScheduleWrapper)
+        assert im.combination_kwargs == {"L": 4.0}
+
+    def test_long_type_name_is_accepted(self, discrete_env):
+        from phoenx.builder import create_intrinsic_motivation
+        spec = self._spec()
+        spec["type"] = "CompositeIntrinsicMotivation"
+        assert isinstance(create_intrinsic_motivation(spec, discrete_env),
+                          CompositeIntrinsicMotivation)
+
+    def test_composite_reward_normalizer_is_refused(self, discrete_env):
+        from phoenx.builder import create_intrinsic_motivation
+        spec = self._spec()
+        spec["config"]["reward_normalizer"] = {"type": "RewardNorm", "config": {}}
+        with pytest.raises(ValueError, match="no reward_normalizer of its own"):
+            create_intrinsic_motivation(spec, discrete_env)
+
+    def test_spec_validates_against_the_config_schema(self):
+        from phoenx.config_schema import build_schema
+        import jsonschema
+        schema = build_schema()
+        sub = {"$ref": "#/definitions/intrinsic_motivation", "definitions": schema["definitions"]}
+        jsonschema.validate(self._spec(), sub)
+        bad = self._spec()
+        bad["config"]["components"][1]["config"]["model_configs"]["target"]["output_layer"].append(
+            {"type": "dense"})
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, sub)

@@ -47,6 +47,112 @@ pip install "phoenx-rl @ git+https://github.com/jasonhayes1987/PhoenX_RL.git"
 phoenx-train --config LunarLanderContinuous-v3/sac.yml
 ```
 
+## Editing a config in the GUI
+
+Open the window from the environment where PhoenX is installed. The
+installer for the window does not include Python or PhoenX. See
+[The PhoenX window](window.md).
+
+```bash
+phoenx-config gui                      # start blank, or New > From example
+phoenx-config gui path/to/my_run.yml   # open an existing config
+```
+
+The editor is generated from the same schema as `phoenx-config validate`, so
+every setting PhoenX understands is there: dropdowns for agent, head, layer,
+normalizer and buffer types (the fields below change with the choice), number
+and text fields that start at the value PhoenX would use anyway, add / remove /
+reorder buttons for layer lists and model branches, and on/off switches for
+optional sections such as normalizers and schedules. Hover a field name for
+the description from the code's docstring.
+
+- **YAML preview** (right): exactly what Save writes. Every key the opened
+  file had is written back, even one equal to its default (sweeps can only
+  change values a config sets explicitly). A field you never set is written
+  only if you change it from the default; clearing a field removes it. Tick
+  **Write default values** to write everything.
+- **Problems** (bottom): updates as you type: input that doesn't parse, unknown
+  keys, schema errors, n-step mismatches. Double-click one to jump to its
+  field. Save warns before writing a config with problems.
+- **Show only set fields** hides everything the config does not set, which is
+  a quick way to see what it actually changes.
+- **Right-click a field name** to send it to Sweep Builder (see
+  [Hyperparameter sweeps](hyperparameter-sweeps.md#building-a-sweep-in-the-gui)).
+
+Comments and YAML anchors are not preserved when an existing file is saved;
+anchored values are written out in full. Keys the form has no field for
+(diagnostic `_` knobs, or typos) are kept in each section's *other keys* field
+rather than dropped.
+
+## Running from the GUI
+
+The same window has a **Launch** page that starts the PhoenX commands for you:
+
+| Mode | Runs |
+|------|------|
+| Train | `phoenx-train --config FILE` (**Use Config Builder file** saves and picks the file open in Config Builder) |
+| Resume | `phoenx-train --agent_dir DIR --stop_units N` |
+| Test | `phoenx-test --agent_dir DIR ...` |
+| Sweep | `phoenx-tune --config SWEEP ...` |
+
+Each run is a separate process started with the same Python as the GUI,
+exactly as the terminal would run it; the full command is shown (with a
+**Copy** button) before you press **Start**. Relative paths in the config,
+such as `save_dir: ./Trained_Models/...`, resolve against the **Working
+folder**.
+
+- The log pane shows the command's output. Progress drives the progress bar,
+  and saved checkpoints appear as one updating green line.
+- Choosing an agent folder (a run's `save_dir`) shows where its best
+  checkpoint is, its best reward, and its training limit. For Resume, *Train
+  until* must be past the checkpoint; it is prefilled with the original
+  limit, or the checkpoint plus that limit once the run has already reached it.
+- **Stop** interrupts the run the way Ctrl+C does: training saves a best
+  checkpoint that is still waiting out `save_every`, then exits. If the
+  process has not exited after 15 seconds (Isaac Sim's Kit can ignore the
+  interrupt), Stop becomes **Kill**, and the whole process tree, including
+  Ray workers, is killed.
+- After a training run finishes, its folder is filled in for Resume and Test.
+
+When a run's output is not a terminal (the Launch page, `nohup`, or
+`phoenx-train ... > train.log`), the Trainer prints plain lines instead of
+the live dashboard: `[progress] timestep 14,596/40,000 episodes=499
+avg_reward=43.10 elapsed=0:00:05` every 5 seconds, `[checkpoint] ...` after
+saves, and `[test] episode 10/10 avg_reward=...` when testing.
+
+## Checking a config
+
+PhoenX generates a JSON Schema for configs straight from its own source: the
+constructor signatures give every key, type and default, and their docstrings
+give the descriptions (see [phoenx.config_schema][]). It never imports torch,
+so it runs instantly.
+
+```bash
+# Check files without building an env or a model
+phoenx-config validate path/to/my_experiment.yml
+
+# Autocomplete, hover docs and inline errors in VS Code
+phoenx-config vscode
+```
+
+`validate` reports misspelled keys with a suggestion
+(`agent.config: unknown key 'polcy_clip' (did you mean 'policy_clip'?)`),
+wrong types, unknown layer / head / normalizer types, missing required layer
+params, and n-step horizon mismatches. `vscode` writes
+`phoenx-config.schema.json` into the project folder and points the
+[YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)
+at it for `**/configs/**/*.yml` and `**/fixtures/*.yml` (change with
+`--glob`). To attach the schema to a single file instead, put this on its
+first line:
+
+```yaml
+# yaml-language-server: $schema=./phoenx-config.schema.json
+```
+
+Regenerate the schema (`phoenx-config schema`) after upgrading PhoenX.
+Building a trainer applies the same unknown-key check at runtime, so a typo
+fails at startup instead of training on a default.
+
 ## Isaac Lab environment classes
 
 Isaac example configs can point at a custom env class via the
@@ -165,7 +271,7 @@ agent:
     entropy_lr: 0.0003
     policy_grad_clip: 1.0
     critic_grad_clip: 1.0
-    N: &n 1                    # must match buffer N and VectorNStepReward n
+    N: 1                       # n-step horizon: set it only here (see below)
     log_level: DEBUG
     _diag_freq: 1000
     state_normalizer:          # under agent.config, not top-level normalizers:
@@ -178,12 +284,10 @@ env:
   config:
     cfg: LunarLanderContinuous-v3   # EnvPool task id (not module:Class)
     num_envs: 64
-    obs_key: &obs_key null
-    goal_key: &goal_key null
-    ach_goal_key: &ach_goal_key null
-    wrappers:
-      - type: VectorNStepReward     # required for ReplayBuffer / PER
-        params: {n: *n, obs_key: *obs_key, goal_key: *goal_key, ach_goal_key: *ach_goal_key}
+    obs_key: null
+    goal_key: null
+    ach_goal_key: null
+    wrappers: []                    # VectorNStepReward is added for ReplayBuffer / PER
     render_mode: null
     seed: *seed
 
@@ -199,8 +303,7 @@ buffer:
     priority: proportional
     epsilon: 1.0e-6
     sort_freq: 1000
-    N: *n
-    device: *device
+    device: *device                 # N comes from agent.config.N
 
 # Optional. Forwarded to Renderer; Trainer overwrites renderer.save_dir
 renderer:
@@ -403,7 +506,19 @@ Registered wrapper `type` names include `VectorNStepReward`,
 `OneHotObservationWrapper`, `VectorOneHotObservation`, `AtariPreprocessing`,
 `TimeLimit`, `TimeAwareObservation`, `FrameStackObservation`, and
 `ResizeObservation`. Off-policy replay buffers require `VectorNStepReward` on
-the env. Full wrapper API: [Environment wrappers][phoenx.env_wrapper].
+the env; PhoenX appends it for you (as the outermost wrapper) when it is not
+listed. Full wrapper API: [Environment wrappers][phoenx.env_wrapper].
+
+#### The n-step horizon `N`
+
+Set the n-step horizon once, as `agent.config.N`. Before anything is built,
+[resolve_n_step][phoenx.config_utils.resolve_n_step] copies it to
+`buffer.config.N`, to the `VectorNStepReward` wrapper's `n` (adding the
+wrapper when a replay buffer is used and none is listed), and to an `n_step`
+HER relabeler's `N`. The wrapper's `obs_key` / `goal_key` / `ach_goal_key`
+default to the values in `env.config`. Older configs that repeat `N` in those
+places still load, as long as every copy agrees; a mismatch raises
+`ValueError`.
 
 ### `agent`
 
@@ -466,6 +581,56 @@ and saved-config reload only**. They do not make legacy YAML loadable.
 `noise_schedule` (DDPG/TD3). Each normalizer is a `{type, config}` mapping;
 see [Normalizers][phoenx.normalizer].
 
+**Intrinsic motivation.** `intrinsic_motivation` is a `{type, config}`
+mapping. `type` is `ICM`, `RND`, `EpisodicNovelty`, or `Composite`, which
+combines several of them. Each network under `model_configs` is a
+`layer_config` list of hidden layers plus a one-item `output_layer` list
+holding a dense layer. The network names depend on the type:
+
+| `type` | `model_configs` networks |
+|---|---|
+| `ICM` | `encoder` (optional), `inverse_model`, `forward_model` |
+| `RND` | `target`, `predictor` |
+| `EpisodicNovelty` | `encoder`, `inverse_model` |
+
+A `Composite` lists its modules under `components`, each written the same way
+as a single module. `combination_rule` merges their rewards: `additive`
+(optional `combination_kwargs.weights`, one per component), `multiplicative`,
+`max`, or `ngu`. `ngu` takes exactly two components, episodic first, and
+gives `episodic * clip(lifelong, 1, L)` with `combination_kwargs.L`
+(default 5.0). Reward normalizers go on the components; the composite has
+no normalizer of its own.
+
+```yaml
+intrinsic_motivation:
+  type: Composite
+  config:
+    combination_rule: ngu
+    combination_kwargs: {L: 5.0}
+    components:
+      - type: EpisodicNovelty
+        config:
+          model_configs:
+            encoder:
+              layer_config: [{type: dense, params: {units: 64}}, {type: relu}]
+              output_layer: [{type: dense, params: {units: 32}}]
+            inverse_model:
+              layer_config: [{type: dense, params: {units: 64}}, {type: relu}]
+              output_layer: [{type: dense}]   # width defaults to the action size
+          optimizer_params: {type: Adam, params: {lr: 1.0e-4}}
+      - type: RND
+        config:
+          model_configs:
+            target:
+              layer_config: [{type: dense, params: {units: 128}}, {type: relu}]
+              output_layer: [{type: dense, params: {units: 64}}]
+            predictor:
+              layer_config: [{type: dense, params: {units: 128}}, {type: relu}]
+              output_layer: [{type: dense, params: {units: 64}}]
+          optimizer_params: {type: Adam, params: {lr: 1.0e-4}}
+          reward_normalizer: {type: RewardNorm, config: {}}
+```
+
 Remaining algorithm hyperparameters (`discount`, clip coefficients, `tau`,
 entropy settings, …) are constructor kwargs for the agent class. See
 [Agents][phoenx.rl_agents] rather than duplicating every field here.
@@ -482,7 +647,7 @@ Shared / common `config` fields (constructor defaults):
 | Key | Default | Notes |
 |-----|---------|-------|
 | `buffer_size` | `100000` (replay / PER); required for rollout / trajectory | Replay: max windows; Rollout: horizon per env |
-| `N` | `1` | Replay / PER window length; must match `VectorNStepReward` |
+| `N` | `1` | Replay / PER window length; filled in from `agent.config.N` |
 | `device` | `None` → `get_device()` | |
 | `hindsight` | `None` | Mapping → [HindsightRelabeler][phoenx.her.HindsightRelabeler] (`env` injected) |
 
@@ -654,8 +819,8 @@ promotion, architecture search, and the bundled examples:
    [infer_dim][phoenx.builder.infer_dim] for non-dict normalizers) or set it
    to the true feature width — a blind Isaac cfg that drops object pose needs
    `33`, not `36`.
-4. **Match buffer and schedule to the algorithm.** Off-policy replay needs
-   `VectorNStepReward` and matching `N`. On-policy PPO should set
+4. **Match buffer and schedule to the algorithm.** Off-policy replay uses
+   `agent.config.N` for the n-step window (the buffer and wrapper follow it). On-policy PPO should set
    `learn_every` ≈ `buffer.config.buffer_size * num_envs` when counting
    timesteps. Scale `mini_batch_size` / `learning_epochs` with rollout size.
 5. **Update run metadata.** `save_dir`, callback `project_name`, and optional
@@ -673,8 +838,12 @@ promotion, architecture search, and the bundled examples:
 - **`learn_every` vs `num_envs`** — Timestep cadence is global steps. Raising
   `num_envs` without scaling `learn_every` learns more often per env-step of
   experience.
-- **PER / replay without `VectorNStepReward`** — `ReplayBuffer` and
-  `PrioritizedReplayBuffer` raise if the wrapper is missing.
+- **Misspelled keys** — An unknown key under `agent.config`, a normalizer
+  `config`, a head, a `roots` / `trunk` subnetwork, `agent.config.model`, or a
+  layer's `params` raises `TypeError` with a "did you mean" suggestion. Keys
+  that start with `_` (such as `_diag_freq`) are diagnostic knobs and always
+  allowed. Run `phoenx-config validate my_config.yml` to check a file
+  without building anything.
 - **HER keys** — `goal_key` (and usually `ach_goal_key`) must be set;
   `buffer.config.hindsight` must use `output_format` compatible with the
   buffer (`n_step` for replay, `flat` for trajectory).

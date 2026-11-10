@@ -5,7 +5,115 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- The PhoenX RL window has a new look and opens each editor on an overview.
+  Config Builder: Agent / Environment / Schedule cards that show only the
+  settings the chosen agent reads (on-policy agents hide `batch_size`,
+  `updates_per_learn` and `warmup_steps`; only PPO shows `learning_epochs`
+  and `mini_batch_size`), and a roots → trunk → branches diagram whose
+  inspector edits the selected block. Sweep Builder: phase cards, a table of
+  what the selected phase searches, overrides and defaults. Launch: mode
+  cards and live tiles for timestep, episodes, average reward, best saved
+  reward and elapsed time. The full form is under **All fields** (decisions
+  0020 and 0021). Fonts are bundled, so the window needs no network.
+- `phoenx-config gui` opens the PhoenX RL window and blocks until it closes.
+  It no longer imports tkinter.
+
+### Removed
+- The Tkinter window: `phoenx.config_gui`, `phoenx.sweep_editor`, and
+  `phoenx.run_panel`. Launch commands now live in `phoenx.launch_cmd`.
+  Example listings live in `phoenx.example_files`.
+
 ### Added
+- A desktop window, started with `phoenx-config gui` (and `phoenx-config gui --doctor`).
+  Config Builder, Sweep Builder, and Launch replace the former Tkinter tabs.
+  Dashboard and Settings are blank. The Windows installer is per-user and
+  does not include Python or PhoenX. The how-to page is "The PhoenX window".
+- `phoenx.gui_session`: the long-lived process the window calls for every
+  edit, check, save, and launch.
+- `phoenx.gui_launch`: finds `phoenx-rl` and waits until the window exits.
+- `intrinsic_motivation: {type: Composite, ...}` builds a
+  `CompositeIntrinsicMotivation` from YAML, with its `components` written as
+  ordinary intrinsic-motivation specs. Previously a composite could only be
+  constructed in Python.
+- `IntrinsicMotivation.compute_total_reward`: the full intrinsic reward for
+  a learn batch (learn-time plus rollout-time). Agents now call it instead
+  of adding the two parts themselves, so a composite can merge them with its
+  combination rule.
+- **Sweep Builder** in `phoenx-config gui` (`phoenx.gui_session`) for building
+  Ray Tune sweep files: the config form generated from a new sweep schema
+  (`phoenx.sweep_schema.build_sweep_schema`, with a `dist` dropdown per
+  search spec), plus a *Base config fields* tree of every field in the
+  sweep's `base_config` with its dotted path. Double-click a field to add it
+  to a phase's search space with a starting spec chosen from its type and
+  value (`suggest_spec`), or add it as an override; right-click a field in
+  Config Builder for the same. **Dry run** runs
+  `phoenx-tune --validate-only` on the Launch page.
+- `phoenx.sweep_schema.validate_sweep`: Ray-free sweep checks against the
+  base config (every override / search path must exist in it, spec ranges,
+  block names, and a sample trial per phase, including every `choice`
+  option, validated with the training-config schema).
+- `phoenx.config_form.iter_fields` / `find_field`: every value field of a
+  form with its sweep-style dotted path.
+- A **Launch** page in `phoenx-config gui` (`phoenx.gui_session`, commands in `phoenx.launch_cmd`): Train, Resume
+  (with a new training limit), Test and Sweep, each started as a separate
+  process with the same command the terminal would run, which is shown and
+  copyable. Live log, progress bar from the Trainer's `[progress]` lines,
+  agent-folder summaries (best checkpoint step, best reward, limit), Stop
+  (graceful interrupt, then kill of the process tree after 15 s), and the
+  trained folder filled in for Resume / Test afterwards.
+- `phoenx.process_runner.ProcessRunner`: Tk-free child-process control used
+  by the Launch page (streamed UTF-8 output, two-stage stop on Linux, macOS and
+  Windows).
+- Plain-text progress when the Trainer's output is not a terminal: Rich's
+  live dashboard draws nothing into a pipe or file, so `train()` / `test()`
+  now print `[progress]` / `[test]` lines every 5 s and `[checkpoint]` lines
+  after saves (also limited to one per 5 s). Terminal output is unchanged.
+- `phoenx-train --stop_units N` overrides `schedule.stop_units`; with
+  `--agent_dir` it trains a saved run past its original limit. A target the
+  checkpoint has already reached is refused instead of silently stopping at
+  once.
+- `phoenx.run_info`: `read_run_info(DIR)` (and `python -m phoenx.run_info DIR`,
+  printing JSON) summarizes a saved run (agent, env, step, episodes, best
+  reward, stop limit, whether a buffer was saved) without building it.
+- `phoenx.sweep_schema`: the sweep / phase / `tune` key sets with
+  descriptions and the search-spec distributions, importable without Ray.
+- Every field the config editor shows now has help text, enforced by a test
+  that walks the whole form (every type choice, every list / map item).
+  Layer params get descriptions from `phoenx.layer_specs.LAYER_PARAM_DOCS`.
+- A config editor in `phoenx-config gui` (`phoenx.gui_session`, no torch import).
+  It is generated from the config
+  JSON Schema, so every agent / head / layer / normalizer / buffer setting
+  appears as a field, dropdown or checkbox with its docstring as a tooltip;
+  type dropdowns swap the fields below them; layer lists and model branches
+  have add / remove / reorder controls; optional sections have on/off
+  switches. A live YAML preview shows what Save writes, and a live problems
+  list (bad input, unknown keys, schema errors, n-step mismatches) jumps to
+  the field on double-click. New configs can start from any bundled example.
+  Saved files contain only settings that differ from PhoenX's defaults
+  unless "Write default values" is ticked; unknown keys are carried through,
+  not dropped. Comments and YAML anchors are not preserved on save.
+- `phoenx.config_form`, the GUI-independent form model behind the editor:
+  loads a parsed config into a node tree built from the schema and writes a
+  minimal config back. Tests check that every bundled config round-trips to
+  a valid, stable file, and that the minimal file builds a trainer identical
+  to the original's.
+- `phoenx-config`, a command for checking configs without building
+  anything: `phoenx-config validate FILE...` reports misspelled keys (with a
+  "did you mean" suggestion), wrong types, unknown layer / head / normalizer
+  / agent types, missing required layer params, and n-step mismatches;
+  `phoenx-config schema` writes the JSON Schema; `phoenx-config vscode`
+  points the VS Code YAML extension at it for autocomplete, hover docs and
+  inline errors. The schema is generated by `phoenx.config_schema`, which
+  reads constructor signatures, docstrings and registries from the source
+  with `ast` (no torch import), so new parameters and registry entries show
+  up without anyone editing the schema. Tests pin the parsed view to the live
+  classes and registries. This schema is also the planned foundation for a
+  config-editor GUI. Adds a `jsonschema` dependency.
+- `phoenx.layer_specs.LAYER_SPECS`: the params each `LAYER_REGISTRY` layer
+  type accepts, used for layer-param validation and the schema. A test keeps
+  it in step with `LAYER_REGISTRY`.
+
 - A Metrics Reference guide (`docs/how-to/metrics-reference.md`) documenting
   the metrics PhoenX can log, what each one measures, and how to read it —
   including the interpretation traps: `buffer/fill` has one definition but
@@ -140,6 +248,62 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API reference pages for `phoenx.adaptive_kl`, `phoenx.agent_utils`, `phoenx.distributions`, and `phoenx.rl_callbacks` (mkdocstrings stubs under `docs/api/` plus `mkdocs.yml` nav entries). All four are part of the public surface but had no page, so their docstrings were unreachable from the site; the API section now covers 15 modules.
 
 ### Changed
+- The config editor shows intrinsic-motivation `model_configs` as form fields:
+  one section per network (`encoder`, `inverse_model`, `forward_model`,
+  `target`, `predictor`, depending on the type), each with a `layer_config`
+  list and a one-item dense `output_layer`. `optimizer_params` is the same
+  optimizer section the model uses. Previously both were raw YAML boxes.
+- The `ScheduleWrapper` `start_value` docstring (also shown as the GUI's help
+  text) said to leave it unset for non-learning-rate schedules, which is
+  where it is required. It now says when it is required and that a cosine
+  learning-rate schedule ignores it.
+- The config editor writes back every key an opened file had, even one equal
+  to its default, and explicit `null`s; previously such keys were dropped on
+  save, which broke any sweep over them (a sweep can only change values its
+  base config sets). A field never set is still written only once it
+  differs from the default, and clearing a field removes it.
+- The `phoenx-train` / `phoenx-test` / `phoenx-tune` console scripts point
+  at a new `run()` in each CLI module, which turns Ctrl+C (and, on Windows,
+  Ctrl+Break) into exit code 130 with a one-line message instead of a
+  traceback. Reinstall (`pip install -e .`) to pick up the new entry points.
+- `validate_sweep_config` rejects unknown keys at the sweep, phase /
+  `defaults`, and `tune` levels with a "did you mean" suggestion. A
+  misspelled phase key (e.g. `serach_space`) used to be merged and never
+  read, so that phase ran with nothing to search.
+- The `model:` and `roots` / `trunk` sections of the config schema are read
+  from `ModularModel` / `SubNetwork`'s constructors instead of being written
+  by hand, so their descriptions, defaults and choices come from the code.
+  `ModularModel.shared_update` is annotated `Literal['combined', 'critic',
+  'policy']`, and section descriptions come from class docstrings.
+- `StochasticContinuousHead.distribution` and
+  `StochasticDiscreteHead.distribution` are annotated as `Literal` types and
+  checked in the constructor, so a misspelled distribution fails when the
+  head is built instead of at its first forward pass, and the schema / GUI
+  offer it as a dropdown.
+- Agent-level `optimizer_params`, `lr_scheduler` and `shared_update` (which
+  silently override the same keys under `agent.config.model`) are still
+  accepted but hidden from the GUI unless a config uses them.
+- The n-step horizon is now set in one place, `agent.config.N`.
+  `phoenx.config_utils.resolve_n_step` (run by `build_trainer_from_config`)
+  copies it to `buffer.config.N`, to the `VectorNStepReward` wrapper's `n`,
+  and to an `n_step` HER relabeler, and appends a `VectorNStepReward`
+  wrapper (outermost) when a replay buffer is used and none is listed; the
+  wrapper's `obs_key` / `goal_key` / `ach_goal_key` default to `env.config`.
+  Configs that still repeat N keep working when every copy agrees; a
+  mismatch raises `ValueError`. The bundled SAC example and the SAC / TD3
+  smoke fixtures now set N only under `agent.config`.
+- Misspelled config keys now raise `TypeError` (with a "did you mean"
+  suggestion) instead of being silently ignored. This covers agent
+  constructor kwargs (previously `setattr` onto the agent, so `polcy_clip`
+  trained on the default `policy_clip`; the check runs before `Agent.__init__`'s
+  error-swallowing block), normalizer kwargs, `VectorNStepReward` kwargs,
+  head configs (`Head.from_config` previously dropped unknown keys, so
+  `layer_confg` built a head with no hidden layers), `roots` / `trunk`
+  subnetworks, the `agent.config.model` block, and layer params for layer
+  types whose builder reads named keys (previously `kernal: orthogonal` fell
+  back to the default init). Keys starting with `_` (such as `_diag_freq`)
+  are still accepted as diagnostic knobs.
+
 - Isaac Lab target is 3.0.0 with Isaac Sim 6.2, Python 3.12, and torch
   2.11.0+cu130. `setup.ps1 -Isaac` installs `isaaclab[isaacsim,all]==3.0.0`
   through uv and the v3.0.0 overrides file; Gymnasium mode is the only path
@@ -354,6 +518,90 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- Stop could never interrupt training when the window (or any parent) was
+  started with SIGINT ignored, as `nohup` and background jobs do on Linux and
+  macOS: Python then never raises `KeyboardInterrupt`, so every Stop ended in
+  a kill after the grace period without flushing the best checkpoint. The
+  PhoenX CLIs now restore SIGINT at startup.
+- The PhoenX RL window's form now behaves like the Tkinter editor it
+  replaced (decision 0020). Layers and other list items show their type's
+  fields right under the type dropdown (deep sections started closed, and a
+  layer had no way to open). Adding a branch, layer, or map entry, choosing
+  a type, or turning on an optional field opens that section. Scalars show
+  a `default X` hint and help on hover. A nullable number is a text box,
+  not a `null` dropdown. Fast typing no longer loses characters. The YAML
+  preview sits beside the form and Problems below it, and double-clicking a
+  problem opens and focuses the field.
+- Session errors in the window were dropped, so a failed edit looked like
+  nothing happened. They now open a dialog.
+- Changing a model branch's head type in the window failed with "No such
+  field": the branch's own fields hid it in the session's path index.
+- Sweep Builder checked sweeps against the base config's file path instead
+  of its contents, so every bundled sweep showed about 16 problems. Fields
+  added from the *Base config fields* tree were looked up in the Config
+  Builder's document instead of the base config, so they were refused as
+  "not in the base config".
+- The Launch page never polled a running command, so its log, progress, and
+  status did not update after Start. It now polls every 100 ms.
+- Open, Save As, and Browse use native file dialogs. The dialog plugin was
+  in `package.json` but never registered in the Rust shell. Closing the
+  window now asks about unsaved edits and a running command, as the Tkinter
+  window did, and a session reply no longer blocks the window's main thread.
+- `desktop/package.json`, `package-lock.json`, `tsconfig.json`,
+  `tauri.conf.json` and the capability file were ignored by the repository's
+  `*.json` rule, so a clone could not build the window.
+- `max_concurrent_trials` was ignored for `search_alg: {type: random}` (and
+  `variant_generator`): Ray applies that limit only to `Searcher`s and logged
+  that it would ignore it for the `BasicVariantGenerator`, so every trial
+  that fit the resources ran at once. The limit is now passed to the
+  generator itself.
+- `CompositeIntrinsicMotivation` in agent training: `ngu` raised on the first
+  rollout step (it was applied to the single episodic reward), a composite
+  of only rollout-time modules (e.g. two `EpisodicNovelty`) raised at the
+  first update, and `multiplicative` / `max` added the episodic and
+  learn-time groups instead of combining them. The groups are now merged by
+  the rule, a group with one module passes its reward through, and
+  `combination_kwargs.L` reaches `ngu` (it was never passed). The
+  constructor rejects `ngu` without exactly two components, a `weights` list
+  of the wrong length, and settings the chosen rule does not read.
+- `Agent.from_config` meant to drop the saved `intrinsic_motivation` dict
+  before rebuilding the agent (the module is restored from its own folder in
+  `load_state`), but looped over the characters of the string
+  `"intrinsic_motivation"` instead, so the agent was constructed with the
+  raw dict until `load_state` replaced it.
+- The config GUI let a sweep be saved over a training config (or the
+  reverse) with only the OS's generic replace prompt. Saving over the other
+  kind of file now asks with an explicit warning, the Run tab refuses a
+  training config in Sweep mode and a sweep in Train mode before starting,
+  and Save As for a new file starts in the Run tab's working folder.
+  Opening a training config in the Sweep tab no longer loads it into the
+  sweep form (which produced a hybrid file that plain Save wrote back over
+  the config); it offers a new sweep with that file as `base_config`.
+  Opening a sweep in the Config tab offers the Sweep tab.
+- Interrupting training (Ctrl+C) lost a best checkpoint still waiting out
+  `save_every`, and left the env open. `Trainer.train` now catches the
+  interrupt, runs the existing pending-best flush, closes the env, and
+  re-raises.
+- `phoenx-train --agent_dir DIR --log_level LEVEL` crashed with `NameError`
+  (`config` was only read from `config.json` when no log level was given).
+- `ModularModel.shared_update` is documented as what it is today: recorded
+  and saved, but not read by any agent's `learn`, which hard-codes the
+  routing (combined loss on-policy; critic-owned shared modules off-policy).
+- `Renderer` documents its fields. `renderer.save_dir` is overwritten by the
+  Trainer with the run's `save_dir`, so it is now hidden in the editor and
+  documented as having no effect.
+- The per-algorithm builders read `obs_key` / `goal_key` from the built
+  environment instead of indexing `config["env"]["config"]`, so a config that
+  omits those keys no longer fails with `KeyError`, and Isaac configs that
+  rely on `IsaacSimWrapper`'s `obs_key="policy"` default now hand normalizers
+  and intrinsic motivation `"policy"` rather than `None`.
+- `context_length` (the causal-transformer act-time window) is now a real
+  `Agent` constructor parameter and is saved by `get_config`. It previously
+  reached the agent only through the leftover-kwargs `setattr`, so a run
+  trained with a custom window reloaded with the default of 16.
+- `IsaacSimWrapper`'s `obs_key` is annotated `str | None`, matching the
+  documented `obs_key: null` for multi-modal observations.
+
 - `metrics.include: []` in a training YAML disabled every metric instead of
   meaning "no allow-list". Because an unrecognized key still passes through
   `MetricsManager` under its own flat name, the result was a run logging *only*

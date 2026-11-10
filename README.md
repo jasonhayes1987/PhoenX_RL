@@ -135,6 +135,8 @@ phoenx-train --config path/to/my_experiment.yml
 ### Resume from a saved agent directory
 ```bash
 phoenx-train --agent_dir path/to/saved/agent_dir
+# Train past the original run's limit (total, in the run's stop_unit):
+phoenx-train --agent_dir path/to/saved/agent_dir --stop_units 3000000
 ```
 
 Optional: `--log_level INFO` (or any standard level).

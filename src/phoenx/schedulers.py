@@ -35,8 +35,18 @@ class ScheduleWrapper:
             schedule_type: Scheduler kind: ``"linear"``, ``"cosine"``, or
                 ``"exponential"``.
             steps: Number of steps over which the schedule runs.
-            end_value: Ending value of the schedule.
-            start_value: Starting value of the schedule. Use default value of None for non learning rate schedules.
+            end_value: Ending value of the schedule. For ``linear`` and
+                ``exponential`` this is reached as the ratio
+                ``end_value / start_value``; for a ``cosine`` learning-rate
+                schedule it is the final learning rate itself.
+            start_value: Starting value of the schedule. Required for
+                ``linear`` and ``exponential``, and for any schedule without
+                an optimizer (reward-weight and other factor schedules),
+                since those scale by ``end_value / start_value``. For a
+                learning-rate schedule, set it to the optimizer's learning
+                rate so the schedule ends at ``end_value``. A ``cosine``
+                learning-rate schedule ignores it and starts from the
+                optimizer's learning rate.
             optimizer: Optimizer whose learning rate is scheduled, or ``None``
                 to use an internal dummy optimizer.
             kwargs (dict): Extra keyword arguments forwarded to the underlying

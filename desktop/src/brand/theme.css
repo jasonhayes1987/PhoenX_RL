@@ -1,0 +1,135 @@
+/* PhoenX RL window theme. Colors, type and the shared control styles.
+   Amber (--live) marks only a live action: decision 0006. */
+:root {
+  --bg: #070b10;
+  --bg-raise: #0b131b;
+  --panel-top: rgba(17, 27, 38, 0.92);
+  --panel-bottom: rgba(10, 16, 23, 0.92);
+  --well: #070d13;
+  --sunk: #060a0f;
+  --line: #1c2a38;
+  --line-soft: #16212d;
+  --line-input: #243444;
+  --text: #e6edf3;
+  --text-2: #c9d4df;
+  --muted: #8b98a8;
+  --faint: #6b7a8b;
+  --accent: #22d3ee;
+  --accent-ink: #a5f3fc;
+  --accent-soft: rgba(34, 211, 238, 0.08);
+  --accent-line: rgba(34, 211, 238, 0.4);
+  --live: #f59e0b;
+  --live-ink: #fbbf24;
+  --live-soft: rgba(245, 158, 11, 0.08);
+  --ok: #34d399;
+  --ok-ink: #6ee7b7;
+  --err: #ff7b7b;
+  --bad-bg: #2a1015;
+  --note: #8aa4c8;
+  --font-display: "Chakra Petch", "Segoe UI", sans-serif;
+  --font-body: "Inter", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 70% -10%, #0e2230 0%, var(--bg) 60%) fixed, var(--bg);
+  color: var(--text);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+  background: #0c141c;
+  border: 1px solid var(--line-input);
+  border-radius: 8px;
+  padding: 6px 14px;
+  color: var(--text-2);
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+input,
+select,
+textarea {
+  background: var(--well);
+  border: 1px solid var(--line-input);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+[data-tone="live"] {
+  color: var(--live-ink);
+  border-color: var(--live);
+}
+
+button.primary[data-tone="live"] {
+  background: var(--live);
+  border-color: var(--live);
+  color: #1a1205;
+  font-weight: 600;
+}
+
+button.primary[data-tone="live"]:hover:not(:disabled) {
+  background: #ffb84d;
+  color: #1a1205;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1c2a38;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

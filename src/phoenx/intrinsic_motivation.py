@@ -46,6 +46,9 @@ from .logging_config import get_logger
 # =============================================================================
 _REGISTRY: dict[str, type] = {}
 
+#: Config ``type`` names that build a ``CompositeIntrinsicMotivation``.
+COMPOSITE_TYPES = ('Composite', 'CompositeIntrinsicMotivation')
+
 
 def register_intrinsic_motivation(cls):
     """Register an ``IntrinsicMotivation`` subclass for save/load dispatch.
@@ -185,6 +188,35 @@ class IntrinsicMotivation(Model):
             Per-sample learn reward of shape ``(batch,)``.
         """
         return T.zeros(states.shape[0], device=self.device, dtype=T.float32)
+
+    def compute_total_reward(
+        self,
+        states: T.Tensor,
+        next_states: T.Tensor,
+        actions: T.Tensor | None,
+        rollout_rewards: T.Tensor,
+    ) -> tuple[T.Tensor, T.Tensor]:
+        """Return the full intrinsic reward for a learn batch.
+
+        Agents call this once per update. The default adds the learn-time
+        reward to the rollout-time reward stored with each transition;
+        ``CompositeIntrinsicMotivation`` overrides it to merge the two with
+        its combination rule.
+
+        Args:
+            states: Batch of states, shape ``(batch, *state_dim)``.
+            next_states: Batch of next states, shape ``(batch, *state_dim)``.
+            actions: Batch of actions, or ``None`` when unused.
+            rollout_rewards: Rollout-time rewards for the same transitions,
+                any shape with ``batch`` elements in the same order.
+
+        Returns:
+            total (torch.Tensor): Full intrinsic reward, shape ``(batch,)``.
+            learn (torch.Tensor): Learn-time part alone, shape ``(batch,)``,
+                for logging.
+        """
+        learn = self.compute_learn_reward(states, next_states, actions)
+        return learn + rollout_rewards.reshape(learn.shape), learn
 
     def compute_rollout_reward(
         self,
@@ -361,11 +393,17 @@ class IntrinsicMotivation(Model):
         """Construct a concrete intrinsic-motivation module by type name.
 
         Args:
-            im_type: One of ``'ICM'``, ``'RND'``, or ``'EpisodicNovelty'``.
+            im_type: One of ``'ICM'``, ``'RND'``, ``'EpisodicNovelty'``, or
+                ``'Composite'`` (also accepted as
+                ``'CompositeIntrinsicMotivation'``). A composite takes
+                already-built modules as ``components``;
+                [create_intrinsic_motivation][phoenx.builder.create_intrinsic_motivation]
+                builds them from YAML.
             **kwargs (Any): Forwarded to the subclass constructor.
 
         Returns:
-            A new ``ICM``, ``RND``, or ``EpisodicNovelty`` instance.
+            A new ``ICM``, ``RND``, ``EpisodicNovelty``, or
+            ``CompositeIntrinsicMotivation`` instance.
 
         Raises:
             ValueError: If ``im_type`` is not a known concrete type.
@@ -376,6 +414,8 @@ class IntrinsicMotivation(Model):
             return RND(**kwargs)
         elif im_type == 'EpisodicNovelty':
             return EpisodicNovelty(**kwargs)
+        elif im_type in COMPOSITE_TYPES:
+            return CompositeIntrinsicMotivation(**kwargs)
         else:
             raise ValueError(f"Unknown intrinsic motivation type: {im_type}")
 
@@ -1428,6 +1468,14 @@ _COMBINATION_RULES: dict[str, Callable] = {
     'ngu': ngu_combination,
 }
 
+#: ``combination_kwargs`` keys each rule reads.
+_COMBINATION_KWARGS: dict[str, frozenset] = {
+    'additive': frozenset({'weights'}),
+    'multiplicative': frozenset(),
+    'max': frozenset(),
+    'ngu': frozenset({'L'}),
+}
+
 
 @register_intrinsic_motivation
 class CompositeIntrinsicMotivation(IntrinsicMotivation):
@@ -1437,6 +1485,14 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
     own training. ``train`` calls each child's ``train`` and returns the sum
     of detached losses (for logging). Per-step rewards are merged with a named
     combination rule (``additive``, ``multiplicative``, ``max``, or ``ngu``).
+
+    Online children (``EpisodicNovelty``) produce their reward during the
+    rollout; parametric children (``ICM``, ``RND``) produce theirs at learn
+    time. The rule combines each group, then combines the two group results
+    in [compute_total_reward][phoenx.intrinsic_motivation.CompositeIntrinsicMotivation.compute_total_reward],
+    so ``ngu`` with ``[EpisodicNovelty, RND]`` gives
+    ``episodic * clip(lifelong, 1, L)``. A group with a single child passes
+    its reward through unchanged.
 
     Attributes:
         combination_rule: String key into the combination-rule registry.
@@ -1462,10 +1518,14 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         Args:
             env: Environment wrapper shared with the children.
             components: Child intrinsic-motivation modules to combine.
-            combination_rule: One of ``'additive'``, ``'multiplicative'``,
-                ``'max'``, or ``'ngu'``.
-            combination_kwargs: Extra kwargs for the rule (e.g. ``weights``
-                for additive combination).
+            combination_rule: How the children's rewards are merged:
+                ``'additive'`` (weighted sum), ``'multiplicative'``
+                (product), ``'max'`` (per-step maximum), or ``'ngu'``
+                (``episodic * clip(lifelong, 1, L)``; needs exactly two
+                children, episodic first).
+            combination_kwargs: Settings for the rule: ``weights`` (one per
+                child, ``additive`` only) or ``L`` (lifelong clip, ``ngu``
+                only, default 5.0).
             reward_weight: Outer scale applied after combining children.
             reward_scheduler: Optional schedule applied to ``reward_weight``.
             extrinsic_threshold: Intrinsic-only warmup steps.
@@ -1485,8 +1545,24 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             )
             if combination_rule not in _COMBINATION_RULES:
                 raise ValueError(f"Unknown combination_rule: {combination_rule}")
+            combination_kwargs = dict(combination_kwargs or {})
+            allowed = _COMBINATION_KWARGS[combination_rule]
+            unknown = sorted(set(combination_kwargs) - allowed)
+            if unknown:
+                raise ValueError(
+                    f"combination_kwargs {unknown} not used by combination_rule "
+                    f"'{combination_rule}' (accepts: {sorted(allowed) or 'nothing'})")
+            weights = combination_kwargs.get('weights')
+            if weights is not None and len(weights) != len(components):
+                raise ValueError(
+                    f"combination_kwargs.weights has {len(weights)} entries but there "
+                    f"are {len(components)} components; give one weight per component")
+            if combination_rule == 'ngu' and len(components) != 2:
+                raise ValueError(
+                    f"combination_rule 'ngu' needs exactly 2 components "
+                    f"[episodic, lifelong], got {len(components)}")
             self.combination_rule = combination_rule
-            self.combination_kwargs = combination_kwargs or {}
+            self.combination_kwargs = combination_kwargs
             self.components: List[IntrinsicMotivation] = components
             self.is_online = any(c.is_online for c in components)
 
@@ -1530,6 +1606,29 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             return None
         return [weights[i] for i, _ in components]
 
+    def _combine(self, rewards: list[T.Tensor], weights: list[float] | None = None) -> T.Tensor:
+        """Apply the combination rule to a list of reward tensors.
+
+        A single reward passes through unchanged (weighted, for
+        ``additive``), so a group with one child never trips ``ngu``'s
+        two-reward requirement.
+
+        Args:
+            rewards: Reward tensors of matching shape.
+            weights: Per-reward weights for ``additive``; ignored otherwise.
+
+        Returns:
+            Combined reward tensor.
+        """
+        rule = _COMBINATION_RULES[self.combination_rule]
+        if self.combination_rule == 'additive':
+            return rule(rewards, weights=weights)
+        if len(rewards) == 1:
+            return rewards[0]
+        if self.combination_rule == 'ngu':
+            return rule(rewards, L=self.combination_kwargs.get('L', 5.0))
+        return rule(rewards)
+
     def compute_rollout_reward(
         self,
         states: T.Tensor,
@@ -1551,17 +1650,20 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             Combined rollout reward of shape ``(batch,)``, or zeros when no
             online children are present.
         """
-        rule = _COMBINATION_RULES[self.combination_rule]
         online, _ = self._split_components()
         if not online:
             return T.zeros(states.shape[0], device=self.device, dtype=T.float32)
 
         rewards = [c.compute_rollout_reward(states, next_states, actions, env_indices) for _, c in online]
-        weights = self._weights_for(online)
+        return self._combine(rewards, self._weights_for(online))
 
-        if self.combination_rule == 'additive':
-            return rule(rewards, weights=weights)
-        return rule(rewards)
+    def _parametric_reward(self, states, next_states, actions) -> T.Tensor | None:
+        """Combined learn reward of the parametric children, or ``None``."""
+        _, parametric = self._split_components()
+        if not parametric:
+            return None
+        rewards = [c.compute_learn_reward(states, next_states, actions) for _, c in parametric]
+        return self._combine(rewards, self._weights_for(parametric))
 
     def compute_learn_reward(
         self,
@@ -1588,18 +1690,8 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
             RuntimeError: If neither parametric nor rollout rewards are
                 available to combine.
         """
-        rule = _COMBINATION_RULES[self.combination_rule]
-        online, parametric = self._split_components()
-
-        if parametric:
-            learn_rewards = [c.compute_learn_reward(states, next_states, actions) for _, c in parametric]
-            learn_weights = self._weights_for(parametric)
-            learn_combined = (rule(learn_rewards, weights=learn_weights)
-                              if self.combination_rule == 'additive'
-                              else rule(learn_rewards))
-        else:
-            learn_combined = None
-
+        online, _ = self._split_components()
+        learn_combined = self._parametric_reward(states, next_states, actions)
         rollout_combined = rollout_rewards if online else None
 
         if learn_combined is None and rollout_combined is None:
@@ -1609,9 +1701,54 @@ class CompositeIntrinsicMotivation(IntrinsicMotivation):
         elif rollout_combined is None:
             final_rewards = learn_combined
         else:
-            final_rewards = rule([rollout_combined, learn_combined])
+            # Online (episodic) group first: ngu reads [episodic, lifelong].
+            final_rewards = self._combine([rollout_combined, learn_combined])
 
         return self._scaled_reward_weight() * final_rewards
+
+    def compute_total_reward(
+        self,
+        states: T.Tensor,
+        next_states: T.Tensor,
+        actions: T.Tensor | None,
+        rollout_rewards: T.Tensor,
+    ) -> tuple[T.Tensor, T.Tensor]:
+        """Merge the online and parametric groups with the combination rule.
+
+        Unlike the base class, the rollout rewards are not simply added: the
+        two groups are combined by ``combination_rule`` and the result is
+        scaled by the composite ``reward_weight``.
+
+        Args:
+            states: Batch of states, shape ``(batch, *state_dim)``.
+            next_states: Batch of next states, shape ``(batch, *state_dim)``.
+            actions: Batch of actions, or ``None``.
+            rollout_rewards: Combined rollout rewards stored with the
+                transitions (from ``compute_rollout_reward``), ``batch``
+                elements in the same order.
+
+        Returns:
+            total (torch.Tensor): Combined intrinsic reward, ``(batch,)``.
+            learn (torch.Tensor): Parametric group's reward scaled by
+                ``reward_weight`` (zeros when there is none), for logging.
+        """
+        online, _ = self._split_components()
+        weight = self._scaled_reward_weight()
+        learn_combined = self._parametric_reward(states, next_states, actions)
+        rollout_combined = (rollout_rewards.reshape(states.shape[0]).to(self.device)
+                            if online else None)
+        if learn_combined is None and rollout_combined is None:
+            zeros = T.zeros(states.shape[0], device=self.device, dtype=T.float32)
+            return zeros, zeros
+        if learn_combined is None:
+            total = rollout_combined
+        elif rollout_combined is None:
+            total = learn_combined
+        else:
+            total = self._combine([rollout_combined, learn_combined])
+        learn = (weight * learn_combined if learn_combined is not None
+                 else T.zeros_like(total))
+        return weight * total, learn
 
     def train(self, states, next_states, actions=None) -> T.Tensor:
         """Train every child and return the sum of detached losses.

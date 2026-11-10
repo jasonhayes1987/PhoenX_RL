@@ -20,6 +20,7 @@ import gymnasium as gym
 import numpy as np
 import yaml
 
+from phoenx.config_utils import resolve_n_step
 from phoenx.models import modular_parts_from_config
 from phoenx.buffer import Buffer, RolloutBuffer, TrajectoryBuffer
 from phoenx.her import HindsightRelabeler
@@ -28,7 +29,7 @@ from phoenx.rl_agents import Agent
 from phoenx.renderer import Renderer
 from phoenx.rl_callbacks import load as callback_load
 from phoenx.trainer import TrainingSchedule, Trainer, SuccessCriterion
-from phoenx.intrinsic_motivation import IntrinsicMotivation
+from phoenx.intrinsic_motivation import COMPOSITE_TYPES, IntrinsicMotivation
 from phoenx.metrics import MetricsManager
 from phoenx.normalizer import create_normalizer as normalizer_factory, RunningNorm, BatchNorm, RewardNorm
 from phoenx.schedulers import ScheduleWrapper
@@ -252,10 +253,14 @@ def create_intrinsic_motivation(config: dict, env: EnvWrapper, key: str | None =
     Args:
         config: Spec with ``type`` and ``config`` keys. ``type`` is dispatched
             by ``IntrinsicMotivation.create_instance``; accepted values are
-            ``"ICM"``, ``"RND"``, and ``"EpisodicNovelty"``. Inside
-            ``config["config"]``, optional ``reward_scheduler`` is wrapped in
-            ``ScheduleWrapper`` and optional ``reward_normalizer`` is built via
-            [create_normalizer][phoenx.builder.create_normalizer]. ``env`` is injected before dispatch.
+            ``"ICM"``, ``"RND"``, ``"EpisodicNovelty"``, and ``"Composite"``.
+            Inside ``config["config"]``, optional ``reward_scheduler`` is
+            wrapped in ``ScheduleWrapper`` and optional ``reward_normalizer``
+            is built via [create_normalizer][phoenx.builder.create_normalizer].
+            A ``Composite`` lists its children under ``components``, each a
+            ``{type, config}`` spec built by this same function; it takes no
+            ``reward_normalizer`` of its own. ``env`` is injected before
+            dispatch.
         env: Environment injected into the IM config and used when building an
             optional reward normalizer.
         key: Present for call-site symmetry with [create_normalizer][phoenx.builder.create_normalizer];
@@ -270,8 +275,19 @@ def create_intrinsic_motivation(config: dict, env: EnvWrapper, key: str | None =
     im_config.update({
         'env': env,
         'reward_scheduler': ScheduleWrapper(**im_config['reward_scheduler']) if im_config.get('reward_scheduler', None) else None,
-        'reward_normalizer': create_normalizer(im_config['reward_normalizer'], env) if im_config.get('reward_normalizer', None) else None,
     })
+    if im_type in COMPOSITE_TYPES:
+        if im_config.get('reward_normalizer'):
+            raise ValueError(
+                "A Composite intrinsic motivation has no reward_normalizer of its own; "
+                "set reward_normalizer on its components instead.")
+        im_config.pop('reward_normalizer', None)
+        im_config['components'] = [
+            create_intrinsic_motivation(component, env, key)
+            for component in im_config.get('components') or []]
+    else:
+        im_config['reward_normalizer'] = (create_normalizer(im_config['reward_normalizer'], env)
+                                          if im_config.get('reward_normalizer', None) else None)
     return IntrinsicMotivation.create_instance(im_type, **im_config)
 
 
@@ -456,7 +472,9 @@ def build_agent(config: dict, env: EnvWrapper) -> Agent:
 def build_trainer_from_config(config: dict, log_level: str | None = None) -> Trainer:
     """Assemble a ``Trainer`` from a full parsed training config.
 
-    Seeds from ``config["schedule"]["seed"]`` when present, then builds env,
+    Seeds from ``config["schedule"]["seed"]`` when present, resolves the
+    n-step horizon with [resolve_n_step][phoenx.config_utils.resolve_n_step]
+    (so ``agent.config.N`` is the only place it needs to be set), then builds env,
     agent, buffer, schedule, callbacks, renderer, and success criterion via
     the factories in this module.
 
@@ -475,6 +493,10 @@ def build_trainer_from_config(config: dict, log_level: str | None = None) -> Tra
     seed = config.get('schedule', {}).get('seed', None)
     if seed is not None:
         set_seed(seed)
+
+    # agent.config.N is the single source of the n-step horizon; fan it out to
+    # the replay buffer, the VectorNStepReward wrapper and HER before building.
+    resolve_n_step(config)
 
     env = create_env(config)
     agent = build_agent(config, env)

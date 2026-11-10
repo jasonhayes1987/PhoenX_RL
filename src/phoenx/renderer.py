@@ -1,3 +1,5 @@
+"""Episode video recording (``Renderer``)."""
+
 from dataclasses import dataclass
 import os
 from typing import Literal
@@ -11,7 +13,14 @@ from .logging_config import get_logger
 
 @dataclass
 class Renderer:
-    """Handles all rendering, video creation, and video logging.
+    """Records episode videos to ``<save_dir>/renders/<train|test>/``.
+
+    Attributes:
+        render_freq: Record every Nth episode; ``0`` (default) never records.
+        save_dir: Root folder for the videos. The Trainer overwrites it with the
+            run's own ``save_dir``, so setting it in a config has no effect.
+        fps: Frames per second of the written video.
+        codec: Video codec passed to the writer (``libx264`` = H.264 MP4).
     """
     render_freq: int = 0
     save_dir: str = "models/"
@@ -19,6 +28,7 @@ class Renderer:
     codec: str = "libx264"
 
     def __post_init__(self):
+        """Attach a logger."""
         self.logger = get_logger(self.__class__.__name__, level='INFO')
 
     def render_episode(
@@ -117,6 +127,7 @@ class Renderer:
         return episode % self.render_freq == 0
 
     def get_config(self) -> dict:
+        """Constructor kwargs that rebuild this renderer."""
         return {
             "render_freq": self.render_freq,
             "save_dir": self.save_dir,

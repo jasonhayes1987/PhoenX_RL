@@ -14,7 +14,7 @@ causal transformer) belong in the trunk only.
 # imports
 from abc import abstractmethod
 import math
-from typing import Optional, List, Dict, Iterator, Callable, Any
+from typing import Optional, List, Dict, Iterator, Callable, Any, Literal
 from pathlib import Path
 
 import gymnasium as gym
@@ -32,6 +32,8 @@ from torch.distributions import (
 from .distributions import SquashedNormal, ScaledBeta, ScaledKumaraswamy, BoundedIndependent
 from .torch_utils import get_device, VarianceScaling_
 from .logging_config import get_logger
+from .config_utils import init_param_names, reject_unknown_keys
+from .layer_specs import INIT_SPEC_KEYS, LAYER_SPECS, unknown_layer_params
 from .env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper
 from .schedulers import ScheduleWrapper
 
@@ -407,7 +409,15 @@ LAYER_REGISTRY: Dict[str, Callable[[dict], nn.Module]] = {
 
 #: keys of the per-layer ``params`` dict that configure weight initialization
 #: rather than the layer constructor itself.
-_INIT_SPEC_KEYS = ('kernel', 'kernel_params', 'kernel params')
+_INIT_SPEC_KEYS = INIT_SPEC_KEYS
+
+#: keys a ``roots`` / ``trunk`` subnetwork config may carry.
+_SUBNET_KEYS = ('layer_config', 'input_keys', 'optimizer_params', 'lr_scheduler')
+
+#: keys an ``agent.config.model`` block may carry (``type`` is the optional
+#: ``'ModularModel'`` tag of the serialized form).
+_MODEL_KEYS = ('type', 'roots', 'trunk', 'branches', 'optimizer_params',
+               'lr_scheduler', 'shared_update', 'device')
 
 
 def build_layer(layer_type: str, params: dict | None = None) -> nn.Module:
@@ -426,10 +436,19 @@ def build_layer(layer_type: str, params: dict | None = None) -> nn.Module:
 
     Raises:
         ValueError: If ``layer_type`` is unknown or a required param is missing.
+        TypeError: If ``params`` holds a name the layer would silently ignore
+            (see [LAYER_SPECS][phoenx.layer_specs.LAYER_SPECS]).
     """
     if layer_type not in LAYER_REGISTRY:
         raise ValueError(
             f"Unsupported layer type: {layer_type!r}. Available: {sorted(LAYER_REGISTRY)}"
+        )
+    unknown = unknown_layer_params(layer_type, params)
+    if unknown:
+        reject_unknown_keys(
+            f"Layer {layer_type!r}", unknown,
+            list(LAYER_SPECS[layer_type]['params']) + ['kernel', 'kernel_params'],
+            allow_private=False,
         )
     ctor_params = {k: v for k, v in (params or {}).items() if k not in _INIT_SPEC_KEYS}
     try:
@@ -1964,6 +1983,14 @@ class SubNetwork(nn.Module):
 # Branch heads
 # -----------------------------------------------------------------------------
 
+def _check_distribution(name: str, allowed: tuple[str, ...], owner: str) -> None:
+    """Fail at construction instead of at the first forward pass."""
+    if name not in allowed:
+        raise ValueError(
+            f"{owner}: unsupported distribution {name!r}; choose one of {', '.join(allowed)}."
+        )
+
+
 class Head(nn.Module):
     """Base class for branch heads: a ``SubNetwork`` body plus env-shaped outputs.
 
@@ -2084,8 +2111,10 @@ class Head(nn.Module):
         """Rebuild a head from an inner config dict, injecting ``env``.
 
         Schedule dicts under ``lr_scheduler`` / ``temperature_schedule`` are
-        reconstructed as ``ScheduleWrapper`` instances. Keys unknown to the
-        constructor are dropped.
+        reconstructed as ``ScheduleWrapper`` instances. Keys that only legacy
+        ``Model`` configs carry are dropped; any other key the constructor
+        does not accept raises ``TypeError`` (it is almost always a typo, and
+        dropping it would silently build the wrong head).
 
         Args:
             config: Inner config (the ``'config'`` payload of ``get_config``).
@@ -2094,14 +2123,18 @@ class Head(nn.Module):
         Returns:
             A new head instance of this class.
         """
-        import inspect
         cfg = dict(config)
         cfg.pop('env', None)
         for key in ('lr_scheduler', 'temperature_schedule'):
             if isinstance(cfg.get(key), dict):
                 cfg[key] = ScheduleWrapper.from_config(cfg[key])
         cfg['env'] = env
-        params = inspect.signature(cls.__init__).parameters
+        params = init_param_names(cls)
+        reject_unknown_keys(
+            cls.__name__,
+            [k for k in cfg if k not in params and k not in _legacy_model_keys()],
+            params - {'env'},
+        )
         kwargs = {k: v for k, v in cfg.items() if k in params}
         return cls(**kwargs)
 
@@ -2136,7 +2169,7 @@ class StochasticDiscreteHead(Head):
         output_config: List[Dict] | None = None,
         optimizer_params: dict | None = None,
         lr_scheduler: ScheduleWrapper | None = None,
-        distribution: str = 'categorical',
+        distribution: Literal['categorical'] = 'categorical',
         temperature: float = 1.0,
         temperature_schedule: ScheduleWrapper | None = None,
         device: str | T.device | None = None,
@@ -2155,7 +2188,11 @@ class StochasticDiscreteHead(Head):
             temperature_schedule: Optional multiplier schedule on temperature.
             device: Device to place parameters on.
             name: Display name used in error messages.
+
+        Raises:
+            ValueError: If ``distribution`` is not ``'categorical'``.
         """
+        _check_distribution(distribution, ('categorical',), type(self).__name__)
         self.distribution = distribution
         self.temperature = temperature
         self.temperature_schedule = temperature_schedule
@@ -2213,7 +2250,7 @@ class StochasticContinuousHead(Head):
         output_config: List[Dict] | None = None,
         optimizer_params: dict | None = None,
         lr_scheduler: ScheduleWrapper | None = None,
-        distribution: str = 'beta',
+        distribution: Literal['beta', 'kumaraswamy', 'normal'] = 'beta',
         device: str | T.device | None = None,
         name: str | None = None,
     ):
@@ -2228,7 +2265,11 @@ class StochasticContinuousHead(Head):
             distribution: ``'beta'``, ``'kumaraswamy'``, or ``'normal'``.
             device: Device to place parameters on.
             name: Display name used in error messages.
+
+        Raises:
+            ValueError: If ``distribution`` is not one of the three families.
         """
+        _check_distribution(distribution, ('beta', 'kumaraswamy', 'normal'), type(self).__name__)
         self.distribution = distribution
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device, name)
 
@@ -2464,6 +2505,14 @@ def build_head(config: dict, env: EnvWrapper) -> Head:
     return HEAD_REGISTRY[head_type].from_config(inner, env=env)
 
 
+def _legacy_model_keys() -> set[str]:
+    """Constructor keys of the legacy ``Model`` classes heads can be built from."""
+    keys: set[str] = set()
+    for legacy_name in LEGACY_MODEL_TO_HEAD_TYPE:
+        keys |= init_param_names(globals()[legacy_name])
+    return keys
+
+
 #: legacy Model class name -> composite Head class name (config adapter).
 LEGACY_MODEL_TO_HEAD_TYPE: Dict[str, str] = {
     'StochasticDiscretePolicy': 'StochasticDiscreteHead',
@@ -2525,6 +2574,7 @@ def modular_parts_from_config(config: dict, env: EnvWrapper) -> dict:
         ``device``.
     """
     cfg = dict(config)
+    reject_unknown_keys("agent.config.model", cfg, _MODEL_KEYS)
     roots = None
     if cfg.get('roots'):
         roots = {
@@ -2658,7 +2708,7 @@ class ModularModel(nn.Module):
         branches: Dict[str, Head] | None = None,
         optimizer_params: dict | None = None,
         lr_scheduler: ScheduleWrapper | None = None,
-        shared_update: str = 'combined',
+        shared_update: Literal['combined', 'critic', 'policy'] = 'combined',
         device: str | T.device | None = None,
         name: str | None = None,
     ):
@@ -2673,8 +2723,13 @@ class ModularModel(nn.Module):
                 own; defaults to Adam with ``lr=0.001``.
             lr_scheduler: Default ``ScheduleWrapper`` cloned per module that
                 has no scheduler of its own.
-            shared_update: Ownership hint for agents — ``'combined'``,
-                ``'critic'``, or ``'policy'``.
+            shared_update: Intended rule for which loss updates the shared
+                roots / trunk (``'combined'``, ``'critic'`` or ``'policy'``).
+                Currently recorded and saved only: each agent's ``learn``
+                hard-codes the routing (on-policy agents use the combined
+                loss; off-policy agents train shared modules from the critic
+                loss and detach them for the actor), so changing it has no
+                effect yet.
             device: Device for parameters (``None`` = framework default).
             name: Display name used in error messages.
 
@@ -3388,6 +3443,7 @@ class ModularModel(nn.Module):
     def _subnet_from_config(cfg: dict | None, name: str) -> SubNetwork | None:
         if cfg is None:
             return None
+        reject_unknown_keys(f"Subnetwork {name!r}", cfg, _SUBNET_KEYS)
         lr_sched = cfg.get('lr_scheduler')
         if isinstance(lr_sched, dict):
             lr_sched = ScheduleWrapper.from_config(lr_sched)

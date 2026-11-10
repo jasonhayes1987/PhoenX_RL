@@ -38,9 +38,33 @@ nav:
       - Installation: how-to/installation.md            # snippet include of root installation.md
       - Getting Started: how-to/getting-started.md      # phoenx-train / phoenx-test CLI usage
       - Configuration Files: how-to/configurations.md   # YAML schema, bundled examples, config resolution
+      - The PhoenX Window: how-to/window.md         # desktop window, installer limit, doctor
       - Metrics Reference: how-to/metrics-reference.md  # the logged metrics, what they measure, how to read them
       - Hyperparameter Sweeps: how-to/hyperparameter-sweeps.md  # phoenx-tune multi-phase Ray Tune sweeps
       - Isaac Sim Environments: how-to/isaac-sim.md     # custom cfg .py files
+  - Decisions:
+      - Index: decisions/index.md
+      - 0001 Python form: decisions/0001-session-uses-the-python-form.md
+      - 0002 Five pages: decisions/0002-five-sidebar-pages.md
+      - 0003 Empty pages: decisions/0003-empty-dashboard-and-settings.md
+      - 0004 Open on an editor: decisions/0004-open-on-the-editor.md
+      - 0005 Brand folder: decisions/0005-one-brand-folder.md
+      - 0006 Amber means live: decisions/0006-amber-means-live.md
+      - 0007 Header status: decisions/0007-header-is-the-run-word.md
+      - 0008 Questions in Python: decisions/0008-questions-stay-in-python.md
+      - 0009 One Python process: decisions/0009-one-python-process.md
+      - 0010 Old window overlap: decisions/0010-tkinter-until-the-window-existed.md
+      - 0011 Installer limit: decisions/0011-installer-does-not-include-python.md
+      - 0012 Desktop tree: decisions/0012-desktop-code-is-reviewed-with-the-rest.md
+      - 0013 Vitest: decisions/0013-vitest-for-the-screen.md
+      - 0014 Stable Rust: decisions/0014-official-stable-rust.md
+      - 0015 Visible-page shortcuts: decisions/0015-shortcuts-follow-the-visible-page.md
+      - 0016 The command waits: decisions/0016-the-command-waits.md
+      - 0017 Product name: decisions/0017-product-name-and-per-user-install.md
+      - 0018 One window: decisions/0018-one-window.md
+      - 0019 Session pipes: decisions/0019-rust-forwards-pipes.md
+      - 0020 Tkinter layout: decisions/0020-form-follows-the-tkinter-layout.md
+      - 0021 Overview cards: decisions/0021-overview-cards-are-shortcuts.md
   - API Reference:
       - Agents (phoenx.rl_agents): api/rl_agents.md
       - Models (phoenx.models): api/models.md
@@ -54,6 +78,17 @@ nav:
       - Noise (phoenx.noise): api/noise.md
       - Schedulers (phoenx.schedulers): api/schedulers.md
       - Builder (phoenx.builder): api/builder.md
+      - Config Utilities (phoenx.config_utils): api/config_utils.md
+      - Config Schema (phoenx.config_schema): api/config_schema.md
+      - Layer Specs (phoenx.layer_specs): api/layer_specs.md
+      - Config Form (phoenx.config_form): api/config_form.md
+      - Example Files (phoenx.example_files): api/example_files.md
+      - Launch Commands (phoenx.launch_cmd): api/launch_cmd.md
+      - Window Session (phoenx.gui_session): api/gui_session.md
+      - Window Launcher (phoenx.gui_launch): api/gui_launch.md
+      - Run Info (phoenx.run_info): api/run_info.md
+      - Process Runner (phoenx.process_runner): api/process_runner.md
+      - Sweep Schema (phoenx.sweep_schema): api/sweep_schema.md
       - RL Callbacks (phoenx.rl_callbacks): api/rl_callbacks.md
       - Ray Tune (phoenx.ray_tune): api/ray_tune.md
       - Agent Utils (phoenx.agent_utils): api/agent_utils.md

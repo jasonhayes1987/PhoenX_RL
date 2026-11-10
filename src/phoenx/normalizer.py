@@ -11,6 +11,7 @@ import torch as T
 import numpy as np
 from .torch_utils import get_device
 from .logging_config import get_logger
+from .config_utils import init_param_names, reject_unknown_keys
 
 
 def create_normalizer(config: dict) -> 'BaseNormalizer':
@@ -71,9 +72,11 @@ class BaseNormalizer:
                 framework default via ``get_device``.
             log_level: Logger level name (e.g. ``'INFO'``).
             name: Logger / display name; defaults to the class name.
-            **kwargs (Any): Extra attributes set on ``self`` via
-                ``setattr``.
+            **kwargs (Any): Private diagnostic knobs (names starting with
+                ``_``) set on ``self`` via ``setattr``; any other key raises
+                ``TypeError``.
         """
+        reject_unknown_keys(type(self).__name__, kwargs, init_param_names(type(self)))
         self.name = name if name else self.__class__.__name__
         self.logger = get_logger(self.name, level=log_level.upper())
         self.kwargs = kwargs

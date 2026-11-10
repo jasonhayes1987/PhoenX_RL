@@ -65,7 +65,19 @@ phoenx-train --config path/to/my_experiment.yml
 
 # Resume from a previously saved agent directory
 phoenx-train --agent_dir path/to/saved/agent_dir
+
+# Resume and train past the original limit
+phoenx-train --agent_dir path/to/saved/agent_dir --stop_units 3000000
 ```
+
+An agent directory is the run's `save_dir` (it holds `config.json`, `agent/`
+and `trainer_state.pt`). Training saves it only when the rolling average
+reward reaches a new best, so it holds the *best* checkpoint, and a resume
+continues from the step that checkpoint was taken at, with the original
+`schedule.stop_units`. `--stop_units` replaces that limit (a total, in the
+run's `stop_unit`); a value the checkpoint has already reached is refused,
+since training would stop at once. `python -m phoenx.run_info DIR` prints the
+checkpoint's step, episodes, best reward and limit as JSON.
 
 `phoenx.builder.load_config` resolves `--config` in this order: an existing
 on-disk path always wins; otherwise a relative value is looked up among the

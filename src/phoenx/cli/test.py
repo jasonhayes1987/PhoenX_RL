@@ -21,6 +21,7 @@ import json
 import argparse
 from pathlib import Path
 
+from phoenx.process_runner import run_interruptible
 from phoenx.env_wrapper import EnvWrapper
 from phoenx.trainer import Trainer
 from phoenx.logging_config import configure_logging
@@ -55,6 +56,7 @@ def build_eval_env(agent_dir: Path, env: str|None, num_envs: int|None, render_mo
 
 
 def main() -> None:
+    """Parse arguments, load the saved agent, and run evaluation episodes."""
     parser = argparse.ArgumentParser(description="Watch / evaluate a trained agent.")
     parser.add_argument(
         "--agent_dir",
@@ -114,5 +116,10 @@ def main() -> None:
     trainer = Trainer.load(agent_dir, env=env, load_weights=True, load_buffer=False, log_level=args.log_level)
     trainer.test(unit="episode", units=args.num_episodes)
     
+def run() -> None:
+    """Console-script entry point: ``main`` with clean Ctrl+C / Stop handling."""
+    run_interruptible(main)
+
+
 if __name__ == "__main__":
-    main()
+    run()
