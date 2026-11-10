@@ -155,6 +155,7 @@ def resolve_n_step(config: dict) -> dict:
         ValueError: If two places name different horizons.
 
     Example:
+        ```python
         >>> cfg = {
         ...     "agent": {"type": "SAC", "config": {"N": 3}},
         ...     "env": {"type": "gymnasium", "config": {"cfg": "Pendulum-v1"}},
@@ -164,6 +165,7 @@ def resolve_n_step(config: dict) -> dict:
         3
         >>> cfg["env"]["config"]["wrappers"][0]["params"]["n"]
         3
+        ```
     """
     agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
     agent_type = agent.get("type")

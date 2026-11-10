@@ -49,6 +49,10 @@ phoenx-train --config LunarLanderContinuous-v3/sac.yml
 
 ## Editing a config in the GUI
 
+Open the window from the environment where PhoenX is installed. The
+installer for the window does not include Python or PhoenX. See
+[The PhoenX window](window.md).
+
 ```bash
 phoenx-config gui                      # start blank, or New > From example
 phoenx-config gui path/to/my_run.yml   # open an existing config
@@ -72,22 +76,21 @@ the description from the code's docstring.
   field. Save warns before writing a config with problems.
 - **Show only set fields** hides everything the config does not set, which is
   a quick way to see what it actually changes.
-- **Right-click a field name** to send it to the Sweep tab (see
+- **Right-click a field name** to send it to Sweep Builder (see
   [Hyperparameter sweeps](hyperparameter-sweeps.md#building-a-sweep-in-the-gui)).
 
 Comments and YAML anchors are not preserved when an existing file is saved;
 anchored values are written out in full. Keys the form has no field for
 (diagnostic `_` knobs, or typos) are kept in each section's *other keys* field
-rather than dropped. The editor needs `tkinter`, which python.org installers
-include; on Debian/Ubuntu install `python3-tk`.
+rather than dropped.
 
 ## Running from the GUI
 
-The same window has a **Run** tab that starts the PhoenX commands for you:
+The same window has a **Launch** page that starts the PhoenX commands for you:
 
 | Mode | Runs |
 |------|------|
-| Train | `phoenx-train --config FILE` (**Use editor's config** saves and picks the file open in the Config tab) |
+| Train | `phoenx-train --config FILE` (**Use Config Builder file** saves and picks the file open in Config Builder) |
 | Resume | `phoenx-train --agent_dir DIR --stop_units N` |
 | Test | `phoenx-test --agent_dir DIR ...` |
 | Sweep | `phoenx-tune --config SWEEP ...` |
@@ -111,7 +114,7 @@ folder**.
   Ray workers, is killed.
 - After a training run finishes, its folder is filled in for Resume and Test.
 
-When a run's output is not a terminal (the Run tab, `nohup`, or
+When a run's output is not a terminal (the Launch page, `nohup`, or
 `phoenx-train ... > train.log`), the Trainer prints plain lines instead of
 the live dashboard: `[progress] timestep 14,596/40,000 episodes=499
 avg_reward=43.10 elapsed=0:00:05` every 5 seconds, `[checkpoint] ...` after

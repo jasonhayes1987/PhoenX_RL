@@ -5,8 +5,6 @@ helpers below, must not import ``torch`` or ``tkinter``. Each check is a real
 second process. The child does not catch exceptions: a stub that raises
 ``NotImplementedError`` exits non-zero and fails the test by assertion.
 
-REEXPORT: the names still published from ``config_gui`` and ``run_panel`` are
-the same objects as the moved helpers.
 """
 
 from __future__ import annotations
@@ -90,35 +88,3 @@ def test_command_text_fresh_interpreter_omits_torch_and_tkinter():
         leaked = [name for name in ("torch", "tkinter") if name in sys.modules]
         assert not leaked, leaked
         """)
-
-
-def test_config_gui_bundled_examples_is_example_files_bundled_examples():
-    """REEXPORT: config_gui.bundled_examples is example_files.bundled_examples."""
-    import phoenx.config_gui as config_gui
-    import phoenx.example_files as example_files
-
-    assert config_gui.bundled_examples is example_files.bundled_examples
-
-
-def test_run_panel_build_command_is_launch_cmd_build_command():
-    """REEXPORT: run_panel.build_command is launch_cmd.build_command."""
-    import phoenx.launch_cmd as launch_cmd
-    import phoenx.run_panel as run_panel
-
-    assert run_panel.build_command is launch_cmd.build_command
-
-
-def test_run_panel_describe_run_is_launch_cmd_describe_run():
-    """REEXPORT: run_panel.describe_run is launch_cmd.describe_run."""
-    import phoenx.launch_cmd as launch_cmd
-    import phoenx.run_panel as run_panel
-
-    assert run_panel.describe_run is launch_cmd.describe_run
-
-
-def test_run_panel_join_is_launch_cmd_command_text():
-    """REEXPORT: run_panel._join is launch_cmd.command_text."""
-    import phoenx.launch_cmd as launch_cmd
-    import phoenx.run_panel as run_panel
-
-    assert run_panel._join is launch_cmd.command_text

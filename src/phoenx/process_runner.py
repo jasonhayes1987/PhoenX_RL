@@ -94,15 +94,22 @@ def parse_progress(line: str) -> Progress | None:
 
 
 def install_interrupt_handlers() -> None:
-    """Make Ctrl+Break raise ``KeyboardInterrupt`` on Windows, like Ctrl+C.
+    """Make the GUI's Stop raise ``KeyboardInterrupt`` in a PhoenX CLI.
 
     Windows can only interrupt a child process in its own process group with
-    Ctrl+Break, whose default action kills Python outright. The PhoenX CLIs
-    call this so the GUI's Stop lets training flush its pending best
-    checkpoint first. No-op elsewhere.
+    Ctrl+Break, whose default action kills Python outright, so Ctrl+Break is
+    mapped to ``KeyboardInterrupt`` like Ctrl+C.
+
+    Elsewhere, a process started in the background (``nohup``, ``&`` in a
+    script, some launchers) inherits SIGINT set to *ignored*, and Python then
+    never raises ``KeyboardInterrupt``: Stop would always end in a kill after
+    the grace period, without flushing the best checkpoint. SIGINT is put
+    back to the normal handler in that case.
     """
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, signal.default_int_handler)
+    if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
 
 
 def run_interruptible(main) -> None:

@@ -152,6 +152,14 @@ __autograph_*.py
 *.pt
 *.json
 !tests/fixtures/smoke_baselines.json
+# The desktop window's own config files are source (the *.json rule above is
+# for run output); its generated Tauri schemas stay ignored.
+!desktop/package.json
+!desktop/package-lock.json
+!desktop/tsconfig.json
+!desktop/src-tauri/tauri.conf.json
+!desktop/src-tauri/capabilities/*.json
+desktop/src-tauri/gen/
 
 # Playwright
 node_modules/

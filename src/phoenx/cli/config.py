@@ -9,7 +9,7 @@ Subcommands:
   an environment or touching torch.
 * ``vscode`` writes the schema and points the VS Code YAML extension at it,
   for autocomplete, hover docs and inline errors while editing configs.
-* ``gui`` opens the config editor window ([phoenx.config_gui][]).
+* ``gui`` opens the PhoenX window ([phoenx.gui_launch][]).
 
 Example:
     ``phoenx-config validate my_run.yml``
@@ -97,7 +97,9 @@ def _cmd_vscode(args: argparse.Namespace) -> int:
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             print(f"{settings_path} is not plain JSON (comments?); add this by hand:")
-            print(json.dumps({"yaml.schemas": {f"./{args.schema}": args.glob}}, indent=2))
+            print(
+                json.dumps({"yaml.schemas": {f"./{args.schema}": args.glob}}, indent=2)
+            )
             return 1
     schemas = settings.setdefault("yaml.schemas", {})
     schemas[f"./{Path(args.schema).as_posix()}"] = args.glob
@@ -110,41 +112,57 @@ def _cmd_vscode(args: argparse.Namespace) -> int:
 
 
 def _cmd_gui(args: argparse.Namespace) -> int:
-    try:
-        from phoenx.config_gui import main as gui_main
-    except ImportError as exc:  # tkinter missing from this Python
-        print(f"The config editor needs tkinter, which this Python lacks ({exc}).\n"
-              "On Windows/macOS, reinstall Python from python.org with Tcl/Tk enabled; "
-              "on Debian/Ubuntu: sudo apt install python3-tk", file=sys.stderr)
-        return 1
-    return gui_main(args.file)
+    from phoenx.gui_launch import doctor, launch_window
+
+    if args.doctor:
+        return doctor()
+    return launch_window(args.file)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``phoenx-config`` command."""
     parser = argparse.ArgumentParser(
-        prog="phoenx-config", description="PhoenX config schema and validation tools")
+        prog="phoenx-config", description="PhoenX config schema and validation tools"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("schema", help="Write the config JSON Schema")
-    p.add_argument("-o", "--output", default=DEFAULT_SCHEMA_NAME,
-                   help=f"Output file, or '-' for stdout (default: {DEFAULT_SCHEMA_NAME})")
+    p.add_argument(
+        "-o",
+        "--output",
+        default=DEFAULT_SCHEMA_NAME,
+        help=f"Output file, or '-' for stdout (default: {DEFAULT_SCHEMA_NAME})",
+    )
     p.set_defaults(func=_cmd_schema)
 
     p = sub.add_parser("validate", help="Check YAML configs without building anything")
     p.add_argument("files", nargs="+", help="Config files to check")
     p.set_defaults(func=_cmd_validate)
 
-    p = sub.add_parser("vscode", help="Enable YAML autocomplete in VS Code for a project")
-    p.add_argument("--root", default=".", help="Project folder (default: current folder)")
-    p.add_argument("--schema", default=DEFAULT_SCHEMA_NAME,
-                   help="Schema path, relative to --root")
-    p.add_argument("--glob", nargs="+", default=DEFAULT_GLOBS,
-                   help=f"Config file globs (default: {' '.join(DEFAULT_GLOBS)})")
+    p = sub.add_parser(
+        "vscode", help="Enable YAML autocomplete in VS Code for a project"
+    )
+    p.add_argument(
+        "--root", default=".", help="Project folder (default: current folder)"
+    )
+    p.add_argument(
+        "--schema", default=DEFAULT_SCHEMA_NAME, help="Schema path, relative to --root"
+    )
+    p.add_argument(
+        "--glob",
+        nargs="+",
+        default=DEFAULT_GLOBS,
+        help=f"Config file globs (default: {' '.join(DEFAULT_GLOBS)})",
+    )
     p.set_defaults(func=_cmd_vscode)
 
-    p = sub.add_parser("gui", help="Open the config editor window")
-    p.add_argument("file", nargs="?", help="Config to open (optional)")
+    p = sub.add_parser("gui", help="Open the PhoenX window")
+    p.add_argument("file", nargs="?", help="Config or sweep to open (optional)")
+    p.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Print the Python and window paths without opening the window",
+    )
     p.set_defaults(func=_cmd_gui)
 
     args = parser.parse_args(argv)

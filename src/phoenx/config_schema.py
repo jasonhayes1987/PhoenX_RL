@@ -17,10 +17,12 @@ extension speaks best). It powers editor autocomplete and
 ``phoenx-config validate``, and is the field list the config GUI renders.
 
 Example:
+    ```python
     >>> from phoenx.config_schema import build_schema
     >>> schema = build_schema()
     >>> sorted(schema["properties"])[:3]
     ['agent', 'buffer', 'callbacks']
+    ```
 """
 
 from __future__ import annotations

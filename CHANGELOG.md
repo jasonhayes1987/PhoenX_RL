@@ -5,7 +5,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- The PhoenX RL window has a new look and opens each editor on an overview.
+  Config Builder: Agent / Environment / Schedule cards that show only the
+  settings the chosen agent reads (on-policy agents hide `batch_size`,
+  `updates_per_learn` and `warmup_steps`; only PPO shows `learning_epochs`
+  and `mini_batch_size`), and a roots → trunk → branches diagram whose
+  inspector edits the selected block. Sweep Builder: phase cards, a table of
+  what the selected phase searches, overrides and defaults. Launch: mode
+  cards and live tiles for timestep, episodes, average reward, best saved
+  reward and elapsed time. The full form is under **All fields** (decisions
+  0020 and 0021). Fonts are bundled, so the window needs no network.
+- `phoenx-config gui` opens the PhoenX RL window and blocks until it closes.
+  It no longer imports tkinter.
+
+### Removed
+- The Tkinter window: `phoenx.config_gui`, `phoenx.sweep_editor`, and
+  `phoenx.run_panel`. Launch commands now live in `phoenx.launch_cmd`.
+  Example listings live in `phoenx.example_files`.
+
 ### Added
+- A desktop window, started with `phoenx-config gui` (and `phoenx-config gui --doctor`).
+  Config Builder, Sweep Builder, and Launch replace the former Tkinter tabs.
+  Dashboard and Settings are blank. The Windows installer is per-user and
+  does not include Python or PhoenX. The how-to page is "The PhoenX window".
+- `phoenx.gui_session`: the long-lived process the window calls for every
+  edit, check, save, and launch.
+- `phoenx.gui_launch`: finds `phoenx-rl` and waits until the window exits.
 - `intrinsic_motivation: {type: Composite, ...}` builds a
   `CompositeIntrinsicMotivation` from YAML, with its `components` written as
   ordinary intrinsic-motivation specs. Previously a composite could only be
@@ -14,22 +40,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a learn batch (learn-time plus rollout-time). Agents now call it instead
   of adding the two parts themselves, so a composite can merge them with its
   combination rule.
-- A **Sweep** tab in `phoenx-config gui` (`phoenx.sweep_editor`) for building
+- **Sweep Builder** in `phoenx-config gui` (`phoenx.gui_session`) for building
   Ray Tune sweep files: the config form generated from a new sweep schema
   (`phoenx.sweep_schema.build_sweep_schema`, with a `dist` dropdown per
   search spec), plus a *Base config fields* tree of every field in the
   sweep's `base_config` with its dotted path. Double-click a field to add it
   to a phase's search space with a starting spec chosen from its type and
   value (`suggest_spec`), or add it as an override; right-click a field in
-  the Config tab for the same. **Dry run** runs
-  `phoenx-tune --validate-only` in the Run tab.
+  Config Builder for the same. **Dry run** runs
+  `phoenx-tune --validate-only` on the Launch page.
 - `phoenx.sweep_schema.validate_sweep`: Ray-free sweep checks against the
   base config (every override / search path must exist in it, spec ranges,
   block names, and a sample trial per phase, including every `choice`
   option, validated with the training-config schema).
 - `phoenx.config_form.iter_fields` / `find_field`: every value field of a
   form with its sweep-style dotted path.
-- A **Run** tab in `phoenx-config gui` (`phoenx.run_panel`): Train, Resume
+- A **Launch** page in `phoenx-config gui` (`phoenx.gui_session`, commands in `phoenx.launch_cmd`): Train, Resume
   (with a new training limit), Test and Sweep, each started as a separate
   process with the same command the terminal would run, which is shown and
   copyable. Live log, progress bar from the Trainer's `[progress]` lines,
@@ -37,7 +63,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (graceful interrupt, then kill of the process tree after 15 s), and the
   trained folder filled in for Resume / Test afterwards.
 - `phoenx.process_runner.ProcessRunner`: Tk-free child-process control used
-  by the Run tab (streamed UTF-8 output, two-stage stop on Linux, macOS and
+  by the Launch page (streamed UTF-8 output, two-stage stop on Linux, macOS and
   Windows).
 - Plain-text progress when the Trainer's output is not a terminal: Rich's
   live dashboard draws nothing into a pipe or file, so `train()` / `test()`
@@ -55,8 +81,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Every field the config editor shows now has help text, enforced by a test
   that walks the whole form (every type choice, every list / map item).
   Layer params get descriptions from `phoenx.layer_specs.LAYER_PARAM_DOCS`.
-- A config editor window, `phoenx-config gui [FILE]` (`phoenx.config_gui`,
-  standard-library tkinter, no torch import). It is generated from the config
+- A config editor in `phoenx-config gui` (`phoenx.gui_session`, no torch import).
+  It is generated from the config
   JSON Schema, so every agent / head / layer / normalizer / buffer setting
   appears as a field, dropdown or checkbox with its docstring as a tooltip;
   type dropdowns swap the fields below them; layer lists and model branches
@@ -492,6 +518,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `trainer.py`, and `builder.py` all import and which is untouched.
 
 ### Fixed
+- Stop could never interrupt training when the window (or any parent) was
+  started with SIGINT ignored, as `nohup` and background jobs do on Linux and
+  macOS: Python then never raises `KeyboardInterrupt`, so every Stop ended in
+  a kill after the grace period without flushing the best checkpoint. The
+  PhoenX CLIs now restore SIGINT at startup.
+- The PhoenX RL window's form now behaves like the Tkinter editor it
+  replaced (decision 0020). Layers and other list items show their type's
+  fields right under the type dropdown (deep sections started closed, and a
+  layer had no way to open). Adding a branch, layer, or map entry, choosing
+  a type, or turning on an optional field opens that section. Scalars show
+  a `default X` hint and help on hover. A nullable number is a text box,
+  not a `null` dropdown. Fast typing no longer loses characters. The YAML
+  preview sits beside the form and Problems below it, and double-clicking a
+  problem opens and focuses the field.
+- Session errors in the window were dropped, so a failed edit looked like
+  nothing happened. They now open a dialog.
+- Changing a model branch's head type in the window failed with "No such
+  field": the branch's own fields hid it in the session's path index.
+- Sweep Builder checked sweeps against the base config's file path instead
+  of its contents, so every bundled sweep showed about 16 problems. Fields
+  added from the *Base config fields* tree were looked up in the Config
+  Builder's document instead of the base config, so they were refused as
+  "not in the base config".
+- The Launch page never polled a running command, so its log, progress, and
+  status did not update after Start. It now polls every 100 ms.
+- Open, Save As, and Browse use native file dialogs. The dialog plugin was
+  in `package.json` but never registered in the Rust shell. Closing the
+  window now asks about unsaved edits and a running command, as the Tkinter
+  window did, and a session reply no longer blocks the window's main thread.
+- `desktop/package.json`, `package-lock.json`, `tsconfig.json`,
+  `tauri.conf.json` and the capability file were ignored by the repository's
+  `*.json` rule, so a clone could not build the window.
 - `max_concurrent_trials` was ignored for `search_alg: {type: random}` (and
   `variant_generator`): Ray applies that limit only to `Searcher`s and logged
   that it would ignore it for the `BasicVariantGenerator`, so every trial

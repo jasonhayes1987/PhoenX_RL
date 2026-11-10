@@ -1,4 +1,4 @@
-"""Build and describe the commands the Run tab launches.
+"""Build and describe the commands the Launch page starts.
 
 ``build_command`` turns form fields into the argument list of a PhoenX
 command. ``command_text`` joins that list into one line for this platform.
@@ -15,11 +15,11 @@ REPLAY_BUFFERS = ("ReplayBuffer", "PrioritizedReplayBuffer")
 
 
 def build_command(mode: str, values: dict[str, str]) -> list[str]:
-    """Turn Run-tab field values into the argv of a PhoenX command.
+    """Turn Launch-page field values into the argv of a PhoenX command.
 
     Args:
         mode: ``"train"``, ``"resume"``, ``"test"``, or ``"sweep"``.
-        values: Field text, keyed by the Run tab's field names.
+        values: Field text, keyed by the Launch page's field names.
 
     Returns:
         The argv list, starting with the Python interpreter.
@@ -52,17 +52,27 @@ def build_command(mode: str, values: dict[str, str]) -> list[str]:
         return python_command("phoenx.cli.train", args)
     if mode == "test":
         args += ["--agent_dir", need("agent_dir", "Agent folder")]
-        for flag, key in (("--num_episodes", "num_episodes"), ("--num_envs", "num_envs"),
-                          ("--render_mode", "render_mode"), ("--env", "env"),
-                          ("--seed", "seed"), ("--log_level", "log_level")):
+        for flag, key in (
+            ("--num_episodes", "num_episodes"),
+            ("--num_envs", "num_envs"),
+            ("--render_mode", "render_mode"),
+            ("--env", "env"),
+            ("--seed", "seed"),
+            ("--log_level", "log_level"),
+        ):
             opt(flag, key)
         return python_command("phoenx.cli.test", args)
     if mode == "sweep":
         args += ["--config", need("sweep", "Sweep file")]
-        for flag, key in (("--base-config", "base_config"), ("--num-samples", "num_samples"),
-                          ("--max-concurrent", "max_concurrent"), ("--name", "name"),
-                          ("--storage-path", "storage_path"), ("--from-phase", "from_phase"),
-                          ("--log-level", "log_level")):
+        for flag, key in (
+            ("--base-config", "base_config"),
+            ("--num-samples", "num_samples"),
+            ("--max-concurrent", "max_concurrent"),
+            ("--name", "name"),
+            ("--storage-path", "storage_path"),
+            ("--from-phase", "from_phase"),
+            ("--log-level", "log_level"),
+        ):
             opt(flag, key)
         if v.get("resume") == "1":
             args.append("--resume")
@@ -88,8 +98,11 @@ def describe_run(info: dict) -> str:
     unit = info.get("stop_unit") or "timestep"
     limit = info.get("stop_units")
     if info.get("progress") is None:
-        return f"{what}. No trainer_state.pt, so the step reached is unknown (limit {limit:,} {unit}s)." \
-            if isinstance(limit, int) else f"{what}. No trainer_state.pt."
+        return (
+            f"{what}. No trainer_state.pt, so the step reached is unknown (limit {limit:,} {unit}s)."
+            if isinstance(limit, int)
+            else f"{what}. No trainer_state.pt."
+        )
     text = f"{what}. Best checkpoint at {unit} {info['progress']:,}"
     if isinstance(limit, int):
         text += f" of {limit:,}"
@@ -97,14 +110,16 @@ def describe_run(info: dict) -> str:
         text += f", best avg reward {info['best_reward']:.2f}"
     text += "."
     if isinstance(limit, int) and info["progress"] >= limit:
-        text += " It already reached its limit: set 'Train until' higher to train further."
+        text += (
+            " It already reached its limit: set 'Train until' higher to train further."
+        )
     if info.get("buffer_type") in REPLAY_BUFFERS and not info.get("has_buffer"):
         text += " No replay buffer was saved, so resuming refills it from scratch."
     return text
 
 
 def command_text(argv: list[str]) -> str:
-    """Join an argv list into the command line the Run tab displays.
+    """Join an argv list into the command line the Launch page displays.
 
     Args:
         argv: The list ``build_command`` returns.
@@ -115,4 +130,5 @@ def command_text(argv: list[str]) -> str:
     if sys.platform.startswith("win"):
         return subprocess.list2cmdline(argv)
     import shlex
+
     return shlex.join(argv)
