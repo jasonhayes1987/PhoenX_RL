@@ -1,10 +1,11 @@
-"""Train / test lifecycle hooks, W&B logging, and Ray Tune reporting.
+"""Train / test lifecycle hooks, W&B and MLflow logging, and Ray Tune reporting.
 
 `Callback` is the no-op base class; subclasses override the hooks they care
 about. `Trainer` drives a subset of them at run start, after each env step,
 when an episode finishes (the ``*_epoch_end`` hooks — the ``epoch`` argument
 is the trainer's global step counter, not an episode index), and at run end.
-`WandbCallback` logs metrics and checkpoints to W&B. `RayTuneCallback`
+`WandbCallback` logs metrics and checkpoints to W&B; `MLflowCallback` does the
+same for MLflow (an optional dependency, imported only when used). `RayTuneCallback`
 reports training metrics to an enclosing Ray Tune trial on a step cadence and
 is a harmless no-op outside a Tune session. Register third-party subclasses
 with `register_callback`, look them up with `callback_load`, or rebuild an
@@ -13,7 +14,9 @@ instance from a ``get_config()`` dict via `load`.
 from pathlib import Path
 import math
 import os
+import atexit
 import json
+import time
 import warnings
 from typing import Optional
 import torch as T
@@ -27,6 +30,22 @@ _CALLBACK_REGISTRY: dict[str, type] = {}
 # Bounds the interactive prompt inside wandb.login()'s credential fallback so a
 # training run can never block indefinitely waiting on stdin.
 _WANDB_LOGIN_TIMEOUT = 30
+
+# Bounds MLflowCallback's tracking-server health check so a stopped server
+# fails the run fast instead of stalling in MLflow's own retry loop.
+_MLFLOW_CONNECT_TIMEOUT = 5
+
+# MLflow storage limits: param values are capped (6000 chars in MLflow 2.x/3.x)
+# and keys at 250 chars.
+_MLFLOW_MAX_PARAM_LEN = 6000
+_MLFLOW_MAX_KEY_LEN = 250
+
+# MLflowCallback buffers metrics and sends them in batches (like W&B's client
+# does) instead of one HTTP request per env step: a batch goes out once it
+# holds _MLFLOW_BATCH_SIZE values (MLflow's per-request limit) or the oldest
+# value is _MLFLOW_FLUSH_SECONDS old, and always at run end.
+_MLFLOW_BATCH_SIZE = 1000
+_MLFLOW_FLUSH_SECONDS = 5.0
 
 # Reported for RayTuneCallback's `success_rate` metric when the trainer has no
 # `success_criterion` configured (so the key is absent from every episode
@@ -725,6 +744,664 @@ class WandbCallback(Callback):
 
         Returns:
             callback (WandbCallback): New instance from ``config['config']``.
+        """
+        return cls(**config['config'])
+
+
+def _import_mlflow():
+    """Import ``mlflow`` lazily so it stays an optional dependency.
+
+    Returns:
+        The imported ``mlflow`` module.
+
+    Raises:
+        ImportError: If MLflow is not installed, with the install command.
+    """
+    try:
+        import mlflow
+    except ImportError as exc:
+        raise ImportError(
+            "MLflowCallback needs MLflow. Install it with `pip install mlflow` "
+            "(or `pip install phoenx[mlflow]`)."
+        ) from exc
+    return mlflow
+
+
+def _mlflow_key(key) -> str:
+    """Return ``key`` with characters MLflow rejects replaced by ``_``.
+
+    MLflow metric/param/tag names allow letters, digits, ``_ - . / :`` and
+    spaces; PhoenX metric names (``rollout/truncation_rate``) already fit.
+    """
+    return "".join(c if (c.isalnum() or c in "_-./: ") else "_" for c in str(key))
+
+
+def _mlflow_scalar(value) -> float | None:
+    """Coerce a log value to ``float``, or ``None`` when it is not a scalar.
+
+    W&B accepts any object; MLflow metrics must be numbers. Bools (``saved``,
+    ``best``) become ``0.0``/``1.0``; numpy scalars and one-element tensors
+    are unwrapped; strings, lists and other objects are skipped.
+    """
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, T.Tensor):
+        return float(value.item()) if value.numel() == 1 else None
+    item = getattr(value, "item", None)
+    if callable(item) and getattr(value, "shape", None) in ((), (1,)):
+        try:
+            return float(item())
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+class MLflowCallback(Callback):
+    """MLflow callback that logs metrics and best-model artifacts.
+
+    Drop-in counterpart of `WandbCallback`: same constructor arguments, same
+    hooks, same artifact rules. ``project_name`` is the MLflow *experiment*
+    name. On first train begin it checks the tracking server, starts an
+    MLflow run from the trainer config, logs step and episode metrics, and
+    uploads the save directory as the ``model`` artifact when an episode log
+    carries ``saved=True``, subject to the optional ``artifact_every``
+    cooldown.
+
+    Where MLflow differs from W&B:
+
+    - ``group`` and the caller's ``tags`` become run tags (MLflow has no run
+      groups); ``job_type`` and the agent type are tags too.
+    - The config is flattened to ``/``-separated params (MLflow params are
+      flat strings) and the full tree is also stored as ``config.json``.
+    - Only numeric log values become metrics; bools log as ``0``/``1`` and
+      anything else is skipped.
+    - There is no ``wandb.watch``: when models are passed, their
+      architecture and parameter counts are logged instead of histograms.
+    - Each upload replaces the run's ``model`` artifact folder, so the run
+      holds the latest best checkpoint (W&B keeps every version).
+    - ``run_id`` must be an existing MLflow run id (MLflow assigns ids).
+    """
+
+    def __init__(
+        self,
+        project_name: str,
+        run_name: str | None = None,
+        group: str | None = None,
+        tags: list[str] | None = None,
+        run_id: str | None = None,
+        resume: str | bool | None = None,
+        sweep_params: dict | None = None,
+        artifact_every: int | None = None,
+        extra_config: dict | None = None,
+        tracking_uri: str | None = None,
+        async_logging: bool = True,
+    ):
+        """Store MLflow run identity so every trial of a sweep is distinguishable.
+
+        Args:
+            project_name: MLflow experiment name; created if missing.
+            run_name: Optional explicit run name. When omitted,
+                ``initialize_run`` names the run ``"{prefix}-{run_number}"``
+                from the experiment's existing run names, like W&B.
+            group: Optional group label, stored as the ``group`` tag. When
+                omitted, ``"group-{run_number}"`` is used.
+            tags: Optional caller tags; each becomes a tag set to ``"true"``,
+                combined with the per-call tags and agent type. Never mutated.
+            run_id: Optional existing MLflow run id to reattach to.
+            resume: W&B-style resume mode. With ``run_id`` set, ``"must"``
+                raises if the run does not exist; any other value starts a
+                new run in that case (with a warning).
+            sweep_params: Optional swept hyperparameters, logged as params
+                under a ``sweep/`` prefix.
+            artifact_every: Minimum trainer timesteps between artifact
+                uploads on top of the trainer's own save cadence. ``None``
+                or ``0`` uploads on every step the trainer wrote a checkpoint.
+            extra_config: Optional flat mapping merged into the logged config
+                last (e.g. Ray trial provenance), so it wins key collisions.
+            tracking_uri: MLflow tracking URI (e.g. ``http://127.0.0.1:5000``).
+                When omitted, ``MLFLOW_TRACKING_URI`` and then MLflow's own
+                default are used.
+            async_logging: Send metric batches from a background thread so
+                logging never blocks the training loop. Flushed when the run
+                ends.
+
+        Raises:
+            ImportError: If MLflow is not installed.
+        """
+        _import_mlflow()
+        self.project_name = project_name
+        self.run_name = run_name
+        self.group = group
+        self.tags = list(tags) if tags else None
+        self.run_id = run_id
+        self.resume = resume
+        self.sweep_params = sweep_params
+        self.artifact_every = artifact_every
+        self.extra_config = dict(extra_config) if extra_config else None
+        self.tracking_uri = tracking_uri
+        self.async_logging = async_logging
+        self.save_dir = None
+        self.initialized = False
+        self._finished = False
+        self._last_artifact_at = None
+        self._client = None
+        self._skipped_keys: set[str] = set()
+        self._pending: list = []
+        self._last_flush = 0.0
+        # Filled once a run starts; written by `save` for links (e.g. the GUI).
+        self.experiment_id = None
+        self.active_run_id = None
+        self.resolved_tracking_uri = None
+
+    # ------------------------------------------------------------------ setup
+    def _ensure_mlflow_tracking(self) -> None:
+        """Resolve the tracking URI and fail fast if the server is down.
+
+        Resolution order:
+            1. If a run is already open on this callback, do nothing.
+            2. ``tracking_uri`` from the constructor.
+            3. The ``MLFLOW_TRACKING_URI`` environment variable.
+            4. MLflow's own default (a local store).
+
+        For ``http(s)`` URIs, the server's ``/health`` endpoint is checked
+        with a ``_MLFLOW_CONNECT_TIMEOUT`` second timeout, so a missing
+        server cannot stall training in MLflow's long retry loop.
+
+        Raises:
+            ValueError: If an ``http(s)`` tracking server cannot be reached.
+        """
+        if self._client is not None and self.initialized and not self._finished:
+            return
+        mlflow = _import_mlflow()
+        uri = self.tracking_uri or os.getenv("MLFLOW_TRACKING_URI")
+        if uri:
+            mlflow.set_tracking_uri(uri)
+        uri = mlflow.get_tracking_uri()
+
+        if uri.startswith(("http://", "https://")):
+            import requests
+            try:
+                response = requests.get(f"{uri.rstrip('/')}/health", timeout=_MLFLOW_CONNECT_TIMEOUT)
+                response.raise_for_status()
+            except Exception as exc:
+                raise ValueError(
+                    f"MLflow tracking server at {uri} is not reachable. Start it "
+                    "with `mlflow server --host 127.0.0.1 --port 5000`, or set "
+                    "MLFLOW_TRACKING_URI / tracking_uri to a running server."
+                ) from exc
+
+        self.resolved_tracking_uri = uri
+        self._client = mlflow.MlflowClient(tracking_uri=uri)
+
+    def _get_experiment_id(self) -> str:
+        """Return the id of experiment ``project_name``, creating it if needed.
+
+        Safe when several sweep trials start at once: if another process
+        creates the experiment between the lookup and the create, the
+        create fails and the lookup is retried.
+        """
+        experiment = self._client.get_experiment_by_name(self.project_name)
+        if experiment is None:
+            try:
+                return self._client.create_experiment(self.project_name)
+            except _import_mlflow().exceptions.MlflowException:
+                experiment = self._client.get_experiment_by_name(self.project_name)
+                if experiment is None:
+                    raise
+        if experiment.lifecycle_stage == "deleted":
+            self._client.restore_experiment(experiment.experiment_id)
+        return experiment.experiment_id
+
+    def _next_run_number(self) -> int:
+        """Return one more than the highest ``*-N`` run name in the experiment.
+
+        The MLflow version of ``wandb_support.get_next_run_number``. Names
+        that do not end in ``-<int>`` are ignored rather than crashing.
+        """
+        highest = 0
+        page_token = None
+        while True:
+            runs = self._client.search_runs(
+                [self.experiment_id], max_results=1000, page_token=page_token
+            )
+            for run in runs:
+                suffix = (run.info.run_name or "").rsplit("-", 1)[-1]
+                if suffix.isdigit():
+                    highest = max(highest, int(suffix))
+            page_token = getattr(runs, "token", None)
+            if not page_token:
+                return highest + 1
+
+    def initialize_run(self, logs: dict, models: list[T.nn.Module] = None, run_number: Optional[int] = None, run_name_prefix: Optional[str] = None, tags: list[str] = None, job_type: str = "train"):
+        """Start an MLflow run from the trainer config.
+
+        Naming, grouping and config composition match
+        `WandbCallback.initialize_run`: ``self.run_name`` verbatim when set,
+        else ``"{run_name_prefix}-{run_number}"``; ``self.group`` when set,
+        else ``"group-{run_number}"``; config is ``logs`` plus flattened
+        ``sweep_params`` plus ``extra_config`` (last wins). The run number is
+        looked up only when needed.
+
+        Args:
+            logs: Trainer config tree; must include ``save_dir``.
+            models: Modules whose architecture is logged, or ``None``.
+            run_number: Explicit run counter for naming/grouping.
+            run_name_prefix: Prefix for the default run name.
+            tags: Per-call tags (e.g. ``["train"]``). Never mutated.
+            job_type: ``"train"`` or ``"test"``, stored as a tag.
+
+        Raises:
+            ValueError: If ``resume="must"`` and ``run_id`` does not exist.
+        """
+        self.save_dir = logs['save_dir']
+        self.experiment_id = self._get_experiment_id()
+
+        resolved_run_number = run_number
+
+        def _resolve_run_number():
+            nonlocal resolved_run_number
+            if resolved_run_number is None:
+                resolved_run_number = self._next_run_number()
+            return resolved_run_number
+
+        name = self.run_name if self.run_name else f"{run_name_prefix}-{_resolve_run_number()}"
+        group = self.group if self.group else f"group-{_resolve_run_number()}"
+
+        combined_tags = list(self.tags) if self.tags else []
+        combined_tags.extend(tags or [])
+        agent_type = logs.get('agent', {}).get('type')
+        if agent_type:
+            combined_tags.append(agent_type)
+        run_tags = {_mlflow_key(t): "true" for t in combined_tags}
+        run_tags.update({
+            "group": str(group),
+            "job_type": job_type,
+            "phoenx.tags": ",".join(str(t) for t in combined_tags),
+        })
+        if agent_type:
+            run_tags["agent_type"] = str(agent_type)
+
+        config = logs
+        if self.sweep_params:
+            config = {**logs, **flatten_dict(self.sweep_params, parent_key='sweep', sep='/')}
+        if self.extra_config:
+            config = {**config, **self.extra_config}
+
+        run = self._open_run(name, run_tags)
+        self.active_run_id = run.info.run_id
+        self.run_name = run.info.run_name
+        self.initialized = True
+        self._finished = False
+        self._skipped_keys = set()
+        self._pending = []
+        self._last_flush = time.monotonic()
+        # Safety net for runs that never reach on_*_end (Ctrl+C, a crash, the
+        # GUI's Stop): flush and mark the run KILLED at interpreter exit,
+        # the way wandb closes its own runs.
+        atexit.register(self._close_at_exit)
+
+        self._log_config(config)
+        if models:
+            self._log_models(models)
+
+    def _open_run(self, name: str, run_tags: dict):
+        """Reattach to ``self.run_id`` when it exists, else create a new run."""
+        mlflow = _import_mlflow()
+        if self.run_id:
+            try:
+                run = self._client.get_run(self.run_id)
+            except mlflow.exceptions.MlflowException:
+                run = None
+            if run is not None:
+                self._client.update_run(run.info.run_id, status="RUNNING")
+                self._client.log_batch(run.info.run_id, tags=self._tag_list(run_tags))
+                return self._client.get_run(run.info.run_id)
+            if self.resume == "must":
+                raise ValueError(f"MLflow run '{self.run_id}' does not exist and resume='must'.")
+            warnings.warn(f"MLflow run '{self.run_id}' not found; starting a new run instead.")
+        return self._client.create_run(self.experiment_id, run_name=name, tags=run_tags)
+
+    @staticmethod
+    def _tag_list(tags: dict) -> list:
+        """Convert a tag dict to MLflow ``RunTag`` entities."""
+        from mlflow.entities import RunTag
+        return [RunTag(k, v) for k, v in tags.items()]
+
+    def _log_config(self, config: dict) -> None:
+        """Log ``config`` as flat params plus the full tree as ``config.json``.
+
+        Params are capped at MLflow's value length and sent in batches of
+        100. On a resumed run a param whose value changed cannot be
+        overwritten; that batch is skipped with a warning.
+        """
+        from mlflow.entities import Param
+        flat = flatten_dict(config, sep='/')
+        params = [
+            Param(_mlflow_key(k)[:_MLFLOW_MAX_KEY_LEN], str(v)[:_MLFLOW_MAX_PARAM_LEN])
+            for k, v in flat.items()
+        ]
+        mlflow = _import_mlflow()
+        for i in range(0, len(params), 100):
+            try:
+                self._client.log_batch(self.active_run_id, params=params[i:i + 100])
+            except mlflow.exceptions.MlflowException as exc:
+                warnings.warn(f"MLflowCallback: some params were not logged: {exc}")
+        self._client.log_text(
+            self.active_run_id, json.dumps(config, indent=2, default=str), "config.json"
+        )
+
+    def _log_models(self, models) -> None:
+        """Log each model's architecture and parameter counts (no ``watch`` in MLflow).
+
+        Writes ``model_architecture/model_<i>.txt`` (the module tree as
+        printed by PyTorch) and params ``model_<i>/class``,
+        ``model_<i>/num_params`` and ``model_<i>/num_trainable_params``.
+        Objects that are not ``nn.Module`` get the text file and class only.
+        """
+        from mlflow.entities import Param
+        params = []
+        for i, model in enumerate(models):
+            self._client.log_text(self.active_run_id, str(model), f"model_architecture/model_{i}.txt")
+            params.append(Param(f"model_{i}/class", type(model).__name__))
+            if not isinstance(model, T.nn.Module):
+                continue  # e.g. an intrinsic-motivation wrapper: text only
+            total = sum(p.numel() for p in model.parameters())
+            trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            params += [Param(f"model_{i}/num_params", str(total)),
+                       Param(f"model_{i}/num_trainable_params", str(trainable))]
+        try:
+            self._client.log_batch(self.active_run_id, params=params)
+        except _import_mlflow().exceptions.MlflowException as exc:
+            warnings.warn(f"MLflowCallback: model params were not logged: {exc}")
+
+    # ---------------------------------------------------------------- logging
+    def _log(self, logs: dict | None, step: int) -> None:
+        """Log every numeric value in ``logs`` as a metric at ``step``.
+
+        The MLflow version of ``wandb.log(logs, step=step)``. Values are
+        buffered and sent by `_flush` (see ``_MLFLOW_BATCH_SIZE`` /
+        ``_MLFLOW_FLUSH_SECONDS``). Non-numeric values are skipped, with one
+        warning per key per run.
+        """
+        if not logs:
+            return
+        from mlflow.entities import Metric
+        timestamp = int(time.time() * 1000)
+        for key, value in logs.items():
+            number = _mlflow_scalar(value)
+            if number is None:
+                if key not in self._skipped_keys:
+                    self._skipped_keys.add(key)
+                    warnings.warn(
+                        f"MLflowCallback: '{key}' is a {type(value).__name__}, not a number; not logged."
+                    )
+                continue
+            self._pending.append(Metric(_mlflow_key(key)[:_MLFLOW_MAX_KEY_LEN], number, timestamp, int(step)))
+        if (len(self._pending) >= _MLFLOW_BATCH_SIZE
+                or time.monotonic() - self._last_flush >= _MLFLOW_FLUSH_SECONDS):
+            self._flush()
+
+    def _flush(self) -> None:
+        """Send buffered metrics in batches of ``_MLFLOW_BATCH_SIZE``."""
+        pending, self._pending = self._pending, []
+        self._last_flush = time.monotonic()
+        for i in range(0, len(pending), _MLFLOW_BATCH_SIZE):
+            batch = pending[i:i + _MLFLOW_BATCH_SIZE]
+            if self.async_logging:
+                self._client.log_batch(self.active_run_id, metrics=batch, synchronous=False)
+            else:
+                self._client.log_batch(self.active_run_id, metrics=batch)
+
+    def _save_model_artifact(self, step: int) -> None:
+        """Upload ``save_dir`` as the run's ``model`` artifact.
+
+        The MLflow version of ``wandb_support.save_model_artifact``: copies
+        the save directory under ``model/`` (minus ``renders/``, whose
+        videos `log_render` already uploads once each), adds
+        ``mlflow_config.json`` at the root when present, and tags the run
+        with the step of this best checkpoint.
+        """
+        save_dir = Path(self.save_dir)
+        for path in save_dir.rglob("*"):
+            rel = path.relative_to(save_dir)
+            if not path.is_file() or rel.parts[0] == "renders":
+                continue  # videos are logged once each by log_render
+            parent = Path("model", *rel.parts[:-1]).as_posix()
+            self._client.log_artifact(self.active_run_id, str(path), artifact_path=parent)
+        config_file = Path(self.save_dir) / "mlflow_config.json"
+        if config_file.exists():
+            self._client.log_artifact(self.active_run_id, str(config_file))
+        self._client.set_tag(self.active_run_id, "best_checkpoint_step", str(step))
+
+    def _close_at_exit(self) -> None:
+        """Flush and mark an unfinished run ``KILLED`` when Python exits."""
+        if self.initialized and not self._finished:
+            try:
+                self._finish_run(status="KILLED")
+            except Exception:
+                pass  # the server may already be gone; never block exit
+
+    def _finish_run(self, status: str = "FINISHED") -> None:
+        """Flush async metrics and mark the run finished, at most once per run.
+
+        Like `WandbCallback._finish_run`, guards against the trainer firing
+        the end hook once per env that finished on the final step.
+        """
+        if self._finished or not self.initialized:
+            return
+        self._flush()
+        mlflow = _import_mlflow()
+        flush = getattr(mlflow, "flush_async_logging", None)
+        if self.async_logging and callable(flush):
+            flush()
+        self._client.set_terminated(self.active_run_id, status=status)
+        self._finished = True
+        atexit.unregister(self._close_at_exit)
+
+    def log_render(self, video_path: str | Path, context: str, step: int, metrics: dict | None = None) -> None:
+        """Upload a rendered episode video and log its metrics.
+
+        The MLflow version of the ``wandb.Video`` logging in `Renderer`: the
+        file is stored under ``renders/<context>/`` in the run's artifacts
+        (MLflow's UI plays ``.mp4`` files there) and ``metrics`` are logged at
+        ``step``. Does nothing if no run is open.
+
+        Args:
+            video_path: Path of the ``.mp4`` written by the renderer.
+            context: ``"train"`` or ``"test"``.
+            step: Trainer global step for the metrics.
+            metrics: Scalars such as ``render_episode_reward``.
+        """
+        if not self.initialized or self._finished:
+            return
+        self._client.log_artifact(self.active_run_id, str(video_path), artifact_path=f"renders/{context}")
+        if metrics:
+            self._log(metrics, step=step)
+
+    @property
+    def run_url(self) -> str | None:
+        """Web UI link to this run, or ``None`` before a run or without a server."""
+        uri = self.resolved_tracking_uri or ""
+        if not (uri.startswith(("http://", "https://")) and self.experiment_id and self.active_run_id):
+            return None
+        return f"{uri.rstrip('/')}/#/experiments/{self.experiment_id}/runs/{self.active_run_id}"
+
+    @property
+    def experiment_url(self) -> str | None:
+        """Web UI link to the experiment (``project_name``), or ``None`` without a server."""
+        uri = self.resolved_tracking_uri or ""
+        if not (uri.startswith(("http://", "https://")) and self.experiment_id):
+            return None
+        return f"{uri.rstrip('/')}/#/experiments/{self.experiment_id}"
+
+    # ------------------------------------------------------------------ hooks
+    def on_train_begin(self, logs: dict, run_number: Optional[int] = None, models: Optional[list[T.nn.Module]] = None):
+        """Check the tracking server and start a train run if none is open.
+
+        Args:
+            logs: Trainer config tree logged as params and ``config.json``.
+            run_number: Optional run counter reused when resuming a named run.
+            models: Modules whose architecture is logged, or ``None``.
+        """
+        self._ensure_mlflow_tracking()
+        if not self.initialized:
+            self.initialize_run(logs, models, run_number, run_name_prefix="train", tags=["train"], job_type="train")
+
+    def on_train_end(self, logs=None):
+        """Finish the active MLflow run when training exits. Idempotent.
+
+        Args:
+            logs (dict | None): Unused; accepted for base-class compatibility.
+        """
+        self._finish_run()
+
+    def on_train_epoch_begin(self, epoch: int, logs=None):
+        """No-op; MLflow logging happens on epoch end."""
+        pass
+
+    def _should_upload_artifact(self, epoch: int) -> bool:
+        """Return whether the ``artifact_every`` cooldown has elapsed.
+
+        Same rule as `WandbCallback._should_upload_artifact`.
+        """
+        if not self.artifact_every:
+            return True
+        if self._last_artifact_at is None:
+            return True
+        return epoch >= self._last_artifact_at + self.artifact_every
+
+    def on_train_epoch_end(self, epoch: int, logs=None):
+        """Log episode metrics and upload the model artifact if a checkpoint was saved.
+
+        Uploads follow ``logs['saved']`` (the trainer wrote a checkpoint this
+        step), throttled by ``artifact_every``, exactly like `WandbCallback`.
+
+        Args:
+            epoch: Trainer global step, used as the metric step and the
+                cooldown clock.
+            logs (dict | None): Episode metrics.
+        """
+        if logs is None:
+            logs = {}
+        self._log(logs, step=epoch)
+        if logs.get("saved", False) and self._should_upload_artifact(epoch):
+            os.makedirs(self.save_dir, exist_ok=True)
+            self._save_model_artifact(epoch)
+            self._last_artifact_at = epoch
+
+    def on_train_step_begin(self, step: int, logs=None):
+        """No-op; MLflow logging happens on step end."""
+        pass
+
+    def on_train_step_end(self, step: int, logs=None):
+        """Log per-step training metrics.
+
+        Args:
+            step: Trainer global step used as the metric step.
+            logs (dict | None): Per-step scalars.
+        """
+        self._log(logs or {}, step=step)
+
+    def on_test_begin(self, logs: dict, run_number: Optional[str] = None):
+        """Start a test run when none is open yet (e.g. not after training).
+
+        Args:
+            logs: Trainer config tree.
+            run_number: Optional run counter / suffix for the test run name.
+        """
+        if not self.initialized:
+            self._ensure_mlflow_tracking()
+            self.initialize_run(logs=logs, run_number=run_number, run_name_prefix="test", tags=["test"], job_type="test")
+
+    def on_test_end(self, logs=None):
+        """Finish the active MLflow run when evaluation exits. Idempotent."""
+        self._finish_run()
+
+    def on_test_epoch_begin(self, epoch: int, logs=None):
+        """No-op; MLflow logging happens on epoch end."""
+        pass
+
+    def on_test_epoch_end(self, epoch: int, logs=None):
+        """Log episode evaluation metrics.
+
+        Args:
+            epoch: Trainer global step used as the metric step.
+            logs (dict | None): Episode metrics.
+        """
+        self._log(logs or {}, step=epoch)
+
+    def on_test_step_begin(self, step: int, logs=None):
+        """No-op; MLflow logging happens on step end."""
+        pass
+
+    def on_test_step_end(self, step: int, logs=None):
+        """Log per-step evaluation metrics.
+
+        Args:
+            step: Trainer global step used as the metric step.
+            logs (dict | None): Per-step scalars.
+        """
+        self._log(logs or {}, step=step)
+
+    # ------------------------------------------------------------ persistence
+    def get_config(self):
+        """Return a serializable ``{'type', 'config'}`` dict for this callback.
+
+        Returns:
+            config (dict): ``type`` ``"MLflowCallback"`` and the constructor
+                kwargs, enough to rebuild an equivalent callback via `load`.
+        """
+        return {
+            'type': "MLflowCallback",
+            'config': {
+                'project_name': self.project_name,
+                'run_name': self.run_name,
+                'group': self.group,
+                'tags': self.tags,
+                'run_id': self.run_id,
+                'resume': self.resume,
+                'sweep_params': self.sweep_params,
+                'artifact_every': self.artifact_every,
+                'extra_config': self.extra_config,
+                'tracking_uri': self.tracking_uri,
+                'async_logging': self.async_logging,
+            }
+        }
+
+    def save(self, folder: str | Path | None = None):
+        """Write ``mlflow_config.json`` under ``folder`` or ``save_dir``.
+
+        Adds a ``run`` section (tracking URI, experiment and run ids, UI
+        links) next to ``type``/``config`` so other tools can find the run;
+        `load` ignores it.
+
+        Args:
+            folder: Destination directory, or ``None`` for ``self.save_dir``.
+        """
+        path = Path(folder if folder is not None else self.save_dir) / "mlflow_config.json"
+        os.makedirs(path.parent, exist_ok=True)
+        data = self.get_config()
+        data['run'] = {
+            'tracking_uri': self.resolved_tracking_uri,
+            'experiment_id': self.experiment_id,
+            'run_id': self.active_run_id,
+            'run_url': self.run_url,
+            'experiment_url': self.experiment_url,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+    @classmethod
+    def load(cls, config):
+        """Build an `MLflowCallback` from a wrapped ``get_config()`` dict.
+
+        Args:
+            config (dict): Mapping with a ``'config'`` sub-dict of constructor kwargs.
+
+        Returns:
+            callback (MLflowCallback): New instance from ``config['config']``.
         """
         return cls(**config['config'])
 

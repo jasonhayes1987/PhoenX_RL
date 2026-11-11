@@ -7,7 +7,7 @@ import numpy as np
 import wandb
 
 from .env_wrapper import IsaacSimWrapper
-from .rl_callbacks import WandbCallback
+from .rl_callbacks import MLflowCallback, WandbCallback
 from .logging_config import get_logger
 
 
@@ -96,6 +96,15 @@ class Renderer:
                         f"render_episode_reward": episode_reward,
                         f"render_episode_length": local_step,
                     }, step=step)
+
+        # Log to MLflow if callback exists: the video as an artifact under
+        # renders/<context>/, plus the same render metrics as W&B.
+        for cb in trainer.callbacks or []:
+            if isinstance(cb, MLflowCallback):
+                cb.log_render(video_path, context, step, {
+                    "render_episode_reward": episode_reward,
+                    "render_episode_length": local_step,
+                })
 
         render_env.close()
 

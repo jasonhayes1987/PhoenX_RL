@@ -50,6 +50,7 @@ dev = [
   "black>=24.4", "isort>=5.13", "pylint>=3.2", "ruff>=0.6", "notebook>=7.1",
 ]
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.25"]
+mlflow = ["mlflow>=3.0"]
 
 [project.scripts]
 phoenx-train = "phoenx.cli.train:run"

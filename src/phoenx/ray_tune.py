@@ -1431,6 +1431,7 @@ def resolve_trial_config(sweep: dict, phase: dict, sampled: dict, base_config: d
 
 import json
 import math
+import os
 import uuid
 import warnings
 
@@ -1479,7 +1480,7 @@ _STOPPER_CLASSES: dict[str, type] = {
 #: Callback ``type`` names [rl_trainable][phoenx.ray_tune.rl_trainable] fully
 #: owns per trial (removed from the base config's own ``callbacks`` list
 #: before re-adding exactly the right set; see ``_inject_trial_callbacks``).
-_TRIAL_MANAGED_CALLBACK_TYPES = frozenset({"RayTuneCallback", "WandbCallback"})
+_TRIAL_MANAGED_CALLBACK_TYPES = frozenset({"RayTuneCallback", "WandbCallback", "MLflowCallback"})
 
 #: Callback ``type`` names considered trial-runtime-only artifacts, stripped
 #: by [write_best_config][phoenx.ray_tune.write_best_config] since they are
@@ -2223,6 +2224,12 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
       contacts the counter actor.
     - If ``phase['wandb']`` is absent, strip any ``WandbCallback`` the base
       config declares, so trials do not spam W&B with default naming.
+    - ``phase['mlflow']`` works the same way for ``MLflowCallback``: same
+      ``project`` requirement, same run name, group, tags, ``sweep_params``
+      and ``extra_config``, sharing one ordinal with W&B when both are set.
+      ``phase['mlflow']['tracking_uri']`` (else ``MLFLOW_TRACKING_URI`` as
+      seen by the trial process) is passed through as ``tracking_uri``.
+      Absent, any ``MLflowCallback`` in the base config is stripped.
 
     Args:
         config: This trial's fully-resolved training config, mutated in
@@ -2241,8 +2248,8 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
             ``WandbCallback(sweep_params=...)`` when W&B is enabled.
 
     Raises:
-        ValueError: If ``phase['wandb']`` is present but missing the
-            required ``project`` key.
+        ValueError: If ``phase['wandb']`` or ``phase['mlflow']`` is present
+            but missing the required ``project`` key.
     """
     callbacks = [
         cb for cb in (config.get("callbacks") or [])
@@ -2259,18 +2266,22 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
     })
 
     wandb_cfg = phase.get("wandb")
-    if wandb_cfg:
-        project = wandb_cfg.get("project")
-        if not project:
+    mlflow_cfg = phase.get("mlflow")
+    for key, cfg in (("wandb", wandb_cfg), ("mlflow", mlflow_cfg)):
+        if cfg and not cfg.get("project"):
             raise ValueError(
-                f"phase['wandb'] for phase '{phase.get('name')}' is missing required key 'project'"
+                f"phase['{key}'] for phase '{phase.get('name')}' is missing required key 'project'"
             )
+
+    if wandb_cfg or mlflow_cfg:
         sweep_name = sweep.get("_sweep_name", "sweep")
         phase_name = phase.get("name", "phase")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             trial_id = tune.get_context().get_trial_id() or "local"
 
+        # One ordinal per trial, shared by both trackers so a trial has the
+        # same run name in W&B and MLflow.
         ordinal = _resolve_trial_ordinal(sweep, phase_name, trial_id)
         if ordinal is None:
             suffix = trial_id
@@ -2281,17 +2292,27 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
         if ordinal is not None:
             extra_config["ray/trial_ordinal"] = ordinal
 
-        callbacks.append({
-            "type": "WandbCallback",
-            "config": {
+        def _tracker_config(project: str) -> dict:
+            return {
                 "project_name": project,
                 "run_name": f"{sweep_name}-{phase_name}-{suffix}",
                 "group": f"{sweep_name}-{phase_name}",
                 "tags": [sweep_name, phase_name],
                 "sweep_params": _to_plain(sampled),
-                "extra_config": extra_config,
-            },
-        })
+                "extra_config": dict(extra_config),
+            }
+
+        if wandb_cfg:
+            callbacks.append({
+                "type": "WandbCallback",
+                "config": _tracker_config(wandb_cfg["project"]),
+            })
+        if mlflow_cfg:
+            mlflow_callback_cfg = _tracker_config(mlflow_cfg["project"])
+            tracking_uri = mlflow_cfg.get("tracking_uri") or os.environ.get("MLFLOW_TRACKING_URI")
+            if tracking_uri:
+                mlflow_callback_cfg["tracking_uri"] = tracking_uri
+            callbacks.append({"type": "MLflowCallback", "config": mlflow_callback_cfg})
 
     config["callbacks"] = callbacks
 
@@ -2473,7 +2494,7 @@ def run_phase(
     ``_trial_dirname_creator`` — the exact shape depends on the phase's
     searcher).
 
-    When ``phase['wandb']`` is set (the same condition
+    When ``phase['wandb']`` or ``phase['mlflow']`` is set (the same condition
     ``_inject_trial_callbacks`` gates on — a phase that will never name a
     W&B run does not pay for one), starts a per-phase, ``num_cpus=0`` Ray
     actor (see ``_start_phase_counter``) that hands out 1-based
@@ -2581,10 +2602,10 @@ def run_phase(
 
     counter_handle = counter_name = None
     try:
-        # Only a phase that will actually name W&B runs pays for a counter
-        # round trip; _inject_trial_callbacks gates on exactly this condition,
-        # so the driver must use the same one.
-        if phase.get("wandb"):
+        # Only a phase that will actually name W&B / MLflow runs pays for a
+        # counter round trip; _inject_trial_callbacks gates on exactly this
+        # condition, so the driver must use the same one.
+        if phase.get("wandb") or phase.get("mlflow"):
             counter_handle, counter_name = _start_phase_counter(sweep_name, phase_name)
 
         alg_type = _search_alg_type(phase)
@@ -3044,7 +3065,7 @@ def write_best_config(config: dict, path: str | Path) -> None:
     clean.pop("save_dir", None)
     if "callbacks" in clean:
         clean["callbacks"] = [
-            cb for cb in clean["callbacks"]
+            cb for cb in (clean["callbacks"] or [])  # `callbacks: null` is valid
             if not (isinstance(cb, dict) and cb.get("type") in _TRIAL_RUNTIME_CALLBACK_TYPES)
         ]
         if not clean["callbacks"]:

@@ -25,7 +25,7 @@ import numpy as np
 import torch as T
 
 from .torch_utils import set_seed
-from .rl_callbacks import Callback, WandbCallback, load as build_callback
+from .rl_callbacks import Callback, MLflowCallback, WandbCallback, load as build_callback
 from .rl_agents import Agent, HasTargetNetworks, build_agent
 from .env_wrapper import Action, EnvWrapper, Observation
 from .obs_utils import flatten_obs, tree_index, tree_to
@@ -379,7 +379,9 @@ class Trainer:
 
             for callback in self.callbacks:
                 callback_func = getattr(callback, func_name)
-                if isinstance(callback, WandbCallback):
+                # W&B and MLflow take the run number (for naming) and the
+                # models (watched by W&B, architecture logged by MLflow).
+                if isinstance(callback, (WandbCallback, MLflowCallback)):
                     run_number = callback.run_name.split("-")[-1] if callback.run_name else None
                     if func_name == 'on_train_begin':
                         callback_func(config, run_number, tuple(models))
@@ -1104,7 +1106,9 @@ class Trainer:
                                           f"{self._progress_units():,}")
 
             if self.callbacks and not interrupted:
-                for episode_log in step_result['episode_logs']:
+                # At least once, even when no episode finished on the final
+                # step, so trackers (MLflow) always close their run.
+                for episode_log in (step_result['episode_logs'] or [None]):
                     for callback in self.callbacks:
                         callback.on_train_end(episode_log)
 
@@ -1194,7 +1198,9 @@ class Trainer:
                             callback.on_test_epoch_end(self._step, episode_log)
 
             if self.callbacks:
-                for episode_log in step_result['episode_logs']:
+                # At least once, even when no episode finished on the final
+                # step, so trackers (MLflow) always close their run.
+                for episode_log in (step_result['episode_logs'] or [None]):
                     for callback in self.callbacks:
                         callback.on_test_end(episode_log)
 

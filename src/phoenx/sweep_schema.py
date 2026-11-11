@@ -41,6 +41,7 @@ PHASE_KEYS: dict[str, str] = {
     "report": "How often trials report the metric, e.g. {every: 20000, unit: timestep}.",
     "auto_learn_every": "Derive schedule.learn_every from the trial's buffer / env sizes.",
     "wandb": "Log trials to Weights & Biases, e.g. {project: my-sweep}.",
+    "mlflow": "Log trials to MLflow, e.g. {project: my-sweep, tracking_uri: http://127.0.0.1:5000}.",
 }
 
 #: Keys of a phase's ``tune`` block. ``search_alg``, ``scheduler`` and
@@ -234,6 +235,7 @@ def _phase_props(spec_ref: dict) -> dict:
         "auto_learn_every": {"type": "boolean", "default": True,
                              "description": PHASE_KEYS["auto_learn_every"]},
         "wandb": {"description": PHASE_KEYS["wandb"]},
+        "mlflow": {"description": PHASE_KEYS["mlflow"]},
     }
 
 
