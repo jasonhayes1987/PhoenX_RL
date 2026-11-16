@@ -540,6 +540,84 @@ def init_module_weights(module: nn.Module, kernel: str = 'default', kernel_param
                 nn.init.zeros_(param)
 
 
+def kernel_spec(config: dict) -> tuple[str, dict]:
+    """Return ``(kernel, kernel_params)`` from a layer or output spec.
+
+    Accepts the legacy ``'kernel params'`` spelling (still written by
+    ``build_layers`` and the W&B sweep helpers, and allowed by the config
+    schema). Before this helper the init code read only ``'kernel_params'``,
+    so parameters given under the legacy key, such as ``gain``, were dropped.
+    """
+    params = config.get('params', {}) or {}
+    kernel = params.get('kernel', 'default')
+    kernel_params = params.get('kernel_params', params.get('kernel params', {})) or {}
+    return kernel, kernel_params
+
+
+def _has_weights(module: nn.Module) -> bool:
+    """True when ``module`` owns a weight tensor that a kernel can initialize."""
+    return any('weight' in name and p.dim() >= 2 for name, p in module.named_parameters())
+
+
+def resolve_output_configs(
+    output_config: list[dict] | None, layers: nn.ModuleDict, owner: str
+) -> list[tuple[dict, nn.Module]]:
+    """Pair each auto-created output layer with its init spec.
+
+    A head can build more than one output layer: a continuous stochastic
+    policy builds one per distribution parameter (the mean and the scale, or
+    Beta's two shapes). ``output_config`` describes *the* output layer, so the
+    user never has to know how many a head builds:
+
+    * one entry applies to every output layer;
+    * one entry per output layer pairs them in order (for different inits);
+    * any other count is an error, instead of silently leaving layers at
+      PyTorch's default init.
+
+    Modules without weights (an output ``Tanh``) are not counted.
+
+    Args:
+        output_config: Init specs from the config; ``None`` or empty means the
+            default kernel for every layer.
+        layers: The head's output ``ModuleDict``.
+        owner: Head or model name, for the error message.
+
+    Returns:
+        ``(spec, layer)`` pairs, one per output layer that has weights.
+
+    Raises:
+        ValueError: If the number of specs is neither 1 nor the number of
+            output layers.
+    """
+    targets = [(name, layer) for name, layer in layers.items() if _has_weights(layer)]
+    configs = list(output_config or []) or [{'type': 'dense', 'params': {}}]
+    if len(configs) == len(targets):
+        return [(config, layer) for config, (_, layer) in zip(configs, targets)]
+    if len(configs) == 1:
+        return [(configs[0], layer) for _, layer in targets]
+    names = [name for name, _ in targets]
+    raise ValueError(
+        f"{owner}: output_config has {len(configs)} entries, but this head has "
+        f"{len(targets)} output layer(s) {names}. Give one entry (used for every "
+        f"output layer) or exactly one per output layer."
+    )
+
+
+def init_output_layers(output_config: list[dict] | None, layers: nn.ModuleDict, owner: str) -> None:
+    """Apply ``output_config`` to every output layer (see ``resolve_output_configs``)."""
+    for config, layer in resolve_output_configs(output_config, layers, owner):
+        kernel, kernel_params = kernel_spec(config)
+        init_module_weights(layer, kernel, kernel_params)
+
+
+def softplus_inverse(value: float) -> float:
+    """Return ``x`` with ``softplus(x) == value`` (``value > 0``)."""
+    if value <= 0.0:
+        raise ValueError(f"softplus_inverse needs a positive value, got {value}.")
+    # log(exp(v) - 1), written to stay finite for large v.
+    return value + math.log(-math.expm1(-value))
+
+
 # =============================================================================
 # Optimizer builder
 # =============================================================================
@@ -710,12 +788,15 @@ class Model(nn.Module):
             layer_config (dict): configuration of layer.
             layers (torch layers): torch.nn.Module.layers.
         """
-        # Loop through each layer config and corresponding layer, applying the
-        # configured kernel to every weight tensor of that layer (shared with
-        # the modular architecture; handles multi-tensor modules like LSTM/MHA).
-        for config, (layer_name, layer) in zip(layer_config, layers.items()):
-            kernel = config.get('params', {}).get('kernel', 'default')  # Get kernel or 'default'
-            kernel_params = config.get('params', {}).get('kernel_params', {}) # Get kernel params or empty dict
+        # Output layers: one spec may cover several layers (e.g. a policy's
+        # mean and scale layers); see ``resolve_output_configs``.
+        if layers is getattr(self, 'output_layer', None):
+            init_output_layers(layer_config, layers, type(self).__name__)
+            return
+        # Hidden layers are built one module per config entry, so the two
+        # always line up; ``strict`` turns any future mismatch into an error.
+        for config, (layer_name, layer) in zip(layer_config, layers.items(), strict=True):
+            kernel, kernel_params = kernel_spec(config)
             init_module_weights(layer, kernel, kernel_params)
 
     def _init_optimizer(self, parameters: Iterator[Parameter] | None = None):
@@ -935,7 +1016,7 @@ class StochasticDiscretePolicy(Model):
         self,
         env: EnvWrapper,
         layer_config: list[dict],
-        output_config: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel_params': {}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: ScheduleWrapper|None = None,
         distribution: str = 'categorical',
@@ -1070,10 +1151,12 @@ class StochasticContinuousPolicy(Model):
         self,
         env:EnvWrapper,
         layer_config: List[Dict],
-        output_config: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: list[dict] = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel_params': {}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
         distribution: str = 'beta',
+        initial_scale: float | None = None,
+        state_dependent_scale: bool = True,
         device: str|T.device|None = None,
     ):
         """Initialize the continuous policy, dual-parameter head, and optimizer.
@@ -1081,14 +1164,23 @@ class StochasticContinuousPolicy(Model):
         Args:
             env: Environment wrapper.
             layer_config: Hidden-layer configuration list.
-            output_config: Output-layer weight-init config (list of layer dicts).
+            output_config: Output-layer weight-init config. One entry is used
+                for every output layer; one entry per output layer is also accepted.
             optimizer_params: Optimizer type and params (default Adam ``lr=0.001``).
             lr_scheduler: Optional learning-rate scheduler.
             distribution: ``'beta'``, ``'kumaraswamy'``, or ``'normal'``.
+            initial_scale: Normal only. Starting standard deviation (before
+                the tanh squash) for every action; ``None`` leaves it to the
+                output layer's init.
+            state_dependent_scale: Normal only. ``True``: scale from a layer
+                on the features. ``False``: one learned scale per action.
             device: Device string/device or ``None`` for the framework default.
         """
+        _check_scale_options(distribution, initial_scale, state_dependent_scale, type(self).__name__)
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device)
         self.distribution = distribution
+        self.initial_scale = initial_scale
+        self.state_dependent_scale = state_dependent_scale
         
         # Set lower/upper bounds of action space to Tensors
         # self.act_space_low = T.tensor(self.act_space.low, dtype=T.float32, device=self.device)
@@ -1096,10 +1188,17 @@ class StochasticContinuousPolicy(Model):
         # Set number of actions in the action space
         self.num_actions = self.act_space.shape[-1]
         # Create the output layer
-        self.output_layer = nn.ModuleDict({
-            'policy_output_param_1': nn.LazyLinear(self.num_actions),
-            'policy_output_param_2': nn.LazyLinear(self.num_actions),
-        })
+        if self.state_dependent_scale:
+            self.output_layer = nn.ModuleDict({
+                'policy_output_param_1': nn.LazyLinear(self.num_actions),
+                'policy_output_param_2': nn.LazyLinear(self.num_actions),
+            })
+            self.policy_output_scale = None
+        else:
+            self.output_layer = nn.ModuleDict({
+                'policy_output_param_1': nn.LazyLinear(self.num_actions),
+            })
+            self.policy_output_scale = nn.Parameter(T.zeros(self.num_actions))
 
         # Move model to device
         self.to(self.device)
@@ -1107,6 +1206,11 @@ class StochasticContinuousPolicy(Model):
         # initialize params
         self._init_model(self.layers, self.layer_config)
         self._init_model(self.output_layer, self.output_config)
+        if self.initial_scale is not None:
+            if self.state_dependent_scale:
+                _set_initial_scale(self.output_layer['policy_output_param_2'], self.initial_scale)
+            else:
+                _set_initial_scale(self.policy_output_scale, self.initial_scale)
 
         # Now that parameters exist, create the optimizer
         self.optimizer = self._init_optimizer(self.parameters())
@@ -1142,7 +1246,10 @@ class StochasticContinuousPolicy(Model):
             x = layer(x)
 
         param_1 = self.output_layer['policy_output_param_1'](x)
-        param_2 = self.output_layer['policy_output_param_2'](x)
+        if self.state_dependent_scale:
+            param_2 = self.output_layer['policy_output_param_2'](x)
+        else:
+            param_2 = self.policy_output_scale.expand_as(param_1)
 
         if self.distribution in ['beta', 'kumaraswamy']:
             # Clamp params between -12 and 6 to allow max expressiveness within safe bounds of dist
@@ -1187,6 +1294,8 @@ class StochasticContinuousPolicy(Model):
         config = super().get_config()
         config["config"].update({
             'distribution': self.distribution,
+            'initial_scale': self.initial_scale,
+            'state_dependent_scale': self.state_dependent_scale,
         })
         return config
 
@@ -1208,6 +1317,8 @@ class StochasticContinuousPolicy(Model):
             optimizer_params=self.optimizer_params.copy(),
             lr_scheduler=self.lr_scheduler.clone() if self.lr_scheduler else None,
             distribution=self.distribution,
+            initial_scale=self.initial_scale,
+            state_dependent_scale=self.state_dependent_scale,
             device=device
         )
         if copy_weights:
@@ -1225,7 +1336,7 @@ class ValueModel(Model):
         self,
         env: EnvWrapper,
         layer_config: List[Dict],
-        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel_params': {}}}],
         optimizer_params:dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: Optional[ScheduleWrapper] = None,
         device: str|T.device|None = None,
@@ -1336,7 +1447,7 @@ class ActorModel(Model):
         self,
         env: EnvWrapper,
         layer_config: List[Dict],
-        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel_params': {}}}],
         optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: ScheduleWrapper|None = None,
         device: str|T.device|None = None,
@@ -1448,7 +1559,7 @@ class BaseCritic(Model):
         self,
         env: EnvWrapper,
         layer_config: List[Dict],
-        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel_params': {}}}],
         optimizer_params: dict = {'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: ScheduleWrapper|None = None,
         device: str|T.device|None = None,
@@ -1499,7 +1610,7 @@ class ContinuousCritic(BaseCritic):
         env: EnvWrapper,
         layer_config: List[Dict],
         merged_config: List[Dict],
-        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel_params': {}}}],
         optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: ScheduleWrapper|None = None,
         device: str|T.device|None = None,
@@ -1630,7 +1741,7 @@ class DiscreteCritic(BaseCritic):
         self,
         env: EnvWrapper,
         layer_config: List[Dict],
-        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel params':{}}}],
+        output_config: dict = [{'type': 'dense', 'params': {'kernel': 'default', 'kernel_params': {}}}],
         optimizer_params: dict={'type':'Adam', 'params':{'lr':0.001}},
         lr_scheduler: ScheduleWrapper|None = None,
         device: str|T.device|None = None,
@@ -1899,9 +2010,8 @@ class SubNetwork(nn.Module):
 
     def init_weights(self) -> None:
         """Apply each layer's kernel spec (multi-tensor aware)."""
-        for config, (layer_name, layer) in zip(self.layer_config, self.layers.items()):
-            kernel = config.get('params', {}).get('kernel', 'default')
-            kernel_params = config.get('params', {}).get('kernel_params', {})
+        for config, (layer_name, layer) in zip(self.layer_config, self.layers.items(), strict=True):
+            kernel, kernel_params = kernel_spec(config)
             init_module_weights(layer, kernel, kernel_params)
 
     def forward(
@@ -2052,14 +2162,12 @@ class Head(nn.Module):
     def init_weights(self) -> None:
         """Initialize body and output layers from their configs.
 
-        Body layers use ``layer_config`` kernels; output layers use
-        ``output_config`` (legacy zip semantics preserved).
+        Body layers use ``layer_config`` kernels. Output layers use
+        ``output_config``: one entry covers every output layer the head
+        builds, or give one per output layer (see ``resolve_output_configs``).
         """
         self.body.init_weights()
-        for config, (layer_name, layer) in zip(self.output_config, self.output_layer.items()):
-            kernel = config.get('params', {}).get('kernel', 'default')
-            kernel_params = config.get('params', {}).get('kernel_params', {})
-            init_module_weights(layer, kernel, kernel_params)
+        init_output_layers(self.output_config, self.output_layer, self.name)
 
     def _body_forward(self, features: T.Tensor) -> T.Tensor:
         y, _ = self.body(features)
@@ -2236,11 +2344,46 @@ class StochasticDiscreteHead(Head):
         return config
 
 
+def _check_scale_options(
+    distribution: str, initial_scale: float | None, state_dependent_scale: bool, owner: str
+) -> None:
+    """Reject scale options that only make sense for the normal distribution."""
+    if distribution != 'normal' and (initial_scale is not None or not state_dependent_scale):
+        raise ValueError(
+            f"{owner}: initial_scale and state_dependent_scale apply to "
+            f"distribution='normal' only, not {distribution!r}."
+        )
+    if initial_scale is not None and not initial_scale > 0.0:
+        raise ValueError(f"{owner}: initial_scale must be > 0, got {initial_scale}.")
+
+
+def _set_initial_scale(layer_or_param: nn.Module | Parameter, initial_scale: float) -> None:
+    """Make ``softplus(scale output) == initial_scale`` for every state.
+
+    For a scale layer, the weights are zeroed (so the output does not depend
+    on the features at the start; they stay trainable) and the bias is set.
+    For a state-independent scale parameter, the parameter is set.
+    """
+    target = softplus_inverse(initial_scale)
+    with T.no_grad():
+        if isinstance(layer_or_param, Parameter):
+            layer_or_param.fill_(target)
+            return
+        layer_or_param.weight.zero_()
+        layer_or_param.bias.fill_(target)
+
+
 class StochasticContinuousHead(Head):
     """Bounded continuous policy head (modular counterpart of ``StochasticContinuousPolicy``).
 
     Output math matches the legacy policy: Beta / Kumaraswamy / squashed Normal
     wrapped in ``BoundedIndependent``.
+
+    For ``distribution='normal'`` the scale (standard deviation before the
+    tanh squash) is ``softplus(s)``, where ``s`` comes from a linear layer on
+    the features (``state_dependent_scale=True``, the default) or is one
+    learned value per action (``False``). ``initial_scale`` sets the scale
+    every action starts with.
     """
 
     def __init__(
@@ -2251,6 +2394,8 @@ class StochasticContinuousHead(Head):
         optimizer_params: dict | None = None,
         lr_scheduler: ScheduleWrapper | None = None,
         distribution: Literal['beta', 'kumaraswamy', 'normal'] = 'beta',
+        initial_scale: float | None = None,
+        state_dependent_scale: bool = True,
         device: str | T.device | None = None,
         name: str | None = None,
     ):
@@ -2259,26 +2404,63 @@ class StochasticContinuousHead(Head):
         Args:
             env: Environment wrapper providing a Box action space.
             layer_config: Hidden-layer config for the head body.
-            output_config: Init specs for the two parameter output layers.
+            output_config: Init spec for the output layer. One entry is used
+                for every output layer this head builds (one per distribution
+                parameter); one entry per output layer is also accepted.
             optimizer_params: Optional per-head optimizer spec.
             lr_scheduler: Optional per-head ``ScheduleWrapper``.
             distribution: ``'beta'``, ``'kumaraswamy'``, or ``'normal'``.
+            initial_scale: Normal only. Standard deviation (before the tanh
+                squash) every action starts with, e.g. 0.3. ``None`` leaves
+                the scale to the output layer's init (about 0.69).
+            state_dependent_scale: Normal only. ``True``: the scale comes from
+                a layer on the features, so it can differ by state. ``False``:
+                one learned scale per action, the same in every state.
             device: Device to place parameters on.
             name: Display name used in error messages.
 
         Raises:
-            ValueError: If ``distribution`` is not one of the three families.
+            ValueError: If ``distribution`` is not one of the three families,
+                or a scale option is set for a non-normal distribution, or
+                ``initial_scale`` is not positive.
         """
         _check_distribution(distribution, ('beta', 'kumaraswamy', 'normal'), type(self).__name__)
+        _check_scale_options(distribution, initial_scale, state_dependent_scale, type(self).__name__)
         self.distribution = distribution
+        self.initial_scale = initial_scale
+        self.state_dependent_scale = state_dependent_scale
         super().__init__(env, layer_config, output_config, optimizer_params, lr_scheduler, device, name)
 
     def _build_output_layer(self) -> None:
         self.num_actions = self.act_space.shape[-1]
-        self.output_layer = nn.ModuleDict({
-            'policy_output_param_1': nn.LazyLinear(self.num_actions),
-            'policy_output_param_2': nn.LazyLinear(self.num_actions),
-        })
+        if self.state_dependent_scale:
+            self.output_layer = nn.ModuleDict({
+                'policy_output_param_1': nn.LazyLinear(self.num_actions),
+                'policy_output_param_2': nn.LazyLinear(self.num_actions),
+            })
+            self.policy_output_scale = None
+        else:
+            self.output_layer = nn.ModuleDict({
+                'policy_output_param_1': nn.LazyLinear(self.num_actions),
+            })
+            # softplus(0) ~= 0.69 unless initial_scale is given.
+            self.policy_output_scale = nn.Parameter(T.zeros(self.num_actions))
+
+    def init_weights(self) -> None:
+        """Initialize body and output layers, then set the starting scale."""
+        super().init_weights()
+        if self.initial_scale is None:
+            return
+        if self.state_dependent_scale:
+            _set_initial_scale(self.output_layer['policy_output_param_2'], self.initial_scale)
+        else:
+            _set_initial_scale(self.policy_output_scale, self.initial_scale)
+
+    def _scale_param(self, x: T.Tensor, like: T.Tensor) -> T.Tensor:
+        """Pre-softplus scale: from the scale layer, or the per-action parameter."""
+        if self.state_dependent_scale:
+            return self.output_layer['policy_output_param_2'](x)
+        return self.policy_output_scale.expand_as(like)
 
     def forward(self, features: T.Tensor, action: T.Tensor | None = None):
         """Return a bounded continuous action distribution.
@@ -2296,7 +2478,7 @@ class StochasticContinuousHead(Head):
         """
         x = self._body_forward(features)
         param_1 = self.output_layer['policy_output_param_1'](x)
-        param_2 = self.output_layer['policy_output_param_2'](x)
+        param_2 = self._scale_param(x, param_1)
 
         if self.distribution in ['beta', 'kumaraswamy']:
             # Clamp params between -12 and 6 to allow max expressiveness within safe bounds of dist
@@ -2333,9 +2515,13 @@ class StochasticContinuousHead(Head):
         return BoundedIndependent(dist, reinterpreted_batch_ndims=1)
 
     def get_config(self) -> dict:
-        """Serialize including the continuous distribution name."""
+        """Serialize including the distribution and scale options."""
         config = super().get_config()
-        config['config'].update({'distribution': self.distribution})
+        config['config'].update({
+            'distribution': self.distribution,
+            'initial_scale': self.initial_scale,
+            'state_dependent_scale': self.state_dependent_scale,
+        })
         return config
 
 

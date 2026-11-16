@@ -33,10 +33,8 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-import torch as T
 
 from phoenx.builder import build_trainer_from_config, load_config
 from phoenx.trainer import Trainer
@@ -77,26 +75,16 @@ def train_and_evaluate(config_path, seed, total_steps, eval_episodes=10):
         save_dir = str(Path(tmp_dir) / "run")
         config["save_dir"] = save_dir
 
-        # phoenx.env_wrapper's tensor conversion (GymnasiumWrapper._initialize_env,
-        # extract_states_goals, VectorNStepReward) calls get_device() with no
-        # argument, which always resolves to CUDA when a GPU is present -- it does
-        # not read env.config or agent.config.device. On a CUDA-capable machine
-        # this crashes a "device: cpu" fixture with a device-mismatch RuntimeError
-        # the moment the agent (cpu) and env (cuda) tensors meet in Trainer.step.
-        # There is no config knob for this in src/phoenx (out of scope here), so
-        # this test-only patch pins env_wrapper's device resolution to cpu for the
-        # duration of the run, matching what the fixture's device: cpu declares.
-        with patch("phoenx.env_wrapper.get_device", return_value=T.device("cpu")):
-            trainer = build_trainer_from_config(config)
-            trainer.train()  # closes env
-            trainer.save()  # AFTER train, so the checkpoint is the final weights
+        trainer = build_trainer_from_config(config)
+        trainer.train()  # closes env
+        trainer.save()  # AFTER train, so the checkpoint is the final weights
 
-            loaded = Trainer.load(save_dir)
-            try:
-                loaded.test(unit="episode", units=eval_episodes)
-                return sum(loaded._score_history) / len(loaded._score_history)
-            finally:
-                loaded.env.close()
+        loaded = Trainer.load(save_dir)
+        try:
+            loaded.test(unit="episode", units=eval_episodes)
+            return sum(loaded._score_history) / len(loaded._score_history)
+        finally:
+            loaded.env.close()
 
 
 def _assert_learns(name, config, seeds, total_steps, threshold):

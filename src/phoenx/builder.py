@@ -160,7 +160,9 @@ def create_env(config: dict) -> EnvWrapper:
             ``"isaacsim"``, ``"gymnasium"``, and ``"envpool"``; the ``config``
             sub-dict is forwarded as keyword arguments to the matching wrapper
             constructor (``IsaacSimWrapper``, ``GymnasiumWrapper``, or
-            ``EnvPoolWrapper``).
+            ``EnvPoolWrapper``). For Gymnasium and EnvPool, an unset
+            ``env.config.device`` is filled from ``agent.config.device`` (or
+            the top-level ``device``).
 
     Returns:
         Constructed environment wrapper.
@@ -172,6 +174,12 @@ def create_env(config: dict) -> EnvWrapper:
     """
     env_type = config["env"]["type"]
     env_config = dict(config["env"]["config"])
+    if env_type in ("gymnasium", "envpool") and env_config.get("device") is None:
+        # The env's tensors go where the agent's do, so a ``device: cpu`` run
+        # stays on the CPU even when a GPU is present.
+        agent_device = config.get("agent", {}).get("config", {}).get("device", config.get("device"))
+        if agent_device is not None:
+            env_config["device"] = agent_device
     if env_type == "isaacsim":
         return IsaacSimWrapper(**env_config)
     if env_type == "gymnasium":

@@ -104,6 +104,26 @@ def callback_load(name: str) -> type:
 
 
 
+def _test_run_name(run_name: str | None) -> str | None:
+    """Name for a test run of an agent whose saved config carries ``run_name``.
+
+    A saved config keeps the *training* run's name, so a later test of that
+    agent would otherwise reuse it. The test run is named after it instead:
+    ``train-3`` -> ``test-3`` (same number, so the pair lines up and shares
+    ``group-3``), any other name gets a ``test-`` prefix
+    (``mysweep-refine-0004of0008`` -> ``test-mysweep-refine-0004of0008``),
+    and a name that is already a test name is kept. ``None`` stays ``None``
+    so the callback picks the next free ``test-N``.
+    """
+    if not run_name:
+        return None
+    if run_name.startswith("test-"):
+        return run_name
+    if run_name.startswith("train-"):
+        return "test-" + run_name[len("train-"):]
+    return f"test-{run_name}"
+
+
 class Callback():
     """No-op base for train / test lifecycle hooks.
 
@@ -630,13 +650,16 @@ class WandbCallback(Callback):
         """Start a test W&B run when none is open yet.
 
         Called by `Trainer._initialize_run` for ``context="test"``. Skips
-        init when a run was already started (e.g. after training).
+        init when a run was already started (e.g. after training in the same
+        process). Otherwise the run name inherited from the agent's saved
+        training config is turned into a test name (see `_test_run_name`).
 
         Args:
             logs: Trainer config tree passed to ``wandb.init``.
             run_number: Optional run counter / suffix for the test run name.
         """
         if not self.initialized:
+            self.run_name = _test_run_name(self.run_name)
             self.initialize_run(logs=logs, run_number=run_number, run_name_prefix="test", tags=["test"], job_type="test")
 
     def on_test_end(self, logs=None):
@@ -803,7 +826,8 @@ class MLflowCallback(Callback):
 
     Drop-in counterpart of `WandbCallback`: same constructor arguments, same
     hooks, same artifact rules. ``project_name`` is the MLflow *experiment*
-    name. On first train begin it checks the tracking server, starts an
+    name. On first train begin it makes sure the tracking server is up
+    (starting a local one if needed, see `phoenx.mlflow_server`), starts an
     MLflow run from the trainer config, logs step and episode metrics, and
     uploads the save directory as the ``model`` artifact when an episode log
     carries ``saved=True``, subject to the optional ``artifact_every``
@@ -837,6 +861,7 @@ class MLflowCallback(Callback):
         extra_config: dict | None = None,
         tracking_uri: str | None = None,
         async_logging: bool = True,
+        auto_start_server: bool = True,
     ):
         """Store MLflow run identity so every trial of a sweep is distinguishable.
 
@@ -860,12 +885,16 @@ class MLflowCallback(Callback):
                 or ``0`` uploads on every step the trainer wrote a checkpoint.
             extra_config: Optional flat mapping merged into the logged config
                 last (e.g. Ray trial provenance), so it wins key collisions.
-            tracking_uri: MLflow tracking URI (e.g. ``http://127.0.0.1:5000``).
-                When omitted, ``MLFLOW_TRACKING_URI`` and then MLflow's own
-                default are used.
+            tracking_uri: MLflow tracking URI. When omitted,
+                ``MLFLOW_TRACKING_URI`` is used, then
+                ``http://127.0.0.1:5000`` (see `phoenx.mlflow_server`).
             async_logging: Send metric batches from a background thread so
                 logging never blocks the training loop. Flushed when the run
                 ends.
+            auto_start_server: When the tracking URI is on this machine
+                (``127.0.0.1`` / ``localhost``) and no server answers, start
+                one in the background (`phoenx.mlflow_server.ensure_server`).
+                It keeps running after the run so the dashboard stays up.
 
         Raises:
             ImportError: If MLflow is not installed.
@@ -882,6 +911,7 @@ class MLflowCallback(Callback):
         self.extra_config = dict(extra_config) if extra_config else None
         self.tracking_uri = tracking_uri
         self.async_logging = async_logging
+        self.auto_start_server = auto_start_server
         self.save_dir = None
         self.initialized = False
         self._finished = False
@@ -897,40 +927,40 @@ class MLflowCallback(Callback):
 
     # ------------------------------------------------------------------ setup
     def _ensure_mlflow_tracking(self) -> None:
-        """Resolve the tracking URI and fail fast if the server is down.
+        """Resolve the tracking URI and make sure its server is reachable.
 
         Resolution order:
             1. If a run is already open on this callback, do nothing.
             2. ``tracking_uri`` from the constructor.
             3. The ``MLFLOW_TRACKING_URI`` environment variable.
-            4. MLflow's own default (a local store).
+            4. ``phoenx.mlflow_server.DEFAULT_TRACKING_URI``
+               (``http://127.0.0.1:5000``).
 
-        For ``http(s)`` URIs, the server's ``/health`` endpoint is checked
-        with a ``_MLFLOW_CONNECT_TIMEOUT`` second timeout, so a missing
-        server cannot stall training in MLflow's long retry loop.
+        For a local ``http(s)`` URI with ``auto_start_server`` on, a server
+        is started if none answers (`phoenx.mlflow_server.ensure_server`).
+        Otherwise the ``/health`` endpoint is checked with a
+        ``_MLFLOW_CONNECT_TIMEOUT`` second timeout, so a missing server fails
+        the run fast instead of stalling in MLflow's long retry loop.
 
         Raises:
-            ValueError: If an ``http(s)`` tracking server cannot be reached.
+            ValueError: If the server cannot be reached or started.
         """
         if self._client is not None and self.initialized and not self._finished:
             return
+        from . import mlflow_server
         mlflow = _import_mlflow()
-        uri = self.tracking_uri or os.getenv("MLFLOW_TRACKING_URI")
-        if uri:
-            mlflow.set_tracking_uri(uri)
-        uri = mlflow.get_tracking_uri()
+        uri = self.tracking_uri or os.getenv("MLFLOW_TRACKING_URI") or mlflow_server.DEFAULT_TRACKING_URI
+        mlflow.set_tracking_uri(uri)
 
         if uri.startswith(("http://", "https://")):
-            import requests
-            try:
-                response = requests.get(f"{uri.rstrip('/')}/health", timeout=_MLFLOW_CONNECT_TIMEOUT)
-                response.raise_for_status()
-            except Exception as exc:
+            if self.auto_start_server and mlflow_server.is_local(uri):
+                mlflow_server.ensure_server(uri)
+            elif not mlflow_server.is_up(uri, timeout=_MLFLOW_CONNECT_TIMEOUT):
                 raise ValueError(
                     f"MLflow tracking server at {uri} is not reachable. Start it "
-                    "with `mlflow server --host 127.0.0.1 --port 5000`, or set "
+                    "with `python -m phoenx.mlflow_server start`, or set "
                     "MLFLOW_TRACKING_URI / tracking_uri to a running server."
-                ) from exc
+                )
 
         self.resolved_tracking_uri = uri
         self._client = mlflow.MlflowClient(tracking_uri=uri)
@@ -1307,12 +1337,17 @@ class MLflowCallback(Callback):
     def on_test_begin(self, logs: dict, run_number: Optional[str] = None):
         """Start a test run when none is open yet (e.g. not after training).
 
+        The run name inherited from the agent's saved training config is
+        turned into a test name (``train-3`` -> ``test-3``, see
+        `_test_run_name`), like `WandbCallback.on_test_begin`.
+
         Args:
             logs: Trainer config tree.
             run_number: Optional run counter / suffix for the test run name.
         """
         if not self.initialized:
             self._ensure_mlflow_tracking()
+            self.run_name = _test_run_name(self.run_name)
             self.initialize_run(logs=logs, run_number=run_number, run_name_prefix="test", tags=["test"], job_type="test")
 
     def on_test_end(self, logs=None):
@@ -1367,6 +1402,7 @@ class MLflowCallback(Callback):
                 'extra_config': self.extra_config,
                 'tracking_uri': self.tracking_uri,
                 'async_logging': self.async_logging,
+                'auto_start_server': self.auto_start_server,
             }
         }
 

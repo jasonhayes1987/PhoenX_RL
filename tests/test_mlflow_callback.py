@@ -82,7 +82,7 @@ def test_missing_mlflow_raises_install_hint(monkeypatch):
 # -------------------------------------------------------------- tracking URI
 def test_unreachable_server_fails_fast(config, monkeypatch):
     monkeypatch.setattr(rl_callbacks, "_MLFLOW_CONNECT_TIMEOUT", 1)
-    cb = MLflowCallback("proj", tracking_uri="http://127.0.0.1:9")
+    cb = MLflowCallback("proj", tracking_uri="http://127.0.0.1:9", auto_start_server=False)
     with pytest.raises(ValueError, match="not reachable"):
         cb.on_train_begin(config)
     assert not cb.initialized
@@ -182,6 +182,32 @@ def test_test_begin_alone_creates_test_run(config, tracking_uri):
     run = _run(cb)
     assert run.info.run_name == "test-1"
     assert run.data.tags["job_type"] == "test"
+
+
+def test_test_run_of_saved_agent_gets_test_name(config, tracking_uri):
+    trained = MLflowCallback("proj", tracking_uri=tracking_uri, async_logging=False)
+    trained.on_train_begin(config)
+    trained.on_train_end()
+    assert trained.run_name == "train-1"
+
+    # phoenx-test: rebuild from the saved config; the trainer passes the
+    # number from the saved training name.
+    tested = load(trained.get_config())
+    tested.on_test_begin(config, run_number="1")
+    run = _run(tested)
+    assert run.info.run_name == "test-1"
+    assert run.data.tags["job_type"] == "test"
+    assert run.data.tags["group"] == "group-1" == _run(trained).data.tags["group"]
+    assert tested.active_run_id != trained.active_run_id
+
+
+def test_test_run_of_sweep_trial_is_prefixed(config, tracking_uri):
+    cb = MLflowCallback("proj", run_name="s-refine-0004of0008", group="s-refine",
+                        tracking_uri=tracking_uri, async_logging=False)
+    cb.on_test_begin(config, run_number="0004of0008")
+    run = _run(cb)
+    assert run.info.run_name == "test-s-refine-0004of0008"
+    assert run.data.tags["group"] == "s-refine"
 
 
 # ---------------------------------------------------------------------- resume

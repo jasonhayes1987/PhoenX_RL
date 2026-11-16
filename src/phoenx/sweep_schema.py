@@ -41,7 +41,8 @@ PHASE_KEYS: dict[str, str] = {
     "report": "How often trials report the metric, e.g. {every: 20000, unit: timestep}.",
     "auto_learn_every": "Derive schedule.learn_every from the trial's buffer / env sizes.",
     "wandb": "Log trials to Weights & Biases, e.g. {project: my-sweep}.",
-    "mlflow": "Log trials to MLflow, e.g. {project: my-sweep, tracking_uri: http://127.0.0.1:5000}.",
+    "mlflow": "Log trials to MLflow, e.g. {project: my-sweep}. Optional: tracking_uri "
+              "(default http://127.0.0.1:5000), auto_start_server (default true).",
 }
 
 #: Keys of a phase's ``tune`` block. ``search_alg``, ``scheduler`` and

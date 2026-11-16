@@ -154,6 +154,52 @@ class TrainingSchedule:
         }
 
 
+def _scalar(value: Any) -> float | None:
+    """Return ``value`` as a float when it is one finite number, else ``None``."""
+    if isinstance(value, T.Tensor):
+        if value.numel() != 1:
+            return None
+        number = float(value.detach().reshape(()).item())
+    elif isinstance(value, np.ndarray):
+        if value.size != 1:
+            return None
+        number = float(value.reshape(()))
+    elif isinstance(value, (bool, int, float, np.number)):
+        number = float(value)
+    else:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def env_log_metrics(infos: Any) -> dict[str, float]:
+    """Return the numbers in an Isaac Lab ``infos["log"]`` dict, keyed ``env/<name>``.
+
+    Isaac Lab manager envs fill ``extras["log"]`` on every reset with the
+    episode bookkeeping of their managers: per-term episode rewards
+    (``Episode_Reward/...``), termination counts (``Episode_Termination/...``)
+    and curriculum state (``Curriculum/...``). PhoenX passes ``extras`` through
+    as ``infos``. Entries that are not a single number are skipped. Any env
+    without a ``log`` mapping returns ``{}``.
+
+    Args:
+        infos: The ``infos`` of an ``Observation``.
+
+    Returns:
+        Mapping of ``env/<key>`` to float.
+    """
+    if not isinstance(infos, dict):
+        return {}
+    log = infos.get("log")
+    if not isinstance(log, dict):
+        return {}
+    metrics = {}
+    for key, value in log.items():
+        number = _scalar(value)
+        if number is not None:
+            metrics[f"env/{key}"] = number
+    return metrics
+
+
 @dataclass
 class SuccessCriterion:
     """Defines what counts as a successful episode.
@@ -290,6 +336,8 @@ class Trainer:
         self._score_history = None
         self._last_learn = None
         self._success_tracker = None
+        # Last ``infos["log"]`` dict reported (see ``env_log_metrics``).
+        self._last_env_log = None
         self._grad_step = None
         self._run_start_step = None
         self._run_start_optimizer_steps = None
@@ -404,6 +452,7 @@ class Trainer:
         self._score_history = deque(maxlen=100)
         self._last_learn = 0
         self._success_tracker = deque(maxlen=100)
+        self._last_env_log = None
         # Number of `agent.learn()` calls this run. Deliberately not persisted
         # to `trainer_state.pt`, so it restarts at 0 on resume. Retained only
         # for the `grad_step` context key `collect()` emits alongside every
@@ -769,6 +818,14 @@ class Trainer:
             'step_reward': observation.rewards.mean().item(),
             'step_intrinsic_reward': observation.intrinsic_rewards.mean().item() if im is not None else 0.0
         })
+        # Env episode bookkeeping (Isaac Lab ``extras["log"]``): curriculum
+        # level, per-term episode rewards, termination counts. Isaac Lab
+        # builds a new dict on each reset and leaves it in ``extras`` until
+        # the next one, so it is reported once, when a new dict appears.
+        env_log = observation.infos.get("log") if isinstance(observation.infos, dict) else None
+        if env_log is not None and env_log is not self._last_env_log:
+            self._last_env_log = env_log
+            step_log.update(env_log_metrics(observation.infos))
         
         # Check if any env is done
         done_episodes = T.logical_or(observation.terminations, observation.truncations).nonzero(as_tuple=False).flatten()

@@ -286,6 +286,28 @@ def _make_next_step_env(cls, num_envs: int = 4):
 
 
 class TestNextStepManagerBasedRLEnv:
+    def test_phantom_reset_keeps_the_real_episode_log(self, next_step_cls, monkeypatch):
+        """The deferred (phantom) reset ends no episode, so it must not replace
+        ``extras["log"]`` (Isaac Lab rebuilds that dict in every ``_reset_idx``)."""
+        original = FakeManagerBasedRLEnv._reset_idx
+
+        def reset_with_log(self, env_ids):
+            original(self, env_ids)
+            self.reset_calls = getattr(self, "reset_calls", 0) + 1
+            self.extras = getattr(self, "extras", {})
+            self.extras["log"] = {"reset_call": float(self.reset_calls), "n": float(len(env_ids))}
+
+        monkeypatch.setattr(FakeManagerBasedRLEnv, "_reset_idx", reset_with_log)
+        env = _make_next_step_env(next_step_cls, num_envs=4)
+        env.schedule(terminations=_mask(4, [0, 2]))
+        _, _, term, _, _ = env.step(None)  # real reset of envs 0 and 2
+        assert term[0] and term[2]
+        real_log = env.extras["log"]  # Isaac Lab returns this dict as the step's extras
+        assert real_log["n"] == 2.0
+        env.step(None)  # phantom re-reset of 0 and 2
+        assert env.reset_calls == 3  # initial reset, real reset, phantom reset
+        assert env.extras["log"] is real_log
+
     def test_factory_builds_real_subclass_on_injected_base(self, next_step_cls):
         assert next_step_cls.__name__ == "NextStepManagerBasedRLEnv"
         assert next_step_cls.__bases__ == (FakeManagerBasedRLEnv,)

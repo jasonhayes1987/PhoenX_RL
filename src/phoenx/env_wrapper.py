@@ -112,6 +112,7 @@ class VectorNStepReward(VectorWrapper):
         obs_key: str | None = None,
         goal_key: str | None = None,
         ach_goal_key: str | None = None,
+        device: str | T.device | None = None,
         log_level: str = 'INFO',
         name: str | None = None,
         **kwargs
@@ -125,6 +126,9 @@ class VectorNStepReward(VectorWrapper):
                 the full observation (minus goal keys when set).
             goal_key: Dict key for desired goals, or ``None`` if unused.
             ach_goal_key: Dict key for achieved goals, or ``None`` if unused.
+            device: Device for the ring buffers and the windows they emit.
+                The env wrapper passes its own device; ``None`` picks CUDA
+                when available.
             log_level: Logger level name (uppercased).
             name: Logger name; defaults to the class name.
             **kwargs (Any): Private diagnostic knobs (names starting with
@@ -140,7 +144,7 @@ class VectorNStepReward(VectorWrapper):
         self.obs_key = obs_key
         self.goal_key = goal_key
         self.ach_goal_key = ach_goal_key
-        self.device = get_device()
+        self.device = get_device(device)
 
         # Set internal attributes
         self._training = True
@@ -828,6 +832,9 @@ class EnvWrapper:
         if seed is None:
             seed = T.randint(2**31-1, (1,)).item()
         self.seed = seed
+        # Device the env's tensors are put on. Subclasses that take a
+        # ``device`` argument overwrite this before building the env.
+        self.device = get_device()
 
     def extract_states_goals(
         self,
@@ -844,7 +851,7 @@ class EnvWrapper:
             Goal tensor, or ``None`` when ``goal_key`` is unset.
             Achieved-goal tensor, or ``None`` when ``ach_goal_key`` is unset.
         """
-        device = get_device()
+        device = self.device
         if isinstance(states, list):
             obs_list = []
             goals_list = []
@@ -1115,7 +1122,8 @@ class GymnasiumWrapper(EnvWrapper):
         ach_goal_key:str|None=None,
         wrappers:list[dict]|None=None,
         render_mode:str|None=None,
-        seed:int|None=None
+        seed:int|None=None,
+        device:str|None=None
     ):
         """Build a Gymnasium vector env and apply configured wrappers.
 
@@ -1134,8 +1142,14 @@ class GymnasiumWrapper(EnvWrapper):
                 ``None`` for no rendering.
             seed: RNG seed; when ``None``, a random 31-bit seed is drawn by
                 the base class.
+            device: Device for observation tensors and the n-step buffers:
+                ``"cpu"`` or ``"cuda"``. ``None`` picks CUDA when available.
+                When unset, ``create_env`` fills it from ``agent.config.device``
+                so env and agent tensors meet on one device.
         """
         super().__init__(cfg, num_envs, obs_key, goal_key, ach_goal_key, wrappers, render_mode, seed)
+        self.device_spec = device
+        self.device = get_device(device)
         # self.env_id = cfg
         # self.num_envs = num_envs
         # self.obs_key = obs_key
@@ -1188,6 +1202,9 @@ class GymnasiumWrapper(EnvWrapper):
                 
                 override_params = wrapper.get("params", {})
                 final_params = {**default_params, **override_params}
+                if (wrapper_type in WRAPPER_REGISTRY and "device" not in final_params
+                        and "device" in init_param_names(cls)):
+                    final_params["device"] = self.device
                 # final_params.update({"obs_key": self.obs_key, "goal_key": self.goal_key})
                 
                 if vector_aware:
@@ -1212,7 +1229,7 @@ class GymnasiumWrapper(EnvWrapper):
             vec_env = cls(vec_env, **params)
 
         # Wrap vectorized environment to return tensors
-        vec_env = NumpyToTorch(vec_env, device=get_device())
+        vec_env = NumpyToTorch(vec_env, device=self.device)
 
         return vec_env
 
@@ -1387,6 +1404,7 @@ class GymnasiumWrapper(EnvWrapper):
         """
         config = super().config
         config['type'] = "gymnasium"
+        config['config']['device'] = self.device_spec
         return config
         # return {
         #     "type": "gymnasium",
@@ -1536,7 +1554,8 @@ class EnvPoolWrapper(EnvWrapper):
         num_threads: int | None = None,
         wrappers: list[dict] | None = None,
         render_mode: str | None = None,
-        seed: int | None = None
+        seed: int | None = None,
+        device: str | None = None
     ):
         """Build an EnvPool vector env and apply configured wrappers.
 
@@ -1558,8 +1577,14 @@ class EnvPoolWrapper(EnvWrapper):
             render_mode: Render mode forwarded to EnvPool when set, or ``None``.
             seed: RNG seed; when ``None``, a random 31-bit seed is drawn by
                 the base class.
+            device: Device for observation tensors and the n-step buffers:
+                ``"cpu"`` or ``"cuda"``. ``None`` picks CUDA when available.
+                When unset, ``create_env`` fills it from ``agent.config.device``
+                so env and agent tensors meet on one device.
         """
         super().__init__(cfg, num_envs, obs_key, goal_key, ach_goal_key, wrappers, render_mode, seed)
+        self.device_spec = device
+        self.device = get_device(device)
         # self.env_id = cfg
         # self.num_envs = num_envs
         # self.obs_key = obs_key
@@ -1613,6 +1638,8 @@ class EnvPoolWrapper(EnvWrapper):
                 elif wtype in WRAPPER_REGISTRY and WRAPPER_REGISTRY[wtype].get("vector_aware"):
                     default_p = WRAPPER_REGISTRY[wtype]["default_params"].copy()
                     default_p.update(params)
+                    if "device" not in default_p and "device" in init_param_names(WRAPPER_REGISTRY[wtype]["cls"]):
+                        default_p["device"] = self.device
                     vector_wrappers.append((WRAPPER_REGISTRY[wtype]["cls"], default_p))
                 elif hasattr(gym_vector_wrappers, wtype):
                     cls = getattr(gym_vector_wrappers, wtype)
@@ -1629,7 +1656,7 @@ class EnvPoolWrapper(EnvWrapper):
         for cls, params in vector_wrappers:
             env = cls(env, **params)
 
-        env = NumpyToTorch(env, device=get_device())
+        env = NumpyToTorch(env, device=self.device)
         return env
 
     def render_frame(self)->np.ndarray:
@@ -1807,6 +1834,7 @@ class EnvPoolWrapper(EnvWrapper):
         """
         config = super().config
         config['type'] = "envpool"
+        config['config']['device'] = self.device_spec
         config['config']['num_threads'] = self.num_threads
         return config
         # return {
@@ -1904,7 +1932,15 @@ def _get_next_step_env_cls():
             if prev_term.any():
                 ids = prev_term.nonzero(as_tuple=False).squeeze(-1)
                 self._capture_terminal = False
+                # Isaac Lab's _reset_idx replaces extras["log"] with the stats
+                # of the envs it resets. This deferred reset ends no real
+                # episode, so keep the log of the resets that did (episode
+                # rewards, termination counts, curriculum state).
+                extras = getattr(self, "extras", None)
+                real_log = extras.get("log") if isinstance(extras, dict) else None
                 self._reset_idx(ids)
+                if real_log is not None:
+                    self.extras["log"] = real_log
                 self._capture_terminal = True
                 reset_obs = self.observation_manager.compute(update_history=False)
                 for k, v in reset_obs.items():

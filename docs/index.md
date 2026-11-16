@@ -24,5 +24,6 @@ and Isaac Lab): [Installation](how-to/installation.md).
 - **[Decisions](decisions/index.md)** — why the window is built this way
 - **[Hyperparameter Sweeps](how-to/hyperparameter-sweeps.md)** — `phoenx-tune` multi-phase Ray Tune sweeps, search specs, architecture search
 - **[Isaac Sim Environments](how-to/isaac-sim.md)** — training in Isaac Lab, including custom environment configs
+- **PhoenX Flight** — the lunar lander grew into its own project, an aerial craft simulator for Isaac Lab that PhoenX trains by config path
 - **[API Reference](api/rl_agents.md)** — every public module, generated from the source docstrings
 - **[Changelog](changelog.md)** — what changed and when

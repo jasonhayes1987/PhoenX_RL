@@ -2228,7 +2228,8 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
       ``project`` requirement, same run name, group, tags, ``sweep_params``
       and ``extra_config``, sharing one ordinal with W&B when both are set.
       ``phase['mlflow']['tracking_uri']`` (else ``MLFLOW_TRACKING_URI`` as
-      seen by the trial process) is passed through as ``tracking_uri``.
+      seen by the trial process) is passed through as ``tracking_uri``, and
+      ``phase['mlflow']['auto_start_server']`` as ``auto_start_server``.
       Absent, any ``MLflowCallback`` in the base config is stripped.
 
     Args:
@@ -2312,6 +2313,8 @@ def _inject_trial_callbacks(config: dict, sweep: dict, phase: dict, sampled: dic
             tracking_uri = mlflow_cfg.get("tracking_uri") or os.environ.get("MLFLOW_TRACKING_URI")
             if tracking_uri:
                 mlflow_callback_cfg["tracking_uri"] = tracking_uri
+            if "auto_start_server" in mlflow_cfg:
+                mlflow_callback_cfg["auto_start_server"] = bool(mlflow_cfg["auto_start_server"])
             callbacks.append({"type": "MLflowCallback", "config": mlflow_callback_cfg})
 
     config["callbacks"] = callbacks
@@ -2601,6 +2604,16 @@ def run_phase(
     phase_dir = storage_path_abs / sweep_name / phase_name
 
     counter_handle = counter_name = None
+    mlflow_cfg = phase.get("mlflow")
+    if mlflow_cfg and mlflow_cfg.get("auto_start_server", True):
+        # Start the local MLflow server once here, before any trial, so
+        # concurrent trials don't all try to launch it.
+        from . import mlflow_server
+        uri = (mlflow_cfg.get("tracking_uri") or os.environ.get("MLFLOW_TRACKING_URI")
+               or mlflow_server.DEFAULT_TRACKING_URI)
+        if mlflow_server.is_local(uri):
+            mlflow_server.ensure_server(uri)
+
     try:
         # Only a phase that will actually name W&B / MLflow runs pays for a
         # counter round trip; _inject_trial_callbacks gates on exactly this

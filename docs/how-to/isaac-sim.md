@@ -159,6 +159,11 @@ env). If a saved agent’s `config.json` still points at a stale path,
 `phoenx-test --env` overrides that field — see
 [Evaluate a trained agent](getting-started.md#evaluate-a-trained-agent).
 
+The Crazyflie lander is no longer part of PhoenX. It grew into PhoenX Flight,
+an aerial craft simulator in its own repository; PhoenX trains it like any
+other Isaac Lab environment, by its `module:Class` path (for example
+`phoenx_flight.env.scenarios:earth_crazyflie_pad`).
+
 For the Isaac Lab side — scene, managers, rewards, registration — follow
 Isaac Lab’s own guides rather than this page:
 [Create new project or task](https://isaac-sim.github.io/IsaacLab/main/source/overview/own-project/template.html)

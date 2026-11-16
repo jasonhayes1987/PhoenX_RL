@@ -1,5 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 
+# Shell scripts run in Git Bash and WSL, which choke on CR. Keep them LF on
+# every checkout, whatever core.autocrlf says.
+*.sh text eol=lf
+
 # Append-only log: keep both sides when branches add entries in the same place
 CHANGELOG.md merge=union

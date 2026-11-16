@@ -1347,3 +1347,61 @@ def test_raytune_registry_load_constructs_instance():
     assert isinstance(cb, RayTuneCallback)
     assert cb.every == 123
     assert cb.unit == "timestep"
+
+
+# -----------------------------------------------------------------------------
+# Test runs get their own name. A saved agent config carries the TRAINING run's
+# name (e.g. "train-3"); a later phoenx-test of that agent must log as "test-3"
+# (same number, same "group-3"), not reuse "train-3".
+# -----------------------------------------------------------------------------
+@pytest.mark.parametrize("saved, expected", [
+    ("train-3", "test-3"),
+    ("mysweep-refine-0004of0008", "test-mysweep-refine-0004of0008"),
+    ("test-5", "test-5"),
+    (None, None),
+    ("", None),
+])
+def test_test_run_name_rule(saved, expected):
+    assert rl_callbacks._test_run_name(saved) == expected
+
+
+def test_wandb_test_run_of_saved_agent_gets_test_name(monkeypatch, tmp_path):
+    # What phoenx-test does: rebuild the callback from the saved config, then
+    # Trainer._initialize_run passes run_number taken from the saved name.
+    cb = rl_callbacks.load(WandbCallback("proj", run_name="train-3").get_config())
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+    monkeypatch.setattr(rl_callbacks.wandb_support, "get_next_run_number",
+                        lambda *a, **k: pytest.fail("number comes from the training run"))
+
+    cb.on_test_begin({"save_dir": str(tmp_path), "agent": {"type": "PPO"}}, run_number="3")
+
+    call = init_recorder.calls[0]
+    assert call["name"] == "test-3"
+    assert call["group"] == "group-3"
+    assert call["job_type"] == "test"
+    assert cb.run_name == "test-3"
+
+
+def test_wandb_test_run_without_saved_name_uses_next_number(monkeypatch, tmp_path):
+    cb = WandbCallback("proj")
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+    monkeypatch.setattr(rl_callbacks.wandb_support, "get_next_run_number", _make_run_number_recorder(8))
+
+    cb.on_test_begin({"save_dir": str(tmp_path), "agent": {}})
+
+    assert init_recorder.calls[0]["name"] == "test-8"
+
+
+def test_wandb_test_after_training_in_same_process_keeps_training_run(monkeypatch, tmp_path):
+    cb = WandbCallback("proj", run_name="train-3")
+    init_recorder = _make_wandb_init_recorder()
+    monkeypatch.setattr(rl_callbacks.wandb, "init", init_recorder)
+    cb.initialize_run({"save_dir": str(tmp_path), "agent": {}}, run_number="3",
+                      run_name_prefix="train", tags=["train"], job_type="train")
+
+    cb.on_test_begin({"save_dir": str(tmp_path), "agent": {}}, run_number="3")
+
+    assert len(init_recorder.calls) == 1  # no second run opened
+    assert cb.run_name == "train-3"

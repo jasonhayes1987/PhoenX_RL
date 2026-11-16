@@ -17,6 +17,7 @@ import yaml
 from phoenx.builder import available_example_configs, load_config
 
 EXPECTED_EXAMPLE_CONFIGS = [
+    "IsaacSim/AnymalD/Rough/PPO/ppo.yml",
     "IsaacSim/franka/cube_lift/dense/ppo_camera.yml",
     "LunarLander-v3/reinforce.yml",
     "LunarLanderContinuous-v3/ppo.yml",
@@ -25,7 +26,7 @@ EXPECTED_EXAMPLE_CONFIGS = [
 
 
 def test_available_example_configs_lists_bundled_names():
-    """available_example_configs returns the four bundled names, sorted, with /."""
+    """available_example_configs returns the bundled names, sorted, with /."""
     names = available_example_configs()
     assert names == EXPECTED_EXAMPLE_CONFIGS
 

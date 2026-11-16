@@ -60,7 +60,13 @@ def test_refuses_second_start_while_running():
 
 
 def test_stop_is_graceful():
-    """The child gets KeyboardInterrupt and can run its cleanup."""
+    """The child gets KeyboardInterrupt and can run its cleanup.
+
+    The child sleeps in short steps, like a training loop that keeps running
+    Python code. On Windows one long ``time.sleep`` would hide the signal:
+    Python's sleep wakes early only for Ctrl+C, so a Ctrl+Break handler waits
+    until the sleep ends, after the grace period has already killed the child.
+    """
     r = ProcessRunner(grace_seconds=20)
     r.start(_script("""
         import signal, sys, time
@@ -68,7 +74,8 @@ def test_stop_is_graceful():
             signal.signal(signal.SIGBREAK, signal.default_int_handler)
         print("ready", flush=True)
         try:
-            time.sleep(60)
+            for _ in range(600):
+                time.sleep(0.1)
         except KeyboardInterrupt:
             print("cleaned up", flush=True)
             sys.exit(130)

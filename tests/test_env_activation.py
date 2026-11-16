@@ -529,14 +529,17 @@ def test_vscode_git_bash_init_file_before_interactive():
     """PhoenX Git Bash profile puts ``--init-file`` before ``-i`` in args.
 
     ``bash -i --init-file <f>`` is rejected with ``bash: --: invalid option``;
-    ``bash --init-file <f> -i`` works. Skips when settings are absent (gitignored).
+    ``bash --init-file <f> -i`` works. Skips when the settings file or the
+    profile is absent: both are machine-local, and nothing in the repo
+    creates them.
     """
     if not REAL_VSCODE_SETTINGS.is_file():
         pytest.skip(".vscode/settings.json not present (machine-local / gitignored)")
 
     data = json.loads(REAL_VSCODE_SETTINGS.read_text(encoding="utf-8"))
-    profiles = data["terminal.integrated.profiles.windows"]
-    bash_profile = profiles["PhoenX Git Bash"]
+    bash_profile = data.get("terminal.integrated.profiles.windows", {}).get("PhoenX Git Bash")
+    if bash_profile is None:
+        pytest.skip("no 'PhoenX Git Bash' terminal profile in .vscode/settings.json")
     args = bash_profile["args"]
     assert isinstance(args, list)
     assert "--init-file" in args

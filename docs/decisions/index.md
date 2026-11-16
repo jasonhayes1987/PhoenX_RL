@@ -24,3 +24,7 @@ the choice, the options, and what it costs.
 - [0019. Rust only forwards the session pipes](0019-rust-forwards-pipes.md)
 - [0020. The form follows the Tkinter editor's layout rules](0020-form-follows-the-tkinter-layout.md)
 - [0021. Overview cards are shortcuts into the one form](0021-overview-cards-are-shortcuts.md)
+
+Decisions 0022 to 0062 recorded the lunar lander and the aerial craft simulator.
+They moved with that work to its own project, PhoenX Flight, which PhoenX trains
+by config path.

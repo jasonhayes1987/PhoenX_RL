@@ -175,3 +175,6 @@ AGENTS.md
 
 # Ray Tune sweep output (phoenx-tune, any --storage-path)
 ray_results/
+Claude outputs/
+Trained_Models/
+docs/decisions/

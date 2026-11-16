@@ -136,6 +136,10 @@ def _patch_run_phase(monkeypatch):
     monkeypatch.setattr(ray_tune_mod, "resolve_trial_config",
                         lambda sweep, phase, sampled, base_config: {"resolved": True})
     monkeypatch.setattr(ray_tune_mod, "write_best_config", lambda config, path: None)
+    from phoenx import mlflow_server
+    server_calls = []
+    monkeypatch.setattr(mlflow_server, "ensure_server", lambda uri, **k: server_calls.append(uri))
+    monkeypatch.setattr(ray_tune_mod, "_server_calls", server_calls, raising=False)
     start_calls = []
 
     def _start(sweep_name, phase_name):
@@ -188,6 +192,30 @@ def test_mlflow_only_phase_starts_counter(monkeypatch, tmp_path):
     run_phase(sweep={}, phase=phase, base_config={}, storage_path=tmp_path, sweep_name="s")
     assert start_calls == [("s", "p1")]
     assert wp_calls[0]["sweep"]["_phase_counter"] == "actor-name"
+
+
+def test_driver_starts_local_server_once_before_trials(monkeypatch, tmp_path):
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    _patch_run_phase(monkeypatch)
+    phase = {"name": "p1", "tune": {"num_samples": 4}, "mlflow": {"project": "m"}}
+    run_phase(sweep={}, phase=phase, base_config={}, storage_path=tmp_path, sweep_name="s")
+    assert ray_tune_mod._server_calls == ["http://127.0.0.1:5000"]
+
+
+def test_driver_skips_server_for_remote_or_disabled(monkeypatch, tmp_path):
+    _patch_run_phase(monkeypatch)
+    for block in ({"project": "m", "tracking_uri": "http://10.0.0.5:5000"},
+                  {"project": "m", "auto_start_server": False}):
+        run_phase(sweep={}, phase={"name": "p1", "tune": {"num_samples": 1}, "mlflow": block},
+                  base_config={}, storage_path=tmp_path, sweep_name="s")
+    assert ray_tune_mod._server_calls == []
+
+
+def test_auto_start_flag_passed_to_trials(trial):
+    config = {}
+    phase = {"name": "p", "mlflow": {"project": "x", "auto_start_server": False}}
+    _inject_trial_callbacks(config, {}, phase, sampled={})
+    assert _of_type(config, "MLflowCallback")[0]["config"]["auto_start_server"] is False
 
 
 def test_no_tracker_phase_starts_no_counter(monkeypatch, tmp_path):

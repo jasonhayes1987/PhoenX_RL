@@ -1,63 +1,51 @@
-device: &device cuda
-save_dir: ./Trained_Models/IsaacSim/AnymalD/Rough/PPO/
-log_level: INFO
-
-learning_rate: &learning_rate 1.0e-3
-
+# PhoenX training config, written by `phoenx-config gui`.
+# Settings you have not set are omitted (PhoenX uses its defaults).
 schedule:
   stop_unit: timestep
-  stop_units: 196608000          # 2000 iterations
+  stop_units: 196608000
   learn_every_unit: timestep
-  learn_every: 98304             # 24 steps * 4096 envs
-  mini_batch_size: 24576         # rollout / 4 mini-batches
-  learning_epochs: 5
+  learn_every: 98304
   updates_per_learn: 1
+  mini_batch_size: 24576
+  learning_epochs: 5
   warmup_steps: 0
-  seed: &seed 42
-
+  seed: 42
 agent:
   type: PPO
   config:
     model:
-      device: *device
       roots: null
       trunk: null
       branches:
         policy:
           type: StochasticContinuousHead
-          distribution: normal
           layer_config:
-            - type: dense
-              params: {units: 512, kernel: default, kernel_params: {}}
-            - type: elu
-            - type: dense
-              params: {units: 256, kernel: default, kernel_params: {}}
-            - type: elu
-            - type: dense
-              params: {units: 128, kernel: default, kernel_params: {}}
-            - type: elu
+          - {type: dense, params: {units: 512, kernel: default, kernel_params: {}}}
+          - {type: elu}
+          - {type: dense, params: {units: 256, kernel: default, kernel_params: {}}}
+          - {type: elu}
+          - {type: dense, params: {units: 128, kernel: default, kernel_params: {}}}
+          - {type: elu}
           output_config:
-            - type: dense
-              params: {kernel: default, kernel_params: {}}
-          optimizer_params: {type: Adam, params: {lr: *learning_rate}}
+          - {type: dense, params: {kernel: default, kernel_params: {}}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+          distribution: normal
         value:
           type: ValueHead
           layer_config:
-            - type: dense
-              params: {units: 512, kernel: default, kernel_params: {}}
-            - type: elu
-            - type: dense
-              params: {units: 256, kernel: default, kernel_params: {}}
-            - type: elu
-            - type: dense
-              params: {units: 128, kernel: default, kernel_params: {}}
-            - type: elu
+          - {type: dense, params: {units: 512, kernel: default, kernel_params: {}}}
+          - {type: elu}
+          - {type: dense, params: {units: 256, kernel: default, kernel_params: {}}}
+          - {type: elu}
+          - {type: dense, params: {units: 128, kernel: default, kernel_params: {}}}
+          - {type: elu}
           output_config:
-            - type: dense
-              params: {kernel: default, kernel_params: {}}
-          optimizer_params: {type: Adam, params: {lr: *learning_rate}}
+          - {type: dense, params: {kernel: default, kernel_params: {}}}
+          optimizer_params: {type: Adam, params: {lr: 0.001}}
+      device: cuda
     discount: 0.99
     gae_coefficient: 0.95
+    advantage_normalizer: {type: BatchNorm, config: {clip_value: .inf, device: cuda}}
     entropy_coefficient: 0.005
     auto_entropy_tuning: false
     kl_coefficient: 0.0
@@ -68,12 +56,6 @@ agent:
     value_coef: 1.0
     reward_clip: .inf
     bootstrap_truncations: true
-    advantage_normalizer:
-      type: BatchNorm
-      config:
-        clip_value: .inf
-        device: *device
-
 env:
   type: isaacsim
   config:
@@ -83,12 +65,13 @@ env:
     goal_key: null
     ach_goal_key: null
     wrappers: []
-    render_mode: human
-    seed: *seed
+    render_mode: headless
+    seed: 42
     enable_cameras: false
-
 buffer:
   type: RolloutBuffer
-  config:
-    buffer_size: 24
-    device: *device
+  config: {buffer_size: 24, device: cuda}
+device: cuda
+save_dir: ./Trained_Models/IsaacSim/AnymalD/Rough/PPO/
+log_level: INFO
+learning_rate: 0.001

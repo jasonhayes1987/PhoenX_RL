@@ -5,6 +5,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- A `device: cpu` run on a machine with a GPU no longer crashes with
+  "Expected all tensors to be on the same device". The Gymnasium and EnvPool
+  wrappers always put observations and n-step buffers on CUDA when one was
+  present; they now take a `device` (`env.config.device`), and `create_env`
+  fills it from `agent.config.device` when unset. The device is saved with the
+  env config, so a loaded run keeps it. The smoke test's CPU patch is gone.
+- `scripts/activate.sh` stays LF on Windows checkouts (`*.sh text eol=lf` in
+  `.gitattributes`); with `core.autocrlf` it was checked out with CRLF.
+- The Git Bash terminal-profile test skips when `.vscode/settings.json` has no
+  "PhoenX Git Bash" profile, as it already did when the file is missing.
+- `test_stop_is_graceful` passes on Windows. Its child slept in one 60 s
+  `time.sleep`, which on Windows wakes early only for Ctrl+C, so the
+  Ctrl+Break from `ProcessRunner.stop()` landed after the grace-period kill.
+  The child now sleeps in short steps, as a training loop runs.
+- `NextStepManagerBasedRLEnv`: the deferred reset one step after an episode
+  ends no longer replaces `extras["log"]`. Isaac Lab rebuilds that dict in
+  every `_reset_idx`, so the episode stats of the real resets were being
+  overwritten by those of a reset that ended no episode.
+- One `output_config` entry now initializes every output layer a head
+  builds. A continuous stochastic policy builds two (mean and scale); the
+  init loop used `zip`, so the scale layer kept PyTorch's default init and
+  the starting noise was random around 0.69. One entry per output layer is
+  also accepted; any other count is an error. Fixed in `Head.init_weights`
+  and the legacy `Model._init_weights` (`StochasticContinuousHead` and
+  `StochasticContinuousPolicy`).
+- Kernel parameters written under the legacy key `'kernel params'` (by
+  `build_layers`, the W&B sweep helpers, and the legacy model defaults) were
+  ignored at init; they are now applied.
+
+### Added
+
+- Isaac Lab episode bookkeeping is logged: every number in an env's
+  `infos["log"]` (Isaac Lab `extras["log"]`, filled on each reset) is added
+  to the step log as `env/<key>`, e.g. `env/Curriculum/robustness/level`,
+  `env/Episode_Termination/landed`, `env/Episode_Reward/step`. Training and
+  testing. `phoenx.trainer.env_log_metrics`.
+- `initial_scale` and `state_dependent_scale` on `StochasticContinuousHead`
+  and `StochasticContinuousPolicy` (`distribution: normal` only).
+  `initial_scale` sets the noise every action starts with;
+  `state_dependent_scale: false` learns one scale per action instead of a
+  scale layer. Defaults keep the old behaviour and checkpoint layout.
+
 ### Changed
 - The PhoenX RL window has a new look and opens each editor on an overview.
   Config Builder: Agent / Environment / Schedule cards that show only the
