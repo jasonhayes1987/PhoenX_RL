@@ -64,6 +64,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `initial_scale` sets the noise every action starts with;
   `state_dependent_scale: false` learns one scale per action instead of a
   scale layer. Defaults keep the old behaviour and checkpoint layout.
+### Added
+- `phoenx_play` environment type (`PhoenXPlayWrapper`): trains on retro games
+  exported from PhoenX Play. `cfg` is the exported integration folder; each of
+  `num_envs` emulators runs headless in its own process (Gymnasium async
+  vector env), and an optional `rom` overrides the ROM path recorded at export.
+  Appears as the fourth choice on the Environment card in Config Builder.
+  Needs `phoenx-play[train]` in the same Python environment and says so if it
+  is missing. Measured on FF3 (SNES), 16 emulators, PPO on CUDA: 1,198
+  timesteps/s including learning.
 
 ### Changed
 - The PhoenX RL window has a new look and opens each editor on an overview.

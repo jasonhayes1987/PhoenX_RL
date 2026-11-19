@@ -1099,6 +1099,8 @@ class EnvWrapper:
                 return EnvPoolWrapper.from_json(json_string)
             elif config['type'] == 'isaacsim':
                 return IsaacSimWrapper.from_json(json_string)
+            elif config['type'] == 'phoenx_play':
+                return PhoenXPlayWrapper.from_json(json_string)
             else:
                 raise ValueError(f"Unknown environment wrapper type: {config['type']}")
         except KeyError as e:
@@ -1448,6 +1450,124 @@ class GymnasiumWrapper(EnvWrapper):
             return cls(**config)
         except Exception as e:
             raise ValueError(f"Environment wrapper error: {config}, {e}")
+
+
+class PhoenXPlayWrapper(GymnasiumWrapper):
+    """Retro games exported from PhoenX Play, one emulator per process.
+
+    ``cfg`` is the folder PhoenX Play's Export page writes: ``integration.json``
+    (variables, observation, actions, timing), ``reward.py`` and the start
+    states. Each sub-env runs a libretro core headless in its own process
+    through Gymnasium's async vector env, so rollouts use every CPU core (a
+    core keeps global state, so two cannot share a process). Needs PhoenX
+    Play installed in the same environment (``pip install phoenx-play[train]``).
+    """
+
+    def __init__(
+        self,
+        cfg: str,
+        num_envs: int = 8,
+        wrappers: list[dict] | None = None,
+        render_mode: str | None = None,
+        seed: int | None = None,
+        device: str | None = None,
+        rom: str | None = None,
+    ):
+        """Build the async vector env for an exported PhoenX Play integration.
+
+        Args:
+            cfg: Path to the integration folder exported by PhoenX Play.
+            num_envs: Number of emulators, each in its own process. Up to the
+                number of CPU cores pays off; the emulator is the bottleneck.
+            wrappers: Optional list of wrapper specs, each a dict with ``type``
+                and optional ``params``, applied as single-env or vector-aware
+                wrappers (as for ``GymnasiumWrapper``).
+            render_mode: ``"rgb_array"`` to keep each step's last picture for
+                ``render_frame``, or ``None`` (fastest).
+            seed: RNG seed; picks the start state at each reset. When ``None``,
+                a random 31-bit seed is drawn.
+            device: Device for observation tensors: ``"cpu"`` or ``"cuda"``.
+                ``None`` picks CUDA when available.
+            rom: ROM file or folder to use instead of the path recorded at
+                export. The ROM's CRC32 must match the integration.
+        """
+        self.rom = rom
+        self.device_spec = device
+        EnvWrapper.__init__(self, cfg, num_envs, None, None, None, wrappers, render_mode, seed)
+        self.device = get_device(device)
+        self.env = self._initialize_env()
+
+    def _initialize_env(self):
+        """Create PhoenX Play's async vector env, apply wrappers, torch-cast outputs.
+
+        Returns:
+            env (gymnasium.vector.VectorEnv): The vectorized emulators wrapped
+                in ``NumpyToTorch``.
+
+        Raises:
+            ImportError: If PhoenX Play is not installed.
+        """
+        try:
+            from phoenx_play.env import make_vec_env
+        except ImportError as e:
+            raise ImportError(
+                "The phoenx_play env type needs PhoenX Play in this Python environment: "
+                "pip install phoenx-play[train]") from e
+        single_wrappers, vector_wrappers = [], []
+        for wrapper in self.wrappers or []:
+            wrapper_type = wrapper.get('type')
+            if not wrapper_type:
+                raise ValueError("Each wrapper dict must have a 'type' key.")
+            if wrapper_type in WRAPPER_REGISTRY:
+                entry = WRAPPER_REGISTRY[wrapper_type]
+                cls, params = entry["cls"], entry["default_params"].copy()
+                vector_aware = entry.get("vector_aware", False)
+            elif hasattr(gym_vector_wrappers, wrapper_type):
+                cls, params, vector_aware = getattr(gym_vector_wrappers, wrapper_type), {}, True
+            elif hasattr(gym_wrappers, wrapper_type):
+                cls, params, vector_aware = getattr(gym_wrappers, wrapper_type), {}, False
+            else:
+                raise ValueError(f"Unknown wrapper type '{wrapper_type}'.")
+            params.update(wrapper.get("params", {}))
+            if vector_aware:
+                vector_wrappers.append((cls, params))
+            else:
+                single_wrappers.append(lambda env, cls=cls, params=params: cls(env, **params))
+        kwargs = {}
+        if self.rom:
+            kwargs["rom"] = self.rom
+        if self.render_mode:
+            kwargs["render_mode"] = self.render_mode
+        vec_env = make_vec_env(self.env_id, self.num_envs, wrappers=single_wrappers, **kwargs)
+        for cls, params in vector_wrappers:
+            vec_env = cls(vec_env, **params)
+        return NumpyToTorch(vec_env, device=self.device)
+
+    @property
+    def finite_horizon(self) -> bool:
+        """Always True: an integration truncates episodes at its ``max_steps``."""
+        return True
+
+    @property
+    def config(self):
+        """Build a JSON-serializable config with type ``phoenx_play``.
+
+        Returns:
+            config (dict): ``type`` and the constructor kwargs under ``config``.
+        """
+        return {
+            "type": "phoenx_play",
+            "config": {
+                "cfg": self.env_id,
+                "num_envs": self.num_envs,
+                "wrappers": self.wrappers,
+                "render_mode": self.render_mode,
+                "seed": self.seed,
+                "device": self.device_spec,
+                "rom": self.rom,
+            },
+        }
+
 
 class EnvPoolAdapter(VectorEnv):
     """Adapts an EnvPool gymnasium env to be compatible with the VectorWrapper chain."""

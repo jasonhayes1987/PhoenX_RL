@@ -433,7 +433,8 @@ def tagged_union(
 # --------------------------------------------------------------------------
 
 AGENT_CLASSES = ("Reinforce", "ActorCritic", "PPO", "DDPG", "TD3", "SAC")
-ENV_CLASSES = {"gymnasium": "GymnasiumWrapper", "envpool": "EnvPoolWrapper", "isaacsim": "IsaacSimWrapper"}
+ENV_CLASSES = {"gymnasium": "GymnasiumWrapper", "envpool": "EnvPoolWrapper", "isaacsim": "IsaacSimWrapper",
+               "phoenx_play": "PhoenXPlayWrapper"}
 BUFFER_CLASSES = ("ReplayBuffer", "PrioritizedReplayBuffer", "RolloutBuffer", "TrajectoryBuffer")
 #: ``Noise.create_instance`` / ``IntrinsicMotivation.create_instance`` dispatch
 #: on if/elif chains, not a dict literal; ``tests/test_config_schema.py``
