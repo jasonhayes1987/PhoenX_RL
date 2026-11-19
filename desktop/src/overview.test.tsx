@@ -244,4 +244,28 @@ describe("Launch live status", () => {
     expect(screen.getByText("0:21:47")).toBeTruthy()
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("41")
   })
+
+  it("shows a best picked by success rate and curriculum level", () => {
+    const launch: Launch = {
+      mode: "train",
+      values: { cwd: "." },
+      command: "python -m phoenx.cli.train",
+      running: true,
+      status: "timestep 412,160/1,000,000",
+      progress: { mode: "train", unit: "timestep", done: 412160, total: 1000000, fraction: 0.41216, episodes: 1284, avg_reward: 186.4, elapsed: "0:21:47", best: 150.2, best_success: 0.82, best_level: 0.6 },
+      log: [{ text: "[checkpoint] saved best (success_rate=0.820, level=0.6, avg_reward=150.20)", tag: "good" }],
+      start_enabled: false,
+      stop_enabled: true,
+      stop_label: "Stop",
+      open_output_enabled: true,
+      output_dir: "run",
+      resume_info: "",
+      test_info: "",
+      phase_choices: [],
+      run_status: "Running",
+    }
+    const dialogs = { openFile: vi.fn(), saveFile: vi.fn(), openFolder: vi.fn() }
+    render(<LaunchPage launch={launch} dialogs={dialogs} onRun={vi.fn(async () => undefined)} />)
+    expect(screen.getByText("best 82% success · level 0.6 · saved")).toBeTruthy()
+  })
 })

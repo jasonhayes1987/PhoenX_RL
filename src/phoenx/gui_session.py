@@ -1391,7 +1391,8 @@ class GuiSession:
             if prog.mode == "test" and prog.total and prog.done >= prog.total:
                 self._append(line, "good")
                 self._last_checkpoint = False
-            best = (self.progress or {}).get("best")
+            previous = self.progress or {}
+            best = previous.get("best")
             self.progress = {
                 "mode": prog.mode,
                 "unit": prog.unit,
@@ -1403,6 +1404,8 @@ class GuiSession:
                 "avg_reward": prog.avg_reward,
                 "elapsed": prog.elapsed,
                 "best": best,
+                "best_success": previous.get("best_success"),
+                "best_level": previous.get("best_level"),
             }
             reward = (
                 f", avg reward {prog.avg_reward:.2f}"
@@ -1416,6 +1419,10 @@ class GuiSession:
             best = _BEST_RE.search(line)
             if best is not None:
                 self.progress = {**(self.progress or {}), "best": float(best.group(1).replace(",", ""))}
+                # Set with schedule.save_best_by / save_best_level_key.
+                for key, pattern in (("best_success", _SUCCESS_RE), ("best_level", _LEVEL_RE)):
+                    found = pattern.search(line)
+                    self.progress[key] = float(found.group(1)) if found is not None else None
             if self._last_checkpoint and self.log:
                 self.log[-1] = {"text": line, "tag": "good"}
             else:
@@ -1839,6 +1846,9 @@ def _snap(node: Any, path: str) -> dict:
 
 #: ``[checkpoint] saved best (avg_reward=201.70) at ...``
 _BEST_RE = re.compile(r"avg_reward=(-?[0-9][0-9,]*(?:\.[0-9]+)?)")
+#: ``[checkpoint] saved best (success_rate=0.820, level=0.6, avg_reward=...)``
+_SUCCESS_RE = re.compile(r"success_rate=([0-9]+(?:\.[0-9]+)?)")
+_LEVEL_RE = re.compile(r"level=(-?[0-9]+(?:\.[0-9]+)?(?:e-?[0-9]+)?)")
 
 
 def _guess_output(values: dict, cwd: str) -> str | None:

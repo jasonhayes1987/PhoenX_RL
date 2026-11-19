@@ -103,9 +103,14 @@ def describe_run(info: dict) -> str:
             if isinstance(limit, int)
             else f"{what}. No trainer_state.pt."
         )
-    text = f"{what}. Best checkpoint at {unit} {info['progress']:,}"
+    where = "Final policy" if info.get("is_last") else "Best checkpoint"
+    text = f"{what}. {where} at {unit} {info['progress']:,}"
     if isinstance(limit, int):
         text += f" of {limit:,}"
+    if info.get("best_success_rate") is not None:
+        text += f", best success rate {info['best_success_rate']:.0%}"
+    if info.get("best_level") is not None:
+        text += f" at level {info['best_level']:g}"
     if info.get("best_reward") is not None:
         text += f", best avg reward {info['best_reward']:.2f}"
     text += "."

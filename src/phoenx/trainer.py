@@ -56,6 +56,20 @@ class TrainingSchedule:
             ``learn_every_unit`` — predictability is the point. ``0``
             disables the cooldown, saving on every new best. Defaults to 50,000 to match ``RayTuneCallback``'s
             default report cadence.
+        save_best_by: What makes a checkpoint the new best. ``avg_reward``
+            (the default) is the rolling average reward of the last 100
+            episodes. ``success_rate`` is the share of the last 100 episodes
+            the ``success_criterion`` counted as a success (it needs one);
+            ties go to the higher average reward. Use it when reward from
+            different stages of a run cannot be compared, as with a
+            curriculum.
+        save_best_level_key: Optional env log key holding a curriculum level,
+            e.g. ``Curriculum/robustness/level`` (Isaac Lab ``extras["log"]``;
+            ``env/`` in front, as MLflow shows it, also works). When set, a
+            checkpoint at a higher level always beats one at a lower level,
+            and ``save_best_by`` only decides between checkpoints at the same
+            level. After the level changes, the next best waits for 100
+            episodes played at the new level.
     """
     # Training Length
     stop_unit: Literal["timestep", "episode"] = "timestep" # Train length unit
@@ -72,6 +86,22 @@ class TrainingSchedule:
     warmup_steps: int = 0 # Optional warmup gate (no learning until this many steps)
     seed: int | None = None # Seed
     save_every: int = 50_000 # Minimum timesteps between automatic best-model checkpoints (0 disables the cooldown)
+    save_best_by: Literal["avg_reward", "success_rate"] = "avg_reward" # What makes a new best checkpoint
+    save_best_level_key: str | None = None # Env log key of a curriculum level; a higher level always wins
+
+    def __post_init__(self):
+        """Reject a ``save_best_by`` that is not one of the two choices.
+
+        Raises:
+            ValueError: If ``save_best_by`` is not ``avg_reward`` or
+                ``success_rate``, or ``save_best_level_key`` is empty.
+        """
+        if self.save_best_by not in ("avg_reward", "success_rate"):
+            raise ValueError(
+                f"schedule.save_best_by must be 'avg_reward' or 'success_rate', not {self.save_best_by!r}"
+            )
+        if self.save_best_level_key is not None and not str(self.save_best_level_key).strip():
+            raise ValueError("schedule.save_best_level_key is empty; leave it out (null) instead")
 
     def is_done(self, *, step: int, episodes: int) -> bool:
         """Return whether the run has reached its configured length.
@@ -151,6 +181,8 @@ class TrainingSchedule:
             "warmup_steps": self.warmup_steps,
             "seed": self.seed,
             "save_every": self.save_every,
+            "save_best_by": self.save_best_by,
+            "save_best_level_key": self.save_best_level_key,
         }
 
 
@@ -269,8 +301,15 @@ class Trainer:
 
     Steps the environment, records into the buffer, calls ``agent.learn`` on the
     schedule's cadence, drives callbacks and optional rendering, and checkpoints
-    when the running average reward improves.
+    when the running average reward improves. When training ends it also saves
+    the final policy to ``<save_dir>/last/`` (see ``LAST_DIR``).
     """
+
+    #: Subfolder of ``save_dir`` that holds the policy a run ended with. The
+    #: best checkpoint stays in ``save_dir`` itself; this one is written once,
+    #: when ``train`` returns (finished, stopped or interrupted), so a run whose
+    #: peak came early still keeps what it learned afterwards.
+    LAST_DIR = "last"
 
     def __init__(
         self,
@@ -310,6 +349,12 @@ class Trainer:
             validate = getattr(self.buffer, "validate_schedule", None)
             if validate is not None:
                 validate(self.schedule)
+        if schedule.save_best_by == "success_rate" and success_criterion is None:
+            raise ValueError(
+                "schedule.save_best_by is 'success_rate' but the config has no success_criterion. "
+                "Add one (for example `success_criterion: {metric: info_flag}` for an env that "
+                "reports infos['is_success']), or set save_best_by back to 'avg_reward'."
+            )
         self.renderer = renderer
         self.callbacks = callbacks
         self.log_level = log_level
@@ -330,6 +375,14 @@ class Trainer:
         self._best_reward = None
         self._last_save = None
         self._best_pending = None
+        # Best checkpoint under a non-default ``schedule.save_best_by`` /
+        # ``save_best_level_key``: ``(level, metric, avg_reward)``, compared
+        # as a tuple (see ``_best_candidate``). ``None`` until the first.
+        self._best_key = None
+        # Curriculum level last read from the env log, and the episodes
+        # counted since it last changed (``schedule.save_best_level_key``).
+        self._level = None
+        self._episodes_at_level = 0
         self._episode_steps = None
         self._completed_episodes = None
         self._episode_scores = None
@@ -445,6 +498,9 @@ class Trainer:
         self._best_reward = -T.inf
         self._last_save = None
         self._best_pending = False
+        self._best_key = None
+        self._level = None
+        self._episodes_at_level = 0
         self._episode_steps = T.zeros(self.env.num_envs, dtype=T.int32, device=self.agent.device)
         self._completed_episodes = T.zeros(self.env.num_envs, dtype=T.int32, device=self.agent.device)
         self._episode_scores = T.zeros(self.env.num_envs, dtype=T.float32, device=self.agent.device)
@@ -499,6 +555,12 @@ class Trainer:
             self._best_reward = state.get("_best_reward", self._best_reward)
             self._last_save = state.get("_last_save", self._last_save)
             self._best_pending = state.get("_best_pending", self._best_pending)
+            # A best kept under other save_best_by settings is not comparable:
+            # drop it, so the first full window under the new rule saves.
+            if state.get("_best_rule") == self._best_rule() and state.get("_best_key") is not None:
+                self._best_key = tuple(state["_best_key"])
+            self._level = state.get("_level", self._level)
+            self._episodes_at_level = state.get("_episodes_at_level", self._episodes_at_level)
             for name in ("_completed_episodes", "_episode_scores", "_episode_steps"):
                 value = state.get(name)
                 if value is not None:
@@ -857,13 +919,18 @@ class Trainer:
                 'avg_reward': round(float(avg_reward), 2)
             }
             # Success metric
+            success_recorded = False
             if self.success_criterion is not None:
                 success = self.success_criterion.evaluate(observation, i, float(self._episode_scores[i]))
                 if success is not None:
                     self._success_tracker.append(int(success))
+                    success_recorded = True
                     episode_log['success_rate'] = round(
                         sum(self._success_tracker) / len(self._success_tracker), 3
                     )
+            # Episodes in the best-checkpoint window since the level changed.
+            if self.schedule.save_best_by != "success_rate" or success_recorded:
+                self._episodes_at_level += 1
             # Goal distance tracking
             if self.env.goal_key is not None:
                 goal_distance = T.norm(observation.ach_goals[i] - observation.goals[i], p=2, dim=-1)
@@ -871,8 +938,7 @@ class Trainer:
             episode_logs.append(episode_log)
 
         if done_episodes.numel() > 0 and training:
-            if avg_reward > self._best_reward:
-                self._best_reward = avg_reward
+            if self._is_new_best(avg_reward):
                 episode_logs[-1]['best'] = True
                 self._best_pending = True
             if self._best_pending and self.schedule.should_save(step=self._step, last_save_at=self._last_save):
@@ -881,6 +947,10 @@ class Trainer:
                 self.save()
                 self._announce_checkpoint()
                 episode_logs[-1]['saved'] = True
+        # After the best check: the episodes that just ended were played at
+        # the old level, even when their resets moved the curriculum.
+        if training:
+            self._track_level(observation.infos)
 
         # clear current episode memory of done episodes if using IM (Episodic Novelty)
         if done_episodes.numel() > 0 and training and im is not None:
@@ -1014,7 +1084,9 @@ class Trainer:
         ``schedule.should_save``) so the run's peak is not silently dropped;
         the flushed weights are from the end of the run rather than the
         exact peak, the same approximation the mid-run cooldown already
-        makes. Closes the env when finished.
+        makes. Then saves the final policy to ``<save_dir>/last/``
+        (``LAST_DIR``) whatever its reward, also on Ctrl+C / Stop. Closes the
+        env when finished.
 
         Each iteration merges ``self.metrics.collect()`` into ``step_log``
         before handing it to callbacks, so every enabled Table A/A2/B metric
@@ -1183,6 +1255,19 @@ class Trainer:
             elif getattr(self, "_checkpoint_unreported", False):
                 self._announce_checkpoint(force=True)
 
+            # Keep the policy the run ended with. The best checkpoint above
+            # only follows the rolling average reward, which can peak early
+            # (or, with a curriculum, at an easier level) and then never be
+            # beaten, dropping everything learned after it. Skipped when the
+            # run never stepped: there is nothing new to keep.
+            if self._step:
+                last_dir = self.last_dir()
+                self.save(last_dir)
+                message = (f"[last] saved the final policy at {self.schedule.stop_unit} "
+                           f"{self._progress_units():,} to {last_dir}")
+                self.logger.info(message)
+                self._plain_line(console, message)
+
         self.env.close()
         if interrupted:
             raise KeyboardInterrupt
@@ -1340,7 +1425,7 @@ class Trainer:
             return
         self._checkpoint_last = now
         self._checkpoint_unreported = False
-        print(f"[checkpoint] saved best (avg_reward={self._best_reward:.2f}) at "
+        print(f"[checkpoint] saved best ({self._best_text()}) at "
               f"{self.schedule.stop_unit} {self._progress_units():,} to {self.save_dir}",
               flush=True)
 
@@ -1355,6 +1440,10 @@ class Trainer:
             "_best_reward": self._best_reward,
             "_last_save": self._last_save,
             "_best_pending": self._best_pending,
+            "_best_key": list(self._best_key) if self._best_key is not None else None,
+            "_best_rule": self._best_rule(),
+            "_level": self._level,
+            "_episodes_at_level": self._episodes_at_level,
             "_last_learn": self._last_learn,
             "_completed_episodes": self._completed_episodes,
             "_episode_scores": self._episode_scores,
@@ -1378,6 +1467,87 @@ class Trainer:
         if T.cuda.is_available():
             state["cuda"] = T.cuda.get_rng_state_all()
         return state
+
+    def _best_rule(self) -> list:
+        """The settings a stored best was judged under (saved with it)."""
+        return [self.schedule.save_best_by, self.schedule.save_best_level_key]
+
+    def _best_candidate(self, avg_reward: float) -> tuple[float, float, float] | None:
+        """This step's ``(level, metric, avg_reward)``, or ``None`` if not comparable yet.
+
+        ``metric`` is the success rate or the average reward
+        (``schedule.save_best_by``), and ``level`` is the curriculum level, or
+        ``0.0`` without ``schedule.save_best_level_key``. Not comparable until
+        the 100-episode window is full and, with a level, filled entirely
+        with episodes played at the current level.
+        """
+        schedule = self.schedule
+        by_success = schedule.save_best_by == "success_rate"
+        window = self._success_tracker if by_success else self._score_history
+        if window is None or window.maxlen is None or len(window) < window.maxlen:
+            return None
+        level = 0.0
+        if schedule.save_best_level_key is not None:
+            if self._level is None or self._episodes_at_level < window.maxlen:
+                return None
+            level = float(self._level)
+        metric = sum(window) / len(window) if by_success else float(avg_reward)
+        return (level, float(metric), float(avg_reward))
+
+    def _is_new_best(self, avg_reward: float) -> bool:
+        """Record and return whether this step beats the best checkpoint.
+
+        With the default settings (``save_best_by: avg_reward``, no level
+        key) this is the rolling average reward against ``_best_reward``.
+        Otherwise ``_best_candidate`` tuples are compared: level first, then
+        the metric, then the average reward. ``_best_reward`` always ends up
+        as the average reward of the best checkpoint.
+        """
+        schedule = self.schedule
+        if schedule.save_best_by == "avg_reward" and schedule.save_best_level_key is None:
+            if avg_reward > self._best_reward:
+                self._best_reward = avg_reward
+                return True
+            return False
+        candidate = self._best_candidate(avg_reward)
+        if candidate is None or (self._best_key is not None and candidate <= self._best_key):
+            return False
+        self._best_key = candidate
+        self._best_reward = avg_reward
+        return True
+
+    def _track_level(self, infos: Any) -> None:
+        """Read ``schedule.save_best_level_key`` from the env log; restart the count on a change."""
+        key = self.schedule.save_best_level_key
+        if key is None or not isinstance(infos, dict):
+            return
+        log = infos.get("log")
+        if not isinstance(log, dict):
+            return
+        if key not in log and key.startswith("env/"):
+            key = key[len("env/"):]
+        if key not in log:
+            return
+        level = _scalar(log[key])
+        if level is not None and level != self._level:
+            self._level = level
+            self._episodes_at_level = 0
+
+    def _best_text(self) -> str:
+        """``success_rate=0.820, level=0.6, avg_reward=12.34`` for the checkpoint line."""
+        parts = []
+        if self._best_key is not None:
+            level, metric, _ = self._best_key
+            if self.schedule.save_best_by == "success_rate":
+                parts.append(f"success_rate={metric:.3f}")
+            if self.schedule.save_best_level_key is not None:
+                parts.append(f"level={level:g}")
+        parts.append(f"avg_reward={self._best_reward:.2f}")
+        return ", ".join(parts)
+
+    def last_dir(self) -> Path:
+        """Where ``train`` writes the final policy: ``<save_dir>/last/``."""
+        return Path(self.save_dir) / self.LAST_DIR
 
     def save(self, run_dir: str | Path | None = None, *, save_buffer: bool = False) -> None:
         """Persist the full run under ``run_dir`` (defaults to ``self.save_dir``).
@@ -1475,7 +1645,7 @@ class Trainer:
             renderer=renderer,
             callbacks=callbacks,
             log_level=log_level,
-            save_dir=str(run_dir),
+            save_dir=str(cls._save_dir_for(run_dir)),
             metrics=metrics,
         )
 
@@ -1494,6 +1664,21 @@ class Trainer:
         trainer._resume_buffer_restored = buffer_restored
 
         return trainer
+
+    @classmethod
+    def _save_dir_for(cls, run_dir: Path) -> Path:
+        """The ``save_dir`` a run loaded from ``run_dir`` keeps writing to.
+
+        ``run_dir`` itself, except for a final-policy folder
+        (``<save_dir>/last/`` beside a saved run): resuming from it writes new
+        bests to the original ``save_dir`` and the next final policy back to
+        ``last/``, not to ``last/last/``.
+        """
+        parent = run_dir.parent
+        if (run_dir.name == cls.LAST_DIR
+                and (parent / "config.json").is_file() and (parent / "agent").is_dir()):
+            return parent
+        return run_dir
 
     @staticmethod
     def _build_buffer(buffer_config: dict | None, env: EnvWrapper) -> Buffer | None:

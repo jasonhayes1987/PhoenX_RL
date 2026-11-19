@@ -471,25 +471,27 @@ def test_train_flushes_pending_best_at_run_end_bypassing_cooldown(tmp_path, monk
     trainer = _make_ended_trainer(tmp_path, best_pending=True)
     assert trainer.schedule.should_save(step=trainer._step, last_save_at=trainer._last_save) is False
     saved = []
-    monkeypatch.setattr(trainer, "save", lambda *a, **k: saved.append(True))
+    monkeypatch.setattr(trainer, "save", lambda run_dir=None, **k: saved.append(run_dir))
 
     trainer.train()
 
-    assert saved == [True]
+    # The best (to save_dir), then the final policy (to last/).
+    assert saved == [None, trainer.last_dir()]
     assert trainer._best_pending is False
     assert trainer._last_save == 12_345
 
 
 def test_train_does_not_flush_when_nothing_pending_at_run_end(tmp_path, monkeypatch):
     """The negative case that stops the flush from firing unconditionally:
-    a run that ends with `_best_pending=False` writes NO extra checkpoint."""
+    a run that ends with `_best_pending=False` writes NO extra best
+    checkpoint (only the final policy, to last/)."""
     trainer = _make_ended_trainer(tmp_path, best_pending=False)
     saved = []
-    monkeypatch.setattr(trainer, "save", lambda *a, **k: saved.append(True))
+    monkeypatch.setattr(trainer, "save", lambda run_dir=None, **k: saved.append(run_dir))
 
     trainer.train()
 
-    assert saved == []
+    assert saved == [trainer.last_dir()]
     assert trainer._last_save == 0  # unchanged
 
 
@@ -506,3 +508,62 @@ def test_train_run_that_never_steps_does_not_raise(tmp_path, monkeypatch):
     trainer.train()  # must not raise
 
     assert saved == []
+
+
+# =============================================================================
+# Trainer.train(): the final policy goes to <save_dir>/last/.
+#
+# The best checkpoint follows the rolling average reward, which can peak
+# early and never be beaten; without this, a long run kept only that early
+# policy.
+# =============================================================================
+
+
+def test_train_saves_final_policy_to_last_dir(tmp_path):
+    """A real save: <save_dir>/last/ is a complete run directory, and the best
+    checkpoint in <save_dir> is left alone."""
+    trainer = _make_ended_trainer(tmp_path, best_pending=False)
+
+    trainer.train()
+
+    last = tmp_path / Trainer.LAST_DIR
+    assert trainer.last_dir() == last
+    assert (last / "config.json").is_file()
+    assert (last / "agent").is_dir()
+    assert (last / "trainer_state.pt").is_file()
+    assert not (tmp_path / "config.json").exists()  # no best was pending
+
+
+def test_train_saves_final_policy_when_interrupted(tmp_path, monkeypatch):
+    """Ctrl+C (or Stop in the GUI) still keeps the final policy, then re-raises."""
+    trainer = _make_ended_trainer(tmp_path, best_pending=False)
+    saved = []
+    monkeypatch.setattr(trainer, "save", lambda run_dir=None, **k: saved.append(run_dir))
+
+    def interrupt(**_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(trainer.schedule, "is_done", interrupt)
+
+    try:
+        trainer.train()
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("train() should re-raise KeyboardInterrupt")
+
+    assert saved == [trainer.last_dir()]
+
+
+def test_resume_from_last_keeps_original_save_dir(tmp_path):
+    """Loading <save_dir>/last/ keeps save_dir as the original folder, so the
+    next final policy goes back to last/ (not last/last/); any other folder,
+    including one merely named last/, is its own save_dir."""
+    run = tmp_path / "run"
+    (run / "agent").mkdir(parents=True)
+    (run / "config.json").write_text("{}", encoding="utf-8")
+    assert Trainer._save_dir_for(run / Trainer.LAST_DIR) == run
+    assert Trainer._save_dir_for(run) == run
+
+    lone = tmp_path / "lone" / Trainer.LAST_DIR
+    assert Trainer._save_dir_for(lone) == lone

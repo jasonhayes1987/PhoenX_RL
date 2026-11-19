@@ -465,6 +465,8 @@ Passthrough kwargs. Dataclass defaults:
 | `warmup_steps` | int | `0` | Env steps before the first learn |
 | `seed` | int \| null | `None` | If set, seeds the run via `phoenx.torch_utils.set_seed` before build |
 | `save_every` | int | `50_000` | Min env timesteps between automatic best-model checkpoints (`0` = every new best) |
+| `save_best_by` | `"avg_reward"` \| `"success_rate"` | `"avg_reward"` | What makes a checkpoint the new best (see below) |
+| `save_best_level_key` | str \| null | `None` | Env log key of a curriculum level; a higher level always wins (see below) |
 
 `save_every` exists because a new rolling-average best used to trigger a full
 checkpoint tree (and, with W&B, a full artifact upload) nearly every step
@@ -478,6 +480,45 @@ boundary after the window expires, so real gaps run somewhat longer than
 `save_every`, and one still pending when training stops is flushed at the end
 of the run — so a short run that never reaches `save_every` again still ends
 with its best on disk. Set `save_every: 0` to restore save-on-every-new-best.
+
+Separately from the best checkpoint, the end of training always writes the
+final policy to `<save_dir>/last/`, whatever its reward and regardless of
+`save_every`.
+
+#### Picking the best by success rate or curriculum level
+
+The rolling average reward is a poor judge when reward from different parts
+of a run cannot be compared. With a curriculum, a harder level pays less for
+the same skill, and short crash episodes pull the average around. Two keys
+change what "best" means:
+
+```yaml
+schedule:
+  save_best_by: success_rate                       # default: avg_reward
+  save_best_level_key: Curriculum/robustness/level # optional
+success_criterion:
+  metric: info_flag                                # required by success_rate
+```
+
+- `save_best_by: success_rate` keeps the checkpoint with the highest share of
+  successes over the last 100 episodes (the `success_rate` of the episode
+  log), judged by the `success_criterion`. It waits until 100 episodes have
+  been judged, so one lucky episode is not a 100% best. Equal rates go to the
+  higher average reward. Without a `success_criterion` the trainer refuses to
+  start, and the config window flags the field.
+- `save_best_level_key` names a number in the env's `infos["log"]` (Isaac
+  Lab `extras["log"]`), such as a curriculum level; the `env/...` name MLflow
+  shows also works. A checkpoint at a higher level always beats one at a
+  lower level, and `save_best_by` decides between checkpoints at the same
+  level. After the level changes, the next best waits until the 100-episode
+  window holds only episodes played at the new level. It works with either
+  `save_best_by`.
+
+The checkpoint line then reads
+`[checkpoint] saved best (success_rate=0.820, level=0.6, avg_reward=...)`, and
+the Launch page shows `best 82% success · level 0.6 · saved`. A resume keeps
+the stored best only when these two keys are unchanged; otherwise the first
+full window under the new rule becomes the best.
 
 ### `env`
 

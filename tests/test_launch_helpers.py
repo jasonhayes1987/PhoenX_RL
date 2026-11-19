@@ -518,3 +518,25 @@ def test_command_text_posix_quoting(monkeypatch, argv, expected):
     """On other platforms, unsafe arguments are wrapped in single quotes."""
     monkeypatch.setattr(launch_cmd.sys, "platform", "linux")
     assert launch_cmd.command_text(argv) == expected
+
+
+def test_describe_run_best_by_success_rate_and_level():
+    assert launch_cmd.describe_run(
+        {
+            "agent_type": "PPO",
+            "env": "rocket",
+            "stop_units": 1000,
+            "progress": 500,
+            "best_reward": -12.5,
+            "best_success_rate": 0.82,
+            "best_level": 0.6,
+            "has_buffer": False,
+        }
+    ) == ("PPO on rocket. Best checkpoint at timestep 500 of 1,000, best success rate 82% "
+          "at level 0.6, best avg reward -12.50.")
+
+
+def test_describe_run_final_policy_folder():
+    assert launch_cmd.describe_run(
+        {"agent_type": "PPO", "env": "rocket", "progress": 500, "is_last": True, "has_buffer": False}
+    ) == "PPO on rocket. Final policy at timestep 500."

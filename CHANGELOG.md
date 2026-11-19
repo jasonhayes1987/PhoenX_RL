@@ -37,6 +37,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Training always saves the policy it ended with to `<save_dir>/last/`
+  (`Trainer.LAST_DIR`), also when stopped or interrupted, and prints
+  `[last] saved the final policy ... to <dir>`. The best checkpoint only
+  follows the rolling average reward, which can peak early and never be
+  beaten, so a long run kept only an early policy. `last/` is a complete run
+  directory; `Trainer.load` from it keeps `save_dir` as the original folder,
+  so a resume writes the next final policy back to `last/`, not `last/last/`.
+- `schedule.save_best_by` (`avg_reward`, the default, or `success_rate`) and
+  `schedule.save_best_level_key` choose what makes a checkpoint the best.
+  `success_rate` uses the `success_criterion` over the last 100 episodes
+  (waiting until 100 are judged; ties go to the higher average reward). A
+  level key, e.g. `Curriculum/robustness/level` from the env's
+  `infos["log"]`, makes a higher curriculum level always win, and waits for
+  100 episodes at a new level. `success_rate` without a `success_criterion`
+  is refused by the trainer and flagged by `validate_config` (the config
+  window). The checkpoint line, `python -m phoenx.run_info` and the Launch
+  page report the success rate and level.
 - Isaac Lab episode bookkeeping is logged: every number in an env's
   `infos["log"]` (Isaac Lab `extras["log"]`, filled on each reset) is added
   to the step log as `env/<key>`, e.g. `env/Curriculum/robustness/level`,

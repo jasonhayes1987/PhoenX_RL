@@ -13,6 +13,9 @@ export type Progress = {
   avg_reward?: number | null
   elapsed?: string | null
   best?: number | null
+  // Set when schedule.save_best_by is success_rate / save_best_level_key is set.
+  best_success?: number | null
+  best_level?: number | null
 }
 
 export type Launch = {
@@ -135,6 +138,17 @@ function LaunchText({ value, label, className, onCommit }: { value: string; labe
 
 const fmt = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n.toLocaleString("en-US"))
 
+const has = (n: number | null | undefined): n is number => n !== null && n !== undefined
+
+// "best 201.7 · saved", or "best 82% success · level 0.6 · saved" when the
+// run picks its best by success rate and/or curriculum level.
+function bestLine(p: Progress | null): string {
+  if (!p || !has(p.best)) return "best not saved yet"
+  const parts = [has(p.best_success) ? `best ${Math.round(p.best_success * 100)}% success` : `best ${p.best.toFixed(1)}`]
+  if (has(p.best_level)) parts.push(`level ${p.best_level}`)
+  return `${parts.join(" · ")} · saved`
+}
+
 function tiles(launch: Launch) {
   const p = launch.progress
   const unit = p?.unit || "timestep"
@@ -145,8 +159,8 @@ function tiles(launch: Launch) {
     {
       k: "AVG REWARD",
       v: p?.avg_reward === null || p?.avg_reward === undefined ? "—" : p.avg_reward.toFixed(1),
-      sub: p?.best !== null && p?.best !== undefined ? `best ${p.best.toFixed(1)} · saved` : "best not saved yet",
-      tone: p?.best !== null && p?.best !== undefined ? "good" : "",
+      sub: bestLine(p),
+      tone: has(p?.best) ? "good" : "",
     },
     { k: "ELAPSED", v: p?.elapsed || "—", sub: launch.run_status.toLowerCase(), tone: launch.running ? "live" : "" },
   ]

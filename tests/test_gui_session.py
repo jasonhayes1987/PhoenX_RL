@@ -618,3 +618,19 @@ def test_schedule_card_follows_the_agent():
     assert schedule_card("PPO") == ("learn_every", "mini_batch_size", "learning_epochs", "seed")
     assert schedule_card("SAC") == ("learn_every", "batch_size", "updates_per_learn", "warmup_steps", "seed")
     assert schedule_card("Reinforce") == ("learn_every", "seed")
+
+
+def test_checkpoint_line_with_success_rate_and_level_reaches_progress():
+    """``schedule.save_best_by: success_rate`` with a level key: the Launch
+    tile gets the landing rate and level as well as the reward."""
+    session = GuiSession()
+    session._take_line("[checkpoint] saved best (success_rate=0.820, level=0.6, avg_reward=-12.50) "
+                       "at timestep 1,000 to run")
+    assert session.progress["best"] == -12.5
+    assert session.progress["best_success"] == 0.82
+    assert session.progress["best_level"] == 0.6
+    # A plain best (the default rule) clears them again.
+    session._take_line("[checkpoint] saved best (avg_reward=3.00) at timestep 2,000 to run")
+    assert session.progress["best"] == 3.0
+    assert session.progress["best_success"] is None
+    assert session.progress["best_level"] is None

@@ -797,6 +797,7 @@ def validate_config(config: dict, schema: dict | None = None) -> list[str]:
     """
     import jsonschema
 
+    is_config = schema is None
     schema = schema or _build_schema()
     validator = jsonschema.Draft7Validator(schema)
     errors = []
@@ -806,7 +807,29 @@ def validate_config(config: dict, schema: dict | None = None) -> list[str]:
         msg = f"{path}: {_explain(err)}"
         if msg not in errors:
             errors.append(msg)
+    if is_config:
+        errors.extend(msg for msg in cross_field_problems(config) if msg not in errors)
     return errors
+
+
+def cross_field_problems(config: dict) -> list[str]:
+    """Problems that involve two sections, which the JSON Schema cannot say well.
+
+    Args:
+        config: Parsed training config.
+
+    Returns:
+        ``path: message`` strings; empty when there are none.
+    """
+    problems = []
+    schedule = config.get("schedule") if isinstance(config, dict) else None
+    if isinstance(schedule, dict) and schedule.get("save_best_by") == "success_rate":
+        if not config.get("success_criterion"):
+            problems.append(
+                "schedule.save_best_by: 'success_rate' needs a success_criterion "
+                "(for example metric: info_flag); without one no checkpoint is ever the best"
+            )
+    return problems
 
 
 def _most_specific(err):

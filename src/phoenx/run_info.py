@@ -10,7 +10,8 @@ A run directory is what ``Trainer.save`` writes (the run's ``save_dir``)::
 
 Training saves this only when the rolling average reward reaches a new best,
 so the directory holds the *best* checkpoint, and resuming continues from the
-step that checkpoint was taken at.
+step that checkpoint was taken at. When training ends it also writes the
+policy it ended with to ``<run_dir>/last/``, a run directory of the same shape.
 
 [read_run_info][phoenx.run_info.read_run_info] is used by ``phoenx-train``
 (to check ``--stop_units``) and by the config GUI's Run tab, which calls
@@ -42,6 +43,9 @@ def read_run_info(run_dir: str | Path) -> dict[str, Any]:
         A JSON-serializable dict with ``agent_type``, ``env``, ``stop_unit``,
         ``stop_units``, ``progress`` (steps or episodes reached, in
         ``stop_unit``), ``step``, ``episodes``, ``best_reward``,
+        ``best_success_rate`` and ``best_level`` (set only under
+        ``schedule.save_best_by: success_rate`` / ``save_best_level_key``),
+        ``is_last`` (the folder is a final policy, ``<save_dir>/last/``),
         ``has_trainer_state`` and ``has_buffer``. Counter fields are ``None``
         when ``trainer_state.pt`` is missing.
 
@@ -68,6 +72,9 @@ def read_run_info(run_dir: str | Path) -> dict[str, Any]:
         "step": None,
         "episodes": None,
         "best_reward": None,
+        "best_success_rate": None,
+        "best_level": None,
+        "is_last": run_dir.name == "last",
         "progress": None,
         "has_trainer_state": (run_dir / "trainer_state.pt").is_file(),
         "has_buffer": (run_dir / "buffer.pt").is_file(),
@@ -79,6 +86,13 @@ def read_run_info(run_dir: str | Path) -> dict[str, Any]:
         info["step"] = _plain(state.get("_step"))
         info["episodes"] = _plain(state.get("_completed_episodes"))
         info["best_reward"] = _plain(state.get("_best_reward"))
+        # Kept with schedule.save_best_by / save_best_level_key (Trainer._best_key).
+        rule, key = state.get("_best_rule"), state.get("_best_key")
+        if rule and key:
+            if rule[0] == "success_rate":
+                info["best_success_rate"] = _plain(key[1])
+            if rule[1] is not None:
+                info["best_level"] = _plain(key[0])
         info["progress"] = info["episodes"] if info["stop_unit"] == "episode" else info["step"]
     return info
 

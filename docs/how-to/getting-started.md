@@ -73,7 +73,9 @@ phoenx-train --agent_dir path/to/saved/agent_dir --stop_units 3000000
 An agent directory is the run's `save_dir` (it holds `config.json`, `agent/`
 and `trainer_state.pt`). Training saves it only when the rolling average
 reward reaches a new best, so it holds the *best* checkpoint, and a resume
-continues from the step that checkpoint was taken at, with the original
+continues from the step that checkpoint was taken at. `<save_dir>/last/` is
+the policy the run ended with (see below); resume from it to continue from
+the end of the run instead, with the original
 `schedule.stop_units`. `--stop_units` replaces that limit (a total, in the
 run's `stop_unit`); a value the checkpoint has already reached is refused,
 since training would stop at once. `python -m phoenx.run_info DIR` prints the
@@ -197,7 +199,18 @@ gaps between checkpoints are somewhat longer than `save_every`. A peak still
 pending when training stops is flushed once at the end of the run, so it is
 delayed rather than lost. An episode log carries `saved: True` on the steps
 where a checkpoint was actually written. See `schedule.save_every` in
-[Configurations](configurations.md) to tune or disable the cooldown.
+[Configurations](configurations.md) to tune or disable the cooldown, and
+`schedule.save_best_by` / `save_best_level_key` there to pick the best by
+success rate or curriculum level instead of average reward.
+
+The best checkpoint can come from early in a run: a rolling average that
+peaks at 400K steps and is never beaten again keeps only the 400K-step
+policy. So when training ends (finished, stopped or Ctrl+C), the trainer
+also saves the policy it ended with to `<save_dir>/last/` and prints
+`[last] saved the final policy ...`. `last/` is a complete agent directory:
+test it, evaluate it or resume from it like `save_dir` itself. A resume from
+`last/` keeps writing new bests to `save_dir` and the next final policy back
+to `last/`.
 
 On-disk layout is documented on [Trainer.save][phoenx.trainer.Trainer.save].
 After that same run:
