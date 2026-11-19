@@ -24,7 +24,9 @@ from phoenx.config_utils import resolve_n_step
 from phoenx.models import modular_parts_from_config
 from phoenx.buffer import Buffer, RolloutBuffer, TrajectoryBuffer
 from phoenx.her import HindsightRelabeler
-from phoenx.env_wrapper import EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper
+from phoenx.env_wrapper import (
+    EnvWrapper, GymnasiumWrapper, IsaacSimWrapper, EnvPoolWrapper, PhoenXPlayWrapper,
+)
 from phoenx.rl_agents import Agent
 from phoenx.renderer import Renderer
 from phoenx.rl_callbacks import load as callback_load
@@ -157,16 +159,19 @@ def create_env(config: dict) -> EnvWrapper:
     Args:
         config: Full training config. Reads ``config["env"]["type"]`` and
             ``config["env"]["config"]``. Accepted ``type`` values are
-            ``"isaacsim"``, ``"gymnasium"``, and ``"envpool"``; the ``config``
-            sub-dict is forwarded as keyword arguments to the matching wrapper
-            constructor (``IsaacSimWrapper``, ``GymnasiumWrapper``, or
-            ``EnvPoolWrapper``).
+            ``"isaacsim"``, ``"gymnasium"``, ``"envpool"`` and
+            ``"phoenx_play"``; the ``config`` sub-dict is forwarded as keyword
+            arguments to the matching wrapper constructor
+            (``IsaacSimWrapper``, ``GymnasiumWrapper``, ``EnvPoolWrapper`` or
+            ``PhoenXPlayWrapper``). For PhoenX Play, an unset
+            ``env.config.device`` is filled from ``agent.config.device`` (or
+            the top-level ``device``).
 
     Returns:
         Constructed environment wrapper.
 
     Raises:
-        ValueError: If ``env.type`` is not one of the three accepted values.
+        ValueError: If ``env.type`` is not one of the four accepted values.
         KeyError: If the ``env`` section or its ``type`` / ``config`` keys are
             missing.
     """
@@ -178,6 +183,12 @@ def create_env(config: dict) -> EnvWrapper:
         return GymnasiumWrapper(**env_config)
     if env_type == "envpool":
         return EnvPoolWrapper(**env_config)
+    if env_type == "phoenx_play":
+        if env_config.get("device") is None:
+            agent_device = config.get("agent", {}).get("config", {}).get("device", config.get("device"))
+            if agent_device is not None:
+                env_config["device"] = agent_device
+        return PhoenXPlayWrapper(**env_config)
     raise ValueError(f"Invalid environment type: {env_type}")
 
 
