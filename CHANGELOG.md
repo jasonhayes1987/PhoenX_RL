@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- Stop (the GUI and Studio Run page) now saves an Isaac Sim run. Isaac Sim's
+  Kit registers a native Windows console handler when it boots that ends the
+  process on Ctrl+Break (exit code 0xC000013A) before Python's handler runs,
+  so Stop killed the run at once: no `last/`, no pending best flushed. A
+  25M-step run was lost this way. `process_runner.claim_console_interrupts()`
+  registers PhoenX's own handler after Kit's (Windows calls the newest
+  first); it raises `KeyboardInterrupt` in the main thread and ends the
+  chain. The Isaac Sim wrapper calls it once the env is built. Checked end to
+  end: a stopped rocket run printed `[interrupted]` and saved `last/` 0.8 s
+  after Stop. Still open: the process then exits with code 0, not 130 (the
+  Isaac env's close appears to end the process before the interrupt is
+  re-raised), so the Run page may report Finished for a stopped Isaac run.
 - A `device: cpu` run on a machine with a GPU no longer crashes with
   "Expected all tensors to be on the same device". The Gymnasium and EnvPool
   wrappers always put observations and n-step buffers on CUDA when one was

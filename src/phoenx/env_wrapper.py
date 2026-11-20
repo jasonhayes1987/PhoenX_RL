@@ -2314,6 +2314,11 @@ class IsaacSimWrapper(EnvWrapper):
         cfg.sim.device = "cuda:0"
         cfg.seed = self.seed
         env = NextStepManagerBasedRLEnv(cfg=cfg)
+        # Kit has registered its own Ctrl+Break handler by now, which ends the
+        # process before Python sees Stop; take Ctrl+Break back so Stop saves.
+        from phoenx.process_runner import claim_console_interrupts
+
+        claim_console_interrupts()
         # Adapt to the gymnasium VectorWrapper chain (VectorNStepReward, etc.) and
         # supply the goal reward HER recomputes during relabeling.
         env = IsaacLabAdapter(env, distance_threshold=self.distance_threshold)

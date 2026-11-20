@@ -265,3 +265,79 @@ def test_stop_works_when_started_with_sigint_ignored(tmp_path):
     lines += runner.poll()
     assert "[interrupted] stopped by user" in lines
     assert runner.returncode == 130
+
+
+_KIT_LIKE_CHILD = """
+import ctypes, sys, time
+from ctypes import wintypes
+from phoenx.process_runner import claim_console_interrupts, run_interruptible
+
+# Like Isaac Sim's Kit: a native Ctrl+Break handler that ends the process.
+kernel32 = ctypes.windll.kernel32
+def _kit(event):
+    kernel32.ExitProcess(0xC000013A)
+    return True
+_keep = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(_kit)
+kernel32.SetConsoleCtrlHandler(_keep, True)
+if sys.argv[1] == "claim":
+    claim_console_interrupts()
+
+def main():
+    print("ready", flush=True)
+    for _ in range(1200):
+        time.sleep(0.05)
+run_interruptible(main)
+"""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console control handlers")
+@pytest.mark.parametrize("claim", [False, True])
+def test_stop_survives_a_native_ctrl_break_handler(tmp_path, claim):
+    """Isaac Sim's Kit registers a native Ctrl+Break handler that kills the
+    process, so Stop never became KeyboardInterrupt and a run lost ``last/``.
+    ``claim_console_interrupts`` after it puts PhoenX's handler first."""
+    import os
+    from pathlib import Path
+
+    import phoenx
+
+    script = tmp_path / "child.py"
+    script.write_text(_KIT_LIKE_CHILD, encoding="utf-8")
+    src = str(Path(phoenx.__file__).resolve().parents[1])
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([src, os.environ.get("PYTHONPATH", "")]))
+    runner = ProcessRunner(grace_seconds=20)
+    runner.start([sys.executable, str(script), "claim" if claim else "plain"], cwd=str(tmp_path), env=env)
+    deadline = time.time() + 30
+    lines: list[str] = []
+    while "ready" not in lines and time.time() < deadline:
+        lines += runner.poll()
+        time.sleep(0.05)
+    assert "ready" in lines, lines
+    runner.stop()
+    lines += _drain(runner)
+    if claim:
+        assert "[interrupted] stopped by user" in lines
+        assert runner.returncode == 130
+    else:
+        # Without the claim the native handler wins: no interrupt, killed at once.
+        assert "[interrupted] stopped by user" not in lines
+        assert runner.returncode == 0xC000013A
+
+
+def test_claim_console_interrupts_is_a_no_op_off_windows(monkeypatch):
+    import phoenx.process_runner as pr
+
+    monkeypatch.setattr(pr, "IS_WINDOWS", False)
+    monkeypatch.setattr(pr, "_CONSOLE_HANDLER", None)
+    pr.claim_console_interrupts()
+    assert pr._CONSOLE_HANDLER is None
+
+
+def test_console_handler_raises_keyboard_interrupt_for_ctrl_c_and_break_only():
+    import phoenx.process_runner as pr
+
+    assert pr._on_console_event(2) is False  # CTRL_CLOSE_EVENT: left to the next handler
+    with pytest.raises(KeyboardInterrupt):
+        assert pr._on_console_event(1) is True  # CTRL_BREAK_EVENT
+        for _ in range(100):
+            time.sleep(0.01)

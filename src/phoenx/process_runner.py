@@ -112,6 +112,47 @@ def install_interrupt_handlers() -> None:
         signal.signal(signal.SIGINT, signal.default_int_handler)
 
 
+#: The Windows console handler installed by ``claim_console_interrupts``. Kept
+#: here so the ctypes callback is never garbage collected while registered.
+_CONSOLE_HANDLER = None
+
+
+def _on_console_event(event: int) -> bool:
+    """Turn Ctrl+C (0) and Ctrl+Break (1) into ``KeyboardInterrupt`` in the main thread."""
+    if event in (0, 1):
+        import _thread
+
+        _thread.interrupt_main()
+        return True
+    return False
+
+
+def claim_console_interrupts() -> None:
+    """Make Stop raise ``KeyboardInterrupt`` again after a native library took Ctrl+Break.
+
+    Windows delivers Ctrl+Break to console control handlers, newest first, and
+    the first that returns TRUE ends the chain. Isaac Sim's Kit registers a
+    native handler when it boots that ends the process at once (exit code
+    0xC000013A), so Python's own handler never runs: Stop killed a training
+    run without saving ``last/`` or flushing a pending best. Registering this
+    handler after Kit puts it first; it raises ``KeyboardInterrupt`` in the
+    main thread and stops the chain. Calling it again moves it back to the
+    front. A no-op outside Windows.
+    """
+    global _CONSOLE_HANDLER
+    if not IS_WINDOWS:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    if _CONSOLE_HANDLER is not None:
+        kernel32.SetConsoleCtrlHandler(_CONSOLE_HANDLER, False)
+    handler = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)(_on_console_event)
+    if kernel32.SetConsoleCtrlHandler(handler, True):
+        _CONSOLE_HANDLER = handler
+
+
 def run_interruptible(main) -> None:
     """Run a CLI ``main`` and turn an interrupt into exit code 130 without a traceback."""
     install_interrupt_handlers()
